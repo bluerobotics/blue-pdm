@@ -4,7 +4,8 @@ solidworks integration
 - configurations
 
 
-
+offline mode
+- conflict resolution when coming back online
 
 tab system for navigating with multiple tabs
 - pinning tabs

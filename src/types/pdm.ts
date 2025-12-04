@@ -254,9 +254,10 @@ export function getNextRevision(current: string, scheme: RevisionScheme): string
   return 'A' + chars.join('')
 }
 
-// Get file type from extension
+// Get file type from extension (for database categorization)
 export function getFileType(extension: string): PDMFile['file_type'] {
-  const ext = extension.toLowerCase()
+  // Normalize extension to have leading dot
+  const ext = extension.startsWith('.') ? extension.toLowerCase() : ('.' + extension.toLowerCase())
   
   if (['.sldprt', '.prt', '.ipt', '.catpart', '.x_t', '.x_b', '.sat'].includes(ext)) {
     return 'part'
@@ -264,11 +265,78 @@ export function getFileType(extension: string): PDMFile['file_type'] {
   if (['.sldasm', '.asm', '.iam', '.catproduct'].includes(ext)) {
     return 'assembly'
   }
-  if (['.slddrw', '.dwg', '.dxf'].includes(ext)) {
+  if (['.slddrw', '.dwg', '.dxf', '.idw', '.drw'].includes(ext)) {
     return 'drawing'
   }
   if (['.pdf', '.step', '.stp', '.iges', '.igs', '.stl', '.3mf', '.obj'].includes(ext)) {
     return 'document'
+  }
+  
+  return 'other'
+}
+
+// Icon types for UI display (more specific than database file_type)
+export type FileIconType = 
+  | 'part' | 'assembly' | 'drawing' 
+  | 'step' | 'pdf' | 'image' | 'spreadsheet' | 'archive' | 'pcb' | 'schematic' | 'library' | 'code' | 'text'
+  | 'other'
+
+// Get icon type from extension (for UI icons - more granular than file_type)
+export function getFileIconType(extension: string): FileIconType {
+  // Normalize extension to have leading dot
+  const ext = extension.startsWith('.') ? extension.toLowerCase() : ('.' + extension.toLowerCase())
+  
+  // CAD Parts
+  if (['.sldprt', '.prt', '.ipt', '.catpart', '.x_t', '.x_b', '.sat', '.par'].includes(ext)) {
+    return 'part'
+  }
+  // CAD Assemblies
+  if (['.sldasm', '.asm', '.iam', '.catproduct'].includes(ext)) {
+    return 'assembly'
+  }
+  // CAD Drawings
+  if (['.slddrw', '.dwg', '.dxf', '.idw', '.drw'].includes(ext)) {
+    return 'drawing'
+  }
+  // STEP/Exchange formats
+  if (['.step', '.stp', '.iges', '.igs', '.stl', '.3mf', '.obj', '.fbx', '.gltf', '.glb'].includes(ext)) {
+    return 'step'
+  }
+  // PDF
+  if (ext === '.pdf') {
+    return 'pdf'
+  }
+  // Images
+  if (['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.svg', '.webp', '.tiff', '.tif', '.ico'].includes(ext)) {
+    return 'image'
+  }
+  // Spreadsheets
+  if (['.xlsx', '.xls', '.csv', '.ods'].includes(ext)) {
+    return 'spreadsheet'
+  }
+  // Archives
+  if (['.zip', '.rar', '.7z', '.tar', '.gz', '.bz2'].includes(ext)) {
+    return 'archive'
+  }
+  // Schematics (red chip)
+  if (['.sch', '.kicad_sch'].includes(ext)) {
+    return 'schematic'
+  }
+  // Libraries (purple chip)
+  if (['.lbr', '.kicad_mod', '.kicad_sym'].includes(ext)) {
+    return 'library'
+  }
+  // PCB/Electronics (green chip for boards/gerbers)
+  if (['.kicad_pcb', '.brd', '.pcb', '.gbr', '.drl', '.gtl', '.gbl', '.gts', '.gbs', '.gto', '.gbo'].includes(ext)) {
+    return 'pcb'
+  }
+  // Code
+  if (['.py', '.js', '.ts', '.c', '.cpp', '.h', '.hpp', '.cs', '.java', '.rs', '.go', '.json', '.xml', '.yaml', '.yml', '.html', '.css'].includes(ext)) {
+    return 'code'
+  }
+  // Text/Documents
+  if (['.txt', '.md', '.doc', '.docx', '.rtf', '.odt'].includes(ext)) {
+    return 'text'
   }
   
   return 'other'

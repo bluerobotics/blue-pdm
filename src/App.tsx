@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { usePDMStore } from './stores/pdmStore'
 import { supabase, getCurrentSession, getUserProfile, isSupabaseConfigured, getFiles, linkUserToOrganization, checkinFile } from './lib/supabase'
 import { MenuBar } from './components/MenuBar'
@@ -392,6 +392,9 @@ function App() {
     }
   }, [setVaultPath, setVaultConnected, addRecentVault, setStatusMessage])
 
+  // Track what configuration we last loaded to avoid duplicate loads
+  const lastLoadKey = useRef<string>('')
+
   // Initialize working directory on startup (only if authenticated or offline)
   useEffect(() => {
     const initWorkingDir = async () => {
@@ -410,12 +413,32 @@ function App() {
     initWorkingDir()
   }, [user, isOfflineMode, vaultPath, setVaultPath, setVaultConnected])
 
-  // Load files when working directory changes
+  // Load files when ready - wait for organization to be loaded when online
+  // This prevents double-loading (once without org, once with org)
   useEffect(() => {
-    if (isVaultConnected && vaultPath) {
-      loadFiles()
+    if (!isVaultConnected || !vaultPath) return
+    
+    // When online, wait for organization to be loaded before first load
+    // This prevents the "add diff spam" from loading without org data
+    if (!isOfflineMode && user && !organization) {
+      // Show loading state while waiting for org
+      setIsLoading(true)
+      setStatusMessage('Loading organization...')
+      return // Wait for org to load
     }
-  }, [isVaultConnected, vaultPath, loadFiles])
+    
+    // Create a key to track what we've loaded for
+    // Include vaultPath so switching vaults triggers a new load
+    const loadKey = `${vaultPath}:${currentVaultId || 'none'}:${organization?.id || 'none'}`
+    
+    // Skip if we've already loaded for this exact configuration
+    if (lastLoadKey.current === loadKey) {
+      return
+    }
+    
+    lastLoadKey.current = loadKey
+    loadFiles()
+  }, [isVaultConnected, vaultPath, isOfflineMode, user, organization, currentVaultId, loadFiles, setIsLoading, setStatusMessage])
 
   // Handle sidebar resize
   useEffect(() => {

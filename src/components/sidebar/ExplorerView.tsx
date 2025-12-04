@@ -11,10 +11,17 @@ import {
   Lock,
   Cloud,
   Star,
-  X
+  X,
+  FileImage,
+  FileSpreadsheet,
+  FileArchive,
+  FileCode,
+  Cpu,
+  FileType,
+  FilePen
 } from 'lucide-react'
 import { usePDMStore, LocalFile, ConnectedVault } from '../../stores/pdmStore'
-import { getFileType } from '../../types/pdm'
+import { getFileIconType } from '../../types/pdm'
 import { FileContextMenu } from '../FileContextMenu'
 
 interface ExplorerViewProps {
@@ -261,14 +268,34 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
       return <FolderOpen size={16} className={synced ? 'text-pdm-success' : 'text-pdm-fg-muted'} />
     }
     
-    const fileType = getFileType(file.extension)
-    switch (fileType) {
+    const iconType = getFileIconType(file.extension)
+    switch (iconType) {
       case 'part':
         return <FileBox size={16} className="text-pdm-accent" />
       case 'assembly':
-        return <Layers size={16} className="text-pdm-success" />
+        return <Layers size={16} className="text-amber-400" />
       case 'drawing':
-        return <FileText size={16} className="text-pdm-info" />
+        return <FilePen size={16} className="text-sky-300" />
+      case 'step':
+        return <FileBox size={16} className="text-orange-400" />
+      case 'pdf':
+        return <FileType size={16} className="text-red-400" />
+      case 'image':
+        return <FileImage size={16} className="text-purple-400" />
+      case 'spreadsheet':
+        return <FileSpreadsheet size={16} className="text-green-400" />
+      case 'archive':
+        return <FileArchive size={16} className="text-yellow-500" />
+      case 'schematic':
+        return <Cpu size={16} className="text-red-400" />
+      case 'library':
+        return <Cpu size={16} className="text-violet-400" />
+      case 'pcb':
+        return <Cpu size={16} className="text-emerald-400" />
+      case 'code':
+        return <FileCode size={16} className="text-sky-400" />
+      case 'text':
+        return <FileText size={16} className="text-pdm-fg-muted" />
       default:
         return <File size={16} className="text-pdm-fg-muted" />
     }
@@ -683,15 +710,35 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                     return <FolderOpen size={16} className="text-pdm-fg-muted" />
                   }
                   // For files, use actualFile.extension if available, otherwise parse from name
-                  const ext = actualFile?.extension || fileName.split('.').pop()?.toLowerCase() || ''
-                  const fileType = getFileType(ext)
-                  switch (fileType) {
+                  const ext = actualFile?.extension || ('.' + (fileName.split('.').pop()?.toLowerCase() || ''))
+                  const iconType = getFileIconType(ext)
+                  switch (iconType) {
                     case 'part':
                       return <FileBox size={16} className="text-pdm-accent" />
                     case 'assembly':
-                      return <Layers size={16} className="text-pdm-success" />
+                      return <Layers size={16} className="text-amber-400" />
                     case 'drawing':
-                      return <FileText size={16} className="text-pdm-info" />
+                      return <FilePen size={16} className="text-sky-300" />
+                    case 'step':
+                      return <FileBox size={16} className="text-orange-400" />
+                    case 'pdf':
+                      return <FileType size={16} className="text-red-400" />
+                    case 'image':
+                      return <FileImage size={16} className="text-purple-400" />
+                    case 'spreadsheet':
+                      return <FileSpreadsheet size={16} className="text-green-400" />
+                    case 'archive':
+                      return <FileArchive size={16} className="text-yellow-500" />
+                    case 'schematic':
+                      return <Cpu size={16} className="text-red-400" />
+                    case 'library':
+                      return <Cpu size={16} className="text-violet-400" />
+                    case 'pcb':
+                      return <Cpu size={16} className="text-emerald-400" />
+                    case 'code':
+                      return <FileCode size={16} className="text-sky-400" />
+                    case 'text':
+                      return <FileText size={16} className="text-pdm-fg-muted" />
                     default:
                       return <File size={16} className="text-pdm-fg-muted" />
                   }

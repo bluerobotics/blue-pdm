@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { usePDMStore } from '../stores/pdmStore'
-import { formatFileSize, STATE_INFO, getFileType } from '../types/pdm'
+import { formatFileSize, STATE_INFO, getFileIconType } from '../types/pdm'
 import { format, formatDistanceToNow } from 'date-fns'
 import { getFileVersions } from '../lib/supabase'
 import { rollbackToVersion } from '../lib/fileService'
@@ -17,7 +17,14 @@ import {
   Cloud,
   RotateCcw,
   Check,
-  Loader2
+  Loader2,
+  FileImage,
+  FileSpreadsheet,
+  FileArchive,
+  FileCode,
+  Cpu,
+  FileType,
+  FilePen
 } from 'lucide-react'
 
 interface VersionEntry {
@@ -117,14 +124,34 @@ export function DetailsPanel() {
       return <File size={32} className="text-pdm-warning" />
     }
     
-    const fileType = getFileType(file.extension)
-    switch (fileType) {
+    const iconType = getFileIconType(file.extension)
+    switch (iconType) {
       case 'part':
         return <FileBox size={32} className="text-pdm-accent" />
       case 'assembly':
-        return <Layers size={32} className="text-pdm-success" />
+        return <Layers size={32} className="text-amber-400" />
       case 'drawing':
-        return <FileText size={32} className="text-pdm-info" />
+        return <FilePen size={32} className="text-sky-300" />
+      case 'step':
+        return <FileBox size={32} className="text-orange-400" />
+      case 'pdf':
+        return <FileType size={32} className="text-red-400" />
+      case 'image':
+        return <FileImage size={32} className="text-purple-400" />
+      case 'spreadsheet':
+        return <FileSpreadsheet size={32} className="text-green-400" />
+      case 'archive':
+        return <FileArchive size={32} className="text-yellow-500" />
+      case 'schematic':
+        return <Cpu size={32} className="text-red-400" />
+      case 'library':
+        return <Cpu size={32} className="text-violet-400" />
+      case 'pcb':
+        return <Cpu size={32} className="text-emerald-400" />
+      case 'code':
+        return <FileCode size={32} className="text-sky-400" />
+      case 'text':
+        return <FileText size={32} className="text-pdm-fg-muted" />
       default:
         return <File size={32} className="text-pdm-fg-muted" />
     }

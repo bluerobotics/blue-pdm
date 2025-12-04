@@ -1,6 +1,23 @@
 # Changelog
 
-All notable changes to Everything We Currently Know About Tubes will be documented in this file.
+All notable changes to BluePDM will be documented in this file.
+
+## [0.6.0] - 2024-12-04
+
+### Added
+- File type icons for STEP, PDF, images, spreadsheets, archives, PCB, schematics, libraries, and code files
+- Distinct colors for each file type (amber assemblies, sky drawings, red schematics, violet libraries, etc.)
+- Vaults table type definitions for TypeScript
+
+### Fixed
+- Startup double-loading issue (files no longer load twice with "add diff spam")
+- Added loading state while waiting for organization to load
+- Fixed pinned file icons not showing correctly for .slddrw and other file types
+- Fixed extension parsing for pinned items (missing dot prefix)
+
+### Changed
+- Assembly icon now amber colored (stands out from other blues)
+- Drawing icon now uses FilePen for a more artistic look
 
 ## [1.1.2] - 2024-12-03
 

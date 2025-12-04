@@ -283,6 +283,41 @@ export interface Database {
           created_at?: string
         }
       }
+      vaults: {
+        Row: {
+          id: string
+          org_id: string
+          name: string
+          slug: string
+          description: string | null
+          storage_bucket: string
+          is_default: boolean
+          created_by: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          org_id: string
+          name: string
+          slug: string
+          description?: string | null
+          storage_bucket: string
+          is_default?: boolean
+          created_by: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          org_id?: string
+          name?: string
+          slug?: string
+          description?: string | null
+          storage_bucket?: string
+          is_default?: boolean
+          created_by?: string
+          created_at?: string
+        }
+      }
     }
     Views: Record<string, never>
     Functions: Record<string, never>
