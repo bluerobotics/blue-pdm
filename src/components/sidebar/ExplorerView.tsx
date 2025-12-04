@@ -178,7 +178,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
       // Handle both Windows (\) and Unix (/) path separators
       const lastSepIndex = Math.max(file.path.lastIndexOf('/'), file.path.lastIndexOf('\\'))
       const newPath = file.path.substring(0, lastSepIndex + 1) + newName
-      window.electronAPI?.moveFile(file.path, newPath).then(result => {
+      window.electronAPI?.moveFile(file.path, newPath).then((result: { success: boolean; error?: string } | undefined) => {
         if (result?.success) {
           addToast('success', `Renamed to ${newName}`)
           // Update file in store directly instead of full refresh
@@ -358,7 +358,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
         <div
           className={`tree-item ${isCurrentFolder ? 'current-folder' : ''} ${isSelected ? 'selected' : ''} ${diffClass}`}
           style={{ paddingLeft: 8 + depth * 16 }}
-          onClick={(e) => {
+          onClick={() => {
             if (isRenaming) return
             
             // Select the file (local state for highlighting)

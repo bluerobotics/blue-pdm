@@ -141,8 +141,8 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     
     setIsLoadingVaults(true)
     try {
-      const { data, error } = await supabase
-        .from('vaults')
+      const { data, error } = await (supabase
+        .from('vaults') as any)
         .select('*')
         .eq('org_id', organization.id)
         .order('is_default', { ascending: false })
@@ -184,8 +184,8 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     const storageBucket = `vault-${organization.slug}-${slug}`
     
     try {
-      const { data: vault, error } = await supabase
-        .from('vaults')
+      const { data: vault, error } = await (supabase
+        .from('vaults') as any)
         .insert({
           org_id: organization.id,
           name,
@@ -229,8 +229,8 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     
     try {
       // Update in database
-      const { error } = await supabase
-        .from('vaults')
+      const { error } = await (supabase
+        .from('vaults') as any)
         .update({ name: newName, slug: newSlug })
         .eq('id', vault.id)
       
@@ -280,13 +280,13 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     if (!organization) return
     
     try {
-      await supabase
-        .from('vaults')
+      await (supabase
+        .from('vaults') as any)
         .update({ is_default: false })
         .eq('org_id', organization.id)
       
-      const { error } = await supabase
-        .from('vaults')
+      const { error } = await (supabase
+        .from('vaults') as any)
         .update({ is_default: true })
         .eq('id', vaultId)
       
@@ -325,8 +325,8 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
         }
       }
       
-      const { error } = await supabase
-        .from('vaults')
+      const { error } = await (supabase
+        .from('vaults') as any)
         .delete()
         .eq('id', deletingVault.id)
       

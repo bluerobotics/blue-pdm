@@ -2,6 +2,7 @@ solidworks integration
 - previews
 - solidworks metadata
 - configurations
+   - maybe add feature to add configurations to any file (new metadatae)
 
 
 offline mode

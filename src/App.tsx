@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { usePDMStore } from './stores/pdmStore'
-import { supabase, getCurrentSession, getUserProfile, isSupabaseConfigured, getFiles, linkUserToOrganization, checkinFile } from './lib/supabase'
+import { supabase, getCurrentSession, isSupabaseConfigured, getFiles, linkUserToOrganization, checkinFile } from './lib/supabase'
 import { MenuBar } from './components/MenuBar'
 import { ActivityBar } from './components/ActivityBar'
 import { Sidebar } from './components/Sidebar'
@@ -159,7 +159,7 @@ function App() {
       }
       
       // Map hash to localHash for comparison
-      let localFiles = result.files.map(f => ({
+      let localFiles = result.files.map((f: any) => ({
         ...f,
         localHash: f.hash
       }))
@@ -170,12 +170,12 @@ function App() {
         
         if (pdmError) {
           console.warn('Failed to fetch PDM data:', pdmError)
-        } else if (pdmFiles) {
+        } else if (pdmFiles && Array.isArray(pdmFiles)) {
           // Create a map of pdm data by file path
-          const pdmMap = new Map(pdmFiles.map(f => [f.file_path, f]))
+          const pdmMap = new Map(pdmFiles.map((f: any) => [f.file_path, f]))
           
           // Store server files for tracking deletions
-          const serverFilesList = pdmFiles.map(f => ({
+          const serverFilesList = pdmFiles.map((f: any) => ({
             id: f.id,
             file_path: f.file_path,
             name: f.name,

@@ -6,24 +6,10 @@ import { getFileVersions } from '../lib/supabase'
 import { 
   FileBox, 
   Layers, 
-  FileText, 
   File,
-  Clock,
-  User,
-  Tag,
-  Hash,
-  Info,
-  Cloud,
   Loader2,
-  FileImage,
-  FileCode,
-  Cpu,
-  FileType,
   FilePen,
   ExternalLink,
-  Download,
-  Eye,
-  X,
   ArrowLeft
 } from 'lucide-react'
 
@@ -41,14 +27,12 @@ interface VersionEntry {
 
 export function RightPanel() {
   const { 
-    selectedFiles, 
     getSelectedFileObjects,
     rightPanelWidth,
     rightPanelTab,
     rightPanelTabs,
     setRightPanelTab,
     moveTabToBottom,
-    user,
     addToast
   } = usePDMStore()
 
@@ -57,13 +41,6 @@ export function RightPanel() {
   
   const [versions, setVersions] = useState<VersionEntry[]>([])
   const [isLoadingVersions, setIsLoadingVersions] = useState(false)
-  
-  // eDrawings state
-  const [eDrawingsStatus, setEDrawingsStatus] = useState<{
-    checked: boolean
-    installed: boolean
-    path: string | null
-  }>({ checked: false, installed: false, path: null })
   
   // PDF preview state
   const [pdfDataUrl, setPdfDataUrl] = useState<string | null>(null)
@@ -139,19 +116,21 @@ export function RightPanel() {
   const getFileIcon = () => {
     if (!file) return <File size={24} className="text-pdm-fg-muted" />
     const iconType = getFileIconType(file.extension)
-    const iconClass = {
+    const iconClassMap: Record<string, string> = {
       part: 'text-pdm-accent',
       assembly: 'text-amber-400',
       drawing: 'text-sky-300',
       step: 'text-orange-400',
       pdf: 'text-red-400',
       image: 'text-purple-400',
-    }[iconType] || 'text-pdm-fg-muted'
-    const IconComponent = {
+    }
+    const iconClass = iconClassMap[iconType] || 'text-pdm-fg-muted'
+    const iconMap: Record<string, typeof File> = {
       part: FileBox,
       assembly: Layers,
       drawing: FilePen,
-    }[iconType] || File
+    }
+    const IconComponent = iconMap[iconType] || File
     return <IconComponent size={24} className={iconClass} />
   }
 
@@ -268,7 +247,7 @@ export function RightPanel() {
                   <div className="text-sm text-pdm-fg-muted text-center py-8">No history</div>
                 ) : (
                   <div className="space-y-2">
-                    {versions.map((v, i) => (
+                    {versions.map((v) => (
                       <div key={v.id} className="p-2 rounded bg-pdm-bg-light text-sm">
                         <div className="flex justify-between">
                           <span className="font-medium">v{v.version}</span>
