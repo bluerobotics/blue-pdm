@@ -506,6 +506,10 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
       if (isBeingProcessed(file.relativePath)) {
         return <Loader2 size={16} className="text-sky-400 animate-spin" />
       }
+      // Cloud-only folders (exist on server but not locally) - grey and faded
+      if (file.diffStatus === 'cloud') {
+        return <FolderOpen size={16} className="text-pdm-fg-muted opacity-50" />
+      }
       const hasCheckedOut = hasFolderCheckedOutFiles(file.relativePath)
       if (hasCheckedOut) {
         return <FolderOpen size={16} className="text-pdm-warning" />
