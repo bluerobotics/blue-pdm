@@ -150,10 +150,13 @@ function App() {
     if (!silent) {
       setIsLoading(true)
       setStatusMessage('Loading files...')
+      // Yield to UI thread so loading state renders before heavy work
+      await new Promise(resolve => setTimeout(resolve, 0))
     }
     
     try {
       // 1. Load local files
+      setStatusMessage('Scanning local files...')
       const result = await window.electronAPI.listWorkingFiles()
       if (!result.success || !result.files) {
         setStatusMessage(result.error || 'Failed to load files')
@@ -168,11 +171,16 @@ function App() {
       
       // 2. If connected to Supabase, fetch PDM data and merge
       if (organization && !isOfflineMode && currentVaultId) {
+        setStatusMessage('Fetching vault data...')
         const { files: pdmFiles, error: pdmError } = await getFiles(organization.id, { vaultId: currentVaultId })
         
         if (pdmError) {
           console.warn('Failed to fetch PDM data:', pdmError)
         } else if (pdmFiles && Array.isArray(pdmFiles)) {
+          setStatusMessage(`Merging ${pdmFiles.length} files...`)
+          // Yield to UI thread before heavy processing
+          await new Promise(resolve => setTimeout(resolve, 0))
+          
           // Create a map of pdm data by file path
           const pdmMap = new Map(pdmFiles.map((f: any) => [f.file_path, f]))
           
@@ -339,6 +347,9 @@ function App() {
         }
       }
       
+      // Yield before updating state to let UI stay responsive
+      await new Promise(resolve => setTimeout(resolve, 0))
+      
       setFiles(localFiles)
       setFilesLoaded(true)  // Mark that initial load is complete
       const totalFiles = localFiles.filter(f => !f.isDirectory).length
@@ -346,16 +357,19 @@ function App() {
       const folderCount = localFiles.filter(f => f.isDirectory).length
       setStatusMessage(`Loaded ${totalFiles} files, ${folderCount} folders${syncedCount > 0 ? ` (${syncedCount} synced)` : ''}`)
       
-      // Set read-only status on synced files
+      // Set read-only status on synced files in background (non-blocking)
       // Files should be read-only unless checked out by current user
       if (user && window.electronAPI) {
-        for (const file of localFiles) {
-          if (file.isDirectory || !file.pdmData) continue
-          
-          const isCheckedOutByMe = file.pdmData.checked_out_by === user.id
-          // Make file writable if checked out by me, read-only otherwise
-          window.electronAPI.setReadonly(file.path, !isCheckedOutByMe)
-        }
+        // Use setTimeout to not block UI - this can run in background
+        setTimeout(async () => {
+          for (const file of localFiles) {
+            if (file.isDirectory || !file.pdmData) continue
+            
+            const isCheckedOutByMe = file.pdmData.checked_out_by === user.id
+            // Make file writable if checked out by me, read-only otherwise
+            window.electronAPI.setReadonly(file.path, !isCheckedOutByMe)
+          }
+        }, 100)
       }
     } catch (err) {
       if (!silent) {
