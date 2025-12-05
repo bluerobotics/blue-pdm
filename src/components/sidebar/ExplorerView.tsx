@@ -860,13 +860,26 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
             console.log('[Drag] Starting native drag for:', filePaths)
             
             // Set up HTML5 drag data
-            e.dataTransfer.effectAllowed = 'all'
-            e.dataTransfer.dropEffect = 'copy'
-            filePaths.forEach(filePath => {
-              const fileUrl = `file:///${filePath.replace(/\\/g, '/')}`
-              e.dataTransfer.setData('text/uri-list', fileUrl)
-            })
+            e.dataTransfer.effectAllowed = 'copyMove'
             e.dataTransfer.setData('text/plain', filePaths.join('\n'))
+            
+            // Use DownloadURL format for single file - enables actual file copy
+            if (filesToDrag.length === 1) {
+              const filePath = filesToDrag[0].path
+              const fileName = filesToDrag[0].name
+              const ext = filesToDrag[0].extension?.toLowerCase() || ''
+              const mimeTypes: Record<string, string> = {
+                '.pdf': 'application/pdf',
+                '.step': 'application/step',
+                '.stp': 'application/step',
+                '.sldprt': 'application/octet-stream',
+                '.sldasm': 'application/octet-stream',
+                '.slddrw': 'application/octet-stream',
+              }
+              const mime = mimeTypes[ext] || 'application/octet-stream'
+              const fileUrl = `file:///${filePath.replace(/\\/g, '/')}`
+              e.dataTransfer.setData('DownloadURL', `${mime}:${fileName}:${fileUrl}`)
+            }
             
             // Create a custom drag image
             const dragPreview = document.createElement('div')
@@ -876,7 +889,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
             e.dataTransfer.setDragImage(dragPreview, 20, 20)
             setTimeout(() => dragPreview.remove(), 0)
             
-            // Call Electron's native drag
+            // Call Electron's native drag for multi-file support
             window.electronAPI?.startDrag(filePaths)
           }}
         >

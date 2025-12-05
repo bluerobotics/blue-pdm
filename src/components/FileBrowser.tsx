@@ -1178,16 +1178,33 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
     const filePaths = filesToDrag.map(f => f.path)
     console.log('[Drag] Starting native drag for:', filePaths)
     
-    // Set up HTML5 drag data - required to keep drag alive
-    e.dataTransfer.effectAllowed = 'all'
-    e.dataTransfer.dropEffect = 'copy'
-    
-    // Set file URLs for native drop targets (Windows Explorer)
-    filePaths.forEach(filePath => {
-      const fileUrl = `file:///${filePath.replace(/\\/g, '/')}`
-      e.dataTransfer.setData('text/uri-list', fileUrl)
-    })
+    // Set up HTML5 drag data
+    e.dataTransfer.effectAllowed = 'copyMove'
     e.dataTransfer.setData('text/plain', filePaths.join('\n'))
+    
+    // Use DownloadURL format for single file - this enables actual file copy
+    // Format: mime:filename:url
+    if (filesToDrag.length === 1) {
+      const filePath = filesToDrag[0].path
+      const fileName = filesToDrag[0].name
+      const ext = filesToDrag[0].extension?.toLowerCase() || ''
+      const mimeTypes: Record<string, string> = {
+        '.pdf': 'application/pdf',
+        '.step': 'application/step',
+        '.stp': 'application/step',
+        '.sldprt': 'application/octet-stream',
+        '.sldasm': 'application/octet-stream',
+        '.slddrw': 'application/octet-stream',
+        '.dxf': 'application/dxf',
+        '.dwg': 'application/acad',
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+      }
+      const mime = mimeTypes[ext] || 'application/octet-stream'
+      const fileUrl = `file:///${filePath.replace(/\\/g, '/')}`
+      e.dataTransfer.setData('DownloadURL', `${mime}:${fileName}:${fileUrl}`)
+    }
     
     // Create a custom drag image showing file count
     const dragPreview = document.createElement('div')
@@ -1197,7 +1214,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
     e.dataTransfer.setDragImage(dragPreview, 20, 20)
     setTimeout(() => dragPreview.remove(), 0)
     
-    // Also call Electron's startDrag for additional native support
+    // Also call Electron's startDrag for native multi-file support
     window.electronAPI?.startDrag(filePaths)
   }
   
