@@ -762,10 +762,18 @@ ipcMain.handle('fs:create-folder', async (_, folderPath: string) => {
 
 ipcMain.handle('fs:delete', async (_, targetPath: string) => {
   try {
+    log('Deleting item:', targetPath)
+    // Check if path exists first
+    if (!fs.existsSync(targetPath)) {
+      log('Path does not exist:', targetPath)
+      return { success: false, error: 'Path does not exist' }
+    }
     // Move to Recycle Bin instead of permanent delete
     await shell.trashItem(targetPath)
+    log('Successfully moved to Recycle Bin:', targetPath)
     return { success: true }
   } catch (err) {
+    log('Failed to delete:', targetPath, err)
     return { success: false, error: String(err) }
   }
 })

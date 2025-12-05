@@ -373,8 +373,8 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
         return
       }
       
-      // Create vault folder in C:\ (use slug directly as folder name)
-      const vaultPath = `C:\\${vault.slug}`
+      // Create vault folder in C:\BluePDM\ to avoid conflicts with other software
+      const vaultPath = `C:\\BluePDM\\${vault.slug}`
       const result = await api.createWorkingDir(vaultPath)
       
       if (result.success && result.path) {
@@ -401,19 +401,31 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     const connectedVault = connectedVaults.find(v => v.id === vaultId)
     
     // Delete local folder
+    let folderDeleted = false
     if (connectedVault?.localPath) {
-      const api = (window as any).electronAPI
+      const api = window.electronAPI
       if (api) {
         try {
-          await api.deleteItem(connectedVault.localPath)
+          const result = await api.deleteItem(connectedVault.localPath)
+          if (result.success) {
+            folderDeleted = true
+          } else {
+            console.error('Failed to delete local folder:', result.error)
+            addToast('warning', `Could not delete local folder: ${result.error}`)
+          }
         } catch (err) {
           console.error('Failed to delete local folder:', err)
+          addToast('warning', `Could not delete local folder: ${err}`)
         }
       }
     }
     
     removeConnectedVault(vaultId)
-    addToast('info', 'Vault disconnected and local folder deleted')
+    if (folderDeleted) {
+      addToast('success', 'Vault disconnected and local folder moved to Recycle Bin')
+    } else {
+      addToast('info', 'Vault disconnected (local folder may still exist)')
+    }
   }
   
   const isVaultConnected = (vaultId: string) => {
