@@ -222,6 +222,7 @@ CREATE INDEX idx_activity_action ON activity(action);
 
 ALTER TABLE organizations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE vaults ENABLE ROW LEVEL SECURITY;
 ALTER TABLE files ENABLE ROW LEVEL SECURITY;
 ALTER TABLE file_versions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE file_references ENABLE ROW LEVEL SECURITY;
@@ -231,6 +232,28 @@ ALTER TABLE activity ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Users can view their organization"
   ON organizations FOR SELECT
   USING (id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+-- Vaults: users can view vaults in their organization
+CREATE POLICY "Users can view org vaults"
+  ON vaults FOR SELECT
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+-- Vaults: only admins can create vaults
+CREATE POLICY "Admins can create vaults"
+  ON vaults FOR INSERT
+  WITH CHECK (
+    org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin')
+  );
+
+-- Vaults: only admins can update vaults
+CREATE POLICY "Admins can update vaults"
+  ON vaults FOR UPDATE
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'));
+
+-- Vaults: only admins can delete vaults
+CREATE POLICY "Admins can delete vaults"
+  ON vaults FOR DELETE
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'));
 
 -- Users: can view their own profile
 CREATE POLICY "Users can view own profile"
@@ -244,7 +267,8 @@ CREATE POLICY "Users can view org members"
 
 CREATE POLICY "Users can update own profile"
   ON users FOR UPDATE
-  USING (id = auth.uid());
+  USING (id = auth.uid())
+  WITH CHECK (id = auth.uid());
 
 -- Files: authenticated users can access (org filtering done in queries)
 CREATE POLICY "Authenticated users can view files"

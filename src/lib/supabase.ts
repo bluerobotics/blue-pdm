@@ -1,20 +1,51 @@
 // @ts-nocheck - TODO: Fix Supabase type inference issues with Database types
-import { createClient } from '@supabase/supabase-js'
+import { createClient, SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '../types/database'
+import { loadConfig, type SupabaseConfig } from './supabaseConfig'
 
-// These will be set from environment variables
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || ''
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
+// ============================================
+// Dynamic Supabase Client
+// ============================================
 
-// Check if Supabase is configured
-export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey)
+// Current configuration and client (mutable - can be reconfigured at runtime)
+let currentConfig: SupabaseConfig | null = null
+let supabaseClient: SupabaseClient<Database> | null = null
 
-// Only create the client if credentials are configured
-// Use a dummy URL to prevent crash, but isSupabaseConfigured will gate all operations
-export const supabase = createClient<Database>(
-  supabaseUrl || 'https://placeholder.supabase.co',
-  supabaseAnonKey || 'placeholder-key',
-  {
+// Initialize from stored config or env variables (for dev)
+function initializeClient() {
+  // First, try to load from stored config
+  const storedConfig = loadConfig()
+  if (storedConfig) {
+    currentConfig = storedConfig
+    supabaseClient = createClient<Database>(storedConfig.url, storedConfig.anonKey, getClientOptions())
+    console.log('[Supabase] Initialized from stored config')
+    setupSessionListener()
+    return
+  }
+  
+  // Fallback to environment variables (for development)
+  const envUrl = import.meta.env.VITE_SUPABASE_URL || ''
+  const envKey = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
+  
+  if (envUrl && envKey) {
+    currentConfig = { version: 1, url: envUrl, anonKey: envKey }
+    supabaseClient = createClient<Database>(envUrl, envKey, getClientOptions())
+    console.log('[Supabase] Initialized from environment variables')
+    setupSessionListener()
+    return
+  }
+  
+  // Not configured - will use placeholder client
+  console.log('[Supabase] Not configured')
+  supabaseClient = createClient<Database>(
+    'https://placeholder.supabase.co',
+    'placeholder-key',
+    getClientOptions()
+  )
+}
+
+function getClientOptions() {
+  return {
     auth: {
       autoRefreshToken: true,
       persistSession: true,
@@ -26,32 +57,82 @@ export const supabase = createClient<Database>(
       }
     }
   }
-)
+}
 
-// Set up listener for OAuth tokens from Electron main process (production only)
+// Reconfigure the Supabase client with new credentials
+export function reconfigureSupabase(config: SupabaseConfig): void {
+  currentConfig = config
+  supabaseClient = createClient<Database>(config.url, config.anonKey, getClientOptions())
+  console.log('[Supabase] Reconfigured with new credentials')
+  setupSessionListener()
+}
+
+// Get the current Supabase client (creates placeholder if not configured)
+export function getSupabaseClient(): SupabaseClient<Database> {
+  if (!supabaseClient) {
+    initializeClient()
+  }
+  return supabaseClient!
+}
+
+// Check if Supabase is properly configured
+export function isSupabaseConfigured(): boolean {
+  if (!currentConfig && !supabaseClient) {
+    initializeClient()
+  }
+  return currentConfig !== null && currentConfig.url !== '' && currentConfig.anonKey !== ''
+}
+
+// Get current config (for display/sharing)
+export function getCurrentConfig(): SupabaseConfig | null {
+  return currentConfig
+}
+
+// Legacy export for compatibility - getter that returns the client
+export const supabase: SupabaseClient<Database> = new Proxy({} as SupabaseClient<Database>, {
+  get(_, prop) {
+    const client = getSupabaseClient()
+    const value = client[prop as keyof SupabaseClient<Database>]
+    if (typeof value === 'function') {
+      return value.bind(client)
+    }
+    return value
+  }
+})
+
+// Initialize on module load
+initializeClient()
+
+// ============================================
+// Session Listener Setup
+// ============================================
+
 let sessionResolver: ((success: boolean) => void) | null = null
 
-if (typeof window !== 'undefined' && window.electronAPI?.onSetSession) {
-  window.electronAPI.onSetSession(async (tokens) => {
-    console.log('[Auth] Received tokens from main process, setting session...')
-    try {
-      const { data, error } = await supabase.auth.setSession({
-        access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token
-      })
-      
-      if (error) {
-        console.error('[Auth] Error setting session:', error)
+function setupSessionListener() {
+  if (typeof window !== 'undefined' && window.electronAPI?.onSetSession) {
+    window.electronAPI.onSetSession(async (tokens) => {
+      console.log('[Auth] Received tokens from main process, setting session...')
+      try {
+        const client = getSupabaseClient()
+        const { data, error } = await client.auth.setSession({
+          access_token: tokens.access_token,
+          refresh_token: tokens.refresh_token
+        })
+        
+        if (error) {
+          console.error('[Auth] Error setting session:', error)
+          sessionResolver?.(false)
+        } else {
+          console.log('[Auth] Session set successfully:', data.user?.email)
+          sessionResolver?.(true)
+        }
+      } catch (err) {
+        console.error('[Auth] Failed to set session:', err)
         sessionResolver?.(false)
-      } else {
-        console.log('[Auth] Session set successfully:', data.user?.email)
-        sessionResolver?.(true)
       }
-    } catch (err) {
-      console.error('[Auth] Failed to set session:', err)
-      sessionResolver?.(false)
-    }
-  })
+    })
+  }
 }
 
 // ============================================
@@ -59,12 +140,14 @@ if (typeof window !== 'undefined' && window.electronAPI?.onSetSession) {
 // ============================================
 
 export async function signInWithGoogle() {
+  const client = getSupabaseClient()
+  
   // In Electron production, use popup window flow
   const isElectronProduction = window.electronAPI && !window.location.href.startsWith('http://localhost')
   
   if (isElectronProduction) {
     // Get the OAuth URL from Supabase without auto-redirecting
-    const { data, error } = await supabase.auth.signInWithOAuth({
+    const { data, error } = await client.auth.signInWithOAuth({
       provider: 'google',
       options: {
         redirectTo: 'http://localhost/auth/callback', // Will be intercepted by Electron
@@ -106,7 +189,7 @@ export async function signInWithGoogle() {
       } else {
         console.log('[Auth] Session was not set, checking manually...')
         // Fallback: try to get session manually
-        const { data: { session } } = await supabase.auth.getSession()
+        const { data: { session } } = await client.auth.getSession()
         if (session) {
           return { data: { url: null, provider: 'google' }, error: null }
         }
@@ -118,7 +201,7 @@ export async function signInWithGoogle() {
   }
   
   // In development or web, use normal OAuth flow
-  const { data, error } = await supabase.auth.signInWithOAuth({
+  const { data, error } = await client.auth.signInWithOAuth({
     provider: 'google',
     options: {
       redirectTo: window.location.origin,
@@ -132,17 +215,20 @@ export async function signInWithGoogle() {
 }
 
 export async function signOut() {
-  const { error } = await supabase.auth.signOut()
+  const client = getSupabaseClient()
+  const { error } = await client.auth.signOut()
   return { error }
 }
 
 export async function getCurrentUser() {
-  const { data: { user }, error } = await supabase.auth.getUser()
+  const client = getSupabaseClient()
+  const { data: { user }, error } = await client.auth.getUser()
   return { user, error }
 }
 
 export async function getCurrentSession() {
-  const { data: { session }, error } = await supabase.auth.getSession()
+  const client = getSupabaseClient()
+  const { data: { session }, error } = await client.auth.getSession()
   return { session, error }
 }
 
@@ -151,7 +237,8 @@ export async function getCurrentSession() {
 // ============================================
 
 export async function getUserProfile(userId: string) {
-  const { data, error } = await supabase
+  const client = getSupabaseClient()
+  const { data, error } = await client
     .from('users')
     .select('*, organization:organizations(*)')
     .eq('id', userId)
@@ -161,7 +248,8 @@ export async function getUserProfile(userId: string) {
 }
 
 export async function getOrganization(orgId: string) {
-  const { data, error } = await supabase
+  const client = getSupabaseClient()
+  const { data, error } = await client
     .from('organizations')
     .select('*')
     .eq('id', orgId)
@@ -172,8 +260,10 @@ export async function getOrganization(orgId: string) {
 
 // Find and link organization by email domain, or fetch existing org
 export async function linkUserToOrganization(userId: string, userEmail: string) {
+  const client = getSupabaseClient()
+  
   // First, check if user already has an org_id
-  const { data: userProfile } = await supabase
+  const { data: userProfile } = await client
     .from('users')
     .select('org_id')
     .eq('id', userId)
@@ -181,7 +271,7 @@ export async function linkUserToOrganization(userId: string, userEmail: string) 
   
   if (userProfile?.org_id) {
     // User already has org_id, just fetch the organization
-    const { data: existingOrg, error: fetchError } = await supabase
+    const { data: existingOrg, error: fetchError } = await client
       .from('organizations')
       .select('*')
       .eq('id', userProfile.org_id)
@@ -197,7 +287,7 @@ export async function linkUserToOrganization(userId: string, userEmail: string) 
   // Try to find org by email domain
   const domain = userEmail.split('@')[1]
   
-  const { data: org, error: findError } = await supabase
+  const { data: org, error: findError } = await client
     .from('organizations')
     .select('*')
     .contains('email_domains', [domain])
@@ -205,7 +295,7 @@ export async function linkUserToOrganization(userId: string, userEmail: string) 
   
   if (findError || !org) {
     // Try alternative query (in case contains doesn't work with array)
-    const { data: allOrgs } = await supabase
+    const { data: allOrgs } = await client
       .from('organizations')
       .select('*')
     
@@ -215,7 +305,7 @@ export async function linkUserToOrganization(userId: string, userEmail: string) 
     
     if (matchingOrg) {
       // Update user's org_id
-      await supabase
+      await client
         .from('users')
         .update({ org_id: matchingOrg.id })
         .eq('id', userId)
@@ -227,7 +317,7 @@ export async function linkUserToOrganization(userId: string, userEmail: string) 
   }
   
   // Update user's org_id
-  const { error: updateError } = await supabase
+  const { error: updateError } = await client
     .from('users')
     .update({ org_id: org.id })
     .eq('id', userId)
@@ -250,7 +340,8 @@ export async function getFiles(orgId: string, options?: {
   search?: string
   checkedOutByMe?: string  // user ID
 }) {
-  let query = supabase
+  const client = getSupabaseClient()
+  let query = client
     .from('files')
     .select(`
       *,
@@ -290,7 +381,8 @@ export async function getFiles(orgId: string, options?: {
 }
 
 export async function getFile(fileId: string) {
-  const { data, error } = await supabase
+  const client = getSupabaseClient()
+  const { data, error } = await client
     .from('files')
     .select(`
       *,
@@ -305,7 +397,8 @@ export async function getFile(fileId: string) {
 }
 
 export async function getFileByPath(orgId: string, filePath: string) {
-  const { data, error } = await supabase
+  const client = getSupabaseClient()
+  const { data, error } = await client
     .from('files')
     .select('*')
     .eq('org_id', orgId)
@@ -320,7 +413,8 @@ export async function getFileByPath(orgId: string, filePath: string) {
 // ============================================
 
 export async function getFileVersions(fileId: string) {
-  const { data, error } = await supabase
+  const client = getSupabaseClient()
+  const { data, error } = await client
     .from('file_versions')
     .select(`
       *,
@@ -337,7 +431,8 @@ export async function getFileVersions(fileId: string) {
 // ============================================
 
 export async function getWhereUsed(fileId: string) {
-  const { data, error } = await supabase
+  const client = getSupabaseClient()
+  const { data, error } = await client
     .from('file_references')
     .select(`
       *,
@@ -351,7 +446,8 @@ export async function getWhereUsed(fileId: string) {
 }
 
 export async function getContains(fileId: string) {
-  const { data, error } = await supabase
+  const client = getSupabaseClient()
+  const { data, error } = await client
     .from('file_references')
     .select(`
       *,
@@ -369,7 +465,8 @@ export async function getContains(fileId: string) {
 // ============================================
 
 export async function getRecentActivity(orgId: string, limit = 50) {
-  const { data, error } = await supabase
+  const client = getSupabaseClient()
+  const { data, error } = await client
     .from('activity')
     .select(`
       *,
@@ -383,7 +480,8 @@ export async function getRecentActivity(orgId: string, limit = 50) {
 }
 
 export async function getFileActivity(fileId: string, limit = 20) {
-  const { data, error } = await supabase
+  const client = getSupabaseClient()
+  const { data, error } = await client
     .from('activity')
     .select('*')
     .eq('file_id', fileId)
@@ -398,7 +496,8 @@ export async function getFileActivity(fileId: string, limit = 20) {
 // ============================================
 
 export async function getMyCheckedOutFiles(userId: string) {
-  const { data, error } = await supabase
+  const client = getSupabaseClient()
+  const { data, error } = await client
     .from('files')
     .select('*')
     .eq('checked_out_by', userId)
@@ -408,7 +507,8 @@ export async function getMyCheckedOutFiles(userId: string) {
 }
 
 export async function getAllCheckedOutFiles(orgId: string) {
-  const { data, error } = await supabase
+  const client = getSupabaseClient()
+  const { data, error } = await client
     .from('files')
     .select(`
       *,
@@ -436,13 +536,15 @@ export async function syncFile(
   contentHash: string,
   base64Content: string
 ) {
+  const client = getSupabaseClient()
+  
   try {
     // 1. Upload file content to storage (using content hash as filename for deduplication)
     // Use subdirectory based on first 2 chars of hash to prevent too many files in one folder
     const storagePath = `${orgId}/${contentHash.substring(0, 2)}/${contentHash}`
     
     // Check if this content already exists (deduplication)
-    const { data: existingFile } = await supabase.storage
+    const { data: existingFile } = await client.storage
       .from('vault')
       .list(`${orgId}/${contentHash.substring(0, 2)}`, { search: contentHash })
     
@@ -456,7 +558,7 @@ export async function syncFile(
       const blob = new Blob([bytes])
       
       // Upload to storage
-      const { error: uploadError } = await supabase.storage
+      const { error: uploadError } = await client.storage
         .from('vault')
         .upload(storagePath, blob, {
           contentType: 'application/octet-stream',
@@ -472,7 +574,7 @@ export async function syncFile(
     const fileType = getFileTypeFromExtension(extension)
     
     // 3. Check if file already exists in database (by vault and path)
-    const { data: existingDbFile } = await supabase
+    const { data: existingDbFile } = await client
       .from('files')
       .select('id, version')
       .eq('vault_id', vaultId)
@@ -481,7 +583,7 @@ export async function syncFile(
     
     if (existingDbFile) {
       // Update existing file
-      const { data, error } = await supabase
+      const { data, error } = await client
         .from('files')
         .update({
           content_hash: contentHash,
@@ -497,7 +599,7 @@ export async function syncFile(
       if (error) throw error
       
       // Create version record
-      await supabase.from('file_versions').insert({
+      await client.from('file_versions').insert({
         file_id: existingDbFile.id,
         version: existingDbFile.version + 1,
         revision: data.revision,
@@ -510,7 +612,7 @@ export async function syncFile(
       return { file: data, error: null, isNew: false }
     } else {
       // Create new file record
-      const { data, error } = await supabase
+      const { data, error } = await client
         .from('files')
         .insert({
           org_id: orgId,
@@ -533,7 +635,7 @@ export async function syncFile(
       if (error) throw error
       
       // Create initial version record
-      await supabase.from('file_versions').insert({
+      await client.from('file_versions').insert({
         file_id: data.id,
         version: 1,
         revision: 'A',
@@ -565,8 +667,10 @@ function getFileTypeFromExtension(ext: string): 'part' | 'assembly' | 'drawing' 
 // ============================================
 
 export async function checkoutFile(fileId: string, userId: string, message?: string) {
+  const client = getSupabaseClient()
+  
   // First check if file is already checked out
-  const { data: file, error: fetchError } = await supabase
+  const { data: file, error: fetchError } = await client
     .from('files')
     .select('id, file_name, checked_out_by, checked_out_user:users!checked_out_by(email, full_name, avatar_url)')
     .eq('id', fileId)
@@ -585,7 +689,7 @@ export async function checkoutFile(fileId: string, userId: string, message?: str
   }
   
   // Check out the file
-  const { data, error } = await supabase
+  const { data, error } = await client
     .from('files')
     .update({
       checked_out_by: userId,
@@ -601,7 +705,7 @@ export async function checkoutFile(fileId: string, userId: string, message?: str
   }
   
   // Log activity
-  await supabase.from('activity').insert({
+  await client.from('activity').insert({
     org_id: data.org_id,
     file_id: fileId,
     user_id: userId,
@@ -621,8 +725,10 @@ export async function checkinFile(
     comment?: string
   }
 ) {
+  const client = getSupabaseClient()
+  
   // First verify the user has the file checked out
-  const { data: file, error: fetchError } = await supabase
+  const { data: file, error: fetchError } = await client
     .from('files')
     .select('*')
     .eq('id', fileId)
@@ -657,7 +763,7 @@ export async function checkinFile(
     }
     
     // Create version record only for actual changes
-    await supabase.from('file_versions').insert({
+    await client.from('file_versions').insert({
       file_id: fileId,
       version: newVersion,
       revision: file.revision,
@@ -670,7 +776,7 @@ export async function checkinFile(
   }
   
   // Update the file
-  const { data, error } = await supabase
+  const { data, error } = await client
     .from('files')
     .update(updateData)
     .eq('id', fileId)
@@ -682,7 +788,7 @@ export async function checkinFile(
   }
   
   // Log activity
-  await supabase.from('activity').insert({
+  await client.from('activity').insert({
     org_id: data.org_id,
     file_id: fileId,
     user_id: userId,
@@ -697,8 +803,10 @@ export async function checkinFile(
 }
 
 export async function undoCheckout(fileId: string, userId: string) {
+  const client = getSupabaseClient()
+  
   // Verify the user has the file checked out (or is admin)
-  const { data: file, error: fetchError } = await supabase
+  const { data: file, error: fetchError } = await client
     .from('files')
     .select('*, org_id')
     .eq('id', fileId)
@@ -714,7 +822,7 @@ export async function undoCheckout(fileId: string, userId: string) {
   }
   
   // Release the checkout without saving changes
-  const { data, error } = await supabase
+  const { data, error } = await client
     .from('files')
     .update({
       checked_out_by: null,

@@ -92,6 +92,7 @@ interface PDMState {
   organization: Organization | null
   isAuthenticated: boolean
   isOfflineMode: boolean
+  isConnecting: boolean  // True after sign-in while loading organization
   
   // Vault (legacy single vault)
   vaultPath: string | null
@@ -195,6 +196,7 @@ interface PDMState {
   setUser: (user: User | null) => void
   setOrganization: (org: Organization | null) => void
   setOfflineMode: (offline: boolean) => void
+  setIsConnecting: (connecting: boolean) => void
   signOut: () => void
   
   // Actions - Vault
@@ -328,6 +330,7 @@ export const usePDMStore = create<PDMState>()(
       organization: null,
       isAuthenticated: false,
       isOfflineMode: false,
+      isConnecting: false,
       
       vaultPath: null,
       vaultName: null,
@@ -438,9 +441,10 @@ export const usePDMStore = create<PDMState>()(
       
       // Actions - Auth
       setUser: (user) => set({ user, isAuthenticated: !!user }),
-      setOrganization: (organization) => set({ organization }),
+      setOrganization: (organization) => set({ organization, isConnecting: false }),  // Clear connecting state when org loads
       setOfflineMode: (isOfflineMode) => set({ isOfflineMode }),
-      signOut: () => set({ user: null, organization: null, isAuthenticated: false, isOfflineMode: false }),
+      setIsConnecting: (isConnecting) => set({ isConnecting }),
+      signOut: () => set({ user: null, organization: null, isAuthenticated: false, isOfflineMode: false, isConnecting: false }),
       
       // Actions - Vault
       setVaultPath: (vaultPath) => set({ vaultPath }),

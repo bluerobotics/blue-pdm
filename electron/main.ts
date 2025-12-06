@@ -259,10 +259,17 @@ function createAppMenu() {
     {
       label: 'Edit',
       submenu: [
+        { label: 'Undo', accelerator: 'CmdOrCtrl+Z', role: 'undo' },
+        { label: 'Redo', accelerator: 'CmdOrCtrl+Shift+Z', role: 'redo' },
+        { type: 'separator' },
+        { label: 'Cut', accelerator: 'CmdOrCtrl+X', role: 'cut' },
+        { label: 'Copy', accelerator: 'CmdOrCtrl+C', role: 'copy' },
+        { label: 'Paste', accelerator: 'CmdOrCtrl+V', role: 'paste' },
+        { type: 'separator' },
         {
           label: 'Select All',
           accelerator: 'CmdOrCtrl+A',
-          click: () => mainWindow?.webContents.send('menu:select-all')
+          role: 'selectAll'
         },
         { type: 'separator' },
         {

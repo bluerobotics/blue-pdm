@@ -8,6 +8,7 @@ import { FileBrowser } from './components/FileBrowser'
 import { DetailsPanel } from './components/DetailsPanel'
 import { StatusBar } from './components/StatusBar'
 import { WelcomeScreen } from './components/WelcomeScreen'
+import { SetupScreen } from './components/SetupScreen'
 import { Toast } from './components/Toast'
 import { RightPanel } from './components/RightPanel'
 
@@ -25,6 +26,7 @@ function App() {
     user,
     organization,
     isOfflineMode,
+    isConnecting,
     vaultPath,
     isVaultConnected,
     connectedVaults,
@@ -49,6 +51,7 @@ function App() {
     addRecentVault,
     setUser,
     setOrganization,
+    setIsConnecting,
   } = usePDMStore()
   
   // Get current vault ID (from activeVaultId or first connected vault)
@@ -60,10 +63,18 @@ function App() {
   const [isResizingSidebar, setIsResizingSidebar] = useState(false)
   const [isResizingDetails, setIsResizingDetails] = useState(false)
   const [isResizingRightPanel, setIsResizingRightPanel] = useState(false)
+  
+  // Track if Supabase is configured (can change at runtime)
+  const [supabaseReady, setSupabaseReady] = useState(() => isSupabaseConfigured())
+  
+  // Handle Supabase being configured (from SetupScreen)
+  const handleSupabaseConfigured = useCallback(() => {
+    setSupabaseReady(true)
+  }, [])
 
   // Initialize auth state (runs in background, doesn't block UI)
   useEffect(() => {
-    if (!isSupabaseConfigured) {
+    if (!supabaseReady) {
       console.log('[Auth] Supabase not configured')
       return
     }
@@ -111,6 +122,11 @@ function App() {
         console.log('[Auth] Auth state changed:', event)
         
         if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') && session?.user) {
+          // Show connecting state while loading organization
+          if (event === 'SIGNED_IN') {
+            setIsConnecting(true)
+          }
+          
           // Set user from session
           setUser({
             id: session.user.id,
@@ -128,18 +144,25 @@ function App() {
             setTimeout(() => setStatusMessage(''), 3000)
           }
           
-          // Load organization
-          linkUserToOrganization(session.user.id, session.user.email || '').then(({ org }) => {
+          // Load organization (setOrganization will clear isConnecting)
+          linkUserToOrganization(session.user.id, session.user.email || '').then(({ org, error }) => {
             if (org) {
               console.log('[Auth] Organization loaded on state change:', (org as any).name)
               setOrganization(org as any)
+            } else {
+              // No org found, clear connecting state
+              console.log('[Auth] No organization found:', error)
+              setIsConnecting(false)
             }
+          }).catch(() => {
+            setIsConnecting(false)
           })
         } else if (event === 'SIGNED_OUT') {
           console.log('[Auth] Signed out')
           setUser(null)
           setOrganization(null)
           setVaultConnected(false)
+          setIsConnecting(false)
           setStatusMessage('Signed out')
           setTimeout(() => setStatusMessage(''), 3000)
         }
@@ -149,7 +172,7 @@ function App() {
     return () => {
       subscription.unsubscribe()
     }
-  }, [setUser, setOrganization, setStatusMessage, setVaultConnected])
+  }, [setUser, setOrganization, setStatusMessage, setVaultConnected, setIsConnecting])
 
   // Load files from working directory and merge with PDM data
   // silent = true means no loading spinner (for background refreshes after downloads/uploads)
@@ -644,6 +667,15 @@ function App() {
   
   // Only show minimal menu bar on the sign-in screen (not authenticated)
   const isSignInScreen = !user && !isOfflineMode
+  
+  // Show setup screen if Supabase is not configured
+  if (!supabaseReady) {
+    return (
+      <div className="h-screen flex flex-col bg-pdm-bg overflow-hidden">
+        <SetupScreen onConfigured={handleSupabaseConfigured} />
+      </div>
+    )
+  }
 
   return (
     <div className="h-screen flex flex-col bg-pdm-bg overflow-hidden">

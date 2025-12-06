@@ -55,10 +55,11 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
     connectedVaults,
     addConnectedVault,
     addToast,
-    vaultsRefreshKey
+    vaultsRefreshKey,
+    isConnecting: isAuthConnecting  // Global auth connecting state
   } = usePDMStore()
   
-  const [isConnecting, setIsConnecting] = useState(false)
+  const [isConnectingVault, setIsConnectingVault] = useState(false)  // Local vault connection state
   const [isSigningIn, setIsSigningIn] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [orgVaults, setOrgVaults] = useState<Vault[]>([])
@@ -131,7 +132,7 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
   }, [organization?.id, vaultsRefreshKey]) // Refresh when vaultsRefreshKey changes
 
   const handleSignIn = async () => {
-    if (!isSupabaseConfigured) {
+    if (!isSupabaseConfigured()) {
       setStatusMessage('Supabase not configured')
       return
     }
@@ -192,7 +193,7 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
   const handleConnectLegacy = async () => {
     if (!window.electronAPI) return
     
-    setIsConnecting(true)
+    setIsConnectingVault(true)
     try {
       // Determine vault path
       let vaultPath: string
@@ -216,12 +217,53 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
       console.error('Error connecting to vault:', err)
       setStatusMessage('Failed to connect to vault')
     } finally {
-      setIsConnecting(false)
+      setIsConnectingVault(false)
     }
   }
 
   const isVaultConnected = (vaultId: string) => {
     return connectedVaults.some(v => v.id === vaultId)
+  }
+
+  // ============================================
+  // CONNECTING SCREEN (shown after sign-in while loading organization)
+  // ============================================
+  if (isAuthConnecting) {
+    return (
+      <div className="flex-1 flex items-center justify-center bg-pdm-bg overflow-auto">
+        <div className="max-w-md w-full p-8 text-center">
+          <div className="flex justify-center items-center gap-3 mb-8">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" className="text-pdm-accent">
+              <path 
+                d="M12 2L2 7L12 12L22 7L12 2Z" 
+                stroke="currentColor" 
+                strokeWidth="2" 
+                strokeLinecap="round" 
+                strokeLinejoin="round"
+              />
+              <path 
+                d="M2 17L12 22L22 17" 
+                stroke="currentColor" 
+                strokeWidth="2" 
+                strokeLinecap="round" 
+                strokeLinejoin="round"
+              />
+              <path 
+                d="M2 12L12 17L22 12" 
+                stroke="currentColor" 
+                strokeWidth="2" 
+                strokeLinecap="round" 
+                strokeLinejoin="round"
+              />
+            </svg>
+            <h1 className="text-3xl font-bold text-pdm-fg">BluePDM</h1>
+          </div>
+          
+          <Loader2 size={40} className="animate-spin text-pdm-accent mx-auto mb-4" />
+          <p className="text-pdm-fg-muted">Connecting to your organization...</p>
+        </div>
+      </div>
+    )
   }
 
   // ============================================
@@ -268,7 +310,7 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
           <div className="space-y-4">
             <button
               onClick={handleSignIn}
-              disabled={isSigningIn || !isSupabaseConfigured}
+              disabled={isSigningIn || !isSupabaseConfigured()}
               className="w-full btn btn-primary btn-lg gap-3 justify-center py-4"
             >
               {isSigningIn ? (
@@ -467,11 +509,15 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
             <Database size={32} className="text-pdm-fg-muted mx-auto mb-3" />
             <h3 className="font-medium text-pdm-fg mb-1">No Vaults Created</h3>
             <p className="text-sm text-pdm-fg-muted mb-4">
-              Create a vault in Settings → Organization to get started.
+              {user?.role === 'admin' 
+                ? 'Create a vault in Settings → Organization to get started.'
+                : 'Ask an organization admin to create a vault.'}
             </p>
-            <p className="text-xs text-pdm-fg-dim">
-              Or use the advanced options below to connect manually.
-            </p>
+            {user?.role === 'admin' && (
+              <p className="text-xs text-pdm-fg-dim">
+                Or use the advanced options below to connect manually.
+              </p>
+            )}
           </div>
         )}
         
@@ -501,10 +547,10 @@ export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenP
 
             <button
               onClick={handleConnectLegacy}
-              disabled={isConnecting}
+              disabled={isConnectingVault}
               className="w-full btn btn-primary btn-lg gap-2 justify-center"
             >
-              {isConnecting ? (
+              {isConnectingVault ? (
                 <Loader2 size={20} className="animate-spin" />
               ) : (
                 <FolderPlus size={20} />

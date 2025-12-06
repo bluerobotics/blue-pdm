@@ -24,10 +24,15 @@ import {
   ExternalLink,
   Info,
   Github,
-  Heart
+  Heart,
+  Copy,
+  Key,
+  Eye,
+  EyeOff
 } from 'lucide-react'
 import { usePDMStore, ConnectedVault } from '../stores/pdmStore'
-import { supabase, signOut } from '../lib/supabase'
+import { supabase, signOut, getCurrentConfig } from '../lib/supabase'
+import { generateOrgCode, clearConfig } from '../lib/supabaseConfig'
 
 // Build vault path based on platform
 function buildVaultPath(platform: string, vaultSlug: string): string {
@@ -111,6 +116,9 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   const [isDisconnecting, setIsDisconnecting] = useState(false)
   const [appVersion, setAppVersion] = useState('')
   const [platform, setPlatform] = useState<string>('win32')
+  const [showOrgCode, setShowOrgCode] = useState(false)
+  const [orgCode, setOrgCode] = useState<string | null>(null)
+  const [codeCopied, setCodeCopied] = useState(false)
   
   // Get app version and platform
   useEffect(() => {
@@ -742,13 +750,15 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                           <Folder size={14} />
                           Vaults ({orgVaults.length})
                         </div>
-                        <button
-                          onClick={() => setIsCreatingVault(true)}
-                          className="btn btn-primary btn-sm flex items-center gap-1"
-                        >
-                          <Plus size={14} />
-                          Add Vault
-                        </button>
+                        {user?.role === 'admin' && (
+                          <button
+                            onClick={() => setIsCreatingVault(true)}
+                            className="btn btn-primary btn-sm flex items-center gap-1"
+                          >
+                            <Plus size={14} />
+                            Add Vault
+                          </button>
+                        )}
                       </div>
                       
                       {isCreatingVault && (
@@ -802,7 +812,9 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                         </div>
                       ) : orgVaults.length === 0 ? (
                         <div className="text-center py-8 text-pdm-fg-muted text-sm">
-                          No vaults created yet. Add a vault to get started.
+                          {user?.role === 'admin' 
+                            ? 'No vaults created yet. Add a vault to get started.'
+                            : 'No vaults created yet. Ask an organization admin to create one.'}
                         </div>
                       ) : (
                         <div className="space-y-2">
@@ -948,6 +960,72 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                         </div>
                       )}
                     </div>
+                    
+                    {/* Organization Code (Admin only) */}
+                    {user?.role === 'admin' && (
+                      <div className="space-y-3 pt-4 border-t border-pdm-border">
+                        <div className="flex items-center gap-2 text-xs text-pdm-fg-muted uppercase tracking-wide font-medium">
+                          <Key size={14} />
+                          Organization Code
+                        </div>
+                        <p className="text-sm text-pdm-fg-muted">
+                          Share this code with team members so they can connect to your organization's BluePDM instance.
+                        </p>
+                        
+                        {showOrgCode && orgCode ? (
+                          <div className="space-y-2">
+                            <div className="relative">
+                              <div className="font-mono text-xs bg-pdm-bg border border-pdm-border rounded-lg p-3 pr-12 break-all text-pdm-fg max-h-24 overflow-y-auto">
+                                {orgCode}
+                              </div>
+                              <button
+                                onClick={async () => {
+                                  try {
+                                    await navigator.clipboard.writeText(orgCode)
+                                    setCodeCopied(true)
+                                    setTimeout(() => setCodeCopied(false), 2000)
+                                  } catch (err) {
+                                    console.error('Failed to copy:', err)
+                                  }
+                                }}
+                                className="absolute top-2 right-2 p-1.5 hover:bg-pdm-highlight rounded transition-colors"
+                                title="Copy to clipboard"
+                              >
+                                {codeCopied ? (
+                                  <Check size={16} className="text-green-500" />
+                                ) : (
+                                  <Copy size={16} className="text-pdm-fg-muted" />
+                                )}
+                              </button>
+                            </div>
+                            <button
+                              onClick={() => setShowOrgCode(false)}
+                              className="text-xs text-pdm-fg-muted hover:text-pdm-fg"
+                            >
+                              Hide code
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => {
+                              const config = getCurrentConfig()
+                              if (config) {
+                                const code = generateOrgCode(config)
+                                setOrgCode(code)
+                                setShowOrgCode(true)
+                              }
+                            }}
+                            className="btn btn-secondary btn-sm flex items-center gap-2"
+                          >
+                            <Eye size={14} />
+                            Show Organization Code
+                          </button>
+                        )}
+                        <p className="text-xs text-pdm-fg-dim">
+                          Keep this code secure – it contains your Supabase credentials.
+                        </p>
+                      </div>
+                    )}
                   </>
                 ) : (
                   <div className="text-center py-12 text-pdm-fg-muted">
@@ -1035,6 +1113,36 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                       />
                     </button>
                   </label>
+                </div>
+                
+                {/* Connection Settings */}
+                <div className="space-y-3 pt-4 border-t border-pdm-border">
+                  <h3 className="text-sm font-semibold text-pdm-fg">Connection</h3>
+                  <div className="p-4 rounded-lg border border-pdm-border bg-pdm-bg">
+                    <div className="flex items-start gap-3">
+                      <AlertTriangle size={20} className="text-pdm-warning flex-shrink-0 mt-0.5" />
+                      <div className="flex-1">
+                        <div className="text-sm font-medium text-pdm-fg mb-1">Reset Supabase Connection</div>
+                        <div className="text-xs text-pdm-fg-dim mb-3">
+                          Clear saved Supabase credentials and reconnect with a new organization code. 
+                          You'll need to sign out and reconfigure on next launch.
+                        </div>
+                        <button
+                          onClick={() => {
+                            if (confirm('Are you sure you want to reset the Supabase connection? You will need to reconfigure BluePDM with a new organization code.')) {
+                              clearConfig()
+                              signOut()
+                              // Force reload to show setup screen
+                              window.location.reload()
+                            }
+                          }}
+                          className="btn btn-ghost btn-sm text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                        >
+                          Reset Connection
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
             )}

@@ -136,11 +136,11 @@ export function HistoryView() {
                   <span className={`mt-0.5 ${actionInfo.color}`}>
                     {actionInfo.icon}
                   </span>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm">
-                      <span className={actionInfo.color}>{actionInfo.label}</span>
+                  <div className="flex-1 min-w-0 overflow-hidden">
+                    <div className="text-sm flex items-center gap-1">
+                      <span className={`${actionInfo.color} whitespace-nowrap flex-shrink-0`}>{actionInfo.label}</span>
                       {entry.file && (
-                        <span className="text-pdm-fg ml-1 truncate">
+                        <span className="text-pdm-fg truncate">
                           {entry.file.file_name}
                         </span>
                       )}

@@ -1,6 +1,6 @@
 {
   "name": "blue-pdm",
-  "version": "0.10.2",
+  "version": "0.11.0",
   "description": "Product Data Management for engineering teams",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -76,8 +76,9 @@
       "target": "AppImage"
     },
     "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "oneClick": true,
+      "perMachine": false,
+      "deleteAppDataOnUninstall": true
     }
   }
 }
