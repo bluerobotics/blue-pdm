@@ -27,8 +27,7 @@ import {
   Heart,
   Copy,
   Key,
-  Eye,
-  EyeOff
+  Eye
 } from 'lucide-react'
 import { usePDMStore, ConnectedVault } from '../stores/pdmStore'
 import { supabase, signOut, getCurrentConfig } from '../lib/supabase'

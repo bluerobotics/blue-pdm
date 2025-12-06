@@ -26,7 +26,6 @@ function App() {
     user,
     organization,
     isOfflineMode,
-    isConnecting,
     vaultPath,
     isVaultConnected,
     connectedVaults,
