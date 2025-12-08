@@ -4,6 +4,24 @@ import type { Database } from '../types/database'
 import { loadConfig, type SupabaseConfig } from './supabaseConfig'
 
 // ============================================
+// Logging Helper (must be defined early)
+// ============================================
+
+// Helper to log to both console and file (via Electron)
+const authLog = (level: 'info' | 'warn' | 'error' | 'debug', message: string, data?: unknown) => {
+  const logMsg = `[Auth] ${message}`
+  if (level === 'error') {
+    console.error(logMsg, data || '')
+  } else if (level === 'warn') {
+    console.warn(logMsg, data || '')
+  } else {
+    console.log(logMsg, data || '')
+  }
+  // Also log to file if Electron API is available
+  window.electronAPI?.log?.(level, message, data)
+}
+
+// ============================================
 // Dynamic Supabase Client
 // ============================================
 
@@ -108,20 +126,6 @@ initializeClient()
 // ============================================
 
 let sessionResolver: ((success: boolean) => void) | null = null
-
-// Helper to log to both console and file (via Electron)
-const authLog = (level: 'info' | 'warn' | 'error' | 'debug', message: string, data?: unknown) => {
-  const logMsg = `[Auth] ${message}`
-  if (level === 'error') {
-    console.error(logMsg, data || '')
-  } else if (level === 'warn') {
-    console.warn(logMsg, data || '')
-  } else {
-    console.log(logMsg, data || '')
-  }
-  // Also log to file if Electron API is available
-  window.electronAPI?.log?.(level, message, data)
-}
 
 function setupSessionListener() {
   if (typeof window !== 'undefined' && window.electronAPI?.onSetSession) {
