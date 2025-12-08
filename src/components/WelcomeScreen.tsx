@@ -96,14 +96,23 @@ export function WelcomeScreen({ onOpenRecentVault }: WelcomeScreenProps) {
     })
   }, [user, organization, isAuthConnecting])
 
-  // Clear connected vaults when not signed in (unless offline mode)
-  // This removes stale vaults from previous sessions
+  // Track if we've seen a user sign in this session (to distinguish "signed out" from "not loaded yet")
+  const [hasSeenUser, setHasSeenUser] = useState(false)
+  
   useEffect(() => {
-    if (!user && !isOfflineMode && connectedVaults.length > 0) {
+    if (user) {
+      setHasSeenUser(true)
+    }
+  }, [user])
+  
+  // Clear connected vaults when user explicitly signs out (not just on initial load)
+  // Only runs after we've seen a user sign in, then they sign out
+  useEffect(() => {
+    if (hasSeenUser && !user && !isOfflineMode && connectedVaults.length > 0) {
       uiLog('info', 'Clearing connected vaults - user signed out', { count: connectedVaults.length })
       setConnectedVaults([])
     }
-  }, [user, isOfflineMode])
+  }, [user, isOfflineMode, hasSeenUser])
 
   // Auto-connect on mount if we have connected vaults
   useEffect(() => {
