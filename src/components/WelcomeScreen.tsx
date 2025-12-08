@@ -41,7 +41,6 @@ interface Vault {
 }
 
 interface WelcomeScreenProps {
-  onOpenVault: () => void
   onOpenRecentVault: (path: string) => void
 }
 
@@ -54,7 +53,7 @@ function formatSize(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
 }
 
-export function WelcomeScreen({ onOpenVault, onOpenRecentVault }: WelcomeScreenProps) {
+export function WelcomeScreen({ onOpenRecentVault }: WelcomeScreenProps) {
   const { 
     recentVaults, 
     user, 

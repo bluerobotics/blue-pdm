@@ -706,7 +706,6 @@ function App() {
         <div className="flex-1 flex flex-col overflow-hidden min-w-0">
           {showWelcome ? (
             <WelcomeScreen 
-              onOpenVault={handleOpenVault}
               onOpenRecentVault={handleOpenRecentVault}
             />
           ) : (
