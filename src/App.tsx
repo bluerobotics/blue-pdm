@@ -74,11 +74,11 @@ function App() {
   // Initialize auth state (runs in background, doesn't block UI)
   useEffect(() => {
     if (!supabaseReady) {
-      console.log('[Auth] Supabase not configured')
+      console.log('[Auth] Supabase not configured, waiting...')
       return
     }
 
-    console.log('[Auth] Checking for existing session...')
+    console.log('[Auth] Supabase ready, setting up auth listener...')
 
     // Check for existing session
     getCurrentSession().then(async ({ session }) => {
@@ -171,7 +171,7 @@ function App() {
     return () => {
       subscription.unsubscribe()
     }
-  }, [setUser, setOrganization, setStatusMessage, setVaultConnected, setIsConnecting])
+  }, [supabaseReady, setUser, setOrganization, setStatusMessage, setVaultConnected, setIsConnecting])
 
   // Load files from working directory and merge with PDM data
   // silent = true means no loading spinner (for background refreshes after downloads/uploads)
