@@ -448,13 +448,18 @@ function App() {
     
     const result = await window.electronAPI.selectWorkingDir()
     if (result.success && result.path) {
+      // Clear existing file state to avoid stale data
+      setFiles([])
+      setServerFiles([])
+      setFilesLoaded(false)
+      
       setVaultPath(result.path)
       setVaultConnected(true)
       addRecentVault(result.path)
       setStatusMessage(`Opened: ${result.path}`)
       setTimeout(() => setStatusMessage(''), 3000)
     }
-  }, [setVaultPath, setVaultConnected, addRecentVault, setStatusMessage])
+  }, [setVaultPath, setVaultConnected, addRecentVault, setStatusMessage, setFiles, setServerFiles, setFilesLoaded])
 
   // Open recent vault
   const handleOpenRecentVault = useCallback(async (path: string) => {
@@ -462,6 +467,11 @@ function App() {
     
     const result = await window.electronAPI.setWorkingDir(path)
     if (result.success) {
+      // Clear existing file state to avoid stale data
+      setFiles([])
+      setServerFiles([])
+      setFilesLoaded(false)
+      
       setVaultPath(path)
       setVaultConnected(true)
       addRecentVault(path)
@@ -471,7 +481,7 @@ function App() {
       setStatusMessage(result.error || 'Failed to open folder')
       setTimeout(() => setStatusMessage(''), 3000)
     }
-  }, [setVaultPath, setVaultConnected, addRecentVault, setStatusMessage])
+  }, [setVaultPath, setVaultConnected, addRecentVault, setStatusMessage, setFiles, setServerFiles, setFilesLoaded])
 
   // Track what configuration we last loaded to avoid duplicate loads
   const lastLoadKey = useRef<string>('')
