@@ -739,8 +739,11 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                         <Building2 size={20} className="text-pdm-accent" />
                         <span className="text-lg font-medium text-pdm-fg">{organization.name}</span>
                       </div>
-                      <div className="text-sm text-pdm-fg-muted">
+                      <div className="text-sm text-pdm-fg-muted mb-1">
                         Email domains: {organization.email_domains?.join(', ')}
+                      </div>
+                      <div className="text-xs text-pdm-fg-dim font-mono">
+                        ID: {organization.id}
                       </div>
                     </div>
                     
