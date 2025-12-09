@@ -104,6 +104,17 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
     const filesToCheckin = Array.from(selectedFiles)
     const total = filesToCheckin.length
     const toastId = `checkin-${Date.now()}`
+    
+    // Add spinners for all files being processed
+    const processedPaths: string[] = []
+    filesToCheckin.forEach(path => {
+      const file = myCheckedOutFiles.find(f => f.path === path)
+      if (file) {
+        addProcessingFolder(file.relativePath)
+        processedPaths.push(file.relativePath)
+      }
+    })
+    
     addProgressToast(toastId, `Checking in ${total} file${total > 1 ? 's' : ''}...`, total)
     
     try {
@@ -195,6 +206,8 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
           failed++
         }
         
+        // Remove spinner for this file
+        removeProcessingFolder(file.relativePath)
         updateProgressToast(toastId, i + 1, Math.round(((i + 1) / total) * 100))
       }
       
@@ -213,6 +226,8 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
       // Refresh file list to update the UI
       onRefresh(true)
     } finally {
+      // Clean up any remaining spinners
+      processedPaths.forEach(p => removeProcessingFolder(p))
       setIsProcessing(false)
     }
   }
@@ -235,6 +250,16 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
       setIsProcessing(false)
       return
     }
+    
+    // Add spinners for all files being processed
+    const processedPaths: string[] = []
+    filesToSync.forEach(path => {
+      const file = addedFiles.find(f => f.path === path)
+      if (file) {
+        addProcessingFolder(file.relativePath)
+        processedPaths.push(file.relativePath)
+      }
+    })
     
     const toastId = `sync-${Date.now()}`
     addProgressToast(toastId, `Syncing ${total} new file${total > 1 ? 's' : ''}...`, total)
@@ -261,6 +286,7 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
           if (!readResult?.success || !readResult.data || !readResult.hash) {
             console.error('Failed to read file:', file.name)
             failed++
+            removeProcessingFolder(file.relativePath)
             updateProgressToast(toastId, i + 1, Math.round(((i + 1) / total) * 100))
             continue
           }
@@ -291,6 +317,8 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
           failed++
         }
         
+        // Remove spinner for this file
+        removeProcessingFolder(file.relativePath)
         updateProgressToast(toastId, i + 1, Math.round(((i + 1) / total) * 100))
       }
       
@@ -309,6 +337,8 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
       // Refresh file list to update the UI
       onRefresh(true)
     } finally {
+      // Clean up any remaining spinners
+      processedPaths.forEach(p => removeProcessingFolder(p))
       setIsProcessing(false)
     }
   }
@@ -419,6 +449,17 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
     
     const filesToDiscard = Array.from(selectedFiles)
     const total = filesToDiscard.length
+    
+    // Add spinners for all files being processed
+    const processedPaths: string[] = []
+    filesToDiscard.forEach(path => {
+      const file = myCheckedOutFiles.find(f => f.path === path)
+      if (file) {
+        addProcessingFolder(file.relativePath)
+        processedPaths.push(file.relativePath)
+      }
+    })
+    
     const toastId = `discard-${Date.now()}`
     addProgressToast(toastId, `Discarding changes for ${total} file${total > 1 ? 's' : ''}...`, total)
     
@@ -442,6 +483,7 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
           const contentHash = file.pdmData.content_hash
           if (!contentHash) {
             failed++
+            removeProcessingFolder(file.relativePath)
             updateProgressToast(toastId, i + 1, Math.round(((i + 1) / total) * 100))
             continue
           }
@@ -451,6 +493,7 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
           if (downloadError || !data) {
             console.error('Download failed:', downloadError)
             failed++
+            removeProcessingFolder(file.relativePath)
             updateProgressToast(toastId, i + 1, Math.round(((i + 1) / total) * 100))
             continue
           }
@@ -462,6 +505,7 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
           const writeResult = await api.writeFile(file.path, data)
           if (!writeResult?.success) {
             failed++
+            removeProcessingFolder(file.relativePath)
             updateProgressToast(toastId, i + 1, Math.round(((i + 1) / total) * 100))
             continue
           }
@@ -472,6 +516,7 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
           if (!result.success) {
             console.error('Release checkout failed:', result.error)
             failed++
+            removeProcessingFolder(file.relativePath)
             updateProgressToast(toastId, i + 1, Math.round(((i + 1) / total) * 100))
             continue
           }
@@ -484,6 +529,8 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
           failed++
         }
         
+        // Remove spinner for this file
+        removeProcessingFolder(file.relativePath)
         updateProgressToast(toastId, i + 1, Math.round(((i + 1) / total) * 100))
       }
       
@@ -502,6 +549,8 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
       // Refresh file list to update the UI
       onRefresh(true)
     } finally {
+      // Clean up any remaining spinners
+      processedPaths.forEach(p => removeProcessingFolder(p))
       setIsProcessing(false)
     }
   }
