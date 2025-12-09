@@ -477,8 +477,16 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
       return
     }
     
+    // Add folder spinner and progress toast
+    if (file.isDirectory) {
+      addProcessingFolder(file.relativePath)
+    }
+    const toastId = `checkout-${Date.now()}`
+    addProgressToast(toastId, `Checking out ${filesToCheckout.length} file${filesToCheckout.length > 1 ? 's' : ''}...`, filesToCheckout.length)
+    
     let succeeded = 0
-    for (const f of filesToCheckout) {
+    for (let i = 0; i < filesToCheckout.length; i++) {
+      const f = filesToCheckout[i]
       try {
         const result = await checkoutFile(f.pdmData!.id, user.id)
         if (result.success) {
@@ -499,7 +507,14 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
       } catch (err) {
         console.error('Checkout error:', err)
       }
+      updateProgressToast(toastId, i + 1, Math.round(((i + 1) / filesToCheckout.length) * 100))
     }
+    
+    // Clean up
+    if (file.isDirectory) {
+      removeProcessingFolder(file.relativePath)
+    }
+    removeToast(toastId)
     
     if (succeeded > 0) {
       addToast('success', `Checked out ${succeeded} file${succeeded > 1 ? 's' : ''}`)
@@ -528,8 +543,16 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
       return
     }
     
+    // Add folder spinner and progress toast
+    if (file.isDirectory) {
+      addProcessingFolder(file.relativePath)
+    }
+    const toastId = `checkin-${Date.now()}`
+    addProgressToast(toastId, `Checking in ${filesToCheckin.length} file${filesToCheckin.length > 1 ? 's' : ''}...`, filesToCheckin.length)
+    
     let succeeded = 0
-    for (const f of filesToCheckin) {
+    for (let i = 0; i < filesToCheckin.length; i++) {
+      const f = filesToCheckin[i]
       try {
         const result = await checkinFile(f.pdmData!.id, user.id)
         if (result.success) {
@@ -542,7 +565,14 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
       } catch (err) {
         console.error('Checkin error:', err)
       }
+      updateProgressToast(toastId, i + 1, Math.round(((i + 1) / filesToCheckin.length) * 100))
     }
+    
+    // Clean up
+    if (file.isDirectory) {
+      removeProcessingFolder(file.relativePath)
+    }
+    removeToast(toastId)
     
     if (succeeded > 0) {
       addToast('success', `Checked in ${succeeded} file${succeeded > 1 ? 's' : ''}`)

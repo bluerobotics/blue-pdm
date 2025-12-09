@@ -246,11 +246,9 @@ export function FileContextMenu({
     const foldersBeingProcessed = contextFiles.filter(f => f.isDirectory).map(f => f.relativePath)
     foldersBeingProcessed.forEach(p => addProcessingFolder(p))
     
-    // Show progress toast for multiple files
-    const toastId = filesToCheckout.length > 1 ? `checkout-${Date.now()}` : null
-    if (toastId) {
-      addProgressToast(toastId, `Checking out ${filesToCheckout.length} files...`, filesToCheckout.length)
-    }
+    // Show progress toast
+    const toastId = `checkout-${Date.now()}`
+    addProgressToast(toastId, `Checking out ${filesToCheckout.length} file${filesToCheckout.length > 1 ? 's' : ''}...`, filesToCheckout.length)
     
     let succeeded = 0
     let failed = 0
@@ -281,14 +279,12 @@ export function FileContextMenu({
         failed++
       }
       
-      if (toastId) {
-        updateProgressToast(toastId, i + 1, Math.round(((i + 1) / filesToCheckout.length) * 100))
-      }
+      updateProgressToast(toastId, i + 1, Math.round(((i + 1) / filesToCheckout.length) * 100))
     }
     
     // Clean up
     foldersBeingProcessed.forEach(p => removeProcessingFolder(p))
-    if (toastId) removeToast(toastId)
+    removeToast(toastId)
     
     if (failed > 0) {
       addToast('warning', `Checked out ${succeeded}/${filesToCheckout.length} files`)
@@ -311,11 +307,9 @@ export function FileContextMenu({
     const foldersBeingProcessed = contextFiles.filter(f => f.isDirectory).map(f => f.relativePath)
     foldersBeingProcessed.forEach(p => addProcessingFolder(p))
     
-    // Show progress toast for multiple files
-    const toastId = filesToCheckin.length > 1 ? `checkin-${Date.now()}` : null
-    if (toastId) {
-      addProgressToast(toastId, `Checking in ${filesToCheckin.length} files...`, filesToCheckin.length)
-    }
+    // Show progress toast
+    const toastId = `checkin-${Date.now()}`
+    addProgressToast(toastId, `Checking in ${filesToCheckin.length} file${filesToCheckin.length > 1 ? 's' : ''}...`, filesToCheckin.length)
     
     let succeeded = 0
     let failed = 0
@@ -358,14 +352,12 @@ export function FileContextMenu({
         failed++
       }
       
-      if (toastId) {
-        updateProgressToast(toastId, i + 1, Math.round(((i + 1) / filesToCheckin.length) * 100))
-      }
+      updateProgressToast(toastId, i + 1, Math.round(((i + 1) / filesToCheckin.length) * 100))
     }
     
     // Clean up
     foldersBeingProcessed.forEach(p => removeProcessingFolder(p))
-    if (toastId) removeToast(toastId)
+    removeToast(toastId)
     
     if (failed > 0) {
       addToast('warning', `Checked in ${succeeded}/${filesToCheckin.length} files`)
