@@ -8,7 +8,8 @@
     "build": "tsc && vite build && electron-builder",
     "preview": "vite preview",
     "electron:dev": "vite",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "release": "node scripts/release.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
