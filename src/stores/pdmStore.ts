@@ -40,6 +40,13 @@ export interface ToastMessage {
   }
 }
 
+// Pending metadata changes (not yet synced to server)
+export interface PendingMetadata {
+  part_number?: string | null
+  description?: string | null
+  revision?: string
+}
+
 // Local file info from filesystem
 export interface LocalFile {
   name: string
@@ -57,6 +64,11 @@ export interface LocalFile {
   diffStatus?: DiffStatus
   // Local content hash (for detecting modifications)
   localHash?: string
+  // Pending metadata changes (saved locally, synced on check-in)
+  pendingMetadata?: PendingMetadata
+  // Local active version (set after rollback, before check-in)
+  // This tracks which version's content is currently in the local file
+  localActiveVersion?: number
 }
 
 // Server file info (for tracking deleted files)
@@ -231,6 +243,8 @@ interface PDMState {
   setFiles: (files: LocalFile[]) => void
   setServerFiles: (files: ServerFile[]) => void
   updateFileInStore: (path: string, updates: Partial<LocalFile>) => void
+  updatePendingMetadata: (path: string, metadata: PendingMetadata) => void
+  clearPendingMetadata: (path: string) => void
   renameFileInStore: (oldPath: string, newPath: string, newName: string) => void
   setSelectedFiles: (paths: string[]) => void
   toggleFileSelection: (path: string, multiSelect?: boolean) => void
@@ -530,6 +544,39 @@ export const usePDMStore = create<PDMState>()(
         set(state => ({
           files: state.files.map(f => 
             f.path === path ? { ...f, ...updates } : f
+          )
+        }))
+      },
+      updatePendingMetadata: (path, metadata) => {
+        set(state => ({
+          files: state.files.map(f => {
+            if (f.path === path) {
+              // Merge with existing pending metadata
+              const existingPending = f.pendingMetadata || {}
+              const newPending = { ...existingPending, ...metadata }
+              // Also update the pdmData to show the changes immediately in UI
+              const updatedPdmData = f.pdmData ? {
+                ...f.pdmData,
+                part_number: metadata.part_number !== undefined ? metadata.part_number : f.pdmData.part_number,
+                description: metadata.description !== undefined ? metadata.description : f.pdmData.description,
+                revision: metadata.revision !== undefined ? metadata.revision : f.pdmData.revision,
+              } : f.pdmData
+              return { 
+                ...f, 
+                pendingMetadata: newPending,
+                pdmData: updatedPdmData,
+                // Mark as modified if it has pdmData (synced file)
+                diffStatus: f.pdmData ? 'modified' : f.diffStatus
+              }
+            }
+            return f
+          })
+        }))
+      },
+      clearPendingMetadata: (path) => {
+        set(state => ({
+          files: state.files.map(f => 
+            f.path === path ? { ...f, pendingMetadata: undefined } : f
           )
         }))
       },

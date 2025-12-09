@@ -139,11 +139,15 @@ export function HistoryView() {
                   <div className="flex-1 min-w-0 overflow-hidden">
                     <div className="text-sm flex items-center gap-1">
                       <span className={`${actionInfo.color} whitespace-nowrap flex-shrink-0`}>{actionInfo.label}</span>
-                      {entry.file && (
+                      {entry.file ? (
                         <span className="text-pdm-fg truncate">
                           {entry.file.file_name}
                         </span>
-                      )}
+                      ) : (entry.details as any)?.file_name ? (
+                        <span className="text-pdm-fg truncate">
+                          {(entry.details as any).file_name}
+                        </span>
+                      ) : null}
                     </div>
                     <div className="flex items-center gap-2 text-xs text-pdm-fg-muted mt-1">
                       <span className="flex items-center gap-1">

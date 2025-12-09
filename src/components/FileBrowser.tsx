@@ -46,7 +46,7 @@ import {
 } from 'lucide-react'
 import { usePDMStore, LocalFile } from '../stores/pdmStore'
 import { getFileIconType, formatFileSize, STATE_INFO } from '../types/pdm'
-import { syncFile, checkoutFile, checkinFile } from '../lib/supabase'
+import { syncFile, checkoutFile, checkinFile, updateFileMetadata } from '../lib/supabase'
 import { downloadFile } from '../lib/storage'
 import { format } from 'date-fns'
 
@@ -107,6 +107,8 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
     unpinFolder,
     renameFileInStore,
     updateFileInStore,
+    updatePendingMetadata,
+    clearPendingMetadata,
     searchQuery,
     searchType,
     lowercaseExtensions,
@@ -142,6 +144,8 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
   const [renamingFile, setRenamingFile] = useState<LocalFile | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [deleteConfirm, setDeleteConfirm] = useState<LocalFile | null>(null)
+  const [deleteEverywhere, setDeleteEverywhere] = useState(false) // Track if deleting from server too
+  const [isDeleting, setIsDeleting] = useState(false) // Track delete operation in progress
   const [platform, setPlatform] = useState<string>('win32')
   const [customConfirm, setCustomConfirm] = useState<{
     title: string
@@ -161,6 +165,15 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
   const tableRef = useRef<HTMLDivElement>(null)
   const newFolderInputRef = useRef<HTMLInputElement>(null)
   const renameInputRef = useRef<HTMLInputElement>(null)
+  const inlineEditInputRef = useRef<HTMLInputElement>(null)
+  
+  // Inline editing state for metadata columns (itemNumber, description, revision)
+  const [editingCell, setEditingCell] = useState<{ path: string; column: string } | null>(null)
+  const [editValue, setEditValue] = useState('')
+  
+  // Internal drag and drop state for moving files/folders
+  const [draggedFiles, setDraggedFiles] = useState<LocalFile[]>([])
+  const [dragOverFolder, setDragOverFolder] = useState<string | null>(null)
 
   // Use store's currentFolder instead of local state
   const currentPath = currentFolder
@@ -319,13 +332,28 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
     return folderFiles.every(f => !!f.pdmData)
   }
 
-  // Check if any files in a folder are checked out
+  // Check if any files in a folder are checked out and by whom
   const hasFolderCheckedOutFiles = (folderPath: string): boolean => {
     const folderFiles = files.filter(f => 
       !f.isDirectory && 
       f.relativePath.startsWith(folderPath + '/')
     )
     return folderFiles.some(f => f.pdmData?.checked_out_by)
+  }
+  
+  // Get folder checkout status: 'mine' | 'others' | 'both' | null
+  const getFolderCheckoutStatus = (folderPath: string): 'mine' | 'others' | 'both' | null => {
+    const folderFiles = files.filter(f => 
+      !f.isDirectory && 
+      f.relativePath.startsWith(folderPath + '/')
+    )
+    const checkedOutByMe = folderFiles.some(f => f.pdmData?.checked_out_by === user?.id)
+    const checkedOutByOthers = folderFiles.some(f => f.pdmData?.checked_out_by && f.pdmData.checked_out_by !== user?.id)
+    
+    if (checkedOutByMe && checkedOutByOthers) return 'both'
+    if (checkedOutByMe) return 'mine'
+    if (checkedOutByOthers) return 'others'
+    return null
   }
 
   // Check if a file/folder is affected by any processing operation
@@ -498,11 +526,17 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
     let succeeded = 0
     for (const f of filesToCheckin) {
       try {
-        const result = await checkinFile(f.pdmData!.id, user.id)
+        const result = await checkinFile(f.pdmData!.id, user.id, {
+          pendingMetadata: f.pendingMetadata
+        })
         if (result.success) {
           await window.electronAPI?.setReadonly(f.path, true)
+          // Clear pending metadata and update store
+          // Also clear localActiveVersion since we're now checked in
+          clearPendingMetadata(f.path)
           updateFileInStore(f.path, {
-            pdmData: { ...f.pdmData!, checked_out_by: null, checked_out_user: null }
+            pdmData: { ...f.pdmData!, checked_out_by: null, checked_out_user: null, ...result.file },
+            localActiveVersion: undefined  // Clear rollback state
           })
           succeeded++
         }
@@ -526,8 +560,13 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
       if (file.diffStatus === 'cloud') {
         return <FolderOpen size={16} className="text-pdm-fg-muted opacity-50" />
       }
-      const hasCheckedOut = hasFolderCheckedOutFiles(file.relativePath)
-      if (hasCheckedOut) {
+      const checkoutStatus = getFolderCheckoutStatus(file.relativePath)
+      if (checkoutStatus === 'others' || checkoutStatus === 'both') {
+        // Red for folders with files checked out by others
+        return <FolderOpen size={16} className="text-pdm-error" />
+      }
+      if (checkoutStatus === 'mine') {
+        // Orange for folders with only my checkouts
         return <FolderOpen size={16} className="text-pdm-warning" />
       }
       const synced = isFolderSynced(file.relativePath)
@@ -801,6 +840,174 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
     setRenameValue('')
   }
 
+  // Check if file metadata is editable (file must be checked out by current user)
+  const isFileEditable = (file: LocalFile): boolean => {
+    return !!file.pdmData?.id && file.pdmData?.checked_out_by === user?.id
+  }
+
+  // Handle inline cell editing for metadata fields (itemNumber, description, revision, state)
+  const handleStartCellEdit = (file: LocalFile, column: string) => {
+    if (!file.pdmData?.id) {
+      addToast('info', 'Sync file to cloud first to edit metadata')
+      return
+    }
+    
+    // Check if file is checked out by current user
+    if (file.pdmData.checked_out_by !== user?.id) {
+      addToast('info', 'Check out file to edit metadata')
+      return
+    }
+    
+    // Get the current value based on column
+    let currentValue = ''
+    switch (column) {
+      case 'itemNumber':
+        currentValue = file.pdmData?.part_number || ''
+        break
+      case 'description':
+        currentValue = file.pdmData?.description || ''
+        break
+      case 'revision':
+        currentValue = file.pdmData?.revision || 'A'
+        break
+      case 'state':
+        currentValue = file.pdmData?.state || 'wip'
+        break
+    }
+    
+    setEditingCell({ path: file.path, column })
+    setEditValue(currentValue)
+    
+    // Focus the input after render (except for state dropdown)
+    if (column !== 'state') {
+      setTimeout(() => {
+        inlineEditInputRef.current?.focus()
+        inlineEditInputRef.current?.select()
+      }, 0)
+    }
+  }
+  
+  const handleSaveCellEdit = async () => {
+    if (!editingCell || !user) {
+      setEditingCell(null)
+      setEditValue('')
+      return
+    }
+    
+    const file = files.find(f => f.path === editingCell.path)
+    if (!file?.pdmData?.id) {
+      setEditingCell(null)
+      setEditValue('')
+      return
+    }
+    
+    const trimmedValue = editValue.trim()
+    
+    // Check if value actually changed (consider pending metadata too)
+    let currentValue = ''
+    switch (editingCell.column) {
+      case 'itemNumber':
+        currentValue = file.pendingMetadata?.part_number !== undefined 
+          ? (file.pendingMetadata.part_number || '') 
+          : (file.pdmData?.part_number || '')
+        break
+      case 'description':
+        currentValue = file.pendingMetadata?.description !== undefined 
+          ? (file.pendingMetadata.description || '') 
+          : (file.pdmData?.description || '')
+        break
+      case 'revision':
+        currentValue = file.pendingMetadata?.revision !== undefined 
+          ? file.pendingMetadata.revision 
+          : (file.pdmData?.revision || 'A')
+        break
+      case 'state':
+        currentValue = file.pdmData?.state || 'wip'
+        break
+    }
+    
+    if (trimmedValue === currentValue) {
+      setEditingCell(null)
+      setEditValue('')
+      return
+    }
+    
+    // For state changes, sync to server immediately
+    if (editingCell.column === 'state') {
+      const updates = { state: trimmedValue as 'not_tracked' | 'wip' | 'in_review' | 'released' | 'obsolete' }
+      try {
+        const result = await updateFileMetadata(file.pdmData.id, user.id, updates)
+        
+        if (result.success && result.file) {
+          updateFileInStore(file.path, {
+            pdmData: { ...file.pdmData, ...result.file }
+          })
+          addToast('success', 'State updated')
+        } else {
+          addToast('error', result.error || 'Failed to update state')
+        }
+      } catch (err) {
+        addToast('error', `Failed to update state: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    } else {
+      // For item number, description, revision - save locally only (syncs on check-in)
+      const pendingUpdates: { part_number?: string | null; description?: string | null; revision?: string } = {}
+      switch (editingCell.column) {
+        case 'itemNumber':
+          pendingUpdates.part_number = trimmedValue || null
+          break
+        case 'description':
+          pendingUpdates.description = trimmedValue || null
+          break
+        case 'revision':
+          if (!trimmedValue) {
+            addToast('error', 'Revision cannot be empty')
+            return
+          }
+          pendingUpdates.revision = trimmedValue.toUpperCase()
+          break
+      }
+      
+      // Update locally - will sync on check-in
+      updatePendingMetadata(file.path, pendingUpdates)
+    }
+    
+    setEditingCell(null)
+    setEditValue('')
+  }
+  
+  const handleCancelCellEdit = () => {
+    setEditingCell(null)
+    setEditValue('')
+  }
+  
+  // Handle state change via dropdown
+  const handleStateChange = async (file: LocalFile, newState: string) => {
+    if (!file.pdmData?.id || !user) return
+    
+    setEditValue(newState)
+    
+    try {
+      const result = await updateFileMetadata(file.pdmData.id, user.id, {
+        state: newState as 'not_tracked' | 'wip' | 'in_review' | 'released' | 'obsolete'
+      })
+      
+      if (result.success && result.file) {
+        updateFileInStore(file.path, {
+          pdmData: { ...file.pdmData, ...result.file }
+        })
+        addToast('success', 'State updated')
+      } else {
+        addToast('error', result.error || 'Failed to update state')
+      }
+    } catch (err) {
+      addToast('error', `Failed to update: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    
+    setEditingCell(null)
+    setEditValue('')
+  }
+
   // Get all files in a folder (for folder operations)
   const getFilesInFolder = (folderPath: string): LocalFile[] => {
     return files.filter(f => 
@@ -882,18 +1089,43 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
       setStatusMessage(`Checking in ${i + 1}/${syncedFiles.length}: ${file.name}`)
       
       try {
+        // Check if file was moved (local path differs from server path)
+        const wasFileMoved = file.pdmData?.file_path && file.relativePath !== file.pdmData.file_path
+        const wasFileRenamed = file.pdmData?.file_name && file.name !== file.pdmData.file_name
+        
         // Read file to get current hash
         const readResult = await window.electronAPI?.readFile(file.path)
         
         if (readResult?.success && readResult.data && readResult.hash) {
           const result = await checkinFile(file.pdmData!.id, user.id, {
             newContentHash: readResult.hash,
-            newFileSize: file.size
+            newFileSize: file.size,
+            pendingMetadata: file.pendingMetadata,
+            // Include new path if file was moved
+            newFilePath: wasFileMoved ? file.relativePath : undefined,
+            newFileName: wasFileRenamed ? file.name : undefined
           })
           
-          if (result.success) {
+          if (result.success && result.file) {
             // Set file back to read-only after checkin
             await window.electronAPI?.setReadonly(file.path, true)
+            clearPendingMetadata(file.path)
+            // Update store with new version and clear rollback state
+            updateFileInStore(file.path, {
+              pdmData: { ...file.pdmData!, ...result.file, checked_out_by: null, checked_out_user: null },
+              localHash: readResult.hash,
+              diffStatus: undefined,
+              localActiveVersion: undefined  // Clear rollback state
+            })
+            succeeded++
+          } else if (result.success) {
+            // Success but no file returned
+            await window.electronAPI?.setReadonly(file.path, true)
+            clearPendingMetadata(file.path)
+            updateFileInStore(file.path, {
+              pdmData: { ...file.pdmData!, checked_out_by: null, checked_out_user: null },
+              localActiveVersion: undefined
+            })
             succeeded++
           } else {
             // If error is "not checked out", that's ok for folder checkin
@@ -906,10 +1138,32 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
           }
         } else {
           // Just release checkout
-          const result = await checkinFile(file.pdmData!.id, user.id)
-          if (result.success) {
+          const result = await checkinFile(file.pdmData!.id, user.id, {
+            pendingMetadata: file.pendingMetadata,
+            // Include new path if file was moved
+            newFilePath: wasFileMoved ? file.relativePath : undefined,
+            newFileName: wasFileRenamed ? file.name : undefined
+          })
+          if (result.success && result.file) {
             // Set file back to read-only after checkin
             await window.electronAPI?.setReadonly(file.path, true)
+            clearPendingMetadata(file.path)
+            // Update store and clear rollback state - update hash to match server
+            updateFileInStore(file.path, {
+              pdmData: { ...file.pdmData!, ...result.file, checked_out_by: null, checked_out_user: null },
+              localHash: result.file.content_hash,  // Sync hash with server
+              diffStatus: undefined,  // Clear diff status - now in sync
+              localActiveVersion: undefined
+            })
+            succeeded++
+          } else if (result.success) {
+            await window.electronAPI?.setReadonly(file.path, true)
+            clearPendingMetadata(file.path)
+            updateFileInStore(file.path, {
+              pdmData: { ...file.pdmData!, checked_out_by: null, checked_out_user: null },
+              diffStatus: undefined,  // Clear diff status
+              localActiveVersion: undefined
+            })
             succeeded++
           } else if (result.error?.includes('not have this file checked out')) {
             succeeded++
@@ -1180,11 +1434,12 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
   // Track mouse state for native file drag
   // Handle drag start - HTML5 drag initiates, Electron adds native file data
   const handleDragStart = (e: React.DragEvent, file: LocalFile) => {
-    // Get files to drag
+    // Get files to drag - now supports both files and folders
     let filesToDrag: LocalFile[]
     if (selectedFiles.includes(file.path) && selectedFiles.length > 1) {
-      filesToDrag = files.filter(f => selectedFiles.includes(f.path) && !f.isDirectory && f.diffStatus !== 'cloud')
-    } else if (!file.isDirectory && file.diffStatus !== 'cloud') {
+      // Multiple selection - include both files and folders
+      filesToDrag = files.filter(f => selectedFiles.includes(f.path) && f.diffStatus !== 'cloud')
+    } else if (file.diffStatus !== 'cloud') {
       filesToDrag = [file]
     } else {
       e.preventDefault()
@@ -1196,16 +1451,19 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
       return
     }
     
+    // Track dragged files for internal move operations
+    setDraggedFiles(filesToDrag)
+    
     const filePaths = filesToDrag.map(f => f.path)
-    console.log('[Drag] Starting native drag for:', filePaths)
+    console.log('[Drag] Starting drag for:', filePaths)
     
     // Set up HTML5 drag data
     e.dataTransfer.effectAllowed = 'copyMove'
     e.dataTransfer.setData('text/plain', filePaths.join('\n'))
+    e.dataTransfer.setData('application/x-pdm-files', JSON.stringify(filesToDrag.map(f => f.relativePath)))
     
-    // Use DownloadURL format for single file - this enables actual file copy
-    // Format: mime:filename:url
-    if (filesToDrag.length === 1) {
+    // Use DownloadURL format for single file (non-folder) - this enables actual file copy to external apps
+    if (filesToDrag.length === 1 && !filesToDrag[0].isDirectory) {
       const filePath = filesToDrag[0].path
       const fileName = filesToDrag[0].name
       const ext = filesToDrag[0].extension?.toLowerCase() || ''
@@ -1227,18 +1485,197 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
       e.dataTransfer.setData('DownloadURL', `${mime}:${fileName}:${fileUrl}`)
     }
     
-    // Create a custom drag image showing file count
+    // Create a custom drag image showing file/folder count
     const dragPreview = document.createElement('div')
     dragPreview.style.cssText = 'position:absolute;left:-1000px;padding:8px 12px;background:#1e293b;border:1px solid #3b82f6;border-radius:6px;color:white;font-size:13px;display:flex;align-items:center;gap:6px;'
-    dragPreview.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>${filesToDrag.length > 1 ? filesToDrag.length + ' files' : file.name}`
+    const iconSvg = file.isDirectory 
+      ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>'
+      : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>'
+    const label = filesToDrag.length > 1 ? `${filesToDrag.length} items` : file.name
+    dragPreview.innerHTML = `${iconSvg}${label}`
     document.body.appendChild(dragPreview)
     e.dataTransfer.setDragImage(dragPreview, 20, 20)
     setTimeout(() => dragPreview.remove(), 0)
     
-    // Also call Electron's startDrag for native multi-file support
-    window.electronAPI?.startDrag(filePaths)
+    // Also call Electron's startDrag for native multi-file support (only for files, not folders)
+    const filePathsForNative = filesToDrag.filter(f => !f.isDirectory).map(f => f.path)
+    if (filePathsForNative.length > 0) {
+      window.electronAPI?.startDrag(filePathsForNative)
+    }
   }
   
+  // Handle drag end - clear dragged files state
+  const handleDragEnd = () => {
+    setDraggedFiles([])
+    setDragOverFolder(null)
+  }
+  
+  // Check if files can be moved (all synced files must be checked out by user)
+  const canMoveFiles = (filesToCheck: LocalFile[]): boolean => {
+    for (const file of filesToCheck) {
+      if (file.isDirectory) {
+        // For folders, check if any synced files inside are not checked out by user
+        const filesInFolder = files.filter(f => 
+          !f.isDirectory && 
+          f.relativePath.startsWith(file.relativePath + '/') &&
+          f.pdmData?.id && // Is synced
+          f.pdmData.checked_out_by !== user?.id // Not checked out by me
+        )
+        if (filesInFolder.length > 0) return false
+      } else if (file.pdmData?.id && file.pdmData.checked_out_by !== user?.id) {
+        // Synced file not checked out by current user
+        return false
+      }
+    }
+    return true
+  }
+  
+  // Handle drag over a folder row
+  const handleFolderDragOver = (e: React.DragEvent, folder: LocalFile) => {
+    e.preventDefault()
+    e.stopPropagation()
+    
+    // Accept if we have local dragged files OR cross-view drag from Explorer
+    const hasPdmFiles = e.dataTransfer.types.includes('application/x-pdm-files')
+    if (draggedFiles.length === 0 && !hasPdmFiles) return
+    
+    // For local drags, we can check everything
+    // For cross-view drags, we can't check details until drop, just show target
+    const filesToCheck = draggedFiles.length > 0 ? draggedFiles : []
+    
+    if (filesToCheck.length > 0) {
+      // Don't allow dropping a folder into itself or its children
+      const isDroppingIntoSelf = filesToCheck.some(f => 
+        f.isDirectory && (folder.relativePath === f.relativePath || folder.relativePath.startsWith(f.relativePath + '/'))
+      )
+      if (isDroppingIntoSelf) return
+      
+      // Don't allow dropping if the target is the current parent
+      const wouldStayInPlace = filesToCheck.every(f => {
+        const parentPath = f.relativePath.includes('/') 
+          ? f.relativePath.substring(0, f.relativePath.lastIndexOf('/'))
+          : ''
+        return parentPath === folder.relativePath
+      })
+      if (wouldStayInPlace) return
+      
+      // Check if all files can be moved (checked out)
+      if (!canMoveFiles(filesToCheck)) {
+        e.dataTransfer.dropEffect = 'none'
+        return
+      }
+    }
+    
+    e.dataTransfer.dropEffect = 'move'
+    setDragOverFolder(folder.relativePath)
+  }
+  
+  // Handle drag leave from a folder row
+  const handleFolderDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragOverFolder(null)
+  }
+  
+  // Handle drop onto a folder
+  const handleDropOnFolder = async (e: React.DragEvent, targetFolder: LocalFile) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragOverFolder(null)
+    
+    if (!window.electronAPI || !vaultPath) {
+      setDraggedFiles([])
+      return
+    }
+    
+    // Get files from local state or from data transfer (cross-view drag)
+    let filesToMove: LocalFile[] = []
+    
+    if (draggedFiles.length > 0) {
+      filesToMove = draggedFiles
+      setDraggedFiles([])
+    } else {
+      // Try to get from data transfer (drag from Explorer View)
+      const pdmFilesData = e.dataTransfer.getData('application/x-pdm-files')
+      if (pdmFilesData) {
+        try {
+          const relativePaths: string[] = JSON.parse(pdmFilesData)
+          filesToMove = files.filter(f => relativePaths.includes(f.relativePath))
+        } catch (err) {
+          console.error('Failed to parse drag data:', err)
+          return
+        }
+      }
+    }
+    
+    if (filesToMove.length === 0) return
+    
+    // Validate the drop
+    const isDroppingIntoSelf = filesToMove.some(f => 
+      f.isDirectory && (targetFolder.relativePath === f.relativePath || targetFolder.relativePath.startsWith(f.relativePath + '/'))
+    )
+    if (isDroppingIntoSelf) {
+      addToast('error', 'Cannot move a folder into itself')
+      return
+    }
+    
+    // Check that all synced files are checked out by the current user
+    const notCheckedOut: string[] = []
+    for (const file of filesToMove) {
+      if (file.isDirectory) {
+        // For folders, check if any synced files inside are not checked out by user
+        const filesInFolder = files.filter(f => 
+          !f.isDirectory && 
+          f.relativePath.startsWith(file.relativePath + '/') &&
+          f.pdmData?.id && // Is synced
+          f.pdmData.checked_out_by !== user?.id // Not checked out by me
+        )
+        if (filesInFolder.length > 0) {
+          notCheckedOut.push(`${file.name} (contains ${filesInFolder.length} file${filesInFolder.length > 1 ? 's' : ''} not checked out)`)
+        }
+      } else if (file.pdmData?.id && file.pdmData.checked_out_by !== user?.id) {
+        // Synced file not checked out by current user
+        notCheckedOut.push(file.name)
+      }
+    }
+    
+    if (notCheckedOut.length > 0) {
+      addToast('error', `Cannot move - check out first: ${notCheckedOut.slice(0, 3).join(', ')}${notCheckedOut.length > 3 ? ` (+${notCheckedOut.length - 3} more)` : ''}`)
+      return
+    }
+    
+    let succeeded = 0
+    let failed = 0
+    
+    for (const file of filesToMove) {
+      const sourcePath = file.path
+      const fileName = file.name
+      const destPath = buildFullPath(vaultPath, targetFolder.relativePath + '/' + fileName)
+      
+      try {
+        const result = await window.electronAPI.moveFile(sourcePath, destPath)
+        if (result.success) {
+          succeeded++
+        } else {
+          failed++
+          console.error(`Failed to move ${fileName}:`, result.error)
+        }
+      } catch (err) {
+        failed++
+        console.error(`Failed to move ${fileName}:`, err)
+      }
+    }
+    
+    if (failed === 0) {
+      addToast('success', `Moved ${succeeded} item${succeeded > 1 ? 's' : ''} to ${targetFolder.name}`)
+    } else if (succeeded > 0) {
+      addToast('warning', `Moved ${succeeded}, failed ${failed}`)
+    } else {
+      addToast('error', 'Failed to move items')
+    }
+    
+    onRefresh(true)
+  }
 
   // Add files via dialog
   const handleAddFiles = async () => {
@@ -1252,9 +1689,17 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
       return // Cancelled or no files selected
     }
 
+    // Determine the target folder - use current folder if set, otherwise vault root
+    // Also check if a folder is selected
+    const selectedFolder = selectedFiles.length === 1 
+      ? files.find(f => f.path === selectedFiles[0] && f.isDirectory)
+      : null
+    const targetFolder = selectedFolder?.relativePath || currentFolder || ''
+    
     const totalFiles = result.files.length
     const toastId = `add-files-${Date.now()}`
-    addProgressToast(toastId, `Adding ${totalFiles} file${totalFiles > 1 ? 's' : ''}...`, totalFiles)
+    const folderName = targetFolder ? targetFolder.split('/').pop() || targetFolder : 'vault root'
+    addProgressToast(toastId, `Adding ${totalFiles} file${totalFiles > 1 ? 's' : ''} to ${folderName}...`, totalFiles)
 
     try {
       let successCount = 0
@@ -1263,9 +1708,11 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
       for (let i = 0; i < result.files.length; i++) {
         const file = result.files[i]
         // Use relativePath if available (preserves folder structure), otherwise just the filename
-        const targetPath = (file as any).relativePath || file.name
+        // Prepend the target folder path
+        const fileName = (file as any).relativePath || file.name
+        const targetPath = targetFolder ? `${targetFolder}/${fileName}` : fileName
         const destPath = buildFullPath(vaultPath, targetPath)
-        console.log('[AddFiles] Copying:', file.path, '->', destPath)
+        console.log('[AddFiles] Copying:', file.path, '->', destPath, '(folder:', targetFolder || 'root', ')')
 
         const copyResult = await window.electronAPI.copyFile(file.path, destPath)
         if (copyResult.success) {
@@ -1434,11 +1881,6 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
         }
         const displayFilename = formatFilename(file.name, file.extension)
         
-        // Check if there are cloud files in this folder
-        const hasCloudFilesInFolder = file.isDirectory && files.some(f => 
-          !f.isDirectory && f.diffStatus === 'cloud' && f.relativePath.startsWith(file.relativePath + '/')
-        )
-        
         // Check if folder has checkoutable files (synced, not checked out)
         const hasCheckoutableFiles = file.isDirectory && files.some(f => 
           !f.isDirectory && f.pdmData && !f.pdmData.checked_out_by && f.diffStatus !== 'cloud' && f.relativePath.startsWith(file.relativePath + '/')
@@ -1526,60 +1968,107 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
             {getFileIcon(file)}
             <span className={`truncate flex-1 ${file.diffStatus === 'cloud' ? 'italic text-pdm-fg-muted' : ''}`}>{displayFilename}</span>
             
-            {/* Cloud count for folders */}
+            {/* Cloud count for folders with download button - left of avatar */}
             {file.isDirectory && cloudFilesCount > 0 && (
-              <span className="flex items-center gap-0.5 text-[10px] text-pdm-fg-muted flex-shrink-0" title={`${cloudFilesCount} files available to download`}>
+              <span className="flex items-center gap-0.5 text-[10px] text-pdm-fg-muted flex-shrink-0 mr-1" title={`${cloudFilesCount} files available to download`}>
                 <Cloud size={10} />
                 {cloudFilesCount}
+                {/* Download button right after cloud count */}
+                <button
+                  className="inline-actions p-0.5 rounded hover:bg-pdm-success/20 text-pdm-success ml-0.5"
+                  onClick={(e) => handleInlineDownload(e, file)}
+                  title="Download cloud files"
+                >
+                  <ArrowDown size={10} />
+                </button>
               </span>
             )}
             
-            {/* Stacked avatars - just before inline actions */}
-            {checkoutUsers.length > 0 && (
-              <span className="flex items-center flex-shrink-0 -space-x-1.5" title={checkoutUsers.map(u => u.name).join(', ')}>
-                {shownUsers.map((u, i) => (
-                  u.avatar_url ? (
-                    <img 
-                      key={u.id}
-                      src={u.avatar_url} 
-                      alt={u.name}
-                      className={`w-4 h-4 rounded-full ring-1 ${u.isMe ? 'ring-pdm-warning' : 'ring-pdm-error'} bg-pdm-bg`}
-                      style={{ zIndex: maxShow - i }}
-                    />
-                  ) : (
-                    <div 
-                      key={u.id}
-                      className={`w-4 h-4 rounded-full ring-1 ${u.isMe ? 'ring-pdm-warning bg-pdm-warning/30' : 'ring-pdm-error bg-pdm-error/30'} flex items-center justify-center text-[8px] bg-pdm-bg`}
-                      style={{ zIndex: maxShow - i }}
-                    >
-                      {u.name.charAt(0).toUpperCase()}
-                    </div>
+            {/* Download for individual cloud files (not folders) - left of avatar */}
+            {!file.isDirectory && file.diffStatus === 'cloud' && (
+              <button
+                className="inline-actions p-0.5 rounded hover:bg-pdm-success/20 text-pdm-success flex-shrink-0 mr-1"
+                onClick={(e) => handleInlineDownload(e, file)}
+                title="Download"
+              >
+                <ArrowDown size={12} />
+              </button>
+            )}
+            
+            {/* Status icon (avatars or cloud) - after cloud count/download */}
+            {(() => {
+              // If there are checkout users, show avatars
+              if (checkoutUsers.length > 0) {
+                return (
+                  <span className="flex items-center flex-shrink-0 -space-x-1.5 ml-1" title={checkoutUsers.map(u => u.name).join(', ')}>
+                    {shownUsers.map((u, i) => (
+                      <div key={u.id} className="relative" style={{ zIndex: maxShow - i }}>
+                        {u.avatar_url ? (
+                          <img 
+                            src={u.avatar_url} 
+                            alt={u.name}
+                            className={`w-4 h-4 rounded-full ring-1 ${u.isMe ? 'ring-pdm-warning' : 'ring-pdm-error'} bg-pdm-bg object-cover`}
+                            onError={(e) => {
+                              // On error, replace with initial fallback
+                              const target = e.target as HTMLImageElement
+                              target.style.display = 'none'
+                              target.nextElementSibling?.classList.remove('hidden')
+                            }}
+                          />
+                        ) : null}
+                        <div 
+                          className={`w-4 h-4 rounded-full ring-1 ${u.isMe ? 'ring-pdm-warning bg-pdm-warning/30' : 'ring-pdm-error bg-pdm-error/30'} flex items-center justify-center text-[8px] ${u.avatar_url ? 'hidden' : ''}`}
+                        >
+                          {u.name.charAt(0).toUpperCase()}
+                        </div>
+                      </div>
+                    ))}
+                    {extraUsers > 0 && (
+                      <div 
+                        className="w-4 h-4 rounded-full ring-1 ring-pdm-fg-muted bg-pdm-bg flex items-center justify-center text-[8px] text-pdm-fg-muted"
+                        style={{ zIndex: 0 }}
+                      >
+                        +{extraUsers}
+                      </div>
+                    )}
+                  </span>
+                )
+              }
+              
+              // No checkout users - show cloud/sync status if fileStatus column hidden
+              if (!fileStatusColumnVisible) {
+                if (file.isDirectory) {
+                  // Cloud-only folder
+                  if (file.diffStatus === 'cloud') {
+                    return <span title="Cloud only - not downloaded"><Cloud size={12} className="text-pdm-fg-muted flex-shrink-0" /></span>
+                  }
+                  // Check if folder has synced files
+                  const folderPrefix = file.relativePath + '/'
+                  const hasSyncedFilesInFolder = files.some(f => 
+                    !f.isDirectory && f.pdmData && f.relativePath.startsWith(folderPrefix)
                   )
-                ))}
-                {extraUsers > 0 && (
-                  <div 
-                    className="w-4 h-4 rounded-full ring-1 ring-pdm-fg-muted bg-pdm-bg flex items-center justify-center text-[8px] text-pdm-fg-muted"
-                    style={{ zIndex: 0 }}
-                  >
-                    +{extraUsers}
-                  </div>
-                )}
-              </span>
-            )}
+                  if (hasSyncedFilesInFolder) {
+                    return <span title="Synced with cloud"><Cloud size={12} className="text-pdm-success flex-shrink-0" /></span>
+                  }
+                  return null
+                }
+                
+                // For files
+                if (file.diffStatus === 'cloud') {
+                  return <span title="Cloud only - not downloaded"><Cloud size={12} className="text-pdm-fg-muted flex-shrink-0" /></span>
+                }
+                if (isSynced) {
+                  return <span title="Synced with cloud"><Cloud size={12} className="text-pdm-success flex-shrink-0" /></span>
+                }
+                return <span title="Local only - not synced"><HardDrive size={12} className="text-pdm-fg-muted flex-shrink-0" /></span>
+              }
+              
+              return null
+            })()}
             
-            {/* Inline action buttons - show on hover */}
+            {/* Inline action buttons - show on hover (checkout/checkin only, download moved to cloud count) */}
             {!isBeingProcessed(file.relativePath) && (
               <span className="inline-actions flex items-center gap-0.5 flex-shrink-0">
-                {/* Download - for cloud items or folders with cloud files */}
-                {(file.diffStatus === 'cloud' || hasCloudFilesInFolder) && (
-                  <button
-                    className="p-0.5 rounded hover:bg-pdm-success/20 text-pdm-success"
-                    onClick={(e) => handleInlineDownload(e, file)}
-                    title="Download"
-                  >
-                    <ArrowDown size={12} />
-                  </button>
-                )}
                 {/* Check Out - for synced files/folders not checked out */}
                 {((!file.isDirectory && file.pdmData && !file.pdmData.checked_out_by && file.diffStatus !== 'cloud') || hasCheckoutableFiles) && (
                   <button
@@ -1602,84 +2091,137 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                 )}
               </span>
             )}
-            
-            
-            {/* Cloud/sync status icon - only shown when fileStatus column is hidden AND no checkout users */}
-            {!fileStatusColumnVisible && checkoutUsers.length === 0 && (() => {
-              if (file.isDirectory) {
-                // Cloud-only folder
-                if (file.diffStatus === 'cloud') {
-                  return (
-                    <span className="flex-shrink-0 text-pdm-fg-muted" title="Cloud only - not downloaded">
-                      <Cloud size={12} />
-                    </span>
-                  )
-                }
-                
-                // Check if folder has synced files
-                const folderPrefix = file.relativePath + '/'
-                const hasSyncedFilesInFolder = files.some(f => 
-                  !f.isDirectory && f.pdmData && f.relativePath.startsWith(folderPrefix)
-                )
-                if (hasSyncedFilesInFolder) {
-                  return (
-                    <span className="flex-shrink-0 text-pdm-success" title="Synced with cloud">
-                      <Cloud size={12} />
-                    </span>
-                  )
-                }
-                return null
-              }
-              
-              // For files - avatars already shown above if checked out
-              // Cloud-only file
-              if (file.diffStatus === 'cloud') {
-                return (
-                  <span className="flex-shrink-0 text-pdm-fg-muted" title="Cloud only - not downloaded">
-                    <Cloud size={12} />
-                  </span>
-                )
-              }
-              
-              // Synced file (not checked out - avatars shown above if checked out)
-              if (isSynced && !file.pdmData?.checked_out_by) {
-                return (
-                  <span className="flex-shrink-0 text-pdm-success" title="Synced with cloud">
-                    <Cloud size={12} />
-                  </span>
-                )
-              }
-              
-              // Local only
-              if (!isSynced) {
-                return (
-                  <span className="flex-shrink-0 text-pdm-fg-muted" title="Local only - not synced">
-                    <HardDrive size={12} />
-                  </span>
-                )
-              }
-              
-              return null
-            })()}
           </div>
         )
       case 'state':
         if (file.isDirectory) return null
         const state = file.pdmData?.state || 'wip'
         const stateInfo = STATE_INFO[state]
+        // State can be changed without checkout - just needs to be synced
+        const canEditState = !!file.pdmData?.id
+        const isEditingState = editingCell?.path === file.path && editingCell?.column === 'state'
+        
+        if (isEditingState && canEditState) {
+          return (
+            <select
+              ref={(el) => {
+                // Auto-open dropdown when element mounts
+                if (el) {
+                  el.focus()
+                  // Use showPicker if available (modern browsers), otherwise simulate click
+                  if ('showPicker' in el) {
+                    try {
+                      (el as any).showPicker()
+                    } catch {
+                      // showPicker may fail in some contexts, fall back to click
+                      el.click()
+                    }
+                  } else {
+                    el.click()
+                  }
+                }
+              }}
+              value={editValue}
+              onChange={(e) => {
+                e.stopPropagation()
+                handleStateChange(file, e.target.value)
+              }}
+              onBlur={(e) => {
+                // Small delay to allow onChange to fire first
+                setTimeout(() => handleCancelCellEdit(), 100)
+              }}
+              onClick={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+              className="bg-pdm-bg border border-pdm-accent rounded px-1 py-0 text-sm text-pdm-fg focus:outline-none focus:ring-1 focus:ring-pdm-accent"
+            >
+              <option value="not_tracked">Not Tracked</option>
+              <option value="wip">Work in Progress</option>
+              <option value="in_review">In Review</option>
+              <option value="released">Released</option>
+              <option value="obsolete">Obsolete</option>
+            </select>
+          )
+        }
+        
         return (
-          <span className={`state-badge ${state.replace('_', '-')}`}>
+          <span 
+            className={`state-badge ${state.replace('_', '-')} ${canEditState ? 'cursor-pointer hover:ring-1 hover:ring-pdm-accent' : 'opacity-60'}`}
+            onClick={(e) => {
+              e.stopPropagation()
+              e.preventDefault()
+              if (canEditState) {
+                handleStartCellEdit(file, 'state')
+              }
+            }}
+            onMouseDown={(e) => {
+              // Prevent row selection on mousedown
+              if (canEditState) {
+                e.stopPropagation()
+              }
+            }}
+            title={canEditState ? 'Click to change state' : 'File not synced'}
+          >
             {stateInfo?.label || state}
           </span>
         )
       case 'revision':
-        return file.isDirectory ? '' : (file.pdmData?.revision || 'A')
+        if (file.isDirectory) return ''
+        const canEditRevision = isFileEditable(file)
+        const isEditingRevision = editingCell?.path === file.path && editingCell?.column === 'revision'
+        if (isEditingRevision && canEditRevision) {
+          return (
+            <input
+              ref={inlineEditInputRef}
+              type="text"
+              value={editValue}
+              onChange={(e) => setEditValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  handleSaveCellEdit()
+                } else if (e.key === 'Escape') {
+                  handleCancelCellEdit()
+                }
+                e.stopPropagation()
+              }}
+              onBlur={handleSaveCellEdit}
+              onClick={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+              onDragStart={(e) => e.preventDefault()}
+              draggable={false}
+              className="w-full bg-pdm-bg border border-pdm-accent rounded px-1 py-0 text-sm text-pdm-fg focus:outline-none focus:ring-1 focus:ring-pdm-accent"
+            />
+          )
+        }
+        return (
+          <span
+            className={`px-1 rounded ${canEditRevision ? 'cursor-text hover:bg-pdm-bg-light' : 'text-pdm-fg-muted'}`}
+            onClick={(e) => {
+              if (canEditRevision) {
+                e.stopPropagation()
+                handleStartCellEdit(file, 'revision')
+              }
+            }}
+            title={canEditRevision ? 'Click to edit' : 'Check out file to edit'}
+          >
+            {file.pdmData?.revision || 'A'}
+          </span>
+        )
       case 'version':
         if (file.isDirectory) return ''
         const cloudVersion = file.pdmData?.version || null
         if (!cloudVersion) {
           // Not synced yet
           return <span className="text-pdm-fg-muted">-/-</span>
+        }
+        
+        // Check if we have a local active version (after rollback)
+        if (file.localActiveVersion !== undefined && file.localActiveVersion !== cloudVersion) {
+          // We've rolled back/forward to a different version locally
+          return (
+            <span className="text-pdm-info" title={`Viewing version ${file.localActiveVersion} (latest is ${cloudVersion}). Check in to save.`}>
+              {file.localActiveVersion}/{cloudVersion}
+            </span>
+          )
         }
         
         if (file.diffStatus === 'modified') {
@@ -1701,9 +2243,89 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
         // In sync
         return <span>{cloudVersion}/{cloudVersion}</span>
       case 'itemNumber':
-        return file.pdmData?.part_number || ''
+        if (file.isDirectory) return ''
+        const canEditItemNumber = isFileEditable(file)
+        const isEditingItemNumber = editingCell?.path === file.path && editingCell?.column === 'itemNumber'
+        if (isEditingItemNumber && canEditItemNumber) {
+          return (
+            <input
+              ref={inlineEditInputRef}
+              type="text"
+              value={editValue}
+              onChange={(e) => setEditValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  handleSaveCellEdit()
+                } else if (e.key === 'Escape') {
+                  handleCancelCellEdit()
+                }
+                e.stopPropagation()
+              }}
+              onBlur={handleSaveCellEdit}
+              onClick={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+              onDragStart={(e) => e.preventDefault()}
+              draggable={false}
+              className="w-full bg-pdm-bg border border-pdm-accent rounded px-1 py-0 text-sm text-pdm-fg focus:outline-none focus:ring-1 focus:ring-pdm-accent"
+            />
+          )
+        }
+        return (
+          <span
+            className={`px-1 rounded ${canEditItemNumber ? 'cursor-text hover:bg-pdm-bg-light' : ''} ${!file.pdmData?.part_number || !canEditItemNumber ? 'text-pdm-fg-muted' : ''}`}
+            onClick={(e) => {
+              if (canEditItemNumber) {
+                e.stopPropagation()
+                handleStartCellEdit(file, 'itemNumber')
+              }
+            }}
+            title={canEditItemNumber ? 'Click to edit' : 'Check out file to edit'}
+          >
+            {file.pdmData?.part_number || '-'}
+          </span>
+        )
       case 'description':
-        return file.pdmData?.description || ''
+        if (file.isDirectory) return ''
+        const canEditDescription = isFileEditable(file)
+        const isEditingDescription = editingCell?.path === file.path && editingCell?.column === 'description'
+        if (isEditingDescription && canEditDescription) {
+          return (
+            <input
+              ref={inlineEditInputRef}
+              type="text"
+              value={editValue}
+              onChange={(e) => setEditValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  handleSaveCellEdit()
+                } else if (e.key === 'Escape') {
+                  handleCancelCellEdit()
+                }
+                e.stopPropagation()
+              }}
+              onBlur={handleSaveCellEdit}
+              onClick={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+              onDragStart={(e) => e.preventDefault()}
+              draggable={false}
+              className="w-full bg-pdm-bg border border-pdm-accent rounded px-1 py-0 text-sm text-pdm-fg focus:outline-none focus:ring-1 focus:ring-pdm-accent"
+            />
+          )
+        }
+        return (
+          <span
+            className={`px-1 rounded truncate ${canEditDescription ? 'cursor-text hover:bg-pdm-bg-light' : ''} ${!file.pdmData?.description || !canEditDescription ? 'text-pdm-fg-muted' : ''}`}
+            onClick={(e) => {
+              if (canEditDescription) {
+                e.stopPropagation()
+                handleStartCellEdit(file, 'description')
+              }
+            }}
+            title={canEditDescription ? (file.pdmData?.description || 'Click to edit') : 'Check out file to edit'}
+          >
+            {file.pdmData?.description || '-'}
+          </span>
+        )
       case 'fileStatus':
         if (file.isDirectory) return ''
         
@@ -1728,11 +2350,32 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
         }
         
         if (file.pdmData.checked_out_by) {
-          // Checked out
+          // Checked out - show avatar instead of lock
           const isMe = user?.id === file.pdmData.checked_out_by
+          const checkoutUser = (file.pdmData as any).checked_out_user
+          const checkoutAvatarUrl = isMe ? user?.avatar_url : checkoutUser?.avatar_url
+          const checkoutName = isMe ? 'You' : (checkoutUser?.full_name || checkoutUser?.email?.split('@')[0] || 'Someone')
+          
           return (
-            <span className={`flex items-center gap-1 ${isMe ? 'text-pdm-warning' : 'text-pdm-error'}`}>
-              <Lock size={12} />
+            <span className={`flex items-center gap-1 ${isMe ? 'text-pdm-warning' : 'text-pdm-error'}`} title={`Checked out by ${checkoutName}`}>
+              <div className="relative w-4 h-4 flex-shrink-0">
+                {checkoutAvatarUrl ? (
+                  <img 
+                    src={checkoutAvatarUrl} 
+                    alt={checkoutName}
+                    className={`w-4 h-4 rounded-full ring-1 ${isMe ? 'ring-pdm-warning' : 'ring-pdm-error'} object-cover`}
+                    onError={(e) => {
+                      // Hide broken image and show fallback
+                      const target = e.target as HTMLImageElement
+                      target.style.display = 'none'
+                      target.nextElementSibling?.classList.remove('hidden')
+                    }}
+                  />
+                ) : null}
+                <div className={`w-4 h-4 rounded-full ring-1 ${isMe ? 'ring-pdm-warning bg-pdm-warning/30' : 'ring-pdm-error bg-pdm-error/30'} flex items-center justify-center text-[8px] absolute inset-0 ${checkoutAvatarUrl ? 'hidden' : ''}`}>
+                  {checkoutName.charAt(0).toUpperCase()}
+                </div>
+              </div>
               Checked Out
             </span>
           )
@@ -1758,21 +2401,27 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
         
         return (
           <span className={`flex items-center gap-2 ${isMe ? 'text-pdm-warning' : 'text-pdm-fg'}`} title={tooltipName}>
-            {avatarUrl ? (
-              <img 
-                src={avatarUrl} 
-                alt={displayName}
-                title={tooltipName}
-                className="w-5 h-5 rounded-full"
-              />
-            ) : (
+            <div className="relative w-5 h-5 flex-shrink-0">
+              {avatarUrl ? (
+                <img 
+                  src={avatarUrl} 
+                  alt={displayName}
+                  title={tooltipName}
+                  className="w-5 h-5 rounded-full object-cover"
+                  onError={(e) => {
+                    const target = e.target as HTMLImageElement
+                    target.style.display = 'none'
+                    target.nextElementSibling?.classList.remove('hidden')
+                  }}
+                />
+              ) : null}
               <div 
-                className="w-5 h-5 rounded-full bg-pdm-accent/30 flex items-center justify-center text-xs"
+                className={`w-5 h-5 rounded-full bg-pdm-accent/30 flex items-center justify-center text-xs absolute inset-0 ${avatarUrl ? 'hidden' : ''}`}
                 title={tooltipName}
               >
                 {displayName.charAt(0).toUpperCase()}
               </div>
-            )}
+            </div>
             <span className="truncate">{displayName}</span>
           </span>
         )
@@ -2090,16 +2739,21 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                 : file.diffStatus === 'outdated' ? 'diff-outdated'
                 : file.diffStatus === 'cloud' ? 'diff-cloud' : ''
               const isProcessing = isBeingProcessed(file.relativePath)
+              const isDragTarget = file.isDirectory && dragOverFolder === file.relativePath
               
               return (
               <tr
                 key={file.path}
-                className={`${selectedFiles.includes(file.path) ? 'selected' : ''} ${isProcessing ? 'processing' : ''} ${diffClass}`}
+                className={`${selectedFiles.includes(file.path) ? 'selected' : ''} ${isProcessing ? 'processing' : ''} ${diffClass} ${isDragTarget ? 'drag-target' : ''}`}
                 onClick={(e) => handleRowClick(e, file, index)}
                 onDoubleClick={() => handleRowDoubleClick(file)}
                 onContextMenu={(e) => handleContextMenu(e, file)}
-                draggable={!file.isDirectory && file.diffStatus !== 'cloud'}
+                draggable={file.diffStatus !== 'cloud'}
                 onDragStart={(e) => handleDragStart(e, file)}
+                onDragEnd={handleDragEnd}
+                onDragOver={file.isDirectory ? (e) => handleFolderDragOver(e, file) : undefined}
+                onDragLeave={file.isDirectory ? handleFolderDragLeave : undefined}
+                onDrop={file.isDirectory ? (e) => handleDropOnFolder(e, file) : undefined}
               >
                 {visibleColumns.map(column => (
                   <td key={column.id} style={{ width: column.width }}>
@@ -2220,6 +2874,8 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
         // Check out/in status - consider all synced files including those inside folders
         const allCheckedOut = syncedFilesInSelection.length > 0 && syncedFilesInSelection.every(f => f.pdmData?.checked_out_by)
         const allCheckedIn = syncedFilesInSelection.length > 0 && syncedFilesInSelection.every(f => !f.pdmData?.checked_out_by)
+        const anyCheckedOutByOthers = syncedFilesInSelection.some(f => f.pdmData?.checked_out_by && f.pdmData.checked_out_by !== user?.id)
+        const allCheckedOutByOthers = syncedFilesInSelection.length > 0 && syncedFilesInSelection.every(f => f.pdmData?.checked_out_by && f.pdmData.checked_out_by !== user?.id)
         
         // Count files that can be checked out/in (for folder labels)
         const checkoutableCount = syncedFilesInSelection.filter(f => !f.pdmData?.checked_out_by).length
@@ -2916,28 +3572,28 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                   </div>
                 ) : (
                   <div 
-                    className={`context-menu-item ${allCheckedIn ? 'disabled' : ''}`}
+                    className={`context-menu-item ${allCheckedIn || checkinableCount === 0 ? 'disabled' : ''}`}
                     onClick={async () => {
-                      if (allCheckedIn || !user) return
+                      if (allCheckedIn || checkinableCount === 0 || !user) return
                       setContextMenu(null)
                       
-                      // Get all files to checkin - including files inside selected folders
+                      // Get all files to checkin - only files checked out by current user
                       const getFilesToCheckin = (): LocalFile[] => {
                         const result: LocalFile[] = []
                         for (const item of contextFiles) {
                           if (item.isDirectory) {
-                            // Get files inside folder that are checked out
+                            // Get files inside folder that are checked out BY ME
                             const folderPrefix = item.relativePath + '/'
                             const filesInFolder = files.filter(f => 
                               !f.isDirectory && 
                               f.pdmData?.id &&
-                              f.pdmData.checked_out_by &&
+                              f.pdmData.checked_out_by === user?.id &&
                               f.diffStatus !== 'cloud' &&
                               (f.relativePath.startsWith(folderPrefix) || 
                                f.relativePath.substring(0, f.relativePath.lastIndexOf('/')) === item.relativePath)
                             )
                             result.push(...filesInFolder)
-                          } else if (item.pdmData?.id && item.pdmData.checked_out_by && item.diffStatus !== 'cloud') {
+                          } else if (item.pdmData?.id && item.pdmData.checked_out_by === user?.id && item.diffStatus !== 'cloud') {
                             result.push(item)
                           }
                         }
@@ -2945,7 +3601,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                       }
                       const filesToCheckin = getFilesToCheckin()
                       if (filesToCheckin.length === 0) {
-                        addToast('info', 'No files are checked out')
+                        addToast('info', 'No files checked out by you')
                         return
                       }
                       
@@ -2955,22 +3611,67 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                       
                       const checkinOneFile = async (file: LocalFile): Promise<boolean> => {
                         try {
+                          // Check if file was moved (local path differs from server path)
+                          const wasFileMoved = file.pdmData?.file_path && file.relativePath !== file.pdmData.file_path
+                          const wasFileRenamed = file.pdmData?.file_name && file.name !== file.pdmData.file_name
+                          
                           const readResult = await window.electronAPI?.readFile(file.path)
                           
                           if (readResult?.success && readResult.data && readResult.hash) {
                             const result = await checkinFile(file.pdmData!.id, user.id, {
                               newContentHash: readResult.hash,
-                              newFileSize: file.size
+                              newFileSize: file.size,
+                              pendingMetadata: file.pendingMetadata,
+                              newFilePath: wasFileMoved ? file.relativePath : undefined,
+                              newFileName: wasFileRenamed ? file.name : undefined
                             })
                             
-                            if (result.success) {
+                            if (result.success && result.file) {
                               await window.electronAPI?.setReadonly(file.path, true)
+                              clearPendingMetadata(file.path)
+                              // Update store with new version and clear rollback state
+                              updateFileInStore(file.path, {
+                                pdmData: { ...file.pdmData!, ...result.file, checked_out_by: null, checked_out_user: null },
+                                localHash: readResult.hash,
+                                diffStatus: undefined,
+                                localActiveVersion: undefined
+                              })
+                              return true
+                            } else if (result.success) {
+                              await window.electronAPI?.setReadonly(file.path, true)
+                              clearPendingMetadata(file.path)
+                              updateFileInStore(file.path, {
+                                pdmData: { ...file.pdmData!, checked_out_by: null, checked_out_user: null },
+                                localHash: readResult.hash,
+                                diffStatus: undefined,
+                                localActiveVersion: undefined
+                              })
                               return true
                             }
                           } else {
-                            const result = await checkinFile(file.pdmData!.id, user.id)
-                            if (result.success) {
+                            const result = await checkinFile(file.pdmData!.id, user.id, {
+                              pendingMetadata: file.pendingMetadata,
+                              newFilePath: wasFileMoved ? file.relativePath : undefined,
+                              newFileName: wasFileRenamed ? file.name : undefined
+                            })
+                            if (result.success && result.file) {
                               await window.electronAPI?.setReadonly(file.path, true)
+                              clearPendingMetadata(file.path)
+                              updateFileInStore(file.path, {
+                                pdmData: { ...file.pdmData!, ...result.file, checked_out_by: null, checked_out_user: null },
+                                localHash: result.file.content_hash,
+                                diffStatus: undefined,
+                                localActiveVersion: undefined
+                              })
+                              return true
+                            } else if (result.success) {
+                              await window.electronAPI?.setReadonly(file.path, true)
+                              clearPendingMetadata(file.path)
+                              updateFileInStore(file.path, {
+                                pdmData: { ...file.pdmData!, checked_out_by: null, checked_out_user: null },
+                                diffStatus: undefined,
+                                localActiveVersion: undefined
+                              })
                               return true
                             }
                           }
@@ -3001,11 +3702,12 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                       }
                       onRefresh(true) // Silent refresh after checkin
                     }}
-                    title={allCheckedIn ? 'Already checked in' : ''}
+                    title={allCheckedIn ? 'Already checked in' : (allCheckedOutByOthers ? 'Checked out by someone else' : (checkinableCount === 0 ? 'No files checked out by you' : ''))}
                   >
-                    <ArrowUp size={14} className="text-pdm-success" />
+                    <ArrowUp size={14} className={allCheckedIn || checkinableCount === 0 ? 'text-pdm-fg-muted' : 'text-pdm-success'} />
                     Check In {multiSelect ? countLabel : ''}
                     {allCheckedIn && <span className="text-xs text-pdm-fg-muted ml-auto">(already in)</span>}
+                    {!allCheckedIn && allCheckedOutByOthers && <span className="text-xs text-pdm-fg-muted ml-auto">(by others)</span>}
                   </div>
                 )
               )}
@@ -3135,6 +3837,9 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                           const storedFilesToProcess = [...filesToProcess]
                           const storedContextFiles = [...contextFiles]
                           const storedFoldersProcessing = contextFiles.filter(f => f.isDirectory).map(f => f.relativePath)
+                          // Also track individual files for spinner display
+                          const storedFilesProcessing = contextFiles.filter(f => !f.isDirectory).map(f => f.relativePath)
+                          const storedAllPathsProcessing = [...storedFoldersProcessing, ...storedFilesProcessing]
                           
                           // Get operation paths for conflict checking
                           const operationPaths = storedFoldersProcessing.length > 0 
@@ -3150,8 +3855,8 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                             onConfirm: async () => {
                               // Define the delete operation
                               const executeDelete = async () => {
-                                // Mark folders as processing for spinner display
-                                storedFoldersProcessing.forEach(p => addProcessingFolder(p))
+                                // Mark folders AND files as processing for spinner display
+                                storedAllPathsProcessing.forEach(p => addProcessingFolder(p))
                                 
                                 const total = storedFilesToProcess.length
                                 
@@ -3223,9 +3928,9 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                                 }
                               }
                               
-                              // Remove progress toast
+                              // Remove progress toast and spinners
                               removeToast(toastId)
-                              storedFoldersProcessing.forEach(p => removeProcessingFolder(p))
+                              storedAllPathsProcessing.forEach(p => removeProcessingFolder(p))
                               
                               if (failed > 0) {
                                 addToast('warning', `Removed ${removed}/${total} files locally. ${failed} failed.`)
@@ -3277,7 +3982,8 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                             return
                           }
                           
-                          // Use delete confirm dialog for local files
+                          // Use delete confirm dialog for local files only
+                          setDeleteEverywhere(false)
                           setDeleteConfirm(firstFile)
                         }}
                       >
@@ -3347,6 +4053,20 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                                   }
                                   try {
                                     const { supabase } = await import('../lib/supabase')
+                                    
+                                    // Log activity BEFORE delete (with file info in details)
+                                    await supabase.from('activity').insert({
+                                      org_id: file.pdmData.org_id,
+                                      file_id: null, // Set to null since file will be deleted
+                                      user_id: user!.id,
+                                      user_email: user!.email,
+                                      action: 'delete',
+                                      details: {
+                                        file_name: file.name,
+                                        file_path: file.relativePath
+                                      }
+                                    })
+                                    
                                     const { error } = await supabase
                                       .from('files')
                                       .delete()
@@ -3373,7 +4093,8 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                               }
                             })
                           } else {
-                            // Has local synced files: use delete confirm dialog
+                            // Has local synced files: use delete confirm dialog (with server deletion)
+                            setDeleteEverywhere(true)
                             setDeleteConfirm(firstFile)
                             setContextMenu(null)
                           }
@@ -3581,11 +4302,35 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
         const folderCount = filesToDelete.filter(f => f.isDirectory).length
         const fileCount = filesToDelete.filter(f => !f.isDirectory).length
         
+        // Get all synced files that need server deletion (including files inside folders)
+        const getSyncedFilesForServerDelete = () => {
+          const syncedFiles: LocalFile[] = []
+          for (const item of filesToDelete) {
+            if (item.isDirectory) {
+              // Get all synced files inside the folder
+              const folderPath = item.relativePath.replace(/\\/g, '/')
+              const filesInFolder = files.filter(f => {
+                if (f.isDirectory) return false
+                if (!f.pdmData?.id) return false
+                const filePath = f.relativePath.replace(/\\/g, '/')
+                return filePath.startsWith(folderPath + '/')
+              })
+              syncedFiles.push(...filesInFolder)
+            } else if (item.pdmData?.id) {
+              syncedFiles.push(item)
+            }
+          }
+          // Remove duplicates
+          return [...new Map(syncedFiles.map(f => [f.path, f])).values()]
+        }
+        
+        const syncedFilesCount = deleteEverywhere ? getSyncedFilesForServerDelete().length : 0
+        
         return (
           <>
             <div 
               className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center"
-              onClick={() => setDeleteConfirm(null)}
+              onClick={() => { setDeleteConfirm(null); setDeleteEverywhere(false) }}
             >
               <div 
                 className="bg-pdm-bg-light border border-pdm-border rounded-lg p-6 max-w-md shadow-xl"
@@ -3597,9 +4342,13 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                   </div>
                   <div>
                     <h3 className="text-lg font-semibold text-pdm-fg">
-                      Delete {deleteCount > 1 ? `${deleteCount} Items` : deleteConfirm.isDirectory ? 'Folder' : 'File'}?
+                      {deleteEverywhere ? 'Delete Everywhere' : 'Delete'} {deleteCount > 1 ? `${deleteCount} Items` : deleteConfirm.isDirectory ? 'Folder' : 'File'}?
                     </h3>
-                    <p className="text-sm text-pdm-fg-muted">This action will move items to the Recycle Bin.</p>
+                    <p className="text-sm text-pdm-fg-muted">
+                      {deleteEverywhere 
+                        ? 'Items will be deleted locally AND from the server permanently.'
+                        : 'This action will move items to the Recycle Bin.'}
+                    </p>
                   </div>
                 </div>
                 
@@ -3646,37 +4395,130 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                   )}
                 </div>
                 
+                {/* Warning for delete everywhere */}
+                {deleteEverywhere && syncedFilesCount > 0 && (
+                  <div className="bg-pdm-error/10 border border-pdm-error/30 rounded p-3 mb-4">
+                    <p className="text-sm text-pdm-error font-medium">
+                      ⚠️ {syncedFilesCount} synced file{syncedFilesCount > 1 ? 's' : ''} will be permanently deleted from the server.
+                    </p>
+                    <p className="text-xs text-pdm-fg-muted mt-1">This action cannot be undone.</p>
+                  </div>
+                )}
+                
                 <div className="flex justify-end gap-2">
                   <button
-                    onClick={() => setDeleteConfirm(null)}
-                    className="btn btn-ghost"
+                    onClick={() => { setDeleteConfirm(null); setDeleteEverywhere(false) }}
+                    disabled={isDeleting}
+                    className="btn btn-ghost disabled:opacity-50"
                   >
                     Cancel
                   </button>
                   <button
+                    disabled={isDeleting}
                     onClick={async () => {
-                      let deleted = 0
-                      for (const file of filesToDelete) {
-                        const result = await window.electronAPI?.deleteItem(file.path)
-                        if (result?.success) {
-                          deleted++
-                          setUndoStack(prev => [...prev, { type: 'delete', file, originalPath: file.path }])
-                        }
-                      }
-                      setDeleteConfirm(null)
-                      clearSelection()
+                      setIsDeleting(true)
                       
-                      if (deleted === filesToDelete.length) {
-                        addToast('success', `Deleted ${deleted} item${deleted > 1 ? 's' : ''}`)
-                      } else {
-                        addToast('warning', `Deleted ${deleted}/${filesToDelete.length} items`)
+                      // Track files/folders being deleted for spinner display
+                      const pathsBeingDeleted = filesToDelete.map(f => f.relativePath)
+                      pathsBeingDeleted.forEach(p => addProcessingFolder(p))
+                      
+                      let deletedLocal = 0
+                      let deletedServer = 0
+                      let failedServer = 0
+                      
+                      try {
+                        // Delete locally first
+                        for (const file of filesToDelete) {
+                          const result = await window.electronAPI?.deleteItem(file.path)
+                          if (result?.success) {
+                            deletedLocal++
+                            if (!deleteEverywhere) {
+                              setUndoStack(prev => [...prev, { type: 'delete', file, originalPath: file.path }])
+                            }
+                          }
+                        }
+                        
+                        // If delete everywhere, also delete from server
+                        if (deleteEverywhere) {
+                          const syncedFiles = getSyncedFilesForServerDelete()
+                          if (syncedFiles.length > 0) {
+                            const { supabase } = await import('../lib/supabase')
+                            
+                            for (const file of syncedFiles) {
+                              if (!file.pdmData?.id) continue
+                              try {
+                                // Log activity BEFORE delete (with file info in details)
+                                await supabase.from('activity').insert({
+                                  org_id: file.pdmData.org_id,
+                                  file_id: null, // Set to null since file will be deleted
+                                  user_id: user!.id,
+                                  user_email: user!.email,
+                                  action: 'delete',
+                                  details: {
+                                    file_name: file.name,
+                                    file_path: file.relativePath
+                                  }
+                                })
+                                
+                                const { error } = await supabase
+                                  .from('files')
+                                  .delete()
+                                  .eq('id', file.pdmData.id)
+                                
+                                if (!error) {
+                                  deletedServer++
+                                } else {
+                                  console.error('Failed to delete from server:', file.name, error)
+                                  failedServer++
+                                }
+                              } catch (err) {
+                                console.error('Failed to delete from server:', file.name, err)
+                                failedServer++
+                              }
+                            }
+                          }
+                        }
+                        
+                        // Show appropriate toast
+                        if (deleteEverywhere) {
+                          if (failedServer > 0) {
+                            addToast('warning', `Deleted ${deletedLocal} locally, ${deletedServer} from server (${failedServer} failed)`)
+                          } else if (deletedServer > 0) {
+                            addToast('success', `Deleted ${deletedLocal} locally and ${deletedServer} from server`)
+                          } else {
+                            addToast('success', `Deleted ${deletedLocal} item${deletedLocal > 1 ? 's' : ''} locally`)
+                          }
+                        } else {
+                          if (deletedLocal === filesToDelete.length) {
+                            addToast('success', `Deleted ${deletedLocal} item${deletedLocal > 1 ? 's' : ''}`)
+                          } else {
+                            addToast('warning', `Deleted ${deletedLocal}/${filesToDelete.length} items`)
+                          }
+                        }
+                      } finally {
+                        // Clean up spinners
+                        pathsBeingDeleted.forEach(p => removeProcessingFolder(p))
+                        
+                        setIsDeleting(false)
+                        setDeleteConfirm(null)
+                        setDeleteEverywhere(false)
+                        clearSelection()
+                        onRefresh()
                       }
-                      onRefresh()
                     }}
-                    className="btn bg-pdm-error hover:bg-pdm-error/80 text-white"
+                    className="btn bg-pdm-error hover:bg-pdm-error/80 text-white disabled:opacity-50"
                   >
-                    <Trash2 size={14} />
-                    Delete {deleteCount > 1 ? `(${deleteCount})` : ''}
+                    {isDeleting ? (
+                      <>
+                        <Loader2 size={14} className="animate-spin" />
+                        Deleting...
+                      </>
+                    ) : (
+                      <>
+                        <Trash2 size={14} />
+                        {deleteEverywhere ? 'Delete Everywhere' : 'Delete'} {deleteCount > 1 ? `(${deleteCount})` : ''}
+                      </>
+                    )}
                   </button>
                 </div>
               </div>

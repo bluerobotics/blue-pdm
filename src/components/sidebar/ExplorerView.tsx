@@ -114,6 +114,8 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
   const [draggingPinIndex, setDraggingPinIndex] = useState<number | null>(null)
   const [dragOverPinIndex, setDragOverPinIndex] = useState<number | null>(null)
   const [expandedPinnedFolders, setExpandedPinnedFolders] = useState<Set<string>>(new Set())
+  const [dragOverFolder, setDragOverFolder] = useState<string | null>(null)
+  const [draggedFiles, setDraggedFiles] = useState<LocalFile[]>([])
   
   // Get platform for UI text
   useEffect(() => {
@@ -372,6 +374,21 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     )
     return folderFiles.some(f => f.pdmData?.checked_out_by)
   }
+  
+  // Get folder checkout status: 'mine' | 'others' | 'both' | null
+  const getFolderCheckoutStatus = (folderPath: string): 'mine' | 'others' | 'both' | null => {
+    const folderFiles = files.filter(f => 
+      !f.isDirectory && 
+      f.relativePath.startsWith(folderPath + '/')
+    )
+    const checkedOutByMe = folderFiles.some(f => f.pdmData?.checked_out_by === user?.id)
+    const checkedOutByOthers = folderFiles.some(f => f.pdmData?.checked_out_by && f.pdmData.checked_out_by !== user?.id)
+    
+    if (checkedOutByMe && checkedOutByOthers) return 'both'
+    if (checkedOutByMe) return 'mine'
+    if (checkedOutByOthers) return 'others'
+    return null
+  }
 
   // Check if a file/folder is affected by any processing operation
   const isBeingProcessed = (relativePath: string) => {
@@ -554,11 +571,30 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     for (let i = 0; i < filesToCheckin.length; i++) {
       const f = filesToCheckin[i]
       try {
-        const result = await checkinFile(f.pdmData!.id, user.id)
-        if (result.success) {
+        // Check if file was moved (local path differs from server path)
+        const wasFileMoved = f.pdmData?.file_path && f.relativePath !== f.pdmData.file_path
+        const wasFileRenamed = f.pdmData?.file_name && f.name !== f.pdmData.file_name
+        
+        const result = await checkinFile(f.pdmData!.id, user.id, {
+          newFilePath: wasFileMoved ? f.relativePath : undefined,
+          newFileName: wasFileRenamed ? f.name : undefined
+        })
+        if (result.success && result.file) {
+          await window.electronAPI?.setReadonly(f.path, true)
+          // Update store with new version and clear rollback state
+          updateFileInStore(f.path, {
+            pdmData: { ...f.pdmData!, ...result.file, checked_out_by: null, checked_out_user: null },
+            localHash: result.file.content_hash,
+            diffStatus: undefined,
+            localActiveVersion: undefined  // Clear rollback state
+          })
+          succeeded++
+        } else if (result.success) {
           await window.electronAPI?.setReadonly(f.path, true)
           updateFileInStore(f.path, {
-            pdmData: { ...f.pdmData!, checked_out_by: null, checked_out_user: null }
+            pdmData: { ...f.pdmData!, checked_out_by: null, checked_out_user: null },
+            diffStatus: undefined,
+            localActiveVersion: undefined
           })
           succeeded++
         }
@@ -589,8 +625,13 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
       if (file.diffStatus === 'cloud') {
         return <FolderOpen size={16} className="text-pdm-fg-muted opacity-50" />
       }
-      const hasCheckedOut = hasFolderCheckedOutFiles(file.relativePath)
-      if (hasCheckedOut) {
+      const checkoutStatus = getFolderCheckoutStatus(file.relativePath)
+      if (checkoutStatus === 'others' || checkoutStatus === 'both') {
+        // Red for folders with files checked out by others
+        return <FolderOpen size={16} className="text-pdm-error" />
+      }
+      if (checkoutStatus === 'mine') {
+        // Orange for folders with only my checkouts
         return <FolderOpen size={16} className="text-pdm-warning" />
       }
       const synced = isFolderSynced(file.relativePath)
@@ -693,7 +734,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
         const extra = checkoutUsers.length - maxShow
         
         return (
-          <span className="flex items-center flex-shrink-0 -space-x-1.5" title={checkoutUsers.map(u => u.name).join(', ')}>
+          <span className="flex items-center flex-shrink-0 -space-x-1.5 ml-1" title={checkoutUsers.map(u => u.name).join(', ')}>
             {shown.map((u, i) => (
               u.avatar_url ? (
                 <img 
@@ -752,11 +793,25 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
             src={user.avatar_url} 
             alt="You"
             title="Checked out by you"
-            className="w-4 h-4 rounded-full flex-shrink-0 ring-1 ring-pdm-warning"
+            className="w-4 h-4 rounded-full flex-shrink-0 ring-1 ring-pdm-warning object-cover"
+            onError={(e) => {
+              const target = e.target as HTMLImageElement
+              target.style.display = 'none'
+              target.nextElementSibling?.classList.remove('hidden')
+            }}
           />
         )
       }
-      return <span title="Checked out by you"><Lock size={12} className="text-pdm-warning flex-shrink-0" /></span>
+      // Fallback to initial when no avatar
+      const myName = user?.full_name || user?.email?.split('@')[0] || 'You'
+      return (
+        <div 
+          className="w-4 h-4 rounded-full flex-shrink-0 ring-1 ring-pdm-warning bg-pdm-warning/30 flex items-center justify-center text-[8px]"
+          title="Checked out by you"
+        >
+          {myName.charAt(0).toUpperCase()}
+        </div>
+      )
     }
     
     // Checked out by someone else - show their avatar with red ring
@@ -767,15 +822,36 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
       
       if (avatarUrl) {
         return (
-          <img 
-            src={avatarUrl} 
-            alt={displayName}
-            title={`Checked out by ${displayName}`}
-            className="w-4 h-4 rounded-full flex-shrink-0 ring-1 ring-pdm-error"
-          />
+          <div className="relative w-4 h-4 flex-shrink-0">
+            <img 
+              src={avatarUrl} 
+              alt={displayName}
+              title={`Checked out by ${displayName}`}
+              className="w-4 h-4 rounded-full ring-1 ring-pdm-error object-cover"
+              onError={(e) => {
+                const target = e.target as HTMLImageElement
+                target.style.display = 'none'
+                target.nextElementSibling?.classList.remove('hidden')
+              }}
+            />
+            <div 
+              className="w-4 h-4 rounded-full ring-1 ring-pdm-error bg-pdm-error/30 flex items-center justify-center text-[8px] absolute inset-0 hidden"
+              title={`Checked out by ${displayName}`}
+            >
+              {displayName.charAt(0).toUpperCase()}
+            </div>
+          </div>
         )
       }
-      return <span title={`Checked out by ${displayName}`}><Lock size={12} className="text-pdm-error flex-shrink-0" /></span>
+      // Fallback to initial when no avatar
+      return (
+        <div 
+          className="w-4 h-4 rounded-full flex-shrink-0 ring-1 ring-pdm-error bg-pdm-error/30 flex items-center justify-center text-[8px]"
+          title={`Checked out by ${displayName}`}
+        >
+          {displayName.charAt(0).toUpperCase()}
+        </div>
+      )
     }
     
     // Cloud-only (not downloaded) - grey cloud
@@ -790,6 +866,171 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     
     // Not synced - no icon
     return null
+  }
+
+  // Check if files can be moved (all synced files must be checked out by user)
+  const canMoveFiles = (filesToCheck: LocalFile[]): boolean => {
+    for (const file of filesToCheck) {
+      if (file.isDirectory) {
+        // For folders, check if any synced files inside are not checked out by user
+        const filesInFolder = files.filter(f => 
+          !f.isDirectory && 
+          f.relativePath.startsWith(file.relativePath + '/') &&
+          f.pdmData?.id && // Is synced
+          f.pdmData.checked_out_by !== user?.id // Not checked out by me
+        )
+        if (filesInFolder.length > 0) return false
+      } else if (file.pdmData?.id && file.pdmData.checked_out_by !== user?.id) {
+        // Synced file not checked out by current user
+        return false
+      }
+    }
+    return true
+  }
+
+  // Handle drag over a folder in explorer
+  const handleExplorerFolderDragOver = (e: React.DragEvent, folder: LocalFile) => {
+    e.preventDefault()
+    e.stopPropagation()
+    
+    // Check if we have pdm files being dragged
+    const hasPdmFiles = e.dataTransfer.types.includes('application/x-pdm-files')
+    if (!hasPdmFiles && draggedFiles.length === 0) return
+    
+    // Get the files being dragged
+    const filesToCheck = draggedFiles.length > 0 ? draggedFiles : []
+    
+    // Don't allow dropping a folder into itself or its children
+    const isDroppingIntoSelf = filesToCheck.some(f => 
+      f.isDirectory && (folder.relativePath === f.relativePath || folder.relativePath.startsWith(f.relativePath + '/'))
+    )
+    if (isDroppingIntoSelf) return
+    
+    // Don't allow dropping if the target is the current parent
+    const wouldStayInPlace = filesToCheck.length > 0 && filesToCheck.every(f => {
+      const parentPath = f.relativePath.includes('/') 
+        ? f.relativePath.substring(0, f.relativePath.lastIndexOf('/'))
+        : ''
+      return parentPath === folder.relativePath
+    })
+    if (wouldStayInPlace) return
+    
+    // Check if all files can be moved (checked out)
+    if (filesToCheck.length > 0 && !canMoveFiles(filesToCheck)) {
+      e.dataTransfer.dropEffect = 'none'
+      return
+    }
+    
+    e.dataTransfer.dropEffect = 'move'
+    setDragOverFolder(folder.relativePath)
+  }
+
+  // Handle drag leave from a folder
+  const handleExplorerFolderDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragOverFolder(null)
+  }
+
+  // Handle drop onto a folder in explorer
+  const handleExplorerDropOnFolder = async (e: React.DragEvent, targetFolder: LocalFile) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragOverFolder(null)
+    
+    if (!window.electronAPI || !vaultPath) return
+    
+    // Get files from data transfer or local state
+    let filesToMove: LocalFile[] = []
+    
+    if (draggedFiles.length > 0) {
+      filesToMove = draggedFiles
+      setDraggedFiles([])
+    } else {
+      // Try to get from data transfer (cross-view drag)
+      const pdmFilesData = e.dataTransfer.getData('application/x-pdm-files')
+      if (pdmFilesData) {
+        try {
+          const relativePaths: string[] = JSON.parse(pdmFilesData)
+          filesToMove = files.filter(f => relativePaths.includes(f.relativePath))
+        } catch (err) {
+          console.error('Failed to parse drag data:', err)
+          return
+        }
+      }
+    }
+    
+    if (filesToMove.length === 0) return
+    
+    // Validate the drop
+    const isDroppingIntoSelf = filesToMove.some(f => 
+      f.isDirectory && (targetFolder.relativePath === f.relativePath || targetFolder.relativePath.startsWith(f.relativePath + '/'))
+    )
+    if (isDroppingIntoSelf) {
+      addToast('error', 'Cannot move a folder into itself')
+      return
+    }
+    
+    // Check that all synced files are checked out by the current user
+    const notCheckedOut: string[] = []
+    for (const file of filesToMove) {
+      if (file.isDirectory) {
+        const filesInFolder = files.filter(f => 
+          !f.isDirectory && 
+          f.relativePath.startsWith(file.relativePath + '/') &&
+          f.pdmData?.id &&
+          f.pdmData.checked_out_by !== user?.id
+        )
+        if (filesInFolder.length > 0) {
+          notCheckedOut.push(`${file.name} (contains ${filesInFolder.length} file${filesInFolder.length > 1 ? 's' : ''} not checked out)`)
+        }
+      } else if (file.pdmData?.id && file.pdmData.checked_out_by !== user?.id) {
+        notCheckedOut.push(file.name)
+      }
+    }
+    
+    if (notCheckedOut.length > 0) {
+      addToast('error', `Cannot move - check out first: ${notCheckedOut.slice(0, 3).join(', ')}${notCheckedOut.length > 3 ? ` (+${notCheckedOut.length - 3} more)` : ''}`)
+      return
+    }
+    
+    let succeeded = 0
+    let failed = 0
+    
+    for (const file of filesToMove) {
+      const sourcePath = file.path
+      const fileName = file.name
+      const destPath = buildFullPath(vaultPath, targetFolder.relativePath + '/' + fileName)
+      
+      try {
+        const result = await window.electronAPI.moveFile(sourcePath, destPath)
+        if (result.success) {
+          succeeded++
+        } else {
+          failed++
+          console.error(`Failed to move ${fileName}:`, result.error)
+        }
+      } catch (err) {
+        failed++
+        console.error(`Failed to move ${fileName}:`, err)
+      }
+    }
+    
+    if (failed === 0) {
+      addToast('success', `Moved ${succeeded} item${succeeded > 1 ? 's' : ''} to ${targetFolder.name}`)
+    } else if (succeeded > 0) {
+      addToast('warning', `Moved ${succeeded}, failed ${failed}`)
+    } else {
+      addToast('error', 'Failed to move items')
+    }
+    
+    onRefresh?.(true)
+  }
+
+  // Handle drag end
+  const handleExplorerDragEnd = () => {
+    setDraggedFiles([])
+    setDragOverFolder(null)
   }
 
   const renderTreeItem = (file: LocalFile, depth: number = 0) => {
@@ -808,11 +1049,12 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     const isSelected = selectedFiles.includes(file.path)
     const isRenaming = renamingFile?.relativePath === file.relativePath
     const isProcessing = isBeingProcessed(file.relativePath)
+    const isDragTarget = file.isDirectory && dragOverFolder === file.relativePath
 
     return (
       <div key={file.path}>
         <div
-          className={`tree-item group ${isCurrentFolder ? 'current-folder' : ''} ${isSelected ? 'selected' : ''} ${isProcessing ? 'processing' : ''} ${diffClass}`}
+          className={`tree-item group ${isCurrentFolder ? 'current-folder' : ''} ${isSelected ? 'selected' : ''} ${isProcessing ? 'processing' : ''} ${diffClass} ${isDragTarget ? 'drag-target' : ''}`}
           style={{ paddingLeft: 8 + depth * 16 }}
           onClick={(e) => {
             if (isRenaming) return
@@ -905,13 +1147,13 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
             }
             setContextMenu({ x: e.clientX, y: e.clientY, file })
           }}
-          draggable={!file.isDirectory && file.diffStatus !== 'cloud'}
+          draggable={file.diffStatus !== 'cloud'}
           onDragStart={(e) => {
-            // Get files to drag
+            // Get files to drag - now supports folders too
             let filesToDrag: LocalFile[]
             if (selectedFiles.includes(file.path) && selectedFiles.length > 1) {
-              filesToDrag = files.filter(f => selectedFiles.includes(f.path) && !f.isDirectory && f.diffStatus !== 'cloud')
-            } else if (!file.isDirectory && file.diffStatus !== 'cloud') {
+              filesToDrag = files.filter(f => selectedFiles.includes(f.path) && f.diffStatus !== 'cloud')
+            } else if (file.diffStatus !== 'cloud') {
               filesToDrag = [file]
             } else {
               e.preventDefault()
@@ -923,15 +1165,20 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
               return
             }
             
+            // Track dragged files for internal moves
+            setDraggedFiles(filesToDrag)
+            
             const filePaths = filesToDrag.map(f => f.path)
-            console.log('[Drag] Starting native drag for:', filePaths)
+            console.log('[Explorer Drag] Starting drag for:', filePaths)
             
             // Set up HTML5 drag data
             e.dataTransfer.effectAllowed = 'copyMove'
             e.dataTransfer.setData('text/plain', filePaths.join('\n'))
+            // Set PDM-specific data for cross-view drag
+            e.dataTransfer.setData('application/x-pdm-files', JSON.stringify(filesToDrag.map(f => f.relativePath)))
             
-            // Use DownloadURL format for single file - enables actual file copy
-            if (filesToDrag.length === 1) {
+            // Use DownloadURL format for single non-folder file - enables actual file copy
+            if (filesToDrag.length === 1 && !filesToDrag[0].isDirectory) {
               const filePath = filesToDrag[0].path
               const fileName = filesToDrag[0].name
               const ext = filesToDrag[0].extension?.toLowerCase() || ''
@@ -951,14 +1198,25 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
             // Create a custom drag image
             const dragPreview = document.createElement('div')
             dragPreview.style.cssText = 'position:absolute;left:-1000px;padding:8px 12px;background:#1e293b;border:1px solid #3b82f6;border-radius:6px;color:white;font-size:13px;display:flex;align-items:center;gap:6px;'
-            dragPreview.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>${filesToDrag.length > 1 ? filesToDrag.length + ' files' : file.name}`
+            const iconSvg = file.isDirectory 
+              ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>'
+              : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>'
+            const label = filesToDrag.length > 1 ? `${filesToDrag.length} items` : file.name
+            dragPreview.innerHTML = `${iconSvg}${label}`
             document.body.appendChild(dragPreview)
             e.dataTransfer.setDragImage(dragPreview, 20, 20)
             setTimeout(() => dragPreview.remove(), 0)
             
-            // Call Electron's native drag for multi-file support
-            window.electronAPI?.startDrag(filePaths)
+            // Call Electron's native drag for multi-file support (files only, not folders)
+            const filePathsForNative = filesToDrag.filter(f => !f.isDirectory).map(f => f.path)
+            if (filePathsForNative.length > 0) {
+              window.electronAPI?.startDrag(filePathsForNative)
+            }
           }}
+          onDragEnd={handleExplorerDragEnd}
+          onDragOver={file.isDirectory ? (e) => handleExplorerFolderDragOver(e, file) : undefined}
+          onDragLeave={file.isDirectory ? handleExplorerFolderDragLeave : undefined}
+          onDrop={file.isDirectory ? (e) => handleExplorerDropOnFolder(e, file) : undefined}
         >
           {file.isDirectory && (
             <span 
@@ -1000,61 +1258,9 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
             </span>
           )}
           
-          {/* Status icon (lock, cloud) */}
-          {!isRenaming && getStatusIcon(file)}
-          
-          {/* Inline action buttons - show on hover */}
-          {!isRenaming && !isBeingProcessed(file.relativePath) && (() => {
-            // Check if folder has cloud files
-            const hasCloudFiles = file.isDirectory && files.some(f => 
-              !f.isDirectory && f.diffStatus === 'cloud' && f.relativePath.startsWith(file.relativePath + '/')
-            )
-            // Check if folder has checkoutable files
-            const hasCheckoutableFiles = file.isDirectory && files.some(f => 
-              !f.isDirectory && f.pdmData && !f.pdmData.checked_out_by && f.diffStatus !== 'cloud' && f.relativePath.startsWith(file.relativePath + '/')
-            )
-            // Check if folder has my checked out files
-            const hasMyCheckedOutFiles = file.isDirectory && files.some(f => 
-              !f.isDirectory && f.pdmData?.checked_out_by === user?.id && f.relativePath.startsWith(file.relativePath + '/')
-            )
-            
-            const showDownload = file.diffStatus === 'cloud' || hasCloudFiles
-            const showCheckout = (!file.isDirectory && file.pdmData && !file.pdmData.checked_out_by && file.diffStatus !== 'cloud') || hasCheckoutableFiles
-            const showCheckin = (!file.isDirectory && file.pdmData?.checked_out_by === user?.id) || hasMyCheckedOutFiles
-            
-            if (!showDownload && !showCheckout && !showCheckin) return null
-            
-            if (!showCheckout && !showCheckin) return null
-            
-            return (
-              <span className="inline-actions flex items-center gap-0.5 ml-1">
-                {/* Check Out - for synced files/folders not checked out */}
-                {showCheckout && (
-                  <button
-                    className="p-0.5 rounded hover:bg-pdm-warning/20 text-pdm-warning"
-                    onClick={(e) => handleInlineCheckout(e, file)}
-                    title="Check Out"
-                  >
-                    <ArrowDown size={12} />
-                  </button>
-                )}
-                {/* Check In - for files/folders checked out by me */}
-                {showCheckin && (
-                  <button
-                    className="p-0.5 rounded hover:bg-pdm-success/20 text-pdm-success"
-                    onClick={(e) => handleInlineCheckin(e, file)}
-                    title="Check In"
-                  >
-                    <ArrowUp size={12} />
-                  </button>
-                )}
-              </span>
-            )
-          })()}
-          
-          {/* Diff counts for folders */}
+          {/* Diff counts for folders - left of avatar */}
           {!isRenaming && file.isDirectory && hasDiffs && (
-            <span className="flex items-center gap-1 ml-2 text-xs">
+            <span className="flex items-center gap-1 ml-auto mr-1 text-xs">
               {diffCounts.added > 0 && (
                 <span className="text-pdm-success font-medium">+{diffCounts.added}</span>
               )}
@@ -1084,16 +1290,65 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
             </span>
           )}
           
-          {/* Download for individual cloud files (not folders) */}
+          {/* Download for individual cloud files (not folders) - left of avatar */}
           {!isRenaming && !file.isDirectory && file.diffStatus === 'cloud' && (
             <button
-              className="inline-actions p-0.5 rounded hover:bg-pdm-success/20 text-pdm-success ml-1"
+              className="inline-actions p-0.5 rounded hover:bg-pdm-success/20 text-pdm-success ml-auto mr-1"
               onClick={(e) => handleInlineDownload(e, file)}
               title="Download"
             >
               <ArrowDown size={12} />
             </button>
           )}
+          
+          {/* Status icon (lock, cloud) */}
+          {!isRenaming && getStatusIcon(file)}
+          
+          {/* Inline action buttons - show on hover */}
+          {!isRenaming && !isBeingProcessed(file.relativePath) && (() => {
+            // Check if folder has cloud files
+            const hasCloudFiles = file.isDirectory && files.some(f => 
+              !f.isDirectory && f.diffStatus === 'cloud' && f.relativePath.startsWith(file.relativePath + '/')
+            )
+            // Check if folder has checkoutable files
+            const hasCheckoutableFiles = file.isDirectory && files.some(f => 
+              !f.isDirectory && f.pdmData && !f.pdmData.checked_out_by && f.diffStatus !== 'cloud' && f.relativePath.startsWith(file.relativePath + '/')
+            )
+            // Check if folder has my checked out files
+            const hasMyCheckedOutFiles = file.isDirectory && files.some(f => 
+              !f.isDirectory && f.pdmData?.checked_out_by === user?.id && f.relativePath.startsWith(file.relativePath + '/')
+            )
+            
+            const showCheckout = (!file.isDirectory && file.pdmData && !file.pdmData.checked_out_by && file.diffStatus !== 'cloud') || hasCheckoutableFiles
+            const showCheckin = (!file.isDirectory && file.pdmData?.checked_out_by === user?.id) || hasMyCheckedOutFiles
+            
+            if (!showCheckout && !showCheckin) return null
+            
+            return (
+              <span className="inline-actions flex items-center gap-0.5 ml-1">
+                {/* Check Out - for synced files/folders not checked out */}
+                {showCheckout && (
+                  <button
+                    className="p-0.5 rounded hover:bg-pdm-warning/20 text-pdm-warning"
+                    onClick={(e) => handleInlineCheckout(e, file)}
+                    title="Check Out"
+                  >
+                    <ArrowDown size={12} />
+                  </button>
+                )}
+                {/* Check In - for files/folders checked out by me */}
+                {showCheckin && (
+                  <button
+                    className="p-0.5 rounded hover:bg-pdm-success/20 text-pdm-success"
+                    onClick={(e) => handleInlineCheckin(e, file)}
+                    title="Check In"
+                  >
+                    <ArrowUp size={12} />
+                  </button>
+                )}
+              </span>
+            )
+          })()}
           
         </div>
         {file.isDirectory && isExpanded && children
@@ -1395,17 +1650,38 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                   if (actualFile.isDirectory) return null
                   const { user } = usePDMStore.getState()
                   if (actualFile.pdmData?.checked_out_by === user?.id) {
+                    const myName = user?.full_name || user?.email?.split('@')[0] || 'You'
                     if (user?.avatar_url) {
                       return (
-                        <img 
-                          src={user.avatar_url} 
-                          alt="You"
-                          title="Checked out by you"
-                          className="w-4 h-4 rounded-full flex-shrink-0 ring-1 ring-pdm-warning"
-                        />
+                        <div className="relative w-4 h-4 flex-shrink-0">
+                          <img 
+                            src={user.avatar_url} 
+                            alt="You"
+                            title="Checked out by you"
+                            className="w-4 h-4 rounded-full ring-1 ring-pdm-warning object-cover"
+                            onError={(e) => {
+                              const target = e.target as HTMLImageElement
+                              target.style.display = 'none'
+                              target.nextElementSibling?.classList.remove('hidden')
+                            }}
+                          />
+                          <div 
+                            className="w-4 h-4 rounded-full ring-1 ring-pdm-warning bg-pdm-warning/30 flex items-center justify-center text-[8px] absolute inset-0 hidden"
+                            title="Checked out by you"
+                          >
+                            {myName.charAt(0).toUpperCase()}
+                          </div>
+                        </div>
                       )
                     }
-                    return <span title="Checked out by you"><Lock size={12} className="text-pdm-warning flex-shrink-0" /></span>
+                    return (
+                      <div 
+                        className="w-4 h-4 rounded-full flex-shrink-0 ring-1 ring-pdm-warning bg-pdm-warning/30 flex items-center justify-center text-[8px]"
+                        title="Checked out by you"
+                      >
+                        {myName.charAt(0).toUpperCase()}
+                      </div>
+                    )
                   }
                   if (actualFile.pdmData?.checked_out_by) {
                     const checkedOutUser = (actualFile.pdmData as any).checked_out_user
@@ -1414,15 +1690,35 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                     
                     if (avatarUrl) {
                       return (
-                        <img 
-                          src={avatarUrl} 
-                          alt={displayName}
-                          title={`Checked out by ${displayName}`}
-                          className="w-4 h-4 rounded-full flex-shrink-0 ring-1 ring-pdm-error"
-                        />
+                        <div className="relative w-4 h-4 flex-shrink-0">
+                          <img 
+                            src={avatarUrl} 
+                            alt={displayName}
+                            title={`Checked out by ${displayName}`}
+                            className="w-4 h-4 rounded-full ring-1 ring-pdm-error object-cover"
+                            onError={(e) => {
+                              const target = e.target as HTMLImageElement
+                              target.style.display = 'none'
+                              target.nextElementSibling?.classList.remove('hidden')
+                            }}
+                          />
+                          <div 
+                            className="w-4 h-4 rounded-full ring-1 ring-pdm-error bg-pdm-error/30 flex items-center justify-center text-[8px] absolute inset-0 hidden"
+                            title={`Checked out by ${displayName}`}
+                          >
+                            {displayName.charAt(0).toUpperCase()}
+                          </div>
+                        </div>
                       )
                     }
-                    return <span title={`Checked out by ${displayName}`}><Lock size={12} className="text-pdm-error flex-shrink-0" /></span>
+                    return (
+                      <div 
+                        className="w-4 h-4 rounded-full flex-shrink-0 ring-1 ring-pdm-error bg-pdm-error/30 flex items-center justify-center text-[8px]"
+                        title={`Checked out by ${displayName}`}
+                      >
+                        {displayName.charAt(0).toUpperCase()}
+                      </div>
+                    )
                   }
                   if (actualFile.diffStatus === 'cloud') {
                     return <Cloud size={12} className="text-pdm-fg-muted flex-shrink-0" />
@@ -1442,8 +1738,12 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                       if (actualFile?.diffStatus === 'cloud') {
                         return <FolderOpen size={16} className="text-pdm-fg-muted opacity-50" />
                       }
-                      // Has checked out files - orange
-                      if (hasFolderCheckedOutFiles(pinned.path)) {
+                      // Check checkout status - red for others, orange for mine
+                      const checkoutStatus = getFolderCheckoutStatus(pinned.path)
+                      if (checkoutStatus === 'others' || checkoutStatus === 'both') {
+                        return <FolderOpen size={16} className="text-pdm-error" />
+                      }
+                      if (checkoutStatus === 'mine') {
                         return <FolderOpen size={16} className="text-pdm-warning" />
                       }
                       // All synced - green

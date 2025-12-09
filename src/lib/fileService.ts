@@ -341,15 +341,17 @@ export async function getFileHistory(
 }
 
 /**
- * Rollback file to a previous version
- * Creates a new version that's a copy of the old one
+ * Rollback file to a previous version (LOCAL ONLY)
+ * Switches to a different version (rollback or roll forward)
+ * Does NOT update the server - the server only updates on check-in
+ * Returns the target version info so the caller can download the content
  */
 export async function rollbackToVersion(
   fileId: string,
   userId: string,
   targetVersion: number,
   comment?: string
-): Promise<{ success: boolean; file?: PDMFile; error?: string }> {
+): Promise<{ success: boolean; targetVersionRecord?: any; maxVersion?: number; error?: string }> {
   // Get current file
   const { data: file, error: fetchError } = await supabase
     .from('files')
@@ -363,7 +365,7 @@ export async function rollbackToVersion(
   
   // File must be checked out by user
   if (file.checked_out_by !== userId) {
-    return { success: false, error: 'You must check out the file before rolling back' }
+    return { success: false, error: 'You must check out the file before switching versions' }
   }
   
   // Get target version
@@ -378,45 +380,36 @@ export async function rollbackToVersion(
     return { success: false, error: `Version ${targetVersion} not found` }
   }
   
-  // Create new version pointing to old content hash
-  const newVersion = file.version + 1
-  
-  const { error: insertError } = await supabase
+  // Get max version for reference (the total number of versions)
+  const { data: maxVersionData } = await supabase
     .from('file_versions')
-    .insert({
-      file_id: fileId,
-      version: newVersion,
-      revision: file.revision,
-      content_hash: targetVersionRecord.content_hash,
-      file_size: targetVersionRecord.file_size,
-      state: file.state,
-      created_by: userId,
-      comment: comment || `Rolled back to version ${targetVersion}`
-    })
-  
-  if (insertError) {
-    return { success: false, error: insertError.message }
-  }
-  
-  // Update file record
-  const { data: updated, error: updateError } = await supabase
-    .from('files')
-    .update({
-      version: newVersion,
-      content_hash: targetVersionRecord.content_hash,
-      file_size: targetVersionRecord.file_size,
-      updated_at: new Date().toISOString(),
-      updated_by: userId
-    })
-    .eq('id', fileId)
-    .select()
+    .select('version')
+    .eq('file_id', fileId)
+    .order('version', { ascending: false })
+    .limit(1)
     .single()
   
-  if (updateError) {
-    return { success: false, error: updateError.message }
-  }
+  const maxVersion = maxVersionData?.version || file.version
   
-  return { success: true, file: updated }
+  // DO NOT update the server's files table - this is a local operation only
+  // The server will be updated on check-in
+  
+  // Log activity (this is just for history, doesn't change file state on server)
+  const isRollback = targetVersion < file.version
+  await supabase.from('activity').insert({
+    org_id: file.org_id,
+    file_id: fileId,
+    user_id: userId,
+    action: isRollback ? 'rollback' : 'roll_forward',
+    details: { 
+      from_version: file.version, 
+      to_version: targetVersion,
+      comment: comment || null
+    }
+  })
+  
+  // Return the target version info so caller can download content
+  return { success: true, targetVersionRecord, maxVersion }
 }
 
 /**

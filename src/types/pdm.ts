@@ -1,7 +1,7 @@
 // PDM Types for SolidWorks and CAD file management
 
 // File states following engineering lifecycle
-export type FileState = 'wip' | 'in_review' | 'released' | 'obsolete'
+export type FileState = 'not_tracked' | 'wip' | 'in_review' | 'released' | 'obsolete'
 
 // Revision follows engineering convention (A, B, C... then AA, AB, etc.)
 export type RevisionScheme = 'letter' | 'numeric'
@@ -228,7 +228,7 @@ export interface ActivityEntry {
   file_id: string | null
   user_id: string
   user_email: string
-  action: 'checkout' | 'checkin' | 'create' | 'delete' | 'state_change' | 'revision_change' | 'rename' | 'move'
+  action: 'checkout' | 'checkin' | 'create' | 'delete' | 'state_change' | 'revision_change' | 'rename' | 'move' | 'rollback' | 'roll_forward'
   details: Record<string, unknown>
   created_at: string
 }
@@ -364,6 +364,11 @@ export function formatFileSize(bytes: number): string {
 
 // State display info
 export const STATE_INFO: Record<FileState, { label: string; color: string; description: string }> = {
+  not_tracked: {
+    label: 'Not Tracked',
+    color: 'pdm-fg-muted',
+    description: 'File is not being tracked in the PDM system'
+  },
   wip: {
     label: 'Work in Progress',
     color: 'pdm-wip',

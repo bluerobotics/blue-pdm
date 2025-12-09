@@ -9,7 +9,7 @@ interface CheckoutViewProps {
 }
 
 export function CheckoutView({ onRefresh }: CheckoutViewProps) {
-  const { files, user, organization, vaultPath, addToast, activeVaultId, connectedVaults } = usePDMStore()
+  const { files, user, organization, vaultPath, addToast, activeVaultId, connectedVaults, addProcessingFolder, removeProcessingFolder } = usePDMStore()
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set())
   const [selectedAddedFiles, setSelectedAddedFiles] = useState<Set<string>>(new Set())
   const [isProcessing, setIsProcessing] = useState(false)
@@ -108,18 +108,40 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
         if (!file || !file.pdmData) continue
         
         try {
+          // Check if file was moved (local path differs from server path)
+          const wasFileMoved = file.pdmData?.file_path && file.relativePath !== file.pdmData.file_path
+          const wasFileRenamed = file.pdmData?.file_name && file.name !== file.pdmData.file_name
+          
           // Read file to get current hash
           const readResult = await api.readFile(file.path)
           
           if (readResult?.success && readResult.hash) {
             const result = await checkinFile(file.pdmData.id, user.id, {
               newContentHash: readResult.hash,
-              newFileSize: file.size
+              newFileSize: file.size,
+              newFilePath: wasFileMoved ? file.relativePath : undefined,
+              newFileName: wasFileRenamed ? file.name : undefined
             })
             
-            if (result.success) {
+            if (result.success && result.file) {
               // Make file read-only after check-in
               await api.setReadonly(file.path, true)
+              // Update store with new version and clear rollback state
+              updateFileInStore(file.path, {
+                pdmData: { ...file.pdmData, ...result.file, checked_out_by: null, checked_out_user: null },
+                localHash: readResult.hash,
+                diffStatus: undefined,
+                localActiveVersion: undefined  // Clear rollback state
+              })
+              succeeded++
+            } else if (result.success) {
+              await api.setReadonly(file.path, true)
+              updateFileInStore(file.path, {
+                pdmData: { ...file.pdmData, checked_out_by: null, checked_out_user: null },
+                localHash: readResult.hash,
+                diffStatus: undefined,
+                localActiveVersion: undefined
+              })
               succeeded++
             } else {
               console.error('Check in failed:', result.error)
@@ -127,9 +149,27 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
             }
           } else {
             // Just release checkout without updating content
-            const result = await checkinFile(file.pdmData.id, user.id)
-            if (result.success) {
+            const result = await checkinFile(file.pdmData.id, user.id, {
+              newFilePath: wasFileMoved ? file.relativePath : undefined,
+              newFileName: wasFileRenamed ? file.name : undefined
+            })
+            if (result.success && result.file) {
               await api.setReadonly(file.path, true)
+              // Update store and clear rollback state
+              updateFileInStore(file.path, {
+                pdmData: { ...file.pdmData, ...result.file, checked_out_by: null, checked_out_user: null },
+                localHash: result.file.content_hash,
+                diffStatus: undefined,
+                localActiveVersion: undefined
+              })
+              succeeded++
+            } else if (result.success) {
+              await api.setReadonly(file.path, true)
+              updateFileInStore(file.path, {
+                pdmData: { ...file.pdmData, checked_out_by: null, checked_out_user: null },
+                diffStatus: undefined,
+                localActiveVersion: undefined
+              })
               succeeded++
             } else {
               console.error('Check in failed:', result.error)
@@ -255,6 +295,12 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
     setIsProcessing(true)
     
     const filesToDelete = Array.from(selectedAddedFiles)
+    
+    // Track files being deleted for spinner display
+    const fileObjects = filesToDelete.map(path => addedFiles.find(f => f.path === path)).filter(Boolean)
+    const pathsBeingDeleted = fileObjects.map(f => f!.relativePath)
+    pathsBeingDeleted.forEach(p => addProcessingFolder(p))
+    
     setDeleteProgress({ current: 0, total: filesToDelete.length, isActive: true })
     
     let succeeded = 0
@@ -263,6 +309,7 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
     const api = (window as any).electronAPI
     if (!api) {
       addToast('error', 'Electron API not available')
+      pathsBeingDeleted.forEach(p => removeProcessingFolder(p))
       setIsProcessing(false)
       setDeleteProgress({ current: 0, total: 0, isActive: false })
       return
@@ -301,6 +348,8 @@ export function CheckoutView({ onRefresh }: CheckoutViewProps) {
       // Refresh file list to update the UI
       onRefresh(true)
     } finally {
+      // Clean up spinners
+      pathsBeingDeleted.forEach(p => removeProcessingFolder(p))
       setIsProcessing(false)
       setDeleteProgress({ current: 0, total: 0, isActive: false })
     }

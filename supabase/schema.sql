@@ -8,12 +8,12 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- ENUMS
 -- ===========================================
 
-CREATE TYPE file_state AS ENUM ('wip', 'in_review', 'released', 'obsolete');
+CREATE TYPE file_state AS ENUM ('not_tracked', 'wip', 'in_review', 'released', 'obsolete');
 CREATE TYPE file_type AS ENUM ('part', 'assembly', 'drawing', 'document', 'other');
 CREATE TYPE reference_type AS ENUM ('component', 'drawing_view', 'derived', 'copy');
 CREATE TYPE user_role AS ENUM ('admin', 'engineer', 'viewer');
 CREATE TYPE revision_scheme AS ENUM ('letter', 'numeric');
-CREATE TYPE activity_action AS ENUM ('checkout', 'checkin', 'create', 'delete', 'state_change', 'revision_change', 'rename', 'move', 'rollback');
+CREATE TYPE activity_action AS ENUM ('checkout', 'checkin', 'create', 'delete', 'state_change', 'revision_change', 'rename', 'move', 'rollback', 'roll_forward');
 
 -- ===========================================
 -- ORGANIZATIONS

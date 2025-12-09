@@ -2,8 +2,9 @@ import { useState, useEffect } from 'react'
 import { usePDMStore } from '../stores/pdmStore'
 import { formatFileSize, getFileIconType, STATE_INFO } from '../types/pdm'
 import { format, formatDistanceToNow } from 'date-fns'
-import { getFileVersions, getRecentActivity } from '../lib/supabase'
+import { getFileVersions, getRecentActivity, updateFileMetadata } from '../lib/supabase'
 import { rollbackToVersion } from '../lib/fileService'
+import { downloadFile } from '../lib/storage'
 import { 
   FileBox, 
   Layers, 
@@ -34,7 +35,10 @@ import {
   Edit,
   RefreshCw,
   FolderPlus,
-  MoveRight
+  MoveRight,
+  Pencil,
+  Check,
+  X
 } from 'lucide-react'
 
 interface ActivityEntry {
@@ -58,6 +62,8 @@ const ACTION_INFO: Record<string, { icon: React.ReactNode; label: string; color:
   revision_change: { icon: <Edit size={14} />, label: 'Revision changed', color: 'text-pdm-info' },
   rename: { icon: <Edit size={14} />, label: 'Renamed', color: 'text-pdm-fg-dim' },
   move: { icon: <MoveRight size={14} />, label: 'Moved', color: 'text-pdm-fg-dim' },
+  rollback: { icon: <RotateCcw size={14} />, label: 'Rolled back', color: 'text-pdm-warning' },
+  roll_forward: { icon: <ArrowUp size={14} />, label: 'Rolled forward', color: 'text-pdm-info' },
 }
 
 interface VersionEntry {
@@ -86,7 +92,9 @@ export function DetailsPanel() {
     cadPreviewMode,
     lowercaseExtensions,
     files,
-    organization
+    organization,
+    updateFileInStore,
+    updatePendingMetadata
   } = usePDMStore()
 
   const selectedFileObjects = getSelectedFileObjects()
@@ -96,6 +104,11 @@ export function DetailsPanel() {
   const [versions, setVersions] = useState<VersionEntry[]>([])
   const [isLoadingVersions, setIsLoadingVersions] = useState(false)
   const [rollingBack, setRollingBack] = useState<number | null>(null)
+  
+  // Editable property state
+  const [editingField, setEditingField] = useState<'itemNumber' | 'description' | 'revision' | 'state' | null>(null)
+  const [editValue, setEditValue] = useState('')
+  const [isSavingEdit, setIsSavingEdit] = useState(false)
   
   // Folder-specific state
   const [folderStats, setFolderStats] = useState<{ size: number; fileCount: number; folderCount: number } | null>(null)
@@ -282,38 +295,243 @@ export function DetailsPanel() {
   }, [file, isFolder, detailsPanelTab, organization])
 
   const handleRollback = async (targetVersion: number) => {
-    if (!file?.pdmData?.id || !user) return
+    if (!file?.pdmData?.id || !user || !organization) return
     
     // Check if file is checked out by current user
     if (file.pdmData.checked_out_by !== user.id) {
-      addToast('error', 'You must check out the file before rolling back')
+      addToast('error', 'You must check out the file before switching versions')
       return
     }
+    
+    const currentVersion = file.pdmData.version || 0
+    const isRollForward = targetVersion > currentVersion
+    const actionLabel = isRollForward ? 'Roll forward' : 'Rollback'
     
     setRollingBack(targetVersion)
     
     try {
+      // Find the target version to get its content hash
+      const targetVersionRecord = versions.find(v => v.version === targetVersion)
+      if (!targetVersionRecord) {
+        addToast('error', `Version ${targetVersion} not found`)
+        setRollingBack(null)
+        return
+      }
+      
       const result = await rollbackToVersion(
         file.pdmData.id,
         user.id,
         targetVersion,
-        `Rolled back to version ${targetVersion}`
+        isRollForward ? `Rolled forward to version ${targetVersion}` : `Rolled back to version ${targetVersion}`
       )
       
-      if (result.success) {
-        addToast('success', `Rolled back to version ${targetVersion}`)
+      if (result.success && result.targetVersionRecord) {
+        // Download the content for the target version
+        const { data: contentBlob, error: downloadError } = await downloadFile(
+          organization.id,
+          result.targetVersionRecord.content_hash
+        )
+        
+        if (downloadError || !contentBlob) {
+          addToast('warning', `${actionLabel} to v${targetVersion} - but could not download content: ${downloadError}`)
+        } else {
+          // Write the content to the local file
+          const arrayBuffer = await contentBlob.arrayBuffer()
+          const uint8Array = new Uint8Array(arrayBuffer)
+          
+          if (window.electronAPI) {
+            const writeResult = await window.electronAPI.writeFile(file.path, uint8Array)
+            if (!writeResult.success) {
+              addToast('warning', `${actionLabel} to v${targetVersion} - but could not write file: ${writeResult.error}`)
+            }
+          }
+        }
+        
+        // Update the file in the store - set localActiveVersion to track which version we rolled back to
+        // The server's pdmData.version is NOT changed - only localActiveVersion tracks the local state
+        // Also update localHash to match the target version's content hash
+        updateFileInStore(file.path, {
+          localActiveVersion: targetVersion,
+          localHash: result.targetVersionRecord.content_hash,
+          // Mark as modified since local now differs from server's current version
+          diffStatus: 'modified'
+        })
+        
+        addToast('success', `${actionLabel} to version ${targetVersion} of ${result.maxVersion}`)
+        
         // Reload versions
         const { versions: fileVersions } = await getFileVersions(file.pdmData.id)
         if (fileVersions) {
           setVersions(fileVersions as VersionEntry[])
         }
       } else {
-        addToast('error', result.error || 'Failed to rollback')
+        addToast('error', result.error || `Failed to ${actionLabel.toLowerCase()}`)
       }
     } catch (err) {
-      addToast('error', `Rollback failed: ${err instanceof Error ? err.message : String(err)}`)
+      addToast('error', `${actionLabel} failed: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
       setRollingBack(null)
+    }
+  }
+
+  // Check if file is editable (must be checked out by current user)
+  const isFileEditable = file?.pdmData?.id && file?.pdmData?.checked_out_by === user?.id
+  // State can be edited without checkout - just needs to be synced
+  const canEditState = !!file?.pdmData?.id
+
+  // Handle starting edit of a property field
+  const handleStartEdit = (field: 'itemNumber' | 'description' | 'revision' | 'state') => {
+    if (!file?.pdmData?.id) {
+      addToast('info', 'Sync file to cloud first to edit metadata')
+      return
+    }
+    
+    // State changes don't require checkout
+    if (field !== 'state' && file.pdmData.checked_out_by !== user?.id) {
+      addToast('info', 'Check out file to edit metadata')
+      return
+    }
+    
+    let currentValue = ''
+    switch (field) {
+      case 'itemNumber':
+        currentValue = file.pdmData?.part_number || ''
+        break
+      case 'description':
+        currentValue = file.pdmData?.description || ''
+        break
+      case 'revision':
+        currentValue = file.pdmData?.revision || 'A'
+        break
+      case 'state':
+        currentValue = file.pdmData?.state || 'wip'
+        break
+    }
+    
+    setEditingField(field)
+    setEditValue(currentValue)
+  }
+  
+  // Handle saving an edited property
+  const handleSaveEdit = async () => {
+    if (!editingField || !file?.pdmData?.id || !user) {
+      setEditingField(null)
+      setEditValue('')
+      return
+    }
+    
+    const trimmedValue = editValue.trim()
+    
+    // Get current value to check if changed (consider pending metadata too)
+    let currentValue = ''
+    switch (editingField) {
+      case 'itemNumber':
+        currentValue = file.pendingMetadata?.part_number !== undefined 
+          ? (file.pendingMetadata.part_number || '') 
+          : (file.pdmData?.part_number || '')
+        break
+      case 'description':
+        currentValue = file.pendingMetadata?.description !== undefined 
+          ? (file.pendingMetadata.description || '') 
+          : (file.pdmData?.description || '')
+        break
+      case 'revision':
+        currentValue = file.pendingMetadata?.revision !== undefined 
+          ? file.pendingMetadata.revision 
+          : (file.pdmData?.revision || 'A')
+        break
+      case 'state':
+        currentValue = file.pdmData?.state || 'wip'
+        break
+    }
+    
+    if (trimmedValue === currentValue) {
+      setEditingField(null)
+      setEditValue('')
+      return
+    }
+    
+    // Validate revision
+    if (editingField === 'revision' && !trimmedValue) {
+      addToast('error', 'Revision cannot be empty')
+      return
+    }
+    
+    // For state changes, sync to server immediately
+    if (editingField === 'state') {
+      setIsSavingEdit(true)
+      try {
+        const result = await updateFileMetadata(file.pdmData.id, user.id, {
+          state: trimmedValue as 'not_tracked' | 'wip' | 'in_review' | 'released' | 'obsolete'
+        })
+        
+        if (result.success && result.file) {
+          updateFileInStore(file.path, {
+            pdmData: { ...file.pdmData, ...result.file }
+          })
+          addToast('success', 'State updated')
+        } else {
+          addToast('error', result.error || 'Failed to update state')
+        }
+      } catch (err) {
+        addToast('error', `Failed to update state: ${err instanceof Error ? err.message : String(err)}`)
+      } finally {
+        setIsSavingEdit(false)
+      }
+    } else {
+      // For item number, description, revision - save locally only (syncs on check-in)
+      const pendingUpdates: { part_number?: string | null; description?: string | null; revision?: string } = {}
+      switch (editingField) {
+        case 'itemNumber':
+          pendingUpdates.part_number = trimmedValue || null
+          break
+        case 'description':
+          pendingUpdates.description = trimmedValue || null
+          break
+        case 'revision':
+          pendingUpdates.revision = trimmedValue.toUpperCase()
+          break
+      }
+      
+      // Update locally - will sync on check-in
+      updatePendingMetadata(file.path, pendingUpdates)
+    }
+    
+    setEditingField(null)
+    setEditValue('')
+  }
+  
+  // Handle canceling an edit
+  const handleCancelEdit = () => {
+    setEditingField(null)
+    setEditValue('')
+  }
+  
+  // Handle state change via dropdown
+  const handleStateChange = async (newState: string) => {
+    if (!file?.pdmData?.id || !user) return
+    
+    setIsSavingEdit(true)
+    
+    try {
+      const result = await updateFileMetadata(file.pdmData.id, user.id, {
+        state: newState as 'not_tracked' | 'wip' | 'in_review' | 'released' | 'obsolete'
+      })
+      
+      if (result.success && result.file) {
+        updateFileInStore(file.path, {
+          pdmData: { ...file.pdmData, ...result.file }
+        })
+        addToast('success', 'State updated')
+      } else {
+        addToast('error', result.error || 'Failed to update state')
+      }
+    } catch (err) {
+      addToast('error', `Failed to update: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setIsSavingEdit(false)
+      setEditingField(null)
+      setEditValue('')
     }
   }
 
@@ -480,15 +698,59 @@ export function DetailsPanel() {
                   ) : (
                     // File properties
                     <>
-                      <PropertyItem 
+                      <EditablePropertyItem 
                         icon={<Tag size={14} />}
                         label="Item Number"
                         value={file.pdmData?.part_number || '-'}
+                        isEditing={editingField === 'itemNumber'}
+                        editValue={editValue}
+                        isSaving={isSavingEdit}
+                        editable={!!isFileEditable}
+                        onStartEdit={() => handleStartEdit('itemNumber')}
+                        onSave={handleSaveEdit}
+                        onCancel={handleCancelEdit}
+                        onEditValueChange={setEditValue}
+                        placeholder="-"
                       />
-                      <PropertyItem 
+                      <EditablePropertyItem 
+                        icon={<FileText size={14} />}
+                        label="Description"
+                        value={file.pdmData?.description || '-'}
+                        isEditing={editingField === 'description'}
+                        editValue={editValue}
+                        isSaving={isSavingEdit}
+                        editable={!!isFileEditable}
+                        onStartEdit={() => handleStartEdit('description')}
+                        onSave={handleSaveEdit}
+                        onCancel={handleCancelEdit}
+                        onEditValueChange={setEditValue}
+                        placeholder="-"
+                      />
+                      <EditablePropertyItem 
                         icon={<Hash size={14} />}
                         label="Revision"
                         value={file.pdmData?.revision || 'A'}
+                        isEditing={editingField === 'revision'}
+                        editValue={editValue}
+                        isSaving={isSavingEdit}
+                        editable={!!isFileEditable}
+                        onStartEdit={() => handleStartEdit('revision')}
+                        onSave={handleSaveEdit}
+                        onCancel={handleCancelEdit}
+                        onEditValueChange={setEditValue}
+                        placeholder="A"
+                      />
+                      <StatePropertyItem
+                        icon={<RefreshCw size={14} />}
+                        label="State"
+                        state={file.pdmData?.state || 'wip'}
+                        isEditing={editingField === 'state'}
+                        editValue={editValue}
+                        isSaving={isSavingEdit}
+                        editable={canEditState}
+                        onStartEdit={() => handleStartEdit('state')}
+                        onStateChange={handleStateChange}
+                        onCancel={handleCancelEdit}
                       />
                       <PropertyItem 
                         icon={<Hash size={14} />}
@@ -763,11 +1025,15 @@ export function DetailsPanel() {
                               <div className="flex-1 min-w-0">
                                 <div className="text-sm">
                                   <span className={actionInfo.color}>{actionInfo.label}</span>
-                                  {entry.file && (
+                                  {entry.file ? (
                                     <span className="text-pdm-fg ml-1 truncate">
                                       {entry.file.file_name}
                                     </span>
-                                  )}
+                                  ) : (entry.details as any)?.file_name ? (
+                                    <span className="text-pdm-fg ml-1 truncate">
+                                      {(entry.details as any).file_name}
+                                    </span>
+                                  ) : null}
                                 </div>
                                 <div className="flex items-center gap-2 text-xs text-pdm-fg-muted mt-1">
                                   <span className="flex items-center gap-1">
@@ -803,15 +1069,18 @@ export function DetailsPanel() {
                   ) : (
                     <div className="space-y-2">
                       {versions.map((version, index) => {
-                        const isLatest = index === 0
-                        const isCurrent = file.pdmData?.version === version.version
-                        const canRollback = !isLatest && file.pdmData?.checked_out_by === user?.id
+                        const isServerVersion = index === 0 // Highest version is what's on server
+                        // Local version: use localActiveVersion if set (after rollback), otherwise use pdmData.version
+                        const localVersion = file.localActiveVersion ?? (file.pdmData?.version || 0)
+                        const isLocalVersion = localVersion === version.version
+                        const canSwitch = !isLocalVersion && file.pdmData?.checked_out_by === user?.id
+                        const isRollForward = version.version > localVersion
                         
                         return (
                           <div
                             key={version.id}
                             className={`p-3 rounded-lg border transition-colors ${
-                              isCurrent 
+                              isLocalVersion 
                                 ? 'bg-pdm-accent/10 border-pdm-accent' 
                                 : 'bg-pdm-bg-light border-pdm-border hover:border-pdm-border-light'
                             }`}
@@ -822,14 +1091,14 @@ export function DetailsPanel() {
                                 <span className="text-sm font-medium">
                                   Version {version.version}
                                 </span>
-                                {isLatest && (
+                                {isServerVersion && (
                                   <span className="px-1.5 py-0.5 text-xs bg-pdm-success/20 text-pdm-success rounded">
-                                    Latest
+                                    Server
                                   </span>
                                 )}
-                                {isCurrent && !isLatest && (
+                                {isLocalVersion && (
                                   <span className="px-1.5 py-0.5 text-xs bg-pdm-accent/20 text-pdm-accent rounded">
-                                    Current
+                                    Local
                                   </span>
                                 )}
                                 <span className="text-xs text-pdm-fg-muted">
@@ -837,19 +1106,25 @@ export function DetailsPanel() {
                                 </span>
                               </div>
                               
-                              {canRollback && (
+                              {canSwitch && (
                                 <button
                                   onClick={() => handleRollback(version.version)}
                                   disabled={rollingBack !== null}
-                                  className="flex items-center gap-1 px-2 py-1 text-xs bg-pdm-warning/20 text-pdm-warning rounded hover:bg-pdm-warning/30 transition-colors disabled:opacity-50"
-                                  title="Rollback to this version"
+                                  className={`flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors disabled:opacity-50 ${
+                                    isRollForward 
+                                      ? 'bg-pdm-info/20 text-pdm-info hover:bg-pdm-info/30' 
+                                      : 'bg-pdm-warning/20 text-pdm-warning hover:bg-pdm-warning/30'
+                                  }`}
+                                  title={isRollForward ? 'Roll forward to this version' : 'Rollback to this version'}
                                 >
                                   {rollingBack === version.version ? (
                                     <Loader2 size={12} className="animate-spin" />
+                                  ) : isRollForward ? (
+                                    <ArrowUp size={12} />
                                   ) : (
                                     <RotateCcw size={12} />
                                   )}
-                                  Rollback
+                                  {isRollForward ? 'Roll forward' : 'Rollback'}
                                 </button>
                               )}
                             </div>
@@ -909,6 +1184,183 @@ function PropertyItem({ icon, label, value }: PropertyItemProps) {
       <span className="text-pdm-fg-muted">{icon}</span>
       <span className="text-pdm-fg-muted">{label}:</span>
       <span className="text-pdm-fg">{value}</span>
+    </div>
+  )
+}
+
+interface EditablePropertyItemProps {
+  icon: React.ReactNode
+  label: string
+  value: string
+  isEditing: boolean
+  editValue: string
+  isSaving: boolean
+  editable: boolean
+  onStartEdit: () => void
+  onSave: () => void
+  onCancel: () => void
+  onEditValueChange: (value: string) => void
+  placeholder?: string
+}
+
+function EditablePropertyItem({ 
+  icon, 
+  label, 
+  value, 
+  isEditing, 
+  editValue, 
+  isSaving,
+  editable,
+  onStartEdit, 
+  onSave, 
+  onCancel, 
+  onEditValueChange,
+  placeholder = '-'
+}: EditablePropertyItemProps) {
+  if (isEditing && editable) {
+    return (
+      <div className="flex items-center gap-2">
+        <span className="text-pdm-fg-muted">{icon}</span>
+        <span className="text-pdm-fg-muted">{label}:</span>
+        <div className="flex items-center gap-1 flex-1">
+          <input
+            type="text"
+            value={editValue}
+            onChange={(e) => onEditValueChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                onSave()
+              } else if (e.key === 'Escape') {
+                onCancel()
+              }
+            }}
+            autoFocus
+            disabled={isSaving}
+            className="flex-1 bg-pdm-bg border border-pdm-accent rounded px-2 py-0.5 text-sm text-pdm-fg focus:outline-none focus:ring-1 focus:ring-pdm-accent disabled:opacity-50"
+          />
+          <button
+            onClick={onSave}
+            disabled={isSaving}
+            className="p-1 rounded hover:bg-pdm-success/20 text-pdm-success disabled:opacity-50"
+            title="Save"
+          >
+            {isSaving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+          </button>
+          <button
+            onClick={onCancel}
+            disabled={isSaving}
+            className="p-1 rounded hover:bg-pdm-error/20 text-pdm-error disabled:opacity-50"
+            title="Cancel"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      </div>
+    )
+  }
+  
+  return (
+    <div className="flex items-center gap-2 group">
+      <span className={editable ? "text-pdm-fg-muted" : "text-pdm-fg-muted/50"}>{icon}</span>
+      <span className={editable ? "text-pdm-fg-muted" : "text-pdm-fg-muted/50"}>{label}:</span>
+      <span 
+        className={`px-1 rounded ${editable ? 'cursor-text hover:bg-pdm-bg-light' : ''} ${!value || value === '-' || !editable ? 'text-pdm-fg-muted' : 'text-pdm-fg'}`}
+        onClick={editable ? onStartEdit : undefined}
+        title={editable ? 'Click to edit' : 'Check out file to edit'}
+      >
+        {value || placeholder}
+      </span>
+      {editable && (
+        <button
+          onClick={onStartEdit}
+          className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-pdm-accent/20 text-pdm-fg-muted hover:text-pdm-accent transition-opacity"
+          title="Edit"
+        >
+          <Pencil size={12} />
+        </button>
+      )}
+    </div>
+  )
+}
+
+interface StatePropertyItemProps {
+  icon: React.ReactNode
+  label: string
+  state: string
+  isEditing: boolean
+  editValue: string
+  isSaving: boolean
+  editable: boolean
+  onStartEdit: () => void
+  onStateChange: (newState: string) => void
+  onCancel: () => void
+}
+
+function StatePropertyItem({
+  icon,
+  label,
+  state,
+  isEditing,
+  editValue,
+  isSaving,
+  editable,
+  onStartEdit,
+  onStateChange,
+  onCancel
+}: StatePropertyItemProps) {
+  const stateInfo = STATE_INFO[state as keyof typeof STATE_INFO]
+  
+  if (isEditing && editable) {
+    return (
+      <div className="flex items-center gap-2">
+        <span className="text-pdm-fg-muted">{icon}</span>
+        <span className="text-pdm-fg-muted">{label}:</span>
+        <div className="flex items-center gap-1 flex-1">
+          <select
+            ref={(el) => {
+              // Auto-open dropdown when element mounts
+              if (el && !isSaving) {
+                el.focus()
+                if ('showPicker' in el) {
+                  try {
+                    (el as any).showPicker()
+                  } catch {
+                    el.click()
+                  }
+                } else {
+                  el.click()
+                }
+              }
+            }}
+            value={editValue}
+            onChange={(e) => onStateChange(e.target.value)}
+            onBlur={() => setTimeout(onCancel, 100)}
+            disabled={isSaving}
+            className="bg-pdm-bg border border-pdm-accent rounded px-2 py-0.5 text-sm text-pdm-fg focus:outline-none focus:ring-1 focus:ring-pdm-accent disabled:opacity-50"
+          >
+            <option value="not_tracked">Not Tracked</option>
+            <option value="wip">Work in Progress</option>
+            <option value="in_review">In Review</option>
+            <option value="released">Released</option>
+            <option value="obsolete">Obsolete</option>
+          </select>
+          {isSaving && <Loader2 size={14} className="animate-spin text-pdm-accent" />}
+        </div>
+      </div>
+    )
+  }
+  
+  return (
+    <div className="flex items-center gap-2 group">
+      <span className={editable ? "text-pdm-fg-muted" : "text-pdm-fg-muted/50"}>{icon}</span>
+      <span className={editable ? "text-pdm-fg-muted" : "text-pdm-fg-muted/50"}>{label}:</span>
+      <span 
+        className={`state-badge ${state.replace('_', '-')} ${editable ? 'cursor-pointer hover:ring-1 hover:ring-pdm-accent' : 'opacity-60'}`}
+        onClick={editable ? onStartEdit : undefined}
+        title={editable ? 'Click to change state' : 'Check out file to edit'}
+      >
+        {stateInfo?.label || state}
+      </span>
     </div>
   )
 }

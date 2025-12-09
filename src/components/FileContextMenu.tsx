@@ -317,31 +317,46 @@ export function FileContextMenu({
     for (let i = 0; i < filesToCheckin.length; i++) {
       const file = filesToCheckin[i]
       try {
+        // Check if file was moved (local path differs from server path)
+        const wasFileMoved = file.pdmData?.file_path && file.relativePath !== file.pdmData.file_path
+        const wasFileRenamed = file.pdmData?.file_name && file.name !== file.pdmData.file_name
+        
         const readResult = await window.electronAPI?.readFile(file.path)
         if (readResult?.success && readResult.hash) {
           const result = await checkinFile(file.pdmData!.id, user.id, {
             newContentHash: readResult.hash,
-            newFileSize: file.size
+            newFileSize: file.size,
+            newFilePath: wasFileMoved ? file.relativePath : undefined,
+            newFileName: wasFileRenamed ? file.name : undefined
           })
-          if (result.success) {
+          if (result.success && result.file) {
             await window.electronAPI?.setReadonly(file.path, true)
             // Update file in store directly instead of full refresh
+            // Clear localActiveVersion since we're now checked in with the new version
             updateFileInStore(file.path, {
-              pdmData: { ...file.pdmData!, checked_out_by: null, checked_out_user: null },
+              pdmData: { ...file.pdmData!, ...result.file, checked_out_by: null, checked_out_user: null },
               localHash: readResult.hash,
-              diffStatus: undefined  // Now in sync
+              diffStatus: undefined,  // Now in sync
+              localActiveVersion: undefined  // Clear rollback state
             })
             succeeded++
           } else {
             failed++
           }
         } else {
-          const result = await checkinFile(file.pdmData!.id, user.id)
-          if (result.success) {
+          const result = await checkinFile(file.pdmData!.id, user.id, {
+            newFilePath: wasFileMoved ? file.relativePath : undefined,
+            newFileName: wasFileRenamed ? file.name : undefined
+          })
+          if (result.success && result.file) {
             await window.electronAPI?.setReadonly(file.path, true)
             // Update file in store directly
+            // Clear localActiveVersion since we're now checked in
             updateFileInStore(file.path, {
-              pdmData: { ...file.pdmData!, checked_out_by: null, checked_out_user: null }
+              pdmData: { ...file.pdmData!, ...result.file, checked_out_by: null, checked_out_user: null },
+              localHash: result.file.content_hash,  // Sync hash with server
+              diffStatus: undefined,  // Now in sync
+              localActiveVersion: undefined  // Clear rollback state
             })
             succeeded++
           } else {
@@ -584,12 +599,15 @@ export function FileContextMenu({
     
     // Get folder paths being operated on
     const foldersBeingProcessed = contextFiles.filter(f => f.isDirectory).map(f => f.relativePath)
+    // Also include individual files for spinner display
+    const filesBeingProcessed = contextFiles.filter(f => !f.isDirectory).map(f => f.relativePath)
+    const allPathsBeingProcessed = [...foldersBeingProcessed, ...filesBeingProcessed]
     const operationPaths = foldersBeingProcessed.length > 0 ? foldersBeingProcessed : contextFiles.map(f => f.relativePath)
     
     // Define the delete operation
     const executeDelete = async () => {
-      // Track folders being processed for spinner display
-      foldersBeingProcessed.forEach(p => addProcessingFolder(p))
+      // Track folders AND files being processed for spinner display
+      allPathsBeingProcessed.forEach(p => addProcessingFolder(p))
       
       // Get files to remove - both synced files that exist locally AND unsynced local files
       const syncedLocalFiles = syncedFilesInSelection.filter(f => f.diffStatus !== 'cloud')
@@ -597,7 +615,7 @@ export function FileContextMenu({
       const filesToRemove = [...syncedLocalFiles, ...unsyncedLocalFiles]
       
       if (filesToRemove.length === 0) {
-        foldersBeingProcessed.forEach(p => removeProcessingFolder(p))
+        allPathsBeingProcessed.forEach(p => removeProcessingFolder(p))
         addToast('info', 'No local files to remove')
         return
       }
@@ -674,7 +692,7 @@ export function FileContextMenu({
     
     // Remove progress toast
     removeToast(toastId)
-    foldersBeingProcessed.forEach(p => removeProcessingFolder(p))
+    allPathsBeingProcessed.forEach(p => removeProcessingFolder(p))
     
     if (failed > 0) {
       addToast('warning', `Removed ${removed}/${filesToRemove.length} files locally`)
@@ -741,6 +759,13 @@ export function FileContextMenu({
   const executeDeleteFromServer = async () => {
     setIsDeleting(true)
     
+    // Track files and folders being processed for spinner display
+    const pathsBeingProcessed = deleteConfirmFiles.map(f => f.relativePath)
+    // Also add any folders that were selected
+    const foldersBeingProcessed = contextFiles.filter(f => f.isDirectory).map(f => f.relativePath)
+    const allPathsBeingProcessed = [...new Set([...pathsBeingProcessed, ...foldersBeingProcessed])]
+    allPathsBeingProcessed.forEach(p => addProcessingFolder(p))
+    
     const total = deleteConfirmFiles.length
     const toastId = `delete-server-${Date.now()}`
     addProgressToast(toastId, `Deleting ${total} file${total > 1 ? 's' : ''} from server...`, total)
@@ -763,6 +788,21 @@ export function FileContextMenu({
       }
       
       try {
+        // Log activity BEFORE delete (with file info in details)
+        if (user && file.pdmData.org_id) {
+          await supabase.from('activity').insert({
+            org_id: file.pdmData.org_id,
+            file_id: null, // Set to null since file will be deleted
+            user_id: user.id,
+            user_email: user.email,
+            action: 'delete',
+            details: {
+              file_name: file.name,
+              file_path: file.relativePath
+            }
+          })
+        }
+        
         const { error } = await supabase
           .from('files')
           .delete()
@@ -785,6 +825,8 @@ export function FileContextMenu({
       updateProgressToast(toastId, i + 1, Math.round(((i + 1) / total) * 100))
     }
     
+    // Clean up spinners
+    allPathsBeingProcessed.forEach(p => removeProcessingFolder(p))
     removeToast(toastId)
     setIsDeleting(false)
     setShowDeleteConfirm(false)

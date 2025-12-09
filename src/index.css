@@ -247,6 +247,13 @@ input::placeholder {
   background: var(--pdm-selection);
 }
 
+/* Drag target styling for folder drop */
+.file-table tr.drag-target {
+  background: rgba(59, 130, 246, 0.25) !important;
+  outline: 2px dashed var(--pdm-accent);
+  outline-offset: -2px;
+}
+
 /* Column resize handle */
 .column-resize-handle {
   position: absolute;
@@ -274,6 +281,11 @@ input::placeholder {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.3px;
+}
+
+.state-badge.not-tracked {
+  background: rgba(107, 114, 128, 0.15);
+  color: var(--pdm-fg-muted);
 }
 
 .state-badge.wip {
@@ -340,6 +352,13 @@ input::placeholder {
 
 .tree-item.current-folder:not(.selected) {
   background: rgba(59, 130, 246, 0.15);
+}
+
+/* Drag target styling for folder drop in explorer */
+.tree-item.drag-target {
+  background: rgba(59, 130, 246, 0.25) !important;
+  outline: 2px dashed var(--pdm-accent);
+  outline-offset: -2px;
 }
 
 .tree-item.processing {

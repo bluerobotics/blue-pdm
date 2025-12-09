@@ -255,17 +255,53 @@ function App() {
           // Create set of local file paths for deletion detection
           const localPathSet = new Set(localFiles.map(f => f.relativePath))
           
+          // Create a map of existing files' localActiveVersion to preserve rollback state
+          // Use getState() to get current files at execution time (not stale closure value)
+          const currentFiles = usePDMStore.getState().files
+          const existingLocalActiveVersions = new Map<string, number>()
+          for (const f of currentFiles) {
+            if (f.localActiveVersion !== undefined) {
+              existingLocalActiveVersions.set(f.path, f.localActiveVersion)
+            }
+          }
+          
+          // Create a map of server files that are checked out by current user, keyed by content hash
+          // This allows us to detect moved files (same content, different path) and preserve their pdmData
+          const checkedOutByMeByHash = new Map<string, any>()
+          for (const pdmFile of pdmFiles as any[]) {
+            if (pdmFile.checked_out_by === user?.id && pdmFile.content_hash) {
+              checkedOutByMeByHash.set(pdmFile.content_hash, pdmFile)
+            }
+          }
+          
           // Merge PDM data into local files and compute diff status
           localFiles = localFiles.map(localFile => {
             if (localFile.isDirectory) return localFile
             
-            const pdmData = pdmMap.get(localFile.relativePath)
+            let pdmData = pdmMap.get(localFile.relativePath)
+            let isMovedFile = false
+            
+            // If no path match but file has same hash as one of my checked out files,
+            // this is likely a moved file - preserve the pdmData
+            if (!pdmData && localFile.localHash) {
+              const movedFromFile = checkedOutByMeByHash.get(localFile.localHash)
+              if (movedFromFile) {
+                pdmData = movedFromFile
+                isMovedFile = true
+              }
+            }
+            
+            // Preserve localActiveVersion from existing file (for rollback state)
+            const existingLocalActiveVersion = existingLocalActiveVersions.get(localFile.path)
             
             // Determine diff status
             let diffStatus: 'added' | 'modified' | 'outdated' | undefined
             if (!pdmData) {
               // File exists locally but not on server = added
               diffStatus = 'added'
+            } else if (isMovedFile) {
+              // File was moved - needs check-in to update server path
+              diffStatus = 'modified'
             } else if (pdmData.content_hash && localFile.localHash) {
               // File exists both places - check if modified or outdated
               if (pdmData.content_hash !== localFile.localHash) {
@@ -290,32 +326,37 @@ function App() {
               ...localFile,
               pdmData: pdmData || undefined,
               isSynced: !!pdmData,
-              diffStatus
+              diffStatus,
+              // Preserve rollback state if it exists
+              localActiveVersion: existingLocalActiveVersion
             }
           })
           
-          // Add cloud-only files (exist on server but not locally) as "cloud" entries
-          // These appear faded/greyed to indicate they're available but not downloaded
+          // Add cloud-only files (exist on server but not locally) as "cloud" or "deleted" entries
+          // "cloud" = available for download (muted)
+          // "deleted" = was checked out by me but removed locally (red) - indicates moved/deleted file
+          // Note: if a file was MOVED (same content hash exists locally), don't show the deleted ghost
           const cloudFolders = new Set<string>()
+          
+          // Create a set of local content hashes to detect moved files
+          const localContentHashes = new Set(
+            localFiles.filter(f => !f.isDirectory && f.localHash).map(f => f.localHash)
+          )
           
           for (const pdmFile of pdmFiles as any[]) {
             if (!localPathSet.has(pdmFile.file_path)) {
               // If file is checked out by current user but doesn't exist locally,
-              // auto-release the checkout (user deleted it externally)
-              if (pdmFile.checked_out_by === user?.id) {
-                console.log('[Auto-release] File deleted externally, releasing checkout:', pdmFile.file_name)
-                checkinFile(pdmFile.id, user!.id).then(result => {
-                  if (result.success) {
-                    console.log('[Auto-release] Released checkout for:', pdmFile.file_name)
-                  } else {
-                    console.error('[Auto-release] Failed to release:', result.error)
-                  }
-                })
-                // Clear the checkout info for display (optimistic update)
-                pdmFile.checked_out_by = null
-                pdmFile.checked_out_at = null
-                pdmFile.checked_out_user = null
+              // check if it was MOVED (same content exists at a different location)
+              const isCheckedOutByMe = pdmFile.checked_out_by === user?.id
+              const wasMoved = isCheckedOutByMe && pdmFile.content_hash && localContentHashes.has(pdmFile.content_hash)
+              
+              // If moved, don't show the ghost at the old location - the file is handled at the new location
+              if (wasMoved) {
+                continue
               }
+              
+              // If checked out by me but not moved, it was truly deleted locally
+              const isDeletedByMe = isCheckedOutByMe
               
               // Add cloud parent folders for this file
               const pathParts = pdmFile.file_path.split('/')
@@ -338,7 +379,7 @@ function App() {
                 modifiedTime: pdmFile.updated_at || '',
                 pdmData: pdmFile,
                 isSynced: false, // Not synced locally
-                diffStatus: 'cloud' // Cloud-only, available for download
+                diffStatus: isDeletedByMe ? 'deleted' : 'cloud' // Deleted if I moved/removed it, otherwise cloud
               })
             }
           }
@@ -644,9 +685,9 @@ function App() {
     let refreshTimeout: NodeJS.Timeout | null = null
     
     const cleanup = window.electronAPI.onFilesChanged((changedFiles) => {
-      // Completely skip ALL updates during sync operations
-      const { syncProgress } = usePDMStore.getState()
-      if (syncProgress.isActive) {
+      // Completely skip ALL updates during sync operations or delete operations
+      const { syncProgress, processingFolders } = usePDMStore.getState()
+      if (syncProgress.isActive || processingFolders.size > 0) {
         return // Silent skip - no logging, no processing
       }
       
@@ -658,6 +699,11 @@ function App() {
       }
       
       refreshTimeout = setTimeout(() => {
+        // Check again before refreshing in case a delete started during debounce
+        const currentState = usePDMStore.getState()
+        if (currentState.syncProgress.isActive || currentState.processingFolders.size > 0) {
+          return
+        }
         loadFiles(true) // Silent refresh
         refreshTimeout = null
       }, 1000) // Wait 1 second after last change

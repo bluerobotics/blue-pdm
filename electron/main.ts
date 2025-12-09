@@ -1074,6 +1074,44 @@ ipcMain.handle('fs:copy-file', async (_, sourcePath: string, destPath: string) =
   }
 })
 
+ipcMain.handle('fs:move-file', async (_, sourcePath: string, destPath: string) => {
+  try {
+    const stats = fs.statSync(sourcePath)
+    
+    // Ensure destination directory exists
+    const destDir = path.dirname(destPath)
+    if (!fs.existsSync(destDir)) {
+      fs.mkdirSync(destDir, { recursive: true })
+    }
+    
+    // Try rename first (fastest, works on same filesystem)
+    try {
+      fs.renameSync(sourcePath, destPath)
+      log('Moved (rename):', sourcePath, '->', destPath)
+      return { success: true }
+    } catch (renameErr) {
+      // If rename fails (cross-filesystem), copy then delete
+      log('Rename failed, trying copy+delete:', renameErr)
+    }
+    
+    // Fallback: copy then delete
+    if (stats.isDirectory()) {
+      copyDirSync(sourcePath, destPath)
+      fs.rmSync(sourcePath, { recursive: true, force: true })
+      log('Moved (copy+delete) directory:', sourcePath, '->', destPath)
+    } else {
+      fs.copyFileSync(sourcePath, destPath)
+      fs.unlinkSync(sourcePath)
+      log('Moved (copy+delete) file:', sourcePath, '->', destPath)
+    }
+    
+    return { success: true }
+  } catch (err) {
+    log('Error moving:', err)
+    return { success: false, error: String(err) }
+  }
+})
+
 // Helper to recursively copy a directory
 function copyDirSync(src: string, dest: string) {
   // Create destination directory
@@ -1182,32 +1220,26 @@ function getAllFilesInDir(dirPath: string, baseFolder: string): Array<{ name: st
   return files
 }
 
-// Select files to add (returns file paths) - supports both files and folders
+// Select files to add (returns file paths) - Windows doesn't support openFile + openDirectory together
 ipcMain.handle('dialog:select-files', async () => {
   const result = await dialog.showOpenDialog(mainWindow!, {
-    title: 'Select Files or Folders to Add',
-    properties: ['openFile', 'openDirectory', 'multiSelections'],
+    title: 'Select Files to Add',
+    properties: ['openFile', 'multiSelections'],
     filters: [
+      { name: 'All Files', extensions: ['*'] },
       { name: 'CAD Files', extensions: ['sldprt', 'sldasm', 'slddrw', 'step', 'stp', 'iges', 'igs', 'stl', 'pdf'] },
       { name: 'SolidWorks Parts', extensions: ['sldprt'] },
       { name: 'SolidWorks Assemblies', extensions: ['sldasm'] },
-      { name: 'SolidWorks Drawings', extensions: ['slddrw'] },
-      { name: 'All Files', extensions: ['*'] }
+      { name: 'SolidWorks Drawings', extensions: ['slddrw'] }
     ]
   })
   
   if (!result.canceled && result.filePaths.length > 0) {
-    const allFiles: Array<{ name: string; path: string; relativePath?: string; extension: string; size: number; modifiedTime: string }> = []
+    const allFiles: Array<{ name: string; path: string; extension: string; size: number; modifiedTime: string }> = []
     
     for (const filePath of result.filePaths) {
-      const stats = fs.statSync(filePath)
-      
-      if (stats.isDirectory()) {
-        // Recursively get all files in the folder, preserving folder structure
-        const filesInDir = getAllFilesInDir(filePath, filePath)
-        allFiles.push(...filesInDir)
-      } else {
-        // Single file - just use the filename
+      try {
+        const stats = fs.statSync(filePath)
         allFiles.push({
           name: path.basename(filePath),
           path: filePath,
@@ -1215,6 +1247,8 @@ ipcMain.handle('dialog:select-files', async () => {
           size: stats.size,
           modifiedTime: stats.mtime.toISOString()
         })
+      } catch (err) {
+        log('Error reading file stats:', filePath, err)
       }
     }
     

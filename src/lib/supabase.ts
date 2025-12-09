@@ -830,6 +830,13 @@ export async function checkinFile(
     newContentHash?: string
     newFileSize?: number
     comment?: string
+    newFilePath?: string  // For moved files - update the server path
+    newFileName?: string  // For renamed files - update the server name
+    pendingMetadata?: {
+      part_number?: string | null
+      description?: string | null
+      revision?: string
+    }
   }
 ) {
   const client = getSupabaseClient()
@@ -858,28 +865,82 @@ export async function checkinFile(
     updated_by: userId
   }
   
-  // Only increment version if content actually changed
-  const contentChanged = options?.newContentHash && options.newContentHash !== file.content_hash
+  // Handle file path/name changes (for moved/renamed files)
+  if (options?.newFilePath && options.newFilePath !== file.file_path) {
+    updateData.file_path = options.newFilePath
+  }
+  if (options?.newFileName && options.newFileName !== file.file_name) {
+    updateData.file_name = options.newFileName
+  }
   
-  if (contentChanged) {
-    const newVersion = file.version + 1
-    updateData.content_hash = options.newContentHash
+  // Apply pending metadata changes if any
+  const hasPendingMetadata = options?.pendingMetadata && (
+    options.pendingMetadata.part_number !== undefined ||
+    options.pendingMetadata.description !== undefined ||
+    options.pendingMetadata.revision !== undefined
+  )
+  
+  if (hasPendingMetadata && options?.pendingMetadata) {
+    if (options.pendingMetadata.part_number !== undefined) {
+      updateData.part_number = options.pendingMetadata.part_number
+    }
+    if (options.pendingMetadata.description !== undefined) {
+      updateData.description = options.pendingMetadata.description
+    }
+    if (options.pendingMetadata.revision !== undefined) {
+      updateData.revision = options.pendingMetadata.revision
+    }
+  }
+  
+  // Check if content changed OR metadata changed
+  const contentChanged = options?.newContentHash && options.newContentHash !== file.content_hash
+  const metadataChanged = hasPendingMetadata
+  const shouldIncrementVersion = contentChanged || metadataChanged
+  
+  if (shouldIncrementVersion) {
+    // Get max version from history - new version should be max + 1
+    // This handles the case where you rollback from v5 to v3, then check in -> should be v6
+    const { data: maxVersionData } = await client
+      .from('file_versions')
+      .select('version')
+      .eq('file_id', fileId)
+      .order('version', { ascending: false })
+      .limit(1)
+      .single()
+    
+    const maxVersionInHistory = maxVersionData?.version || file.version
+    const newVersion = maxVersionInHistory + 1
     updateData.version = newVersion
-    if (options.newFileSize !== undefined) {
-      updateData.file_size = options.newFileSize
+    
+    if (contentChanged) {
+      updateData.content_hash = options!.newContentHash
+      if (options!.newFileSize !== undefined) {
+        updateData.file_size = options!.newFileSize
+      }
     }
     
-    // Create version record only for actual changes
+    // Create version record for changes
     await client.from('file_versions').insert({
       file_id: fileId,
       version: newVersion,
-      revision: file.revision,
-      content_hash: options.newContentHash,
-      file_size: options.newFileSize || file.file_size,
+      revision: updateData.revision || file.revision,
+      content_hash: updateData.content_hash || file.content_hash,
+      file_size: updateData.file_size || file.file_size,
       state: file.state,
       created_by: userId,
-      comment: options.comment || null
+      comment: options?.comment || null
     })
+    
+    // Log revision change activity if revision changed
+    if (options?.pendingMetadata?.revision && options.pendingMetadata.revision !== file.revision) {
+      await client.from('activity').insert({
+        org_id: file.org_id,
+        file_id: fileId,
+        user_id: userId,
+        action: 'revision_change',
+        details: { from: file.revision, to: options.pendingMetadata.revision }
+      })
+    }
   }
   
   // Update the file
@@ -902,11 +963,12 @@ export async function checkinFile(
     action: 'checkin',
     details: { 
       ...(options?.comment ? { comment: options.comment } : {}),
-      contentChanged 
+      contentChanged,
+      metadataChanged
     }
   })
   
-  return { success: true, file: data, error: null, contentChanged }
+  return { success: true, file: data, error: null, contentChanged, metadataChanged }
 }
 
 export async function undoCheckout(fileId: string, userId: string) {
@@ -943,6 +1005,75 @@ export async function undoCheckout(fileId: string, userId: string) {
   if (error) {
     return { success: false, error: error.message }
   }
+  
+  return { success: true, file: data, error: null }
+}
+
+/**
+ * Update file metadata (part number, description, revision, state)
+ * File must be checked out by the user to edit
+ * Version is incremented on any metadata change
+ */
+// Update file metadata - NOW ONLY USED FOR STATE CHANGES (syncs immediately)
+// Item number, description, revision are saved locally and synced on check-in
+// State changes do NOT require checkout
+export async function updateFileMetadata(
+  fileId: string,
+  userId: string,
+  updates: {
+    state?: 'not_tracked' | 'wip' | 'in_review' | 'released' | 'obsolete'
+  }
+) {
+  const client = getSupabaseClient()
+  
+  // Get current file to validate and log changes
+  const { data: file, error: fetchError } = await client
+    .from('files')
+    .select('*, org_id')
+    .eq('id', fileId)
+    .single()
+  
+  if (fetchError) {
+    return { success: false, error: fetchError.message }
+  }
+  
+  // Check if state actually changed
+  if (!updates.state || updates.state === file.state) {
+    return { success: true, file, error: null }
+  }
+  
+  // Prepare update data - state changes do NOT increment version
+  const updateData: Record<string, any> = {
+    updated_at: new Date().toISOString(),
+    updated_by: userId,
+    state: updates.state,
+    state_changed_at: new Date().toISOString(),
+    state_changed_by: userId
+  }
+  
+  // Update the file
+  const { data, error } = await client
+    .from('files')
+    .update(updateData)
+    .eq('id', fileId)
+    .select()
+    .single()
+  
+  if (error) {
+    return { success: false, error: error.message }
+  }
+  
+  // Log state change activity
+  await client.from('activity').insert({
+    org_id: file.org_id,
+    file_id: fileId,
+    user_id: userId,
+    action: 'state_change',
+    details: {
+      old_state: file.state,
+      new_state: updates.state
+    }
+  })
   
   return { success: true, file: data, error: null }
 }
