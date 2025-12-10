@@ -995,11 +995,26 @@ export const usePDMStore = create<PDMState>()(
           isExpanded: true  // Ensure vaults are expanded on load
         }))
         
+        // Ensure activeVaultId points to a valid vault (might have been a removed duplicate)
+        const persistedActiveVaultId = persisted.activeVaultId as string | null
+        const validVaultIds = new Set(deduplicatedVaults.map(v => v.id))
+        const validActiveVaultId = persistedActiveVaultId && validVaultIds.has(persistedActiveVaultId)
+          ? persistedActiveVaultId
+          : (deduplicatedVaults[0]?.id || null)
+        
+        // Ensure vaultPath matches the active vault's path
+        const activeVault = deduplicatedVaults.find(v => v.id === validActiveVaultId)
+        const validVaultPath = activeVault?.localPath || (persisted.vaultPath as string | null)
+        
         return {
           ...currentState,
           ...persisted,
           // Use deduplicated vaults
           connectedVaults: deduplicatedVaults,
+          // Use validated activeVaultId
+          activeVaultId: validActiveVaultId,
+          // Use validated vaultPath
+          vaultPath: validVaultPath,
           // Convert expandedFolders back to Set
           expandedFolders: new Set(persisted.expandedFolders as string[] || []),
           // Ensure cadPreviewMode has a default

@@ -2,6 +2,13 @@
 
 All notable changes to BluePDM will be documented in this file.
 
+## [1.2.3] - 2025-12-10
+
+### Fixed
+- Files showing as "cloud" (not downloaded) after fresh install when they exist locally
+- Active vault ID not being validated against deduplicated vaults on startup
+- Vault path not syncing with active vault on startup
+
 ## [1.2.2] - 2025-12-10
 
 ### Fixed
