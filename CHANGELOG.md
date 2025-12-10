@@ -2,13 +2,21 @@
 
 All notable changes to BluePDM will be documented in this file.
 
-## [1.3.2] - 2025-12-10
+## [1.3.3] - 2025-12-10
+
+### Added
+- **Check for Updates** button in Settings → About to manually check for new versions
 
 ### Fixed
 - OAuth sign-in spinner hanging after completing Google sign-in in browser
 - Improved OAuth callback token forwarding with retry logic and error handling
 - Fixed session listener being added multiple times on Supabase reconfiguration
 - Better error messages displayed to user when OAuth fails
+
+## [1.3.2] - 2025-12-10
+
+### Fixed
+- OAuth sign-in spinner hanging after completing Google sign-in in browser (initial fix)
 
 ## [1.3.1] - 2025-12-10
 

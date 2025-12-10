@@ -30,7 +30,8 @@ import {
   UserMinus,
   ChevronDown,
   Wrench,
-  RefreshCw
+  RefreshCw,
+  ArrowDownToLine
 } from 'lucide-react'
 import { usePDMStore, ConnectedVault } from '../stores/pdmStore'
 import { supabase, signOut, getCurrentConfig, updateUserRole, removeUserFromOrg } from '../lib/supabase'
@@ -117,6 +118,8 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   const [disconnectingVault, setDisconnectingVault] = useState<{ id: string; name: string } | null>(null)
   const [isDisconnecting, setIsDisconnecting] = useState(false)
   const [isExportingLogs, setIsExportingLogs] = useState(false)
+  const [isCheckingUpdates, setIsCheckingUpdates] = useState(false)
+  const [updateCheckResult, setUpdateCheckResult] = useState<'none' | 'available' | 'error' | null>(null)
   const [appVersion, setAppVersion] = useState('')
   const [platform, setPlatform] = useState<string>('win32')
   const [showOrgCode, setShowOrgCode] = useState(false)
@@ -1333,6 +1336,57 @@ See you on the team!`
                       Version {appVersion}
                     </p>
                   )}
+                </div>
+                
+                {/* Updates */}
+                <div className="space-y-2">
+                  <h3 className="text-sm font-medium text-pdm-fg-dim uppercase tracking-wide">Updates</h3>
+                  <button
+                    onClick={async () => {
+                      if (!window.electronAPI) return
+                      setIsCheckingUpdates(true)
+                      setUpdateCheckResult(null)
+                      try {
+                        const result = await window.electronAPI.checkForUpdates()
+                        if (result.success && result.updateInfo) {
+                          setUpdateCheckResult('available')
+                          addToast('info', `Update available: v${(result.updateInfo as any).version}`)
+                        } else if (result.success) {
+                          setUpdateCheckResult('none')
+                          addToast('success', 'You are running the latest version')
+                        } else {
+                          setUpdateCheckResult('error')
+                          addToast('error', result.error || 'Failed to check for updates')
+                        }
+                      } catch (err) {
+                        setUpdateCheckResult('error')
+                        addToast('error', 'Failed to check for updates')
+                      } finally {
+                        setIsCheckingUpdates(false)
+                      }
+                    }}
+                    disabled={isCheckingUpdates}
+                    className="w-full flex items-center gap-3 p-4 rounded-lg border border-pdm-border bg-pdm-bg hover:border-pdm-accent transition-colors cursor-pointer text-left disabled:opacity-50"
+                  >
+                    {isCheckingUpdates ? (
+                      <Loader2 size={20} className="text-pdm-fg-muted animate-spin" />
+                    ) : (
+                      <ArrowDownToLine size={20} className="text-pdm-fg-muted" />
+                    )}
+                    <div className="flex-1">
+                      <div className="text-sm font-medium text-pdm-fg">Check for Updates</div>
+                      <div className="text-xs text-pdm-fg-dim">
+                        {updateCheckResult === 'none' 
+                          ? 'You have the latest version' 
+                          : updateCheckResult === 'available'
+                          ? 'Update available! Check the notification.'
+                          : 'Look for new versions of BluePDM'}
+                      </div>
+                    </div>
+                    {updateCheckResult === 'none' && (
+                      <Check size={16} className="text-pdm-success" />
+                    )}
+                  </button>
                 </div>
                 
                 {/* Links */}
