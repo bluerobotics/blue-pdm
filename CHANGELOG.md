@@ -2,6 +2,11 @@
 
 All notable changes to BluePDM will be documented in this file.
 
+## [1.2.1] - 2025-12-10
+
+### Fixed
+- Duplicate vaults appearing in sidebar (deduplication on storage load)
+
 ## [1.2.0] - 2025-12-10
 
 ### Added

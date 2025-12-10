@@ -975,9 +975,28 @@ export const usePDMStore = create<PDMState>()(
       }),
       merge: (persistedState, currentState) => {
         const persisted = persistedState as Record<string, unknown>
+        
+        // Deduplicate connected vaults by ID (keep first occurrence)
+        const persistedVaults = (persisted.connectedVaults as ConnectedVault[]) || []
+        const seenIds = new Set<string>()
+        const seenPaths = new Set<string>()
+        const deduplicatedVaults = persistedVaults.filter(vault => {
+          if (!vault?.id || !vault?.localPath) return false
+          const normalizedPath = vault.localPath.toLowerCase().replace(/\\/g, '/')
+          if (seenIds.has(vault.id) || seenPaths.has(normalizedPath)) {
+            console.warn('[PDMStore] Removing duplicate vault from storage:', vault.name, vault.id)
+            return false
+          }
+          seenIds.add(vault.id)
+          seenPaths.add(normalizedPath)
+          return true
+        })
+        
         return {
           ...currentState,
           ...persisted,
+          // Use deduplicated vaults
+          connectedVaults: deduplicatedVaults,
           // Convert expandedFolders back to Set
           expandedFolders: new Set(persisted.expandedFolders as string[] || []),
           // Ensure cadPreviewMode has a default
