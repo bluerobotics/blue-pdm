@@ -133,14 +133,24 @@ export function SettingsView() {
                 {/* User profile */}
                 <div className="flex items-center gap-3 p-3 bg-pdm-bg rounded-lg border border-pdm-border">
                   {user.avatar_url ? (
-                    <img 
-                      src={user.avatar_url} 
-                      alt={user.full_name || user.email}
-                      className="w-12 h-12 rounded-full"
-                    />
+                    <>
+                      <img 
+                        src={user.avatar_url} 
+                        alt={user.full_name || user.email}
+                        className="w-12 h-12 rounded-full"
+                        onError={(e) => {
+                          const target = e.target as HTMLImageElement
+                          target.style.display = 'none'
+                          target.nextElementSibling?.classList.remove('hidden')
+                        }}
+                      />
+                      <div className="w-12 h-12 rounded-full bg-pdm-accent flex items-center justify-center text-lg text-white font-semibold hidden">
+                        {(user.full_name || user.email?.split('@')[0] || '?').charAt(0).toUpperCase()}
+                      </div>
+                    </>
                   ) : (
                     <div className="w-12 h-12 rounded-full bg-pdm-accent flex items-center justify-center text-lg text-white font-semibold">
-                      {(user.full_name || user.email)[0].toUpperCase()}
+                      {(user.full_name || user.email?.split('@')[0] || '?').charAt(0).toUpperCase()}
                     </div>
                   )}
                   <div className="flex-1 min-w-0">

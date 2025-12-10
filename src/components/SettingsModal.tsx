@@ -577,14 +577,24 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                   <>
                     <div className="flex items-center gap-4 p-4 bg-pdm-bg rounded-lg border border-pdm-border">
                       {user.avatar_url ? (
-                        <img 
-                          src={user.avatar_url} 
-                          alt={user.full_name || user.email}
-                          className="w-16 h-16 rounded-full"
-                        />
+                        <>
+                          <img 
+                            src={user.avatar_url} 
+                            alt={user.full_name || user.email}
+                            className="w-16 h-16 rounded-full"
+                            onError={(e) => {
+                              const target = e.target as HTMLImageElement
+                              target.style.display = 'none'
+                              target.nextElementSibling?.classList.remove('hidden')
+                            }}
+                          />
+                          <div className="w-16 h-16 rounded-full bg-pdm-accent flex items-center justify-center text-2xl text-white font-semibold hidden">
+                            {(user.full_name || user.email?.split('@')[0] || '?').charAt(0).toUpperCase()}
+                          </div>
+                        </>
                       ) : (
                         <div className="w-16 h-16 rounded-full bg-pdm-accent flex items-center justify-center text-2xl text-white font-semibold">
-                          {(user.full_name || user.email)[0].toUpperCase()}
+                          {(user.full_name || user.email?.split('@')[0] || '?').charAt(0).toUpperCase()}
                         </div>
                       )}
                       <div className="flex-1 min-w-0">
@@ -850,14 +860,24 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                               className="flex items-center gap-3 p-3 rounded-lg hover:bg-pdm-highlight transition-colors"
                             >
                               {orgUser.avatar_url ? (
-                                <img 
-                                  src={orgUser.avatar_url} 
-                                  alt={orgUser.full_name || orgUser.email}
-                                  className="w-10 h-10 rounded-full"
-                                />
+                                <>
+                                  <img 
+                                    src={orgUser.avatar_url} 
+                                    alt={orgUser.full_name || orgUser.email}
+                                    className="w-10 h-10 rounded-full"
+                                    onError={(e) => {
+                                      const target = e.target as HTMLImageElement
+                                      target.style.display = 'none'
+                                      target.nextElementSibling?.classList.remove('hidden')
+                                    }}
+                                  />
+                                  <div className="w-10 h-10 rounded-full bg-pdm-fg-muted/20 flex items-center justify-center text-sm font-medium hidden">
+                                    {(orgUser.full_name || orgUser.email?.split('@')[0] || '?').charAt(0).toUpperCase()}
+                                  </div>
+                                </>
                               ) : (
                                 <div className="w-10 h-10 rounded-full bg-pdm-fg-muted/20 flex items-center justify-center text-sm font-medium">
-                                  {(orgUser.full_name || orgUser.email)[0].toUpperCase()}
+                                  {(orgUser.full_name || orgUser.email?.split('@')[0] || '?').charAt(0).toUpperCase()}
                                 </div>
                               )}
                               <div className="flex-1 min-w-0">

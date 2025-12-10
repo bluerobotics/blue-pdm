@@ -169,22 +169,23 @@ function setupSessionListener() {
 export async function signInWithGoogle() {
   const client = getSupabaseClient()
   
-  // In Electron production, use popup window flow
-  const isElectronProduction = window.electronAPI && !window.location.href.startsWith('http://localhost')
+  // In Electron (both dev and production), use system browser OAuth flow
+  const isElectron = !!window.electronAPI
   
   authLog('info', 'signInWithGoogle called', { 
-    isElectronProduction,
+    isElectron,
     currentUrl: window.location.href.substring(0, 50)
   })
   
-  if (isElectronProduction) {
-    authLog('info', 'Using Electron production OAuth flow')
+  if (isElectron) {
+    authLog('info', 'Using Electron system browser OAuth flow')
     
     // Get the OAuth URL from Supabase without auto-redirecting
+    // The redirect URL will be replaced by the main process with a local callback server
     const { data, error } = await client.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: 'http://localhost/auth/callback', // Will be intercepted by Electron
+        redirectTo: 'http://localhost/auth/callback', // Placeholder - will be replaced by main process
         queryParams: {
           access_type: 'offline',
           prompt: 'select_account'
@@ -206,26 +207,26 @@ export async function signInWithGoogle() {
     // Set up promise to wait for session from main process
     const sessionPromise = new Promise<boolean>((resolve) => {
       sessionResolver = resolve
-      // Timeout after 60 seconds
+      // Timeout after 5 minutes (user may take time in browser)
       setTimeout(() => {
-        authLog('warn', 'Session promise timed out after 60s')
+        authLog('warn', 'Session promise timed out after 5 minutes')
         sessionResolver = null
         resolve(false)
-      }, 60000)
+      }, 5 * 60 * 1000)
     })
     
-    // Open OAuth window via Electron IPC
-    authLog('info', 'Opening OAuth popup window via Electron IPC')
+    // Open system browser via Electron IPC (this opens the user's default browser)
+    authLog('info', 'Opening system browser for Google sign-in')
     const result = await window.electronAPI.openOAuthWindow(data.url)
     
-    authLog('info', 'OAuth window closed', { 
+    authLog('info', 'OAuth flow returned', { 
       success: result?.success,
       canceled: result?.canceled,
       error: result?.error
     })
     
     if (result?.success) {
-      authLog('info', 'OAuth window reported success, waiting for session from main process')
+      authLog('info', 'OAuth completed in browser, waiting for session')
       // Wait for the session to be set by the main process
       const sessionSet = await sessionPromise
       sessionResolver = null
@@ -233,7 +234,7 @@ export async function signInWithGoogle() {
       authLog('info', 'Session promise resolved', { sessionSet })
       
       if (sessionSet) {
-        authLog('info', 'Session set successfully via IPC!')
+        authLog('info', 'Session set successfully!')
         return { data: { url: null, provider: 'google' }, error: null }
       } else {
         authLog('warn', 'Session was not set via IPC, checking manually')
@@ -251,10 +252,15 @@ export async function signInWithGoogle() {
     }
     
     sessionResolver = null
+    if (result?.error) {
+      authLog('error', 'OAuth flow failed', { error: result.error })
+      return { data: null, error: new Error(result.error) }
+    }
+    
     authLog('error', 'OAuth flow completed without establishing session', {
       wasCanceled: result?.canceled
     })
-    return { data: null, error: result?.canceled ? null : new Error('OAuth failed') }
+    return { data: null, error: result?.canceled ? null : new Error('Sign in was not completed') }
   }
   
   // In development or web, use normal OAuth flow
@@ -440,6 +446,9 @@ export async function linkUserToOrganization(userId: string, userEmail: string) 
 // Files - Read Operations
 // ============================================
 
+/**
+ * Get files with full metadata including user info (slower, use for single file or small sets)
+ */
 export async function getFiles(orgId: string, options?: {
   vaultId?: string
   folder?: string
@@ -485,6 +494,72 @@ export async function getFiles(orgId: string, options?: {
   
   const { data, error } = await query
   return { files: data, error }
+}
+
+/**
+ * Lightweight file fetch for initial vault sync - only essential columns, no joins
+ * Much faster than getFiles() for large vaults
+ */
+export async function getFilesLightweight(orgId: string, vaultId?: string) {
+  const client = getSupabaseClient()
+  let query = client
+    .from('files')
+    .select(`
+      id,
+      file_path,
+      file_name,
+      extension,
+      file_type,
+      part_number,
+      description,
+      revision,
+      version,
+      content_hash,
+      file_size,
+      state,
+      checked_out_by,
+      checked_out_at,
+      updated_at
+    `)
+    .eq('org_id', orgId)
+    .order('file_path', { ascending: true })
+  
+  if (vaultId) {
+    query = query.eq('vault_id', vaultId)
+  }
+  
+  const { data, error } = await query
+  return { files: data, error }
+}
+
+/**
+ * Get checked out user info for a batch of file IDs
+ * Used to lazily load user info after initial sync
+ */
+export async function getCheckedOutUsers(fileIds: string[]) {
+  if (fileIds.length === 0) return { users: {}, error: null }
+  
+  const client = getSupabaseClient()
+  const { data, error } = await client
+    .from('files')
+    .select(`
+      id,
+      checked_out_user:users!checked_out_by(email, full_name, avatar_url)
+    `)
+    .in('id', fileIds)
+    .not('checked_out_by', 'is', null)
+  
+  if (error) return { users: {}, error }
+  
+  // Convert to a map for easy lookup
+  const users: Record<string, { email: string; full_name: string; avatar_url?: string }> = {}
+  for (const file of data || []) {
+    if (file.checked_out_user) {
+      users[file.id] = file.checked_out_user as { email: string; full_name: string; avatar_url?: string }
+    }
+  }
+  
+  return { users, error: null }
 }
 
 export async function getFile(fileId: string) {

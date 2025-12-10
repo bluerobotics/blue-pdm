@@ -13,6 +13,13 @@ const uiLog = (level: 'info' | 'warn' | 'error' | 'debug', message: string, data
   window.electronAPI?.log?.(level, `[MenuBar] ${message}`, data)
 }
 
+// Get user's initial for avatar fallback (first letter of name or email, never "Y" for "You")
+function getUserInitial(user: { full_name?: string | null; email?: string } | null): string {
+  if (!user) return '?'
+  const name = user.full_name || user.email?.split('@')[0] || ''
+  return name.charAt(0).toUpperCase() || '?'
+}
+
 interface MenuBarProps {
   onOpenVault?: () => void
   onRefresh?: () => void
@@ -243,14 +250,24 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
               className="flex items-center gap-2 px-2 py-1 rounded hover:bg-pdm-bg-lighter transition-colors"
             >
               {user.avatar_url ? (
-                <img 
-                  src={user.avatar_url} 
-                  alt={user.full_name || user.email}
-                  className="w-6 h-6 rounded-full"
-                />
+                <>
+                  <img 
+                    src={user.avatar_url} 
+                    alt={user.full_name || user.email}
+                    className="w-6 h-6 rounded-full"
+                    onError={(e) => {
+                      const target = e.target as HTMLImageElement
+                      target.style.display = 'none'
+                      target.nextElementSibling?.classList.remove('hidden')
+                    }}
+                  />
+                  <div className="w-6 h-6 rounded-full bg-pdm-accent flex items-center justify-center text-xs text-white font-semibold hidden">
+                    {getUserInitial(user)}
+                  </div>
+                </>
               ) : (
                 <div className="w-6 h-6 rounded-full bg-pdm-accent flex items-center justify-center text-xs text-white font-semibold">
-                  {(user.full_name || user.email)[0].toUpperCase()}
+                  {getUserInitial(user)}
                 </div>
               )}
               <span className="text-xs text-pdm-fg-dim max-w-[120px] truncate">
@@ -266,14 +283,24 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
                 <div className="px-4 py-3 border-b border-pdm-border">
                   <div className="flex items-center gap-3">
                     {user.avatar_url ? (
-                      <img 
-                        src={user.avatar_url} 
-                        alt={user.full_name || user.email}
-                        className="w-10 h-10 rounded-full"
-                      />
+                      <>
+                        <img 
+                          src={user.avatar_url} 
+                          alt={user.full_name || user.email}
+                          className="w-10 h-10 rounded-full"
+                          onError={(e) => {
+                            const target = e.target as HTMLImageElement
+                            target.style.display = 'none'
+                            target.nextElementSibling?.classList.remove('hidden')
+                          }}
+                        />
+                        <div className="w-10 h-10 rounded-full bg-pdm-accent flex items-center justify-center text-sm text-white font-semibold hidden">
+                          {getUserInitial(user)}
+                        </div>
+                      </>
                     ) : (
                       <div className="w-10 h-10 rounded-full bg-pdm-accent flex items-center justify-center text-sm text-white font-semibold">
-                        {(user.full_name || user.email)[0].toUpperCase()}
+                        {getUserInitial(user)}
                       </div>
                     )}
                     <div className="flex-1 min-w-0">

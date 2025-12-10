@@ -2,6 +2,40 @@
 
 All notable changes to BluePDM will be documented in this file.
 
+## [1.2.0] - 2025-12-10
+
+### Added
+- Loading spinner on app startup in vault viewer (no more app appearing to hang while loading)
+- Proper avatar fallback handling (shows initials when image fails to load)
+
+### Fixed
+- Avatar images not loading from database - Google OAuth stores avatar as 'picture' not 'avatar_url'
+- Broken avatar images in ExplorerView now gracefully fall back to initials
+- Database trigger now properly saves Google profile pictures for new users
+- Added migration to fix existing users with missing avatar URLs
+
+### Changed
+- Updated schema.sql with Google OAuth avatar fix (`COALESCE(avatar_url, picture)`)
+
+## [1.1.3] - 2025-12-10
+
+### Changed
+- Google sign-in now uses system browser instead of in-app popup
+  - More secure: users sign in through their familiar browser
+  - More reliable: fixes "Unable to login after Google Auth completes" issue
+  - Better UX: users can use their existing Google session and saved passwords
+
+### Fixed
+- OAuth session establishment timeout issues when signing in with Google
+- Multiple GoTrueClient instances warning during authentication
+
+## [1.1.2] - 2025-01-10
+
+### Fixed
+- Files not showing after app upgrade/reinstall when vault folder already exists
+- Race condition in stale vault cleanup that prevented auto-reconnection of existing vault folders
+- Auto-connect now re-triggers when vault ID changes (after upgrade reconnection)
+
 ## [1.1.1] - 2025-01-10
 
 ### Fixed

@@ -339,12 +339,13 @@ BEGIN
   LIMIT 1;
   
   -- Insert user profile
+  -- Note: Google OAuth stores avatar as 'picture', not 'avatar_url'
   INSERT INTO users (id, email, full_name, avatar_url, org_id)
   VALUES (
     NEW.id,
     NEW.email,
     COALESCE(NEW.raw_user_meta_data->>'full_name', NEW.raw_user_meta_data->>'name'),
-    NEW.raw_user_meta_data->>'avatar_url',
+    COALESCE(NEW.raw_user_meta_data->>'avatar_url', NEW.raw_user_meta_data->>'picture'),
     matching_org_id
   );
   
@@ -479,12 +480,13 @@ USING (bucket_id = 'vault');
 -- This runs automatically and links any existing auth.users to public.users.
 -- Safe to run multiple times (uses ON CONFLICT DO NOTHING).
 
+-- Note: Google OAuth stores avatar as 'picture', not 'avatar_url'
 INSERT INTO users (id, email, full_name, avatar_url, org_id)
 SELECT 
   au.id,
   au.email,
   COALESCE(au.raw_user_meta_data->>'full_name', au.raw_user_meta_data->>'name'),
-  au.raw_user_meta_data->>'avatar_url',
+  COALESCE(au.raw_user_meta_data->>'avatar_url', au.raw_user_meta_data->>'picture'),
   o.id
 FROM auth.users au
 LEFT JOIN organizations o ON split_part(au.email, '@', 2) = ANY(o.email_domains)
@@ -531,3 +533,15 @@ VALUES (
 
 -- Duplicate content (same hash = same file content)
 -- SELECT content_hash, COUNT(*) as copies FROM files WHERE content_hash IS NOT NULL GROUP BY content_hash HAVING COUNT(*) > 1;
+
+-- ===========================================
+-- FIX MISSING AVATAR URLS (Migration)
+-- ===========================================
+-- Google OAuth stores profile picture as 'picture', not 'avatar_url'.
+-- This updates any users who have NULL avatar_url to use the 'picture' field.
+-- Safe to run multiple times.
+
+UPDATE users u
+SET avatar_url = COALESCE(au.raw_user_meta_data->>'avatar_url', au.raw_user_meta_data->>'picture')
+FROM auth.users au
+WHERE u.id = au.id AND u.avatar_url IS NULL;

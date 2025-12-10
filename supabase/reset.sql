@@ -55,14 +55,26 @@ DROP POLICY IF EXISTS "Authenticated users can delete from vault" ON storage.obj
 -- 2. Create your organization (INSERT INTO organizations...)
 -- 3. IMPORTANT: If you have existing auth users, run this to link them:
 --
---    INSERT INTO users (id, email, full_name, org_id)
+--    INSERT INTO users (id, email, full_name, avatar_url, org_id)
 --    SELECT 
 --      au.id,
 --      au.email,
---      au.raw_user_meta_data->>'full_name',
+--      COALESCE(au.raw_user_meta_data->>'full_name', au.raw_user_meta_data->>'name'),
+--      COALESCE(au.raw_user_meta_data->>'avatar_url', au.raw_user_meta_data->>'picture'),
 --      o.id
 --    FROM auth.users au
 --    LEFT JOIN organizations o ON split_part(au.email, '@', 2) = ANY(o.email_domains);
 --
 -- The trigger only fires for NEW signups, not existing auth users.
+--
+-- ===========================================
+-- FIX MISSING AVATAR URLS (run if avatars are broken)
+-- ===========================================
+-- Google OAuth stores avatar as 'picture', not 'avatar_url'.
+-- If existing users have NULL avatar_url, run this to fix:
+--
+--    UPDATE users u
+--    SET avatar_url = COALESCE(au.raw_user_meta_data->>'avatar_url', au.raw_user_meta_data->>'picture')
+--    FROM auth.users au
+--    WHERE u.id = au.id AND u.avatar_url IS NULL;
 

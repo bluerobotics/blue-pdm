@@ -115,14 +115,16 @@ export function WelcomeScreen({ onOpenRecentVault }: WelcomeScreenProps) {
   }, [user, isOfflineMode, hasSeenUser])
 
   // Auto-connect on mount if we have connected vaults
+  // Also re-run when vault ID changes (e.g., after stale vault cleanup and reconnection)
+  const firstVaultId = connectedVaults[0]?.id
   useEffect(() => {
     if (connectedVaults.length > 0 && (user || isOfflineMode)) {
-      uiLog('info', 'Auto-connecting to vault', { vaultName: connectedVaults[0].name })
+      uiLog('info', 'Auto-connecting to vault', { vaultName: connectedVaults[0].name, vaultId: connectedVaults[0].id })
       // Auto-connect to first connected vault
       const vault = connectedVaults[0]
       onOpenRecentVault(vault.localPath)
     }
-  }, [user, isOfflineMode, connectedVaults.length])
+  }, [user, isOfflineMode, connectedVaults.length, firstVaultId])
 
   // Load organization vaults with stats
   useEffect(() => {
@@ -176,6 +178,9 @@ export function WelcomeScreen({ onOpenRecentVault }: WelcomeScreenProps) {
         // Clean up stale connected vaults that no longer exist on server
         const serverVaultIds = new Set(vaultsData.map((v: any) => v.id))
         const staleVaults = connectedVaults.filter(cv => !serverVaultIds.has(cv.id))
+        const staleVaultIds = new Set(staleVaults.map(v => v.id))
+        const staleVaultPaths = new Set(staleVaults.map(v => v.localPath.toLowerCase().replace(/\\/g, '/')))
+        
         if (staleVaults.length > 0) {
           uiLog('info', 'Removing stale connected vaults (not on server)', { count: staleVaults.length, ids: staleVaults.map(v => v.id) })
           staleVaults.forEach(v => removeConnectedVault(v.id))
@@ -199,13 +204,16 @@ export function WelcomeScreen({ onOpenRecentVault }: WelcomeScreenProps) {
         
         // Detect orphaned vault folders: folders that exist on disk but aren't in connectedVaults
         // This handles the case where user reinstalls the app and already has vault folders
+        // NOTE: We exclude stale vault paths since those are being removed (state update is async)
         if (window.electronAPI) {
           const connectedPaths = new Set(
-            connectedVaults.map(cv => cv.localPath.toLowerCase().replace(/\\/g, '/'))
+            connectedVaults
+              .filter(cv => !staleVaultIds.has(cv.id)) // Exclude stale vaults being removed
+              .map(cv => cv.localPath.toLowerCase().replace(/\\/g, '/'))
           )
           
           for (const serverVault of vaultsData as any[]) {
-            // Check if this server vault is already connected
+            // Check if this server vault is already connected (with correct ID)
             const isConnected = connectedVaults.some(cv => cv.id === serverVault.id)
             if (isConnected) continue
             
@@ -216,15 +224,20 @@ export function WelcomeScreen({ onOpenRecentVault }: WelcomeScreenProps) {
               if (result.success && result.path) {
                 const normalizedPath = result.path.toLowerCase().replace(/\\/g, '/')
                 
-                // Check if this path isn't already connected under a different vault ID
+                // Check if this path isn't already connected under a different valid vault ID
+                // Note: stale vault paths are excluded from connectedPaths, so we can reconnect
+                // folders that were connected with an old/stale vault ID
                 if (!connectedPaths.has(normalizedPath)) {
-                  uiLog('info', 'Found orphaned vault folder, auto-reconnecting', { 
+                  // Check if this was a stale vault path - if so, this is a reconnection after upgrade
+                  const wasStale = staleVaultPaths.has(normalizedPath)
+                  uiLog('info', wasStale ? 'Reconnecting vault after upgrade' : 'Found orphaned vault folder, auto-reconnecting', { 
                     vaultName: serverVault.name, 
                     vaultId: serverVault.id,
-                    path: result.path 
+                    path: result.path,
+                    wasStaleConnection: wasStale
                   })
                   
-                  // Auto-reconnect the vault
+                  // Auto-reconnect the vault with correct server ID
                   const connectedVault: ConnectedVault = {
                     id: serverVault.id,
                     name: serverVault.name,
@@ -232,7 +245,9 @@ export function WelcomeScreen({ onOpenRecentVault }: WelcomeScreenProps) {
                     isExpanded: true
                   }
                   addConnectedVault(connectedVault)
-                  addToast('info', `Reconnected existing vault folder "${serverVault.name}"`)
+                  addToast('info', wasStale 
+                    ? `Reconnected vault "${serverVault.name}" after upgrade`
+                    : `Reconnected existing vault folder "${serverVault.name}"`)
                 }
               }
             } catch {
@@ -568,10 +583,24 @@ export function WelcomeScreen({ onOpenRecentVault }: WelcomeScreenProps) {
           ) : user && (
             <div className="inline-flex items-center gap-2 px-4 py-2 bg-pdm-bg-light border border-pdm-border rounded-full">
               {user.avatar_url ? (
-                <img src={user.avatar_url} alt="" className="w-5 h-5 rounded-full" />
+                <>
+                  <img 
+                    src={user.avatar_url} 
+                    alt="" 
+                    className="w-5 h-5 rounded-full"
+                    onError={(e) => {
+                      const target = e.target as HTMLImageElement
+                      target.style.display = 'none'
+                      target.nextElementSibling?.classList.remove('hidden')
+                    }}
+                  />
+                  <div className="w-5 h-5 rounded-full bg-pdm-accent flex items-center justify-center text-[10px] text-white font-semibold hidden">
+                    {(user.full_name || user.email?.split('@')[0] || '?').charAt(0).toUpperCase()}
+                  </div>
+                </>
               ) : (
                 <div className="w-5 h-5 rounded-full bg-pdm-accent flex items-center justify-center text-[10px] text-white font-semibold">
-                  {(user.full_name || user.email)[0].toUpperCase()}
+                  {(user.full_name || user.email?.split('@')[0] || '?').charAt(0).toUpperCase()}
                 </div>
               )}
               <span className="text-sm text-pdm-fg-dim">

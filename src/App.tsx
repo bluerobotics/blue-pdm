@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { usePDMStore } from './stores/pdmStore'
-import { supabase, getCurrentSession, isSupabaseConfigured, getFiles, linkUserToOrganization, getUserProfile, setCurrentAccessToken } from './lib/supabase'
+import { supabase, getCurrentSession, isSupabaseConfigured, getFilesLightweight, getCheckedOutUsers, linkUserToOrganization, getUserProfile, setCurrentAccessToken } from './lib/supabase'
 import { MenuBar } from './components/MenuBar'
 import { ActivityBar } from './components/ActivityBar'
 import { Sidebar } from './components/Sidebar'
@@ -97,11 +97,12 @@ function App() {
           const userProfile = profile as { full_name?: string; avatar_url?: string; org_id?: string; role?: string; last_sign_in?: string } | null
           
           // Set user from profile (includes role) or fallback to session data
+          // Note: Google OAuth stores avatar as 'picture' in user_metadata, not 'avatar_url'
           const userData = {
             id: session.user.id,
             email: session.user.email || '',
             full_name: userProfile?.full_name || session.user.user_metadata?.full_name || session.user.user_metadata?.name || null,
-            avatar_url: userProfile?.avatar_url || session.user.user_metadata?.avatar_url || null,
+            avatar_url: userProfile?.avatar_url || session.user.user_metadata?.avatar_url || session.user.user_metadata?.picture || null,
             org_id: userProfile?.org_id || null,
             role: (userProfile?.role || 'engineer') as 'admin' | 'engineer' | 'viewer',
             created_at: session.user.created_at,
@@ -152,11 +153,12 @@ function App() {
             const userProfile = profile as { full_name?: string; avatar_url?: string; org_id?: string; role?: string; last_sign_in?: string } | null
             
             // Set user from profile (includes role) or fallback to session data
+            // Note: Google OAuth stores avatar as 'picture' in user_metadata, not 'avatar_url'
             setUser({
               id: session.user.id,
               email: session.user.email || '',
               full_name: userProfile?.full_name || session.user.user_metadata?.full_name || session.user.user_metadata?.name || null,
-              avatar_url: userProfile?.avatar_url || session.user.user_metadata?.avatar_url || null,
+              avatar_url: userProfile?.avatar_url || session.user.user_metadata?.avatar_url || session.user.user_metadata?.picture || null,
               org_id: userProfile?.org_id || null,
               role: (userProfile?.role || 'engineer') as 'admin' | 'engineer' | 'viewer',
               created_at: session.user.created_at,
@@ -213,31 +215,45 @@ function App() {
     }
     
     try {
-      // 1. Load local files
-      setStatusMessage('Scanning local files...')
-      const result = await window.electronAPI.listWorkingFiles()
-      if (!result.success || !result.files) {
-        setStatusMessage(result.error || 'Failed to load files')
+      // Run local file scan and server fetch in PARALLEL for faster boot
+      const shouldFetchServer = organization && !isOfflineMode && currentVaultId
+      
+      if (!silent) {
+        setStatusMessage(shouldFetchServer ? 'Loading local & cloud files...' : 'Scanning local files...')
+      }
+      
+      // Start both operations at once
+      const localPromise = window.electronAPI.listWorkingFiles()
+      const serverPromise = shouldFetchServer 
+        ? getFilesLightweight(organization.id, currentVaultId)
+        : Promise.resolve({ files: null, error: null })
+      
+      // Wait for both to complete
+      const [localResult, serverResult] = await Promise.all([localPromise, serverPromise])
+      
+      // Process local files
+      if (!localResult.success || !localResult.files) {
+        setStatusMessage(localResult.error || 'Failed to load files')
         return
       }
       
       // Map hash to localHash for comparison
-      let localFiles = result.files.map((f: any) => ({
+      let localFiles = localResult.files.map((f: any) => ({
         ...f,
         localHash: f.hash
       }))
       
-      // 2. If connected to Supabase, fetch PDM data and merge
-      if (organization && !isOfflineMode && currentVaultId) {
-        setStatusMessage('Fetching vault data...')
-        const { files: pdmFiles, error: pdmError } = await getFiles(organization.id, { vaultId: currentVaultId })
+      // 2. If connected to Supabase, merge PDM data
+      if (shouldFetchServer) {
+        const pdmFiles = serverResult.files
+        const pdmError = serverResult.error
         
         if (pdmError) {
           console.warn('Failed to fetch PDM data:', pdmError)
         } else if (pdmFiles && Array.isArray(pdmFiles)) {
-          setStatusMessage(`Merging ${pdmFiles.length} files...`)
-          // Yield to UI thread before heavy processing
-          await new Promise(resolve => setTimeout(resolve, 0))
+          if (!silent) {
+            setStatusMessage(`Merging ${pdmFiles.length} files...`)
+          }
           
           // Create a map of pdm data by file path
           const pdmMap = new Map(pdmFiles.map((f: any) => [f.file_path, f]))
@@ -265,12 +281,21 @@ function App() {
             }
           }
           
-          // Create a map of server files that are checked out by current user, keyed by content hash
+          // Create a map of server files keyed by content hash for move detection
           // This allows us to detect moved files (same content, different path) and preserve their pdmData
+          // We prioritize checked-out-by-me files, but also track all synced files for move detection
+          const serverFilesByHash = new Map<string, any>()
           const checkedOutByMeByHash = new Map<string, any>()
           for (const pdmFile of pdmFiles as any[]) {
-            if (pdmFile.checked_out_by === user?.id && pdmFile.content_hash) {
-              checkedOutByMeByHash.set(pdmFile.content_hash, pdmFile)
+            if (pdmFile.content_hash) {
+              // Always track by hash for move detection (first one wins if duplicates)
+              if (!serverFilesByHash.has(pdmFile.content_hash)) {
+                serverFilesByHash.set(pdmFile.content_hash, pdmFile)
+              }
+              // Also track checked-out-by-me files (these take priority)
+              if (pdmFile.checked_out_by === user?.id) {
+                checkedOutByMeByHash.set(pdmFile.content_hash, pdmFile)
+              }
             }
           }
           
@@ -281,10 +306,11 @@ function App() {
             let pdmData = pdmMap.get(localFile.relativePath)
             let isMovedFile = false
             
-            // If no path match but file has same hash as one of my checked out files,
+            // If no path match but file has same hash as a server file,
             // this is likely a moved file - preserve the pdmData
+            // Prioritize checked-out-by-me files (allows editing), fall back to any server file
             if (!pdmData && localFile.localHash) {
-              const movedFromFile = checkedOutByMeByHash.get(localFile.localHash)
+              const movedFromFile = checkedOutByMeByHash.get(localFile.localHash) || serverFilesByHash.get(localFile.localHash)
               if (movedFromFile) {
                 pdmData = movedFromFile
                 isMovedFile = true
@@ -345,10 +371,9 @@ function App() {
           
           for (const pdmFile of pdmFiles as any[]) {
             if (!localPathSet.has(pdmFile.file_path)) {
-              // If file is checked out by current user but doesn't exist locally,
-              // check if it was MOVED (same content exists at a different location)
+              // Check if this file was MOVED (same content exists at a different location locally)
               const isCheckedOutByMe = pdmFile.checked_out_by === user?.id
-              const wasMoved = isCheckedOutByMe && pdmFile.content_hash && localContentHashes.has(pdmFile.content_hash)
+              const wasMoved = pdmFile.content_hash && localContentHashes.has(pdmFile.content_hash)
               
               // If moved, don't show the ghost at the old location - the file is handled at the new location
               if (wasMoved) {
@@ -446,9 +471,6 @@ function App() {
         }
       }
       
-      // Yield before updating state to let UI stay responsive
-      await new Promise(resolve => setTimeout(resolve, 0))
-      
       setFiles(localFiles)
       setFilesLoaded(true)  // Mark that initial load is complete
       const totalFiles = localFiles.filter(f => !f.isDirectory).length
@@ -456,19 +478,45 @@ function App() {
       const folderCount = localFiles.filter(f => f.isDirectory).length
       setStatusMessage(`Loaded ${totalFiles} files, ${folderCount} folders${syncedCount > 0 ? ` (${syncedCount} synced)` : ''}`)
       
-      // Set read-only status on synced files in background (non-blocking)
-      // Files should be read-only unless checked out by current user
+      // Background tasks (non-blocking) - run after UI renders
       if (user && window.electronAPI) {
-        // Use setTimeout to not block UI - this can run in background
         setTimeout(async () => {
+          // 1. Set read-only status on synced files
           for (const file of localFiles) {
             if (file.isDirectory || !file.pdmData) continue
-            
             const isCheckedOutByMe = file.pdmData.checked_out_by === user.id
-            // Make file writable if checked out by me, read-only otherwise
             window.electronAPI.setReadonly(file.path, !isCheckedOutByMe)
           }
-        }, 100)
+          
+          // 2. Lazy-load checked out user info for UI display
+          // This adds user names/emails without blocking initial render
+          const checkedOutFileIds = localFiles
+            .filter(f => !f.isDirectory && f.pdmData?.checked_out_by)
+            .map(f => f.pdmData!.id)
+          
+          if (checkedOutFileIds.length > 0 && organization) {
+            const { users: userInfo } = await getCheckedOutUsers(checkedOutFileIds)
+            const userInfoMap = userInfo as Record<string, { email: string; full_name: string; avatar_url?: string }>
+            if (Object.keys(userInfoMap).length > 0) {
+              // Update files in store with user info
+              const currentFiles = usePDMStore.getState().files
+              const updatedFiles = currentFiles.map(f => {
+                const fileId = f.pdmData?.id
+                if (fileId && fileId in userInfoMap && f.pdmData) {
+                  return {
+                    ...f,
+                    pdmData: {
+                      ...f.pdmData,
+                      checked_out_user: userInfoMap[fileId]
+                    }
+                  } as typeof f
+                }
+                return f
+              })
+              setFiles(updatedFiles)
+            }
+          }
+        }, 50) // Small delay to let React render first
       }
     } catch (err) {
       if (!silent) {

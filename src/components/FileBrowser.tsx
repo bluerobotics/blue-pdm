@@ -2869,11 +2869,11 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
           </div>
         )}
 
-        {isLoading && (
+        {(isLoading || !filesLoaded) && (
           <div className="absolute inset-0 z-30 bg-pdm-bg/80 flex items-center justify-center">
             <div className="flex flex-col items-center gap-4">
               <div className="w-12 h-12 border-4 border-pdm-accent/30 border-t-pdm-accent rounded-full animate-spin" />
-              <span className="text-sm text-pdm-fg-muted">Loading files...</span>
+              <span className="text-sm text-pdm-fg-muted">Loading vault...</span>
             </div>
           </div>
         )}

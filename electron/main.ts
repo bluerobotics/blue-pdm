@@ -2,8 +2,10 @@ import { app, BrowserWindow, ipcMain, Menu, shell, dialog, screen, nativeImage, 
 import path from 'path'
 import fs from 'fs'
 import crypto from 'crypto'
+import http from 'http'
 import { fileURLToPath } from 'url'
 import chokidar from 'chokidar'
+import type { AddressInfo } from 'net'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -456,114 +458,224 @@ function createAppMenu() {
 }
 
 // ============================================
-// IPC Handlers - OAuth Popup Window
+// IPC Handlers - OAuth via System Browser
 // ============================================
+
+// Active OAuth server (only one at a time)
+let activeOAuthServer: http.Server | null = null
+let oauthTimeout: NodeJS.Timeout | null = null
+
+// Clean up any active OAuth flow
+function cleanupOAuthServer() {
+  if (oauthTimeout) {
+    clearTimeout(oauthTimeout)
+    oauthTimeout = null
+  }
+  if (activeOAuthServer) {
+    try {
+      activeOAuthServer.close()
+    } catch (e) {
+      // Ignore close errors
+    }
+    activeOAuthServer = null
+  }
+}
+
 ipcMain.handle('auth:open-oauth-window', async (_, url: string) => {
   return new Promise((resolve) => {
-    const authWindow = new BrowserWindow({
-      width: 450,
-      height: 600,
-      parent: mainWindow || undefined,
-      modal: true,
-      show: false,
-      backgroundColor: '#1a1a1a',
-      webPreferences: {
-        nodeIntegration: false,
-        contextIsolation: true
-      }
-    })
+    // Clean up any previous OAuth flow
+    cleanupOAuthServer()
     
-    // Center on parent window
-    if (mainWindow) {
-      const parentBounds = mainWindow.getBounds()
-      const x = Math.round(parentBounds.x + (parentBounds.width - 450) / 2)
-      const y = Math.round(parentBounds.y + (parentBounds.height - 600) / 2)
-      authWindow.setPosition(x, y)
-    }
+    log('[OAuth] Starting system browser OAuth flow')
     
-    authWindow.once('ready-to-show', () => {
-      authWindow.show()
-    })
-    
-    // Listen for redirect back to our app with auth tokens
-    let handled = false
-    const handleAuthRedirect = (redirectUrl: string) => {
-      // Prevent duplicate handling
-      if (handled) return false
+    // Create a local HTTP server to receive the OAuth callback
+    const server = http.createServer((req, res) => {
+      const reqUrl = new URL(req.url || '/', `http://localhost`)
       
-      // Check if this is our callback URL (contains access_token or code)
-      if (redirectUrl.startsWith('http://localhost') && 
-          (redirectUrl.includes('access_token') || redirectUrl.includes('code=') || redirectUrl.includes('#'))) {
-        handled = true
-        log('OAuth redirect detected:', redirectUrl.substring(0, 100) + '...')
+      log('[OAuth] Received callback request:', reqUrl.pathname)
+      
+      // Handle the OAuth callback
+      if (reqUrl.pathname === '/auth/callback' || reqUrl.pathname === '/') {
+        // Extract tokens from hash fragment or query params
+        // Note: Hash fragments aren't sent to server, so Supabase will redirect with tokens in query for implicit flow
+        // Or we handle it client-side with a redirect page
         
-        // In production, we can't load localhost - extract tokens and send to renderer
-        if (isDev) {
-          // In dev, localhost server is running, so load the URL directly
-          mainWindow?.loadURL(redirectUrl)
-        } else {
-          // In production, extract tokens from the redirect URL and send to renderer
-          const url = new URL(redirectUrl)
-          const hashFragment = url.hash || ''
-          
-          // Parse the hash fragment to extract tokens
-          const hashParams = new URLSearchParams(hashFragment.substring(1))
-          const accessToken = hashParams.get('access_token')
-          const refreshToken = hashParams.get('refresh_token')
-          const expiresIn = hashParams.get('expires_in')
-          const expiresAt = hashParams.get('expires_at')
-          
-          if (accessToken && refreshToken) {
-            log('Extracted tokens, sending to renderer...')
-            // Send tokens to renderer to set session
-            mainWindow?.webContents.send('auth:set-session', {
-              access_token: accessToken,
-              refresh_token: refreshToken,
-              expires_in: expiresIn ? parseInt(expiresIn) : 3600,
-              expires_at: expiresAt ? parseInt(expiresAt) : undefined
-            })
-          } else {
-            log('No tokens found in redirect, loading file with hash...')
-            // Fallback: try loading file with hash
-            const prodPath = path.join(__dirname, '../dist/index.html')
-            const normalizedPath = prodPath.replace(/\\/g, '/')
-            const fileUrl = `file:///${normalizedPath}${hashFragment}`
-            mainWindow?.loadURL(fileUrl)
-          }
-        }
+        const hashFragment = reqUrl.hash || ''
+        const accessToken = reqUrl.searchParams.get('access_token')
+        const refreshToken = reqUrl.searchParams.get('refresh_token')
+        const expiresIn = reqUrl.searchParams.get('expires_in')
+        const expiresAt = reqUrl.searchParams.get('expires_at')
         
-        authWindow.close()
-        resolve({ success: true })
-        return true
-      }
-      return false
+        // Send a nice HTML response that auto-closes
+        const successHtml = `
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Sign In Successful</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      background: linear-gradient(135deg, #0a1929 0%, #1a365d 100%);
+      color: #e3f2fd;
     }
-    
-    // Check URL changes
-    authWindow.webContents.on('will-redirect', (event, redirectUrl) => {
-      handleAuthRedirect(redirectUrl)
+    .container {
+      text-align: center;
+      padding: 40px;
+      background: rgba(255,255,255,0.1);
+      border-radius: 16px;
+      backdrop-filter: blur(10px);
+    }
+    .checkmark {
+      width: 80px;
+      height: 80px;
+      margin-bottom: 20px;
+    }
+    h1 { margin: 0 0 10px 0; font-weight: 500; }
+    p { margin: 0; opacity: 0.8; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <svg class="checkmark" viewBox="0 0 24 24" fill="none" stroke="#4caf50" stroke-width="2">
+      <circle cx="12" cy="12" r="10"/>
+      <path d="M8 12l3 3 5-6"/>
+    </svg>
+    <h1>Sign In Successful!</h1>
+    <p>You can close this window and return to BluePDM.</p>
+  </div>
+  <script>
+    // Try to extract tokens from hash fragment (Supabase implicit flow)
+    const hash = window.location.hash.substring(1);
+    if (hash) {
+      const params = new URLSearchParams(hash);
+      const accessToken = params.get('access_token');
+      const refreshToken = params.get('refresh_token');
+      if (accessToken) {
+        // Send tokens to the server via a second request
+        fetch('/auth/tokens?' + hash).then(() => {
+          setTimeout(() => window.close(), 1500);
+        });
+      } else {
+        setTimeout(() => window.close(), 2000);
+      }
+    } else {
+      setTimeout(() => window.close(), 2000);
+    }
+  </script>
+</body>
+</html>`
+        
+        res.writeHead(200, { 'Content-Type': 'text/html' })
+        res.end(successHtml)
+        
+        // If we have tokens directly in query params, process them
+        if (accessToken && refreshToken) {
+          log('[OAuth] Tokens received in query params, sending to renderer')
+          mainWindow?.webContents.send('auth:set-session', {
+            access_token: accessToken,
+            refresh_token: refreshToken,
+            expires_in: expiresIn ? parseInt(expiresIn) : 3600,
+            expires_at: expiresAt ? parseInt(expiresAt) : undefined
+          })
+          
+          // Focus the main window
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            if (mainWindow.isMinimized()) mainWindow.restore()
+            mainWindow.focus()
+          }
+          
+          cleanupOAuthServer()
+          resolve({ success: true })
+        }
+        return
+      }
+      
+      // Handle the second request with tokens from hash fragment
+      if (reqUrl.pathname === '/auth/tokens') {
+        const accessToken = reqUrl.searchParams.get('access_token')
+        const refreshToken = reqUrl.searchParams.get('refresh_token')
+        const expiresIn = reqUrl.searchParams.get('expires_in')
+        const expiresAt = reqUrl.searchParams.get('expires_at')
+        
+        res.writeHead(200, { 'Content-Type': 'text/plain' })
+        res.end('OK')
+        
+        if (accessToken && refreshToken) {
+          log('[OAuth] Tokens received from hash fragment, sending to renderer')
+          mainWindow?.webContents.send('auth:set-session', {
+            access_token: accessToken,
+            refresh_token: refreshToken,
+            expires_in: expiresIn ? parseInt(expiresIn) : 3600,
+            expires_at: expiresAt ? parseInt(expiresAt) : undefined
+          })
+          
+          // Focus the main window
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            if (mainWindow.isMinimized()) mainWindow.restore()
+            mainWindow.focus()
+          }
+          
+          cleanupOAuthServer()
+          resolve({ success: true })
+        }
+        return
+      }
+      
+      // Unknown path - redirect to callback
+      res.writeHead(302, { 'Location': '/auth/callback' + (reqUrl.search || '') + (reqUrl.hash || '') })
+      res.end()
     })
     
-    authWindow.webContents.on('will-navigate', (event, navUrl) => {
-      if (handleAuthRedirect(navUrl)) {
-        event.preventDefault()
+    // Listen on a random available port
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address() as AddressInfo
+      const port = address.port
+      const callbackUrl = `http://127.0.0.1:${port}/auth/callback`
+      
+      log('[OAuth] Local callback server started on port', port)
+      
+      activeOAuthServer = server
+      
+      // Modify the OAuth URL to use our local callback
+      // Supabase uses 'redirect_to' parameter for the final redirect destination
+      try {
+        const oauthUrl = new URL(url)
+        oauthUrl.searchParams.set('redirect_to', callbackUrl)
+        
+        const finalUrl = oauthUrl.toString()
+        log('[OAuth] Opening system browser with OAuth URL', { 
+          port, 
+          callbackUrl,
+          urlPreview: finalUrl.substring(0, 100) + '...'
+        })
+        
+        shell.openExternal(finalUrl)
+        
+        // Set a timeout for the OAuth flow (5 minutes)
+        oauthTimeout = setTimeout(() => {
+          log('[OAuth] Timeout waiting for OAuth callback')
+          cleanupOAuthServer()
+          resolve({ success: false, error: 'OAuth timed out' })
+        }, 5 * 60 * 1000)
+        
+      } catch (err) {
+        log('[OAuth] Error parsing OAuth URL:', err)
+        cleanupOAuthServer()
+        resolve({ success: false, error: String(err) })
       }
     })
     
-    // Also check after page loads (for hash-based redirects)
-    authWindow.webContents.on('did-navigate', (event, navUrl) => {
-      handleAuthRedirect(navUrl)
+    server.on('error', (err) => {
+      log('[OAuth] Server error:', err)
+      cleanupOAuthServer()
+      resolve({ success: false, error: String(err) })
     })
-    
-    authWindow.webContents.on('did-navigate-in-page', (event, navUrl) => {
-      handleAuthRedirect(navUrl)
-    })
-    
-    authWindow.on('closed', () => {
-      resolve({ success: false, canceled: true })
-    })
-    
-    authWindow.loadURL(url)
   })
 })
 

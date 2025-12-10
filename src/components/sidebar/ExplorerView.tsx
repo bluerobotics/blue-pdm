@@ -727,23 +727,25 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
         return (
           <span className="flex items-center flex-shrink-0 -space-x-1.5 ml-1" title={checkoutUsers.map(u => u.name).join(', ')}>
             {shown.map((u, i) => (
-              u.avatar_url ? (
-                <img 
-                  key={u.id}
-                  src={u.avatar_url} 
-                  alt={u.name}
-                  className={`w-4 h-4 rounded-full ring-1 ${u.isMe ? 'ring-pdm-warning' : 'ring-pdm-error'} bg-pdm-bg`}
-                  style={{ zIndex: maxShow - i }}
-                />
-              ) : (
+              <div key={u.id} className="relative" style={{ zIndex: maxShow - i }}>
+                {u.avatar_url ? (
+                  <img 
+                    src={u.avatar_url} 
+                    alt={u.name}
+                    className={`w-4 h-4 rounded-full ring-1 ${u.isMe ? 'ring-pdm-warning' : 'ring-pdm-error'} bg-pdm-bg object-cover`}
+                    onError={(e) => {
+                      const target = e.target as HTMLImageElement
+                      target.style.display = 'none'
+                      target.nextElementSibling?.classList.remove('hidden')
+                    }}
+                  />
+                ) : null}
                 <div 
-                  key={u.id}
-                  className={`w-4 h-4 rounded-full ring-1 ${u.isMe ? 'ring-pdm-warning bg-pdm-warning/30' : 'ring-pdm-error bg-pdm-error/30'} flex items-center justify-center text-[8px] bg-pdm-bg`}
-                  style={{ zIndex: maxShow - i }}
+                  className={`w-4 h-4 rounded-full ring-1 ${u.isMe ? 'ring-pdm-warning bg-pdm-warning/30' : 'ring-pdm-error bg-pdm-error/30'} flex items-center justify-center text-[8px] ${u.avatar_url ? 'hidden' : ''}`}
                 >
                   {u.name.charAt(0).toUpperCase()}
                 </div>
-              )
+              </div>
             ))}
             {extra > 0 && (
               <div 
@@ -778,29 +780,26 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     // For files:
     // Checked out by me - show my avatar with orange ring
     if (file.pdmData?.checked_out_by === user?.id) {
-      if (user?.avatar_url) {
-        return (
-          <img 
-            src={user.avatar_url} 
-            alt="You"
-            title="Checked out by you"
-            className="w-4 h-4 rounded-full flex-shrink-0 ring-1 ring-pdm-warning object-cover"
-            onError={(e) => {
-              const target = e.target as HTMLImageElement
-              target.style.display = 'none'
-              target.nextElementSibling?.classList.remove('hidden')
-            }}
-          />
-        )
-      }
-      // Fallback to initial when no avatar
-      const myName = user?.full_name || user?.email?.split('@')[0] || 'You'
+      const myInitial = (user?.full_name || user?.email?.split('@')[0] || '?').charAt(0).toUpperCase()
       return (
-        <div 
-          className="w-4 h-4 rounded-full flex-shrink-0 ring-1 ring-pdm-warning bg-pdm-warning/30 flex items-center justify-center text-[8px]"
-          title="Checked out by you"
-        >
-          {myName.charAt(0).toUpperCase()}
+        <div className="relative w-4 h-4 flex-shrink-0" title="Checked out by you">
+          {user?.avatar_url ? (
+            <img 
+              src={user.avatar_url} 
+              alt="You"
+              className="w-4 h-4 rounded-full ring-1 ring-pdm-warning object-cover"
+              onError={(e) => {
+                const target = e.target as HTMLImageElement
+                target.style.display = 'none'
+                target.nextElementSibling?.classList.remove('hidden')
+              }}
+            />
+          ) : null}
+          <div 
+            className={`w-4 h-4 rounded-full ring-1 ring-pdm-warning bg-pdm-warning/30 flex items-center justify-center text-[8px] absolute inset-0 ${user?.avatar_url ? 'hidden' : ''}`}
+          >
+            {myInitial}
+          </div>
         </div>
       )
     }
@@ -811,13 +810,12 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
       const avatarUrl = checkedOutUser?.avatar_url
       const displayName = checkedOutUser?.full_name || checkedOutUser?.email?.split('@')[0] || 'Someone'
       
-      if (avatarUrl) {
-        return (
-          <div className="relative w-4 h-4 flex-shrink-0">
+      return (
+        <div className="relative w-4 h-4 flex-shrink-0" title={`Checked out by ${displayName}`}>
+          {avatarUrl ? (
             <img 
               src={avatarUrl} 
               alt={displayName}
-              title={`Checked out by ${displayName}`}
               className="w-4 h-4 rounded-full ring-1 ring-pdm-error object-cover"
               onError={(e) => {
                 const target = e.target as HTMLImageElement
@@ -825,22 +823,12 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                 target.nextElementSibling?.classList.remove('hidden')
               }}
             />
-            <div 
-              className="w-4 h-4 rounded-full ring-1 ring-pdm-error bg-pdm-error/30 flex items-center justify-center text-[8px] absolute inset-0 hidden"
-              title={`Checked out by ${displayName}`}
-            >
-              {displayName.charAt(0).toUpperCase()}
-            </div>
+          ) : null}
+          <div 
+            className={`w-4 h-4 rounded-full ring-1 ring-pdm-error bg-pdm-error/30 flex items-center justify-center text-[8px] absolute inset-0 ${avatarUrl ? 'hidden' : ''}`}
+          >
+            {displayName.charAt(0).toUpperCase()}
           </div>
-        )
-      }
-      // Fallback to initial when no avatar
-      return (
-        <div 
-          className="w-4 h-4 rounded-full flex-shrink-0 ring-1 ring-pdm-error bg-pdm-error/30 flex items-center justify-center text-[8px]"
-          title={`Checked out by ${displayName}`}
-        >
-          {displayName.charAt(0).toUpperCase()}
         </div>
       )
     }
@@ -1564,14 +1552,22 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
               {otherCheckoutUsers.length > 0 && (
                 <div className="flex -space-x-1.5" title={`${otherCheckoutUsers.length} user${otherCheckoutUsers.length > 1 ? 's' : ''} have files checked out`}>
                   {otherCheckoutUsers.slice(0, 3).map((u: any, i) => (
-                    <div key={i} className="w-5 h-5 rounded-full ring-1 ring-pdm-bg-light overflow-hidden flex-shrink-0">
+                    <div key={i} className="w-5 h-5 rounded-full ring-1 ring-pdm-bg-light overflow-hidden flex-shrink-0 relative">
                       {u?.avatar_url ? (
-                        <img src={u.avatar_url} alt="" className="w-full h-full object-cover" />
-                      ) : (
-                        <div className="w-full h-full bg-pdm-accent/30 flex items-center justify-center text-[10px] font-medium text-pdm-accent">
-                          {u?.full_name?.[0] || u?.email?.[0] || '?'}
-                        </div>
-                      )}
+                        <img 
+                          src={u.avatar_url} 
+                          alt="" 
+                          className="w-full h-full object-cover"
+                          onError={(e) => {
+                            const target = e.target as HTMLImageElement
+                            target.style.display = 'none'
+                            target.nextElementSibling?.classList.remove('hidden')
+                          }}
+                        />
+                      ) : null}
+                      <div className={`w-full h-full bg-pdm-accent/30 flex items-center justify-center text-[10px] font-medium text-pdm-accent absolute inset-0 ${u?.avatar_url ? 'hidden' : ''}`}>
+                        {u?.full_name?.[0] || u?.email?.[0] || '?'}
+                      </div>
                     </div>
                   ))}
                   {otherCheckoutUsers.length > 3 && (
@@ -1641,6 +1637,12 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
               .map(file => renderTreeItem(file, 1))
             }
             
+            {(isLoading || !filesLoaded) && tree[''].length === 0 && (
+              <div className="flex items-center justify-center py-6">
+                <Loader2 size={20} className="text-pdm-fg-muted animate-spin" />
+              </div>
+            )}
+            
             {tree[''].length === 0 && !isLoading && filesLoaded && (
               <div className="px-4 py-4 text-center text-pdm-fg-muted text-xs">
                 {dragOverFolder === '' ? 'Drop here to move to root' : 'No files in vault'}
@@ -1683,6 +1685,12 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
             })
             .map(file => renderTreeItem(file))
           }
+          
+          {(isLoading || !filesLoaded) && rootItems.length === 0 && (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 size={20} className="text-pdm-fg-muted animate-spin" />
+            </div>
+          )}
           
           {rootItems.length === 0 && !isLoading && filesLoaded && (
             <div className="px-4 py-8 text-center text-pdm-fg-muted text-sm">
@@ -1797,14 +1805,13 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                   if (actualFile.isDirectory) return null
                   const { user } = usePDMStore.getState()
                   if (actualFile.pdmData?.checked_out_by === user?.id) {
-                    const myName = user?.full_name || user?.email?.split('@')[0] || 'You'
-                    if (user?.avatar_url) {
-                      return (
-                        <div className="relative w-4 h-4 flex-shrink-0">
+                    const myInitial = (user?.full_name || user?.email?.split('@')[0] || '?').charAt(0).toUpperCase()
+                    return (
+                      <div className="relative w-4 h-4 flex-shrink-0" title="Checked out by you">
+                        {user?.avatar_url ? (
                           <img 
                             src={user.avatar_url} 
                             alt="You"
-                            title="Checked out by you"
                             className="w-4 h-4 rounded-full ring-1 ring-pdm-warning object-cover"
                             onError={(e) => {
                               const target = e.target as HTMLImageElement
@@ -1812,21 +1819,12 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                               target.nextElementSibling?.classList.remove('hidden')
                             }}
                           />
-                          <div 
-                            className="w-4 h-4 rounded-full ring-1 ring-pdm-warning bg-pdm-warning/30 flex items-center justify-center text-[8px] absolute inset-0 hidden"
-                            title="Checked out by you"
-                          >
-                            {myName.charAt(0).toUpperCase()}
-                          </div>
+                        ) : null}
+                        <div 
+                          className={`w-4 h-4 rounded-full ring-1 ring-pdm-warning bg-pdm-warning/30 flex items-center justify-center text-[8px] absolute inset-0 ${user?.avatar_url ? 'hidden' : ''}`}
+                        >
+                          {myInitial}
                         </div>
-                      )
-                    }
-                    return (
-                      <div 
-                        className="w-4 h-4 rounded-full flex-shrink-0 ring-1 ring-pdm-warning bg-pdm-warning/30 flex items-center justify-center text-[8px]"
-                        title="Checked out by you"
-                      >
-                        {myName.charAt(0).toUpperCase()}
                       </div>
                     )
                   }
@@ -1835,13 +1833,12 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                     const avatarUrl = checkedOutUser?.avatar_url
                     const displayName = checkedOutUser?.full_name || checkedOutUser?.email?.split('@')[0] || 'Someone'
                     
-                    if (avatarUrl) {
-                      return (
-                        <div className="relative w-4 h-4 flex-shrink-0">
+                    return (
+                      <div className="relative w-4 h-4 flex-shrink-0" title={`Checked out by ${displayName}`}>
+                        {avatarUrl ? (
                           <img 
                             src={avatarUrl} 
                             alt={displayName}
-                            title={`Checked out by ${displayName}`}
                             className="w-4 h-4 rounded-full ring-1 ring-pdm-error object-cover"
                             onError={(e) => {
                               const target = e.target as HTMLImageElement
@@ -1849,21 +1846,12 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                               target.nextElementSibling?.classList.remove('hidden')
                             }}
                           />
-                          <div 
-                            className="w-4 h-4 rounded-full ring-1 ring-pdm-error bg-pdm-error/30 flex items-center justify-center text-[8px] absolute inset-0 hidden"
-                            title={`Checked out by ${displayName}`}
-                          >
-                            {displayName.charAt(0).toUpperCase()}
-                          </div>
+                        ) : null}
+                        <div 
+                          className={`w-4 h-4 rounded-full ring-1 ring-pdm-error bg-pdm-error/30 flex items-center justify-center text-[8px] absolute inset-0 ${avatarUrl ? 'hidden' : ''}`}
+                        >
+                          {displayName.charAt(0).toUpperCase()}
                         </div>
-                      )
-                    }
-                    return (
-                      <div 
-                        className="w-4 h-4 rounded-full flex-shrink-0 ring-1 ring-pdm-error bg-pdm-error/30 flex items-center justify-center text-[8px]"
-                        title={`Checked out by ${displayName}`}
-                      >
-                        {displayName.charAt(0).toUpperCase()}
                       </div>
                     )
                   }
