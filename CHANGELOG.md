@@ -2,6 +2,13 @@
 
 All notable changes to BluePDM will be documented in this file.
 
+## [1.3.5] - 2025-12-10
+
+### Fixed
+- Database trigger `handle_new_user` now handles conflicts gracefully during new user signup
+- Database trigger `log_file_activity` now has proper NULL handling and exception catching
+- New user signups no longer fail with "Database error saving new user"
+
 ## [1.3.4] - 2025-12-10
 
 ### Fixed
