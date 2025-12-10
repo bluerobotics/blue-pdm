@@ -2,6 +2,12 @@
 
 All notable changes to BluePDM will be documented in this file.
 
+## [1.2.2] - 2025-12-10
+
+### Fixed
+- Files not showing in Explorer sidebar after app install (vault not being activated/expanded)
+- Vaults now auto-expand on startup to show files immediately
+
 ## [1.2.1] - 2025-12-10
 
 ### Fixed

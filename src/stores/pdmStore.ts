@@ -976,7 +976,7 @@ export const usePDMStore = create<PDMState>()(
       merge: (persistedState, currentState) => {
         const persisted = persistedState as Record<string, unknown>
         
-        // Deduplicate connected vaults by ID (keep first occurrence)
+        // Deduplicate connected vaults by ID (keep first occurrence, ensure expanded)
         const persistedVaults = (persisted.connectedVaults as ConnectedVault[]) || []
         const seenIds = new Set<string>()
         const seenPaths = new Set<string>()
@@ -990,7 +990,10 @@ export const usePDMStore = create<PDMState>()(
           seenIds.add(vault.id)
           seenPaths.add(normalizedPath)
           return true
-        })
+        }).map(vault => ({
+          ...vault,
+          isExpanded: true  // Ensure vaults are expanded on load
+        }))
         
         return {
           ...currentState,

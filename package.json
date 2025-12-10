@@ -1,6 +1,6 @@
 {
   "name": "blue-pdm",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Product Data Management for engineering teams",
   "main": "dist-electron/main.js",
   "scripts": {

@@ -564,6 +564,21 @@ function App() {
       setVaultPath(path)
       setVaultConnected(true)
       addRecentVault(path)
+      
+      // Find matching connected vault and activate it
+      const normalizedPath = path.toLowerCase().replace(/\\/g, '/')
+      const currentVaults = usePDMStore.getState().connectedVaults
+      const matchingVault = currentVaults.find(v => 
+        v.localPath.toLowerCase().replace(/\\/g, '/') === normalizedPath
+      )
+      if (matchingVault) {
+        usePDMStore.getState().setActiveVault(matchingVault.id)
+        // Ensure vault is expanded so files show
+        if (!matchingVault.isExpanded) {
+          usePDMStore.getState().toggleVaultExpanded(matchingVault.id)
+        }
+      }
+      
       setStatusMessage(`Opened: ${path}`)
       setTimeout(() => setStatusMessage(''), 3000)
     } else {
