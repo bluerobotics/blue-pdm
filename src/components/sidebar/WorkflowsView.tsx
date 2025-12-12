@@ -138,6 +138,46 @@ export function WorkflowsView() {
     fraction: number // 0-1 position along that edge
   }>>({})
   
+  // LocalStorage key for visual customizations
+  const getStorageKey = (workflowId: string) => `workflow-visual-${workflowId}`
+  
+  // Load visual customizations from localStorage when workflow changes
+  useEffect(() => {
+    if (!selectedWorkflow?.id) return
+    
+    try {
+      const stored = localStorage.getItem(getStorageKey(selectedWorkflow.id))
+      if (stored) {
+        const data = JSON.parse(stored)
+        if (data.curveMidpoints) setCurveMidpoints(data.curveMidpoints)
+        if (data.labelOffsets) setLabelOffsets(data.labelOffsets)
+        if (data.edgePositions) setEdgePositions(data.edgePositions)
+      }
+    } catch (e) {
+      console.warn('Failed to load workflow visual data:', e)
+    }
+  }, [selectedWorkflow?.id])
+  
+  // Save visual customizations to localStorage when they change
+  useEffect(() => {
+    if (!selectedWorkflow?.id) return
+    
+    // Don't save empty state
+    if (Object.keys(curveMidpoints).length === 0 && 
+        Object.keys(labelOffsets).length === 0 && 
+        Object.keys(edgePositions).length === 0) return
+    
+    try {
+      localStorage.setItem(getStorageKey(selectedWorkflow.id), JSON.stringify({
+        curveMidpoints,
+        labelOffsets,
+        edgePositions
+      }))
+    } catch (e) {
+      console.warn('Failed to save workflow visual data:', e)
+    }
+  }, [selectedWorkflow?.id, curveMidpoints, labelOffsets, edgePositions])
+  
   // Editing state
   const [showCreateWorkflow, setShowCreateWorkflow] = useState(false)
   const [showEditState, setShowEditState] = useState(false)
