@@ -17,6 +17,7 @@ const { execSync } = require('child_process')
 const RESTIC_VERSION = '0.17.3'
 
 // Platform configurations
+// Note: macOS has separate x64 and arm64 binaries for universal app support
 const PLATFORMS = {
   win32: {
     url: `https://github.com/restic/restic/releases/download/v${RESTIC_VERSION}/restic_${RESTIC_VERSION}_windows_amd64.zip`,
@@ -24,11 +25,17 @@ const PLATFORMS = {
     binaryName: 'restic.exe',
     extractedName: `restic_${RESTIC_VERSION}_windows_amd64.exe`
   },
-  darwin: {
+  'darwin-x64': {
     url: `https://github.com/restic/restic/releases/download/v${RESTIC_VERSION}/restic_${RESTIC_VERSION}_darwin_amd64.bz2`,
     archiveType: 'bz2',
     binaryName: 'restic',
     extractedName: `restic_${RESTIC_VERSION}_darwin_amd64`
+  },
+  'darwin-arm64': {
+    url: `https://github.com/restic/restic/releases/download/v${RESTIC_VERSION}/restic_${RESTIC_VERSION}_darwin_arm64.bz2`,
+    archiveType: 'bz2',
+    binaryName: 'restic',
+    extractedName: `restic_${RESTIC_VERSION}_darwin_arm64`
   },
   linux: {
     url: `https://github.com/restic/restic/releases/download/v${RESTIC_VERSION}/restic_${RESTIC_VERSION}_linux_amd64.bz2`,
@@ -258,15 +265,25 @@ async function main() {
   
   if (args.includes('--current')) {
     // Only download for current platform
-    platforms = [process.platform]
-    if (!PLATFORMS[process.platform]) {
+    if (process.platform === 'darwin') {
+      // macOS needs both x64 and arm64 for universal build
+      platforms = ['darwin-x64', 'darwin-arm64']
+    } else if (PLATFORMS[process.platform]) {
+      platforms = [process.platform]
+    } else {
       log(`Unsupported platform: ${process.platform}`, 'red')
       process.exit(1)
     }
   } else if (args.includes('--platform')) {
     const idx = args.indexOf('--platform')
     if (args[idx + 1]) {
-      platforms = [args[idx + 1]]
+      const requestedPlatform = args[idx + 1]
+      // Handle darwin specially
+      if (requestedPlatform === 'darwin') {
+        platforms = ['darwin-x64', 'darwin-arm64']
+      } else {
+        platforms = [requestedPlatform]
+      }
     }
   }
   

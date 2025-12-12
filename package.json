@@ -68,15 +68,6 @@
       "dist/**/*",
       "dist-electron/**/*"
     ],
-    "extraResources": [
-      {
-        "from": "resources/bin/${platform}",
-        "to": "bin",
-        "filter": [
-          "**/*"
-        ]
-      }
-    ],
     "asarUnpack": [
       "resources/bin/**/*"
     ],
@@ -94,7 +85,14 @@
           ]
         }
       ],
-      "icon": "assets/icon.ico"
+      "icon": "assets/icon.ico",
+      "extraResources": [
+        {
+          "from": "resources/bin/win32",
+          "to": "bin",
+          "filter": ["**/*"]
+        }
+      ]
     },
     "mac": {
       "target": [
@@ -106,11 +104,25 @@
         }
       ],
       "category": "public.app-category.developer-tools",
-      "icon": "assets/icon.icns"
+      "icon": "assets/icon.icns",
+      "extraResources": [
+        {
+          "from": "resources/bin/darwin-${arch}",
+          "to": "bin",
+          "filter": ["**/*"]
+        }
+      ]
     },
     "linux": {
       "target": "AppImage",
-      "icon": "assets/icon.png"
+      "icon": "assets/icon.png",
+      "extraResources": [
+        {
+          "from": "resources/bin/linux",
+          "to": "bin",
+          "filter": ["**/*"]
+        }
+      ]
     },
     "nsis": {
       "oneClick": true,
