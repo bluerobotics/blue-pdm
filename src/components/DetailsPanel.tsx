@@ -5,6 +5,7 @@ import { format, formatDistanceToNow } from 'date-fns'
 import { getFileVersions, getRecentActivity, updateFileMetadata } from '../lib/supabase'
 import { rollbackToVersion } from '../lib/fileService'
 import { downloadFile } from '../lib/storage'
+import { ContainsTab, WhereUsedTab, SWPropertiesPanel, SWExportActions } from './SolidWorksPanel'
 import { 
   FileBox, 
   Layers, 
@@ -861,6 +862,12 @@ export function DetailsPanel() {
                     </>
                   )}
                 </div>
+                
+                {/* SolidWorks-specific properties */}
+                {!isFolder && <SWPropertiesPanel file={file} />}
+                
+                {/* Export actions for SW files */}
+                {!isFolder && <SWExportActions file={file} />}
               </div>
             )}
 
@@ -1084,19 +1091,11 @@ export function DetailsPanel() {
             )}
 
             {detailsPanelTab === 'whereused' && (
-              <div className="text-sm text-pdm-fg-muted text-center py-8">
-                Where Used analysis shows which assemblies reference this part.
-                <br />
-                <span className="text-pdm-accent">Coming soon with Supabase integration</span>
-              </div>
+              <WhereUsedTab file={file} />
             )}
 
             {detailsPanelTab === 'contains' && (
-              <div className="text-sm text-pdm-fg-muted text-center py-8">
-                Contains shows the Bill of Materials for assemblies.
-                <br />
-                <span className="text-pdm-accent">Coming soon with Supabase integration</span>
-              </div>
+              <ContainsTab file={file} />
             )}
 
             {detailsPanelTab === 'history' && (

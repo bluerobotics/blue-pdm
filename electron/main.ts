@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url'
 import chokidar from 'chokidar'
 import type { AddressInfo } from 'net'
 import { autoUpdater, UpdateInfo, ProgressInfo } from 'electron-updater'
+import * as si from 'systeminformation'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -16,6 +17,7 @@ const __dirname = path.dirname(__filename)
 // ============================================
 const LOG_MAX_FILES = 100 // Keep max 100 log files (10MB each = 1GB max total)
 const LOG_MAX_SIZE = 10 * 1024 * 1024 // 10MB max per log file
+const LOG_MAX_AGE_DAYS = 7 // Auto-delete logs older than 7 days
 
 interface LogEntry {
   timestamp: string
@@ -71,6 +73,9 @@ function initializeLogging() {
 
 function cleanupOldLogFiles(logsDir: string) {
   try {
+    const now = Date.now()
+    const maxAgeMs = LOG_MAX_AGE_DAYS * 24 * 60 * 60 * 1000 // Convert days to milliseconds
+    
     // Get all log files sorted by modified time (newest first)
     const logFiles = fs.readdirSync(logsDir)
       .filter(f => f.startsWith('bluepdm-') && f.endsWith('.log'))
@@ -81,13 +86,36 @@ function cleanupOldLogFiles(logsDir: string) {
       }))
       .sort((a, b) => b.mtime - a.mtime)
     
+    // First, delete files older than LOG_MAX_AGE_DAYS
+    for (const file of logFiles) {
+      const age = now - file.mtime
+      if (age > maxAgeMs) {
+        try {
+          fs.unlinkSync(file.path)
+          console.log(`Deleted old log file (>${LOG_MAX_AGE_DAYS} days): ${file.name}`)
+        } catch (err) {
+          console.error(`Failed to delete old log file ${file.name}:`, err)
+        }
+      }
+    }
+    
+    // Re-read remaining files after age-based cleanup
+    const remainingFiles = fs.readdirSync(logsDir)
+      .filter(f => f.startsWith('bluepdm-') && f.endsWith('.log'))
+      .map(filename => ({
+        name: filename,
+        path: path.join(logsDir, filename),
+        mtime: fs.statSync(path.join(logsDir, filename)).mtime.getTime()
+      }))
+      .sort((a, b) => b.mtime - a.mtime)
+    
     // Delete files beyond the limit (keeping newest LOG_MAX_FILES - 1 to make room for new one)
-    if (logFiles.length >= LOG_MAX_FILES) {
-      const filesToDelete = logFiles.slice(LOG_MAX_FILES - 1)
+    if (remainingFiles.length >= LOG_MAX_FILES) {
+      const filesToDelete = remainingFiles.slice(LOG_MAX_FILES - 1)
       for (const file of filesToDelete) {
         try {
           fs.unlinkSync(file.path)
-          console.log(`Deleted old log file: ${file.name}`)
+          console.log(`Deleted old log file (over limit): ${file.name}`)
         } catch (err) {
           console.error(`Failed to delete old log file ${file.name}:`, err)
         }
@@ -972,10 +1000,107 @@ ipcMain.handle('auth:open-oauth-window', async (_, url: string) => {
 // ============================================
 ipcMain.handle('app:get-version', () => app.getVersion())
 ipcMain.handle('app:get-platform', () => process.platform)
+ipcMain.handle('app:get-app-version', () => app.getVersion())
+
+// Machine identification for backup service
+ipcMain.handle('app:get-machine-id', () => {
+  // Use a combination of platform-specific identifiers for a stable machine ID
+  // This ID should persist across app restarts but be unique per machine
+  const os = require('os')
+  const platform = process.platform
+  const hostname = os.hostname()
+  const cpus = os.cpus()
+  const cpuModel = cpus.length > 0 ? cpus[0].model : 'unknown'
+  
+  // Create a hash of machine-specific info
+  const machineString = `${platform}-${hostname}-${cpuModel}-${os.arch()}`
+  const hash = crypto.createHash('sha256').update(machineString).digest('hex')
+  return hash.substring(0, 16) // Return first 16 chars for readability
+})
+
+ipcMain.handle('app:get-machine-name', () => {
+  const os = require('os')
+  return os.hostname()
+})
+
 ipcMain.handle('app:get-titlebar-overlay-rect', () => {
   if (!mainWindow) return { x: 0, y: 0, width: 138, height: 38 }
   // getTitleBarOverlayRect is available in Electron 20+
   return mainWindow.getTitleBarOverlayRect?.() || { x: 0, y: 0, width: 138, height: 38 }
+})
+
+ipcMain.handle('app:reload', () => {
+  log('[Main] Reload requested via CLI')
+  if (mainWindow) {
+    mainWindow.webContents.reload()
+    return { success: true }
+  }
+  return { success: false, error: 'No window' }
+})
+
+// ============================================
+// IPC Handlers - System Stats
+// ============================================
+
+// Cache for network stats to calculate deltas
+let lastNetworkStats: { rx: number; tx: number; time: number } | null = null
+
+ipcMain.handle('system:get-stats', async () => {
+  try {
+    // Get all stats in parallel for efficiency
+    const [cpu, mem, netStats, fsSize] = await Promise.all([
+      si.currentLoad(),
+      si.mem(),
+      si.networkStats(),
+      si.fsSize()
+    ])
+    
+    // Calculate network speed (bytes/sec)
+    const totalRx = netStats.reduce((sum, iface) => sum + iface.rx_bytes, 0)
+    const totalTx = netStats.reduce((sum, iface) => sum + iface.tx_bytes, 0)
+    const now = Date.now()
+    
+    let rxSpeed = 0
+    let txSpeed = 0
+    
+    if (lastNetworkStats) {
+      const timeDelta = (now - lastNetworkStats.time) / 1000 // seconds
+      if (timeDelta > 0) {
+        rxSpeed = (totalRx - lastNetworkStats.rx) / timeDelta
+        txSpeed = (totalTx - lastNetworkStats.tx) / timeDelta
+      }
+    }
+    
+    lastNetworkStats = { rx: totalRx, tx: totalTx, time: now }
+    
+    // Sum up disk usage across all mounted drives
+    const totalDiskSize = fsSize.reduce((sum, disk) => sum + disk.size, 0)
+    const totalDiskUsed = fsSize.reduce((sum, disk) => sum + disk.used, 0)
+    
+    return {
+      cpu: {
+        usage: Math.round(cpu.currentLoad),
+        cores: cpu.cpus.map(c => Math.round(c.load))
+      },
+      memory: {
+        used: mem.used,
+        total: mem.total,
+        percent: Math.round((mem.used / mem.total) * 100)
+      },
+      network: {
+        rxSpeed: Math.round(rxSpeed),
+        txSpeed: Math.round(txSpeed)
+      },
+      disk: {
+        used: totalDiskUsed,
+        total: totalDiskSize,
+        percent: totalDiskSize > 0 ? Math.round((totalDiskUsed / totalDiskSize) * 100) : 0
+      }
+    }
+  } catch (err) {
+    log('error', '[System] Failed to get system stats', err)
+    return null
+  }
 })
 
 // ============================================
@@ -1116,6 +1241,48 @@ ipcMain.handle('logs:delete-file', async (_, filePath: string) => {
   } catch (err) {
     logError('Failed to delete log file', { error: String(err) })
     return { success: false, error: String(err) }
+  }
+})
+
+// Clean up old logs manually (deletes logs older than 7 days)
+ipcMain.handle('logs:cleanup-old', async () => {
+  try {
+    const logsDir = path.join(app.getPath('userData'), 'logs')
+    if (!fs.existsSync(logsDir)) {
+      return { success: true, deleted: 0 }
+    }
+    
+    const now = Date.now()
+    const maxAgeMs = LOG_MAX_AGE_DAYS * 24 * 60 * 60 * 1000
+    let deletedCount = 0
+    
+    const logFiles = fs.readdirSync(logsDir)
+      .filter(f => f.startsWith('bluepdm-') && f.endsWith('.log'))
+      .map(filename => ({
+        name: filename,
+        path: path.join(logsDir, filename),
+        mtime: fs.statSync(path.join(logsDir, filename)).mtime.getTime()
+      }))
+    
+    for (const file of logFiles) {
+      const age = now - file.mtime
+      // Don't delete current session log
+      if (age > maxAgeMs && path.normalize(file.path) !== logFilePath) {
+        try {
+          fs.unlinkSync(file.path)
+          deletedCount++
+          log(`Deleted old log file: ${file.name}`)
+        } catch (err) {
+          logError(`Failed to delete log file ${file.name}`, { error: String(err) })
+        }
+      }
+    }
+    
+    log(`Log cleanup completed, deleted ${deletedCount} files`)
+    return { success: true, deleted: deletedCount }
+  } catch (err) {
+    logError('Failed to cleanup old logs', { error: String(err) })
+    return { success: false, error: String(err), deleted: 0 }
   }
 })
 
@@ -1540,6 +1707,8 @@ ipcMain.handle('fs:list-dir-files', async (_, dirPath: string) => {
 // Key: relativePath, Value: { size, mtime, hash }
 const hashCache = new Map<string, { size: number; mtime: number; hash: string }>()
 
+// FAST file listing - no hash computation, returns immediately
+// This is used for initial load to show files right away
 ipcMain.handle('fs:list-working-files', async () => {
   if (!workingDirectory) {
     return { success: false, error: 'No working directory set' }
@@ -1577,25 +1746,16 @@ ipcMain.handle('fs:list-working-files', async () => {
           seenPaths.add(relativePath)
           
           // Check hash cache - reuse if file size and mtime haven't changed
+          // This makes subsequent loads fast even with hash checking
           let fileHash: string | undefined
           const cached = hashCache.get(relativePath)
           const mtimeMs = stats.mtime.getTime()
           
           if (cached && cached.size === stats.size && cached.mtime === mtimeMs) {
-            // File unchanged, reuse cached hash
+            // File unchanged, reuse cached hash (FAST - no disk read)
             fileHash = cached.hash
-          } else {
-            // File changed or new, compute hash
-            try {
-              const fileData = fs.readFileSync(fullPath)
-              fileHash = crypto.createHash('sha256').update(fileData).digest('hex')
-              // Update cache
-              hashCache.set(relativePath, { size: stats.size, mtime: mtimeMs, hash: fileHash })
-            } catch {
-              // Skip hash if file can't be read
-              hashCache.delete(relativePath)
-            }
           }
+          // Don't compute hash if not cached - let background task handle it
           
           files.push({
             name: item.name,
@@ -1605,7 +1765,7 @@ ipcMain.handle('fs:list-working-files', async () => {
             extension: path.extname(item.name).toLowerCase(),
             size: stats.size,
             modifiedTime: stats.mtime.toISOString(),
-            hash: fileHash
+            hash: fileHash  // May be undefined - will be computed in background
           })
         }
       }
@@ -1633,10 +1793,79 @@ ipcMain.handle('fs:list-working-files', async () => {
   return { success: true, files }
 })
 
+// Compute hashes for files in batches - returns progress updates via IPC
+// This runs in background after initial file list is shown
+ipcMain.handle('fs:compute-file-hashes', async (event, filePaths: Array<{ path: string; relativePath: string; size: number; mtime: number }>) => {
+  if (!workingDirectory) {
+    return { success: false, error: 'No working directory set' }
+  }
+  
+  const results: Array<{ relativePath: string; hash: string }> = []
+  const batchSize = 20 // Process 20 files at a time before yielding
+  let processed = 0
+  const total = filePaths.length
+  
+  for (let i = 0; i < filePaths.length; i += batchSize) {
+    const batch = filePaths.slice(i, i + batchSize)
+    
+    for (const file of batch) {
+      try {
+        // Check cache first
+        const cached = hashCache.get(file.relativePath)
+        if (cached && cached.size === file.size && cached.mtime === file.mtime) {
+          results.push({ relativePath: file.relativePath, hash: cached.hash })
+          processed++
+          continue
+        }
+        
+        // Compute hash
+        const fileData = fs.readFileSync(file.path)
+        const hash = crypto.createHash('sha256').update(fileData).digest('hex')
+        
+        // Update cache
+        hashCache.set(file.relativePath, { size: file.size, mtime: file.mtime, hash })
+        
+        results.push({ relativePath: file.relativePath, hash })
+        processed++
+      } catch (err) {
+        // Skip files that can't be read
+        hashCache.delete(file.relativePath)
+        processed++
+      }
+    }
+    
+    // Send progress update after each batch
+    const percent = Math.round((processed / total) * 100)
+    event.sender.send('hash-progress', { processed, total, percent })
+    
+    // Yield to event loop to keep UI responsive
+    await new Promise(resolve => setImmediate(resolve))
+  }
+  
+  return { success: true, results }
+})
+
 ipcMain.handle('fs:create-folder', async (_, folderPath: string) => {
   try {
     fs.mkdirSync(folderPath, { recursive: true })
     return { success: true }
+  } catch (err) {
+    return { success: false, error: String(err) }
+  }
+})
+
+// Check if a directory is empty (has no files or subdirectories)
+ipcMain.handle('fs:is-dir-empty', async (_, dirPath: string) => {
+  try {
+    if (!fs.existsSync(dirPath)) {
+      return { success: false, error: 'Directory does not exist' }
+    }
+    const stat = fs.statSync(dirPath)
+    if (!stat.isDirectory()) {
+      return { success: false, error: 'Path is not a directory' }
+    }
+    const entries = fs.readdirSync(dirPath)
+    return { success: true, empty: entries.length === 0 }
   } catch (err) {
     return { success: false, error: String(err) }
   }
@@ -2068,6 +2297,274 @@ ipcMain.handle('solidworks:extract-thumbnail', async (_, filePath: string) => {
   return extractSolidWorksThumbnail(filePath)
 })
 
+// ============================================
+// SolidWorks Service Integration
+// ============================================
+
+import { spawn, ChildProcess } from 'child_process'
+
+interface SWServiceResult {
+  success: boolean
+  data?: unknown
+  error?: string
+  errorDetails?: string
+}
+
+let swServiceProcess: ChildProcess | null = null
+let swServiceBuffer = ''
+let swPendingRequests: Map<number, { resolve: (value: SWServiceResult) => void; reject: (err: Error) => void }> = new Map()
+let swRequestId = 0
+
+// Get the path to the SolidWorks service executable
+function getSWServicePath(): string {
+  const possiblePaths = [
+    // Production - bundled with app
+    path.join(process.resourcesPath || '', 'bin', 'BluePDM.SolidWorksService.exe'),
+    // Development - Release build
+    path.join(__dirname, '..', 'solidworks-addin', 'BluePDM.SolidWorksService', 'bin', 'Release', 'BluePDM.SolidWorksService.exe'),
+    // Development - Debug build
+    path.join(__dirname, '..', 'solidworks-addin', 'BluePDM.SolidWorksService', 'bin', 'Debug', 'BluePDM.SolidWorksService.exe'),
+  ]
+  
+  for (const p of possiblePaths) {
+    if (fs.existsSync(p)) {
+      return p
+    }
+  }
+  
+  // Return release path as default
+  return possiblePaths[1]
+}
+
+// Start the SolidWorks service process
+async function startSWService(dmLicenseKey?: string): Promise<SWServiceResult> {
+  if (swServiceProcess) {
+    // If service is already running but we have a new license key, set it
+    if (dmLicenseKey) {
+      const result = await sendSWCommand({ action: 'setDmLicense', licenseKey: dmLicenseKey })
+      if (result.success) {
+        return { success: true, data: { message: 'Service running, license key updated' } }
+      }
+    }
+    return { success: true, data: { message: 'Service already running' } }
+  }
+  
+  const servicePath = getSWServicePath()
+  if (!fs.existsSync(servicePath)) {
+    return { success: false, error: `SolidWorks service not found at: ${servicePath}. Build it first with: dotnet build solidworks-addin/BluePDM.SolidWorksService -c Release` }
+  }
+  
+  // Build args - include DM license key if provided
+  const args: string[] = []
+  if (dmLicenseKey) {
+    args.push('--dm-license', dmLicenseKey)
+  }
+  
+  return new Promise((resolve) => {
+    try {
+      swServiceProcess = spawn(servicePath, args, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+      })
+      
+      swServiceProcess.stdout?.on('data', (data: Buffer) => {
+        handleSWServiceOutput(data.toString())
+      })
+      
+      swServiceProcess.stderr?.on('data', (data: Buffer) => {
+        log('[SolidWorks Service]', data.toString())
+      })
+      
+      swServiceProcess.on('error', (err) => {
+        log('[SolidWorks Service] Process error:', err)
+        swServiceProcess = null
+      })
+      
+      swServiceProcess.on('close', (code) => {
+        log('[SolidWorks Service] Process exited with code:', code)
+        swServiceProcess = null
+      })
+      
+      // Wait a moment and test with ping
+      setTimeout(async () => {
+        try {
+          const pingResult = await sendSWCommand({ action: 'ping' })
+          resolve(pingResult)
+        } catch (err) {
+          resolve({ success: false, error: String(err) })
+        }
+      }, 1000)
+      
+    } catch (err) {
+      resolve({ success: false, error: String(err) })
+    }
+  })
+}
+
+// Stop the SolidWorks service
+async function stopSWService(): Promise<void> {
+  if (!swServiceProcess) return
+  
+  try {
+    await sendSWCommand({ action: 'quit' })
+  } catch {
+    // Ignore quit errors
+  }
+  
+  swServiceProcess.kill()
+  swServiceProcess = null
+}
+
+// Handle output from the service
+function handleSWServiceOutput(data: string): void {
+  swServiceBuffer += data
+  
+  const lines = swServiceBuffer.split('\n')
+  swServiceBuffer = lines.pop() || ''
+  
+  for (const line of lines) {
+    if (!line.trim()) continue
+    
+    try {
+      const result = JSON.parse(line) as SWServiceResult
+      
+      const [id, handlers] = swPendingRequests.entries().next().value || []
+      if (handlers) {
+        swPendingRequests.delete(id)
+        handlers.resolve(result)
+      }
+    } catch (err) {
+      log('[SolidWorks Service] Failed to parse output:', line)
+    }
+  }
+}
+
+// Send a command to the SolidWorks service
+async function sendSWCommand(command: Record<string, unknown>): Promise<SWServiceResult> {
+  if (!swServiceProcess?.stdin) {
+    return { success: false, error: 'SolidWorks service not running. Start it first.' }
+  }
+  
+  return new Promise((resolve, reject) => {
+    const id = ++swRequestId
+    
+    const timeout = setTimeout(() => {
+      swPendingRequests.delete(id)
+      resolve({ success: false, error: 'Command timed out' })
+    }, 300000) // 5 minute timeout
+    
+    swPendingRequests.set(id, {
+      resolve: (result) => {
+        clearTimeout(timeout)
+        resolve(result)
+      },
+      reject: (err) => {
+        clearTimeout(timeout)
+        reject(err)
+      }
+    })
+    
+    const json = JSON.stringify(command) + '\n'
+    swServiceProcess!.stdin!.write(json)
+  })
+}
+
+// IPC Handlers for SolidWorks operations
+
+// Start the service
+ipcMain.handle('solidworks:start-service', async (_, dmLicenseKey?: string) => {
+  return startSWService(dmLicenseKey)
+})
+
+// Stop the service
+ipcMain.handle('solidworks:stop-service', async () => {
+  await stopSWService()
+  return { success: true }
+})
+
+// Check if service is running
+ipcMain.handle('solidworks:service-status', async () => {
+  if (!swServiceProcess) {
+    return { success: true, data: { running: false } }
+  }
+  const result = await sendSWCommand({ action: 'ping' })
+  return { success: true, data: { running: result.success, version: (result.data as any)?.version } }
+})
+
+// Get BOM from assembly
+ipcMain.handle('solidworks:get-bom', async (_, filePath: string, options?: { includeChildren?: boolean; configuration?: string }) => {
+  return sendSWCommand({ action: 'getBom', filePath, ...options })
+})
+
+// Get custom properties
+ipcMain.handle('solidworks:get-properties', async (_, filePath: string, configuration?: string) => {
+  return sendSWCommand({ action: 'getProperties', filePath, configuration })
+})
+
+// Set custom properties
+ipcMain.handle('solidworks:set-properties', async (_, filePath: string, properties: Record<string, string>, configuration?: string) => {
+  return sendSWCommand({ action: 'setProperties', filePath, properties, configuration })
+})
+
+// Get configurations
+ipcMain.handle('solidworks:get-configurations', async (_, filePath: string) => {
+  return sendSWCommand({ action: 'getConfigurations', filePath })
+})
+
+// Get external references
+ipcMain.handle('solidworks:get-references', async (_, filePath: string) => {
+  return sendSWCommand({ action: 'getReferences', filePath })
+})
+
+// Get high-res preview image (uses Document Manager API - no SW launch!)
+ipcMain.handle('solidworks:get-preview', async (_, filePath: string, configuration?: string) => {
+  return sendSWCommand({ action: 'getPreview', filePath, configuration })
+})
+
+// Get mass properties
+ipcMain.handle('solidworks:get-mass-properties', async (_, filePath: string, configuration?: string) => {
+  return sendSWCommand({ action: 'getMassProperties', filePath, configuration })
+})
+
+// Export to PDF
+ipcMain.handle('solidworks:export-pdf', async (_, filePath: string, outputPath?: string) => {
+  return sendSWCommand({ action: 'exportPdf', filePath, outputPath })
+})
+
+// Export to STEP
+ipcMain.handle('solidworks:export-step', async (_, filePath: string, options?: { outputPath?: string; configuration?: string; exportAllConfigs?: boolean }) => {
+  return sendSWCommand({ action: 'exportStep', filePath, ...options })
+})
+
+// Export to DXF
+ipcMain.handle('solidworks:export-dxf', async (_, filePath: string, outputPath?: string) => {
+  return sendSWCommand({ action: 'exportDxf', filePath, outputPath })
+})
+
+// Export to IGES
+ipcMain.handle('solidworks:export-iges', async (_, filePath: string, outputPath?: string) => {
+  return sendSWCommand({ action: 'exportIges', filePath, outputPath })
+})
+
+// Export to image (PNG)
+ipcMain.handle('solidworks:export-image', async (_, filePath: string, options?: { outputPath?: string; width?: number; height?: number }) => {
+  return sendSWCommand({ action: 'exportImage', filePath, ...options })
+})
+
+// Replace component in assembly
+ipcMain.handle('solidworks:replace-component', async (_, assemblyPath: string, oldComponent: string, newComponent: string) => {
+  return sendSWCommand({ action: 'replaceComponent', filePath: assemblyPath, oldComponent, newComponent })
+})
+
+// Pack and Go
+ipcMain.handle('solidworks:pack-and-go', async (_, filePath: string, outputFolder: string, options?: { prefix?: string; suffix?: string }) => {
+  return sendSWCommand({ action: 'packAndGo', filePath, outputFolder, ...options })
+})
+
+// ============================================
+// End SolidWorks Service Integration
+// ============================================
+
 // Check if eDrawings is installed
 ipcMain.handle('edrawings:check-installed', async () => {
   // Try native module first
@@ -2231,6 +2728,579 @@ ipcMain.handle('edrawings:destroy-preview', () => {
     edrawingsPreview = null
     return { success: true }
   } catch { return { success: false } }
+})
+
+// ============================================
+// Backup System
+// ============================================
+
+// Get path to bundled restic binary
+function getResticPath(): string {
+  const binaryName = process.platform === 'win32' ? 'restic.exe' : 'restic'
+  
+  if (app.isPackaged) {
+    // Production: use extraResources
+    return path.join(process.resourcesPath, 'bin', binaryName)
+  } else {
+    // Development: use resources folder
+    return path.join(__dirname, '..', 'resources', 'bin', process.platform, binaryName)
+  }
+}
+
+// Check if restic is available (bundled or system)
+ipcMain.handle('backup:check-restic', async () => {
+  const { execSync } = require('child_process')
+  
+  // First try bundled restic
+  const bundledPath = getResticPath()
+  if (fs.existsSync(bundledPath)) {
+    try {
+      const version = execSync(`"${bundledPath}" version`, { encoding: 'utf8' })
+      const match = version.match(/restic\s+([\d.]+)/)
+      return { installed: true, version: match ? match[1] : 'unknown', path: bundledPath }
+    } catch (err) {
+      log('Bundled restic failed: ' + String(err))
+    }
+  }
+  
+  // Fall back to system restic
+  try {
+    const version = execSync('restic version', { encoding: 'utf8' })
+    const match = version.match(/restic\s+([\d.]+)/)
+    return { installed: true, version: match ? match[1] : 'unknown', path: 'restic' }
+  } catch {
+    return { 
+      installed: false, 
+      error: 'restic not found. Run "npm run download-restic" to bundle it with the app.'
+    }
+  }
+})
+
+// Get restic command (bundled or system fallback)
+function getResticCommand(): string {
+  const bundledPath = getResticPath()
+  if (fs.existsSync(bundledPath)) {
+    return bundledPath
+  }
+  return 'restic' // Fall back to system PATH
+}
+
+// Build restic repository URL based on provider
+function buildResticRepo(config: {
+  provider: string
+  bucket: string
+  endpoint?: string
+  region?: string
+}): string {
+  if (config.provider === 'backblaze_b2') {
+    // Backblaze B2 via S3-compatible API
+    // Endpoint should be like: s3.us-west-004.backblazeb2.com
+    const endpoint = config.endpoint || 's3.us-west-004.backblazeb2.com'
+    return `s3:${endpoint}/${config.bucket}/bluepdm-backup`
+  } else if (config.provider === 'aws_s3') {
+    // S3 backend: s3:s3.amazonaws.com/bucket/path
+    const region = config.region || 'us-east-1'
+    return `s3:s3.${region}.amazonaws.com/${config.bucket}/bluepdm-backup`
+  } else if (config.provider === 'google_cloud') {
+    // GCS backend: gs:bucket:/path
+    return `gs:${config.bucket}:/bluepdm-backup`
+  }
+  // Default to S3-compatible
+  const endpoint = config.endpoint || 's3.amazonaws.com'
+  return `s3:${endpoint}/${config.bucket}/bluepdm-backup`
+}
+
+// Run backup
+ipcMain.handle('backup:run', async (event, config: {
+  provider: string
+  bucket: string
+  region?: string
+  endpoint?: string
+  accessKey: string
+  secretKey: string
+  resticPassword: string
+  retentionDaily: number
+  retentionWeekly: number
+  retentionMonthly: number
+  retentionYearly: number
+  localBackupEnabled?: boolean
+  localBackupPath?: string
+  metadataJson?: string  // Database metadata export as JSON string
+  vaultName?: string     // Vault name for tagging
+  vaultPath?: string     // Override vault path
+}) => {
+  const { spawn } = require('child_process')
+  
+  log('Starting backup...', { provider: config.provider, bucket: config.bucket })
+  
+  // Set up environment variables for restic
+  const env = {
+    ...process.env,
+    RESTIC_PASSWORD: config.resticPassword,
+    AWS_ACCESS_KEY_ID: config.accessKey,
+    AWS_SECRET_ACCESS_KEY: config.secretKey,
+  }
+  
+  // For Backblaze B2, also set B2 credentials
+  if (config.provider === 'backblaze_b2') {
+    env.B2_ACCOUNT_ID = config.accessKey
+    env.B2_ACCOUNT_KEY = config.secretKey
+  }
+  
+  const repo = buildResticRepo(config)
+  log('Restic repository URL: ' + repo)
+  
+  try {
+    // First, check if repo exists, if not initialize it
+    event.sender.send('backup:progress', { phase: 'Initializing', percent: 5, message: 'Checking repository...' })
+    
+    const resticCmd = getResticCommand()
+    
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const check = spawn(resticCmd, ['-r', repo, 'snapshots', '--json'], { env })
+        check.on('close', (code: number) => {
+          if (code === 0) resolve()
+          else reject(new Error('Repo not initialized'))
+        })
+        check.on('error', reject)
+      })
+    } catch {
+      // Initialize the repository
+      log('Initializing restic repository...')
+      event.sender.send('backup:progress', { phase: 'Initializing', percent: 10, message: 'Creating repository...' })
+      
+      await new Promise<void>((resolve, reject) => {
+        const init = spawn(resticCmd, ['-r', repo, 'init'], { env })
+        let stderr = ''
+        let stdout = ''
+        
+        init.stdout.on('data', (data: Buffer) => {
+          stdout += data.toString()
+          log('restic init stdout: ' + data.toString())
+        })
+        
+        init.stderr.on('data', (data: Buffer) => {
+          stderr += data.toString()
+          log('restic init stderr: ' + data.toString())
+        })
+        
+        init.on('close', (code: number) => {
+          if (code === 0) {
+            log('Repository initialized successfully')
+            resolve()
+          } else {
+            const errorMsg = stderr || stdout || `Exit code ${code}`
+            logError('Failed to initialize repository', { code, stderr, stdout })
+            reject(new Error(`Failed to initialize repository: ${errorMsg}`))
+          }
+        })
+        init.on('error', (err) => {
+          logError('Failed to spawn restic init', { error: String(err) })
+          reject(err)
+        })
+      })
+    }
+    
+    // Get the working directory (vault path) to backup
+    const backupPath = config.vaultPath || workingDirectory
+    if (!backupPath) {
+      throw new Error('No vault connected - nothing to backup')
+    }
+    
+    // Save database metadata to .bluepdm folder if provided
+    if (config.metadataJson) {
+      event.sender.send('backup:progress', { phase: 'Metadata', percent: 15, message: 'Saving database metadata...' })
+      
+      const bluepdmDir = path.join(backupPath, '.bluepdm')
+      if (!fs.existsSync(bluepdmDir)) {
+        fs.mkdirSync(bluepdmDir, { recursive: true })
+      }
+      
+      const metadataPath = path.join(bluepdmDir, 'database-export.json')
+      fs.writeFileSync(metadataPath, config.metadataJson, 'utf-8')
+      log('Saved database metadata to: ' + metadataPath)
+    }
+    
+    const vaultDisplayName = config.vaultName || path.basename(backupPath)
+    event.sender.send('backup:progress', { phase: 'Backing up', percent: 20, message: `Backing up ${vaultDisplayName}...` })
+    
+    // Build backup command with appropriate tags
+    const backupArgs = [
+      '-r', repo,
+      'backup',
+      backupPath,
+      '--json',
+      '--tag', 'bluepdm',
+      '--tag', 'files'  // Always includes files
+    ]
+    
+    // Add vault name tag for filtering
+    if (config.vaultName) {
+      backupArgs.push('--tag', `vault:${config.vaultName}`)
+    }
+    
+    // Add has-metadata tag if database metadata was included
+    if (config.metadataJson) {
+      backupArgs.push('--tag', 'has-metadata')
+    }
+    
+    // Run the backup
+    const backupResult = await new Promise<{ snapshotId: string; stats: any }>((resolve, reject) => {
+      let output = ''
+      let snapshotId = ''
+      
+      const backup = spawn(resticCmd, backupArgs, { env })
+      
+      backup.stdout.on('data', (data: Buffer) => {
+        const lines = data.toString().split('\n')
+        for (const line of lines) {
+          if (!line.trim()) continue
+          try {
+            const json = JSON.parse(line)
+            if (json.message_type === 'status') {
+              const percent = 20 + Math.round((json.percent_done || 0) * 60)
+              event.sender.send('backup:progress', {
+                phase: 'Backing up',
+                percent,
+                message: `${json.files_done || 0} files processed...`
+              })
+            } else if (json.message_type === 'summary') {
+              snapshotId = json.snapshot_id
+              output = JSON.stringify(json)
+            }
+          } catch {
+            // Not JSON, ignore
+          }
+        }
+      })
+      
+      backup.stderr.on('data', (data: Buffer) => {
+        log('restic stderr: ' + data.toString())
+      })
+      
+      backup.on('close', (code: number) => {
+        if (code === 0) {
+          try {
+            const summary = output ? JSON.parse(output) : {}
+            resolve({
+              snapshotId,
+              stats: {
+                filesNew: summary.files_new || 0,
+                filesChanged: summary.files_changed || 0,
+                filesUnmodified: summary.files_unmodified || 0,
+                bytesAdded: summary.data_added || 0,
+                bytesTotal: summary.total_bytes_processed || 0
+              }
+            })
+          } catch {
+            resolve({ snapshotId, stats: {} })
+          }
+        } else {
+          reject(new Error(`Backup failed with exit code ${code}`))
+        }
+      })
+      
+      backup.on('error', reject)
+    })
+    
+    event.sender.send('backup:progress', { phase: 'Cleanup', percent: 85, message: 'Applying retention policy...' })
+    
+    // Apply retention policy
+    await new Promise<void>((resolve, reject) => {
+      const forget = spawn(resticCmd, [
+        '-r', repo,
+        'forget',
+        '--keep-daily', String(config.retentionDaily),
+        '--keep-weekly', String(config.retentionWeekly),
+        '--keep-monthly', String(config.retentionMonthly),
+        '--keep-yearly', String(config.retentionYearly),
+        '--prune'
+      ], { env })
+      
+      forget.on('close', (code: number) => {
+        if (code === 0) resolve()
+        else reject(new Error('Failed to apply retention policy'))
+      })
+      forget.on('error', reject)
+    })
+    
+    // Optional: Local backup
+    let localBackupSuccess = false
+    if (config.localBackupEnabled && config.localBackupPath) {
+      event.sender.send('backup:progress', { phase: 'Local Backup', percent: 92, message: 'Creating local backup...' })
+      try {
+        const localPath = config.localBackupPath
+        if (!fs.existsSync(localPath)) {
+          fs.mkdirSync(localPath, { recursive: true })
+        }
+        // Copy working directory to local backup path
+        const { execSync } = require('child_process')
+        if (process.platform === 'win32') {
+          execSync(`robocopy "${workingDirectory}" "${localPath}" /MIR /NFL /NDL /NJH /NJS /NC /NS /NP`, { stdio: 'ignore' })
+        } else {
+          execSync(`rsync -a --delete "${workingDirectory}/" "${localPath}/"`, { stdio: 'ignore' })
+        }
+        localBackupSuccess = true
+      } catch (err) {
+        logError('Local backup failed', { error: String(err) })
+      }
+    }
+    
+    event.sender.send('backup:progress', { phase: 'Complete', percent: 100, message: 'Backup complete!' })
+    
+    log('Backup completed successfully', { snapshotId: backupResult.snapshotId })
+    
+    return {
+      success: true,
+      snapshotId: backupResult.snapshotId,
+      localBackupSuccess,
+      stats: backupResult.stats
+    }
+  } catch (err) {
+    logError('Backup failed', { error: String(err) })
+    return { success: false, error: String(err) }
+  }
+})
+
+// List backup snapshots
+ipcMain.handle('backup:list-snapshots', async (_, config: {
+  provider: string
+  bucket: string
+  region?: string
+  endpoint?: string
+  accessKey: string
+  secretKey: string
+  resticPassword: string
+}) => {
+  const { spawn } = require('child_process')
+  
+  const env = {
+    ...process.env,
+    RESTIC_PASSWORD: config.resticPassword,
+    AWS_ACCESS_KEY_ID: config.accessKey,
+    AWS_SECRET_ACCESS_KEY: config.secretKey,
+  }
+  
+  if (config.provider === 'backblaze_b2') {
+    env.B2_ACCOUNT_ID = config.accessKey
+    env.B2_ACCOUNT_KEY = config.secretKey
+  }
+  
+  const repo = buildResticRepo(config)
+  const resticCmd = getResticCommand()
+  
+  try {
+    const snapshots = await new Promise<any[]>((resolve, reject) => {
+      let output = ''
+      
+      const list = spawn(resticCmd, ['-r', repo, 'snapshots', '--json'], { env })
+      
+      list.stdout.on('data', (data: Buffer) => {
+        output += data.toString()
+      })
+      
+      list.on('close', (code: number) => {
+        if (code === 0) {
+          try {
+            const parsed = JSON.parse(output)
+            resolve(parsed)
+          } catch {
+            resolve([])
+          }
+        } else {
+          reject(new Error('Failed to list snapshots'))
+        }
+      })
+      
+      list.on('error', reject)
+    })
+    
+    return {
+      success: true,
+      snapshots: snapshots.map(s => ({
+        id: s.short_id || s.id,
+        time: s.time,
+        hostname: s.hostname,
+        paths: s.paths || [],
+        tags: s.tags || []
+      }))
+    }
+  } catch (err) {
+    logError('Failed to list snapshots', { error: String(err) })
+    return { success: false, error: String(err), snapshots: [] }
+  }
+})
+
+// Delete a snapshot from restic
+ipcMain.handle('backup:delete-snapshot', async (_, config: {
+  provider: string
+  bucket: string
+  region?: string
+  endpoint?: string
+  accessKey: string
+  secretKey: string
+  resticPassword: string
+  snapshotId: string
+}) => {
+  const { spawn } = require('child_process')
+  
+  log('Deleting snapshot...', { snapshotId: config.snapshotId })
+  
+  const env = {
+    ...process.env,
+    RESTIC_PASSWORD: config.resticPassword,
+    AWS_ACCESS_KEY_ID: config.accessKey,
+    AWS_SECRET_ACCESS_KEY: config.secretKey,
+  }
+  
+  if (config.provider === 'backblaze_b2') {
+    env.B2_ACCOUNT_ID = config.accessKey
+    env.B2_ACCOUNT_KEY = config.secretKey
+  }
+  
+  const repo = buildResticRepo(config)
+  const resticCmd = getResticCommand()
+  
+  try {
+    // Forget the snapshot (mark for deletion)
+    await new Promise<void>((resolve, reject) => {
+      const forget = spawn(resticCmd, ['-r', repo, 'forget', config.snapshotId], { env })
+      let stderr = ''
+      
+      forget.stderr.on('data', (data: Buffer) => {
+        stderr += data.toString()
+      })
+      
+      forget.on('close', (code: number) => {
+        if (code === 0) resolve()
+        else reject(new Error(stderr || `Exit code ${code}`))
+      })
+      forget.on('error', reject)
+    })
+    
+    // Prune the repository to actually free space
+    await new Promise<void>((resolve, reject) => {
+      const prune = spawn(resticCmd, ['-r', repo, 'prune'], { env })
+      
+      prune.on('close', (code: number) => {
+        if (code === 0) resolve()
+        else reject(new Error(`Prune failed with exit code ${code}`))
+      })
+      prune.on('error', reject)
+    })
+    
+    log('Snapshot deleted successfully')
+    return { success: true }
+  } catch (err) {
+    logError('Failed to delete snapshot', { error: String(err) })
+    return { success: false, error: String(err) }
+  }
+})
+
+// Restore from backup
+ipcMain.handle('backup:restore', async (event, config: {
+  provider: string
+  bucket: string
+  region?: string
+  endpoint?: string
+  accessKey: string
+  secretKey: string
+  resticPassword: string
+  snapshotId: string
+  targetPath: string
+  specificPaths?: string[]
+}) => {
+  const { spawn } = require('child_process')
+  
+  log('Starting restore...', { snapshotId: config.snapshotId, targetPath: config.targetPath })
+  
+  const env = {
+    ...process.env,
+    RESTIC_PASSWORD: config.resticPassword,
+    AWS_ACCESS_KEY_ID: config.accessKey,
+    AWS_SECRET_ACCESS_KEY: config.secretKey,
+  }
+  
+  if (config.provider === 'backblaze_b2') {
+    env.B2_ACCOUNT_ID = config.accessKey
+    env.B2_ACCOUNT_KEY = config.secretKey
+  }
+  
+  const repo = buildResticRepo(config)
+  const resticCmd = getResticCommand()
+  
+  try {
+    const args = [
+      '-r', repo,
+      'restore', config.snapshotId,
+      '--target', config.targetPath
+    ]
+    
+    if (config.specificPaths && config.specificPaths.length > 0) {
+      for (const p of config.specificPaths) {
+        args.push('--include', p)
+      }
+    }
+    
+    await new Promise<void>((resolve, reject) => {
+      const restore = spawn(resticCmd, args, { env })
+      
+      restore.stdout.on('data', (data: Buffer) => {
+        log('restore stdout: ' + data.toString())
+      })
+      
+      restore.stderr.on('data', (data: Buffer) => {
+        log('restore stderr: ' + data.toString())
+      })
+      
+      restore.on('close', (code: number) => {
+        if (code === 0) resolve()
+        else reject(new Error(`Restore failed with exit code ${code}`))
+      })
+      
+      restore.on('error', reject)
+    })
+    
+    log('Restore completed successfully')
+    
+    // Check if metadata file exists in restored data
+    const metadataPath = path.join(config.targetPath, '.bluepdm', 'database-export.json')
+    let hasMetadata = false
+    if (fs.existsSync(metadataPath)) {
+      hasMetadata = true
+      log('Found database metadata in restored backup')
+    }
+    
+    return { success: true, hasMetadata }
+  } catch (err) {
+    logError('Restore failed', { error: String(err) })
+    return { success: false, error: String(err) }
+  }
+})
+
+// Read database metadata from a vault directory
+ipcMain.handle('backup:read-metadata', async (_, vaultPath: string) => {
+  const metadataPath = path.join(vaultPath, '.bluepdm', 'database-export.json')
+  
+  if (!fs.existsSync(metadataPath)) {
+    return { success: false, error: 'No metadata file found' }
+  }
+  
+  try {
+    const content = fs.readFileSync(metadataPath, 'utf-8')
+    const data = JSON.parse(content)
+    
+    if (data._type !== 'bluepdm_database_export') {
+      return { success: false, error: 'Invalid metadata file format' }
+    }
+    
+    log('Read database metadata from: ' + metadataPath)
+    return { success: true, data }
+  } catch (err) {
+    logError('Failed to read metadata', { error: String(err) })
+    return { success: false, error: String(err) }
+  }
 })
 
 // ============================================
@@ -2412,5 +3482,131 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
+  }
+})
+
+// ============================================
+// External CLI Server (for development/automation)
+// ============================================
+const CLI_PORT = 31337
+
+let cliServer: http.Server | null = null
+let pendingCliRequests: Map<string, { resolve: (result: unknown) => void, reject: (err: Error) => void }> = new Map()
+
+function startCliServer() {
+  if (cliServer) return
+  
+  cliServer = http.createServer(async (req, res) => {
+    // CORS headers for local development
+    res.setHeader('Access-Control-Allow-Origin', '*')
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+    res.setHeader('Content-Type', 'application/json')
+    
+    if (req.method === 'OPTIONS') {
+      res.writeHead(200)
+      res.end()
+      return
+    }
+    
+    if (req.method !== 'POST') {
+      res.writeHead(405)
+      res.end(JSON.stringify({ error: 'Method not allowed' }))
+      return
+    }
+    
+    let body = ''
+    req.on('data', chunk => { body += chunk })
+    req.on('end', async () => {
+      try {
+        const { command } = JSON.parse(body)
+        
+        if (!command || typeof command !== 'string') {
+          res.writeHead(400)
+          res.end(JSON.stringify({ error: 'Missing command' }))
+          return
+        }
+        
+        log(`[CLI Server] Received command: ${command}`)
+        
+        // Handle reload command directly in main process
+        if (command === 'reload-app' || command === 'restart') {
+          log('[CLI Server] Reloading app...')
+          if (mainWindow) {
+            mainWindow.webContents.reload()
+            res.writeHead(200)
+            res.end(JSON.stringify({ success: true, result: { outputs: [{ type: 'info', content: 'Reloading app...' }] } }))
+          } else {
+            res.writeHead(503)
+            res.end(JSON.stringify({ error: 'No window' }))
+          }
+          return
+        }
+        
+        // Generate unique request ID
+        const requestId = `cli-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+        
+        // Send command to renderer and wait for response
+        const resultPromise = new Promise((resolve, reject) => {
+          pendingCliRequests.set(requestId, { resolve, reject })
+          
+          // Timeout after 30 seconds
+          setTimeout(() => {
+            if (pendingCliRequests.has(requestId)) {
+              pendingCliRequests.delete(requestId)
+              reject(new Error('Command timeout'))
+            }
+          }, 30000)
+        })
+        
+        // Send to renderer
+        if (mainWindow?.webContents) {
+          mainWindow.webContents.send('cli-command', { requestId, command })
+        } else {
+          res.writeHead(503)
+          res.end(JSON.stringify({ error: 'App not ready' }))
+          return
+        }
+        
+        const result = await resultPromise
+        res.writeHead(200)
+        res.end(JSON.stringify({ success: true, result }))
+        
+      } catch (err) {
+        log(`[CLI Server] Error: ${err}`)
+        res.writeHead(500)
+        res.end(JSON.stringify({ error: String(err) }))
+      }
+    })
+  })
+  
+  cliServer.listen(CLI_PORT, '127.0.0.1', () => {
+    log(`[CLI Server] Listening on http://127.0.0.1:${CLI_PORT}`)
+    console.log(`\n📟 BluePDM CLI Server running on port ${CLI_PORT}`)
+    console.log(`   Use: node cli/bluepdm.js <command>\n`)
+  })
+  
+  cliServer.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      log(`[CLI Server] Port ${CLI_PORT} already in use`)
+    } else {
+      logError('[CLI Server] Error', { error: String(err) })
+    }
+  })
+}
+
+// IPC handler for CLI command responses from renderer
+ipcMain.on('cli-response', (_, { requestId, result }) => {
+  const pending = pendingCliRequests.get(requestId)
+  if (pending) {
+    pendingCliRequests.delete(requestId)
+    pending.resolve(result)
+  }
+})
+
+// Start CLI server when app is ready (only in dev mode or if env var is set)
+app.whenReady().then(() => {
+  if (isDev || process.env.BLUEPDM_CLI === '1') {
+    startCliServer()
   }
 })

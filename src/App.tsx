@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { usePDMStore } from './stores/pdmStore'
 import { supabase, getCurrentSession, isSupabaseConfigured, getFilesLightweight, getCheckedOutUsers, linkUserToOrganization, getUserProfile, setCurrentAccessToken } from './lib/supabase'
+// Backup services removed - now handled directly via restic
 import { MenuBar } from './components/MenuBar'
 import { ActivityBar } from './components/ActivityBar'
 import { Sidebar } from './components/Sidebar'
@@ -11,6 +12,7 @@ import { WelcomeScreen } from './components/WelcomeScreen'
 import { SetupScreen } from './components/SetupScreen'
 import { Toast } from './components/Toast'
 import { RightPanel } from './components/RightPanel'
+import { Terminal } from './components/Terminal'
 
 // Build full path using the correct separator for the platform
 function buildFullPath(vaultPath: string, relativePath: string): string {
@@ -43,6 +45,7 @@ function App() {
     setVaultConnected,
     setFiles,
     setServerFiles,
+    setServerFolderPaths,
     setIsLoading,
     statusMessage,
     setStatusMessage,
@@ -272,6 +275,8 @@ function App() {
     
     try {
       // Run local file scan and server fetch in PARALLEL for faster boot
+      // Note: listWorkingFiles now returns FAST (no blocking hash computation)
+      // Hashes are computed in background after initial display
       const shouldFetchServer = organization && !isOfflineMode && currentVaultId
       
       if (!silent) {
@@ -372,6 +377,18 @@ function App() {
           }))
           setServerFiles(serverFilesList)
           
+          // Compute all folder paths that exist on the server
+          const serverFolderPathsSet = new Set<string>()
+          for (const file of pdmFiles as any[]) {
+            const pathParts = file.file_path.split('/')
+            let currentPath = ''
+            for (let i = 0; i < pathParts.length - 1; i++) {
+              currentPath = currentPath ? `${currentPath}/${pathParts[i]}` : pathParts[i]
+              serverFolderPathsSet.add(currentPath)
+            }
+          }
+          setServerFolderPaths(serverFolderPathsSet)
+          
           // Create set of local file paths for deletion detection (case-insensitive)
           const localPathSet = new Set(localFiles.map(f => f.relativePath.toLowerCase()))
           
@@ -471,10 +488,9 @@ function App() {
                   diffStatus = 'outdated'
                 }
               }
-            } else if (pdmData.content_hash && !localFile.localHash) {
-              // Cloud has content but we couldn't hash local file - might be outdated
-              diffStatus = 'outdated'
             }
+            // NOTE: If cloud has hash but local doesn't have one yet, leave diffStatus undefined
+            // The background hash computation will set the proper status once hashes are computed
             
             return {
               ...localFile,
@@ -581,7 +597,8 @@ function App() {
       }
       
       // Update folder diffStatus based on contents
-      // A folder should be 'cloud' if all its contents are cloud-only
+      // A folder should be 'cloud' if all its contents are cloud-only AND it has some cloud content
+      // Empty folders that exist locally should NOT be marked as cloud
       // Process folders bottom-up (deepest first) so parent folders see updated child statuses
       const folders = localFiles.filter(f => f.isDirectory)
       
@@ -597,7 +614,7 @@ function App() {
         const normalizedFolder = folder.relativePath.replace(/\\/g, '/')
         
         // Get direct children of this folder
-        const hasLocalContent = localFiles.some(f => {
+        const directChildren = localFiles.filter(f => {
           if (f.relativePath === folder.relativePath) return false // Skip self
           const normalizedPath = f.relativePath.replace(/\\/g, '/')
           
@@ -606,11 +623,15 @@ function App() {
           const remainder = normalizedPath.slice(normalizedFolder.length + 1)
           if (remainder.includes('/')) return false // It's nested deeper, not direct child
           
-          // Check if this item is local (not cloud-only)
-          return f.diffStatus !== 'cloud'
+          return true
         })
         
-        if (!hasLocalContent) {
+        const hasLocalContent = directChildren.some(f => f.diffStatus !== 'cloud')
+        const hasCloudContent = directChildren.some(f => f.diffStatus === 'cloud')
+        
+        // Only mark as cloud if folder has cloud content AND no local content
+        // Empty local folders should stay as normal folders
+        if (!hasLocalContent && hasCloudContent) {
           // Update this folder to cloud status
           const folderInList = localFiles.find(f => f.relativePath === folder.relativePath)
           if (folderInList) {
@@ -663,6 +684,72 @@ function App() {
               })
               setFiles(updatedFiles)
             }
+          }
+          
+          // 3. Background hash computation for files without hashes
+          // This runs progressively without blocking the UI
+          const filesNeedingHash = localFiles.filter(f => 
+            !f.isDirectory && !f.localHash && f.pdmData?.content_hash
+          )
+          
+          if (filesNeedingHash.length > 0 && window.electronAPI.computeFileHashes) {
+            window.electronAPI?.log('info', '[LoadFiles] Computing hashes for', { count: filesNeedingHash.length })
+            setStatusMessage(`Checking ${filesNeedingHash.length} files for changes...`)
+            
+            // Prepare file list for hash computation
+            const hashRequests = filesNeedingHash.map(f => ({
+              path: f.path,
+              relativePath: f.relativePath,
+              size: f.size,
+              mtime: new Date(f.modifiedTime).getTime()
+            }))
+            
+            try {
+              // Compute hashes in background (with progress updates via IPC)
+              const { results } = await window.electronAPI.computeFileHashes(hashRequests)
+              
+              if (results && results.length > 0) {
+                // Create a map for quick lookup
+                const hashMap = new Map(results.map(r => [r.relativePath, r.hash]))
+                
+                // Update files with computed hashes and recompute diff status
+                const currentFiles = usePDMStore.getState().files
+                const updatedFiles = currentFiles.map(f => {
+                  if (f.isDirectory) return f
+                  
+                  const computedHash = hashMap.get(f.relativePath)
+                  if (!computedHash) return f
+                  
+                  // Recompute diff status with the new hash
+                  let newDiffStatus = f.diffStatus
+                  if (f.pdmData?.content_hash && computedHash) {
+                    if (f.pdmData.content_hash !== computedHash) {
+                      // Hashes differ - check which is newer
+                      const localModTime = new Date(f.modifiedTime).getTime()
+                      const cloudUpdateTime = f.pdmData.updated_at ? new Date(f.pdmData.updated_at).getTime() : 0
+                      newDiffStatus = localModTime > cloudUpdateTime ? 'modified' : 'outdated'
+                    } else {
+                      // Hashes match - no diff
+                      newDiffStatus = undefined
+                    }
+                  }
+                  
+                  return {
+                    ...f,
+                    localHash: computedHash,
+                    diffStatus: newDiffStatus
+                  }
+                })
+                
+                setFiles(updatedFiles)
+                window.electronAPI?.log('info', '[LoadFiles] Hash computation complete', { updated: results.length })
+              }
+            } catch (err) {
+              window.electronAPI?.log('error', '[LoadFiles] Hash computation failed', { error: String(err) })
+            }
+            
+            // Clear the status message after hash computation
+            setStatusMessage('')
           }
         }, 50) // Small delay to let React render first
       }
@@ -951,6 +1038,10 @@ function App() {
     return cleanup
   }, [vaultPath, loadFiles])
 
+  // Start backup heartbeat and scheduler when user and org are available
+  // Backup services removed - all backup operations are now handled directly via restic
+  // when the user clicks "Backup Now" or "Restore" in the BackupPanel
+
   // Auto-updater event listeners
   useEffect(() => {
     if (!window.electronAPI) return
@@ -1015,6 +1106,9 @@ function App() {
     }
   }, [])
 
+  // Get terminal toggle
+  const { toggleTerminal } = usePDMStore()
+  
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1034,6 +1128,10 @@ function App() {
             e.preventDefault()
             toggleDetailsPanel()
             break
+          case '`':  // Ctrl+` or Cmd+` to toggle terminal
+            e.preventDefault()
+            toggleTerminal()
+            break
         }
       }
       
@@ -1045,7 +1143,7 @@ function App() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [handleOpenVault, toggleSidebar, toggleDetailsPanel, loadFiles])
+  }, [handleOpenVault, toggleSidebar, toggleDetailsPanel, loadFiles, toggleTerminal])
 
   // Determine if we should show the welcome screen
   const showWelcome = (!user && !isOfflineMode) || !hasVaultConnected
@@ -1111,6 +1209,9 @@ function App() {
           <DetailsPanel />
                 </>
               )}
+              
+              {/* Terminal Panel */}
+              <Terminal onRefresh={loadFiles} />
             </>
           )}
         </div>

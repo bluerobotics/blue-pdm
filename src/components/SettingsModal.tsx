@@ -36,9 +36,13 @@ import {
   FolderOpen,
   Clock,
   ChevronLeft,
-  User
+  User,
+  HardDrive,
+  Filter,
+  Calendar
 } from 'lucide-react'
 import { usePDMStore, ConnectedVault } from '../stores/pdmStore'
+import { BackupPanel } from './BackupPanel'
 import { supabase, signOut, getCurrentConfig, updateUserRole, removeUserFromOrg, getOrgVaultAccess, setUserVaultAccess } from '../lib/supabase'
 import { generateOrgCode, clearConfig } from '../lib/supabaseConfig'
 import { getInitials } from '../types/pdm'
@@ -56,7 +60,7 @@ function buildVaultPath(platform: string, vaultSlug: string): string {
   }
 }
 
-type SettingsTab = 'organization' | 'preferences' | 'logs' | 'about'
+type SettingsTab = 'organization' | 'backup' | 'preferences' | 'logs' | 'about'
 
 interface OrgUser {
   id: string
@@ -97,11 +101,13 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     setVaultPath,
     setVaultConnected,
     setUser: _setUser,
-    setOrganization: _setOrganization,
+    setOrganization,
     addToast,
     triggerVaultsRefresh,
     cadPreviewMode,
     setCadPreviewMode,
+    solidworksPath,
+    setSolidworksPath,
     lowercaseExtensions,
     setLowercaseExtensions,
     ignorePatterns,
@@ -135,6 +141,12 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   const [selectedLogFile, setSelectedLogFile] = useState<{ name: string; path: string; content: string } | null>(null)
   const [isLoadingLogContent, setIsLoadingLogContent] = useState(false)
   const [logCopied, setLogCopied] = useState(false)
+  const [logFilter, setLogFilter] = useState<'today' | 'week' | 'all'>('all')
+  const [logFilterDropdownOpen, setLogFilterDropdownOpen] = useState(false)
+  const [selectedLogPaths, setSelectedLogPaths] = useState<Set<string>>(new Set())
+  const [copyingLogPath, setCopyingLogPath] = useState<string | null>(null)
+  const [isBulkCopying, setIsBulkCopying] = useState(false)
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false)
   const [updateCheckResult, setUpdateCheckResult] = useState<'none' | 'available' | 'error' | null>(null)
   const [appVersion, setAppVersion] = useState('')
   const [platform, setPlatform] = useState<string>('win32')
@@ -246,6 +258,148 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     }
     return null
   }
+  
+  // Parse date from filename for filtering
+  const getLogFileDate = (filename: string): Date | null => {
+    const match = filename.match(/bluepdm-(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})\.log/)
+    if (match) {
+      const [, year, month, day, hour, minute, second] = match
+      return new Date(`${year}-${month}-${day}T${hour}:${minute}:${second}`)
+    }
+    return null
+  }
+  
+  // Filter log files based on selected filter
+  const filteredLogFiles = logFiles.filter(file => {
+    if (logFilter === 'all') return true
+    
+    const fileDate = getLogFileDate(file.name) || new Date(file.modifiedTime)
+    const now = new Date()
+    
+    if (logFilter === 'today') {
+      // Check if same day
+      return fileDate.toDateString() === now.toDateString()
+    } else if (logFilter === 'week') {
+      // Check if within last 7 days
+      const weekAgo = new Date(now)
+      weekAgo.setDate(weekAgo.getDate() - 7)
+      return fileDate >= weekAgo
+    }
+    
+    return true
+  })
+  
+  const logFilterOptions = [
+    { value: 'today' as const, label: 'Today' },
+    { value: 'week' as const, label: 'This Week' },
+    { value: 'all' as const, label: 'All Logs' },
+  ]
+  
+  // Toggle selection of a single log file
+  const toggleLogSelection = (path: string) => {
+    setSelectedLogPaths(prev => {
+      const next = new Set(prev)
+      if (next.has(path)) {
+        next.delete(path)
+      } else {
+        next.add(path)
+      }
+      return next
+    })
+  }
+  
+  // Select or deselect all filtered logs
+  const toggleSelectAllLogs = () => {
+    const allFilteredPaths = filteredLogFiles.map(f => f.path)
+    const allSelected = allFilteredPaths.every(p => selectedLogPaths.has(p))
+    
+    if (allSelected) {
+      // Deselect all
+      setSelectedLogPaths(new Set())
+    } else {
+      // Select all filtered
+      setSelectedLogPaths(new Set(allFilteredPaths))
+    }
+  }
+  
+  // Copy a single log file content to clipboard
+  const copyLogFile = async (file: { name: string; path: string }) => {
+    if (!window.electronAPI) return
+    setCopyingLogPath(file.path)
+    try {
+      const result = await window.electronAPI.readLogFile(file.path)
+      if (result.success && result.content) {
+        await navigator.clipboard.writeText(result.content)
+        addToast('success', `Copied ${file.name}`)
+      } else {
+        addToast('error', result.error || 'Failed to read log file')
+      }
+    } catch (err) {
+      addToast('error', 'Failed to copy log file')
+    } finally {
+      setCopyingLogPath(null)
+    }
+  }
+  
+  // Bulk copy selected log files
+  const bulkCopyLogs = async () => {
+    if (!window.electronAPI || selectedLogPaths.size === 0) return
+    setIsBulkCopying(true)
+    try {
+      const selectedFiles = filteredLogFiles.filter(f => selectedLogPaths.has(f.path))
+      const contents: string[] = []
+      
+      for (const file of selectedFiles) {
+        const result = await window.electronAPI.readLogFile(file.path)
+        if (result.success && result.content) {
+          contents.push(`${'='.repeat(60)}\n${file.name}\n${'='.repeat(60)}\n${result.content}\n`)
+        }
+      }
+      
+      if (contents.length > 0) {
+        await navigator.clipboard.writeText(contents.join('\n'))
+        addToast('success', `Copied ${contents.length} log file${contents.length > 1 ? 's' : ''}`)
+      }
+    } catch (err) {
+      addToast('error', 'Failed to copy log files')
+    } finally {
+      setIsBulkCopying(false)
+    }
+  }
+  
+  // Bulk delete selected log files
+  const bulkDeleteLogs = async () => {
+    if (!window.electronAPI || selectedLogPaths.size === 0) return
+    setIsBulkDeleting(true)
+    try {
+      const selectedFiles = filteredLogFiles.filter(f => selectedLogPaths.has(f.path) && !f.isCurrentSession)
+      let deletedCount = 0
+      
+      for (const file of selectedFiles) {
+        const result = await window.electronAPI.deleteLogFile(file.path)
+        if (result?.success) {
+          deletedCount++
+        }
+      }
+      
+      if (deletedCount > 0) {
+        addToast('success', `Deleted ${deletedCount} log file${deletedCount > 1 ? 's' : ''}`)
+        setSelectedLogPaths(new Set())
+        loadLogFiles()
+      }
+    } catch (err) {
+      addToast('error', 'Failed to delete log files')
+    } finally {
+      setIsBulkDeleting(false)
+    }
+  }
+  
+  // Check if all filtered logs are selected
+  const allFilteredSelected = filteredLogFiles.length > 0 && filteredLogFiles.every(f => selectedLogPaths.has(f.path))
+  const someFilteredSelected = filteredLogFiles.some(f => selectedLogPaths.has(f.path))
+  
+  // Count of selected logs that can be deleted (not current session)
+  const deletableSelectedCount = filteredLogFiles.filter(f => selectedLogPaths.has(f.path) && !f.isCurrentSession).length
   
   const loadVaultAccess = async () => {
     if (!organization) return
@@ -793,6 +947,7 @@ See you on the team!`
   
   const tabs = [
     { id: 'organization' as SettingsTab, icon: Building2, label: 'Organization' },
+    { id: 'backup' as SettingsTab, icon: HardDrive, label: 'Backups' },
     { id: 'preferences' as SettingsTab, icon: Settings, label: 'Preferences' },
     { id: 'logs' as SettingsTab, icon: FileText, label: 'Logs' },
     { id: 'about' as SettingsTab, icon: Info, label: 'About' },
@@ -800,7 +955,7 @@ See you on the team!`
 
   return (
     <div 
-      className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center"
+      className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center"
       onClick={onClose}
     >
       <div 
@@ -1250,6 +1405,79 @@ See you on the team!`
                       )}
                     </div>
                     
+                    {/* SolidWorks Integration (Admin only) */}
+                    {user?.role === 'admin' && (
+                      <div className="space-y-3 pt-4 border-t border-pdm-border">
+                        <div className="flex items-center gap-2 text-xs text-pdm-fg-muted uppercase tracking-wide font-medium">
+                          <FileBox size={14} />
+                          SolidWorks Integration
+                        </div>
+                        <p className="text-sm text-pdm-fg-muted">
+                          Enter your organization's Document Manager API license key to enable direct file reading.
+                          All users in your organization will automatically use this key.
+                        </p>
+                        
+                        <div className="space-y-2">
+                          <label className="text-xs text-pdm-fg-dim">Document Manager License Key</label>
+                          <input
+                            type="password"
+                            value={organization?.settings?.solidworks_dm_license_key || ''}
+                            onChange={async (e) => {
+                              const newKey = e.target.value || null
+                              if (!organization) return
+                              try {
+                                const { error } = await supabase
+                                  .from('organizations')
+                                  .update({ 
+                                    settings: { 
+                                      ...organization.settings, 
+                                      solidworks_dm_license_key: newKey 
+                                    } 
+                                  })
+                                  .eq('id', organization.id)
+                                if (error) throw error
+                                setOrganization({
+                                  ...organization,
+                                  settings: { ...organization.settings, solidworks_dm_license_key: newKey || undefined }
+                                })
+                                addToast('success', 'SolidWorks license key updated')
+                              } catch (err) {
+                                addToast('error', 'Failed to save license key')
+                              }
+                            }}
+                            placeholder="Enter your organization's DM API license key"
+                            className="w-full px-3 py-2 bg-pdm-bg border border-pdm-border rounded-lg text-sm text-pdm-fg placeholder-pdm-fg-dim focus:outline-none focus:border-pdm-accent font-mono"
+                          />
+                          <p className="text-xs text-pdm-fg-dim">
+                            Free with SolidWorks subscription.{' '}
+                            <a 
+                              href="https://customerportal.solidworks.com/" 
+                              target="_blank" 
+                              rel="noopener noreferrer"
+                              className="text-pdm-accent hover:underline"
+                              onClick={(e) => {
+                                e.preventDefault()
+                                window.electronAPI?.openFile('https://customerportal.solidworks.com/')
+                              }}
+                            >
+                              Request key →
+                            </a>
+                          </p>
+                          {organization?.settings?.solidworks_dm_license_key && (
+                            <div className="flex items-center gap-2 text-xs text-green-400">
+                              <Check size={12} />
+                              Direct file access enabled for all org users
+                            </div>
+                          )}
+                        </div>
+                        
+                        <div className="p-3 bg-pdm-bg rounded-lg border border-pdm-border text-xs text-pdm-fg-dim space-y-1">
+                          <div><strong>With DM key:</strong> BOM, properties, configs read directly from files (instant)</div>
+                          <div><strong>Without DM key:</strong> Uses SolidWorks API which launches SW in background (slower first time)</div>
+                        </div>
+                      </div>
+                    )}
+                    
                     {/* Organization Code (Admin only) */}
                     {user?.role === 'admin' && (
                       <div className="space-y-3 pt-4 border-t border-pdm-border">
@@ -1324,6 +1552,18 @@ See you on the team!`
               </div>
             )}
             
+            {activeTab === 'backup' && (
+              <div className="space-y-6">
+                {organization ? (
+                  <BackupPanel isAdmin={user?.role === 'admin'} />
+                ) : (
+                  <div className="text-center py-12 text-pdm-fg-muted">
+                    Connect to an organization to configure backups
+                  </div>
+                )}
+              </div>
+            )}
+            
             {activeTab === 'preferences' && (
               <div className="space-y-6">
                 {/* CAD Preview Mode */}
@@ -1376,6 +1616,43 @@ See you on the team!`
                         <Check size={20} className="text-pdm-accent" />
                       )}
                     </button>
+                  </div>
+                </div>
+                
+                {/* SolidWorks Local Settings */}
+                <div className="space-y-3 pt-4 border-t border-pdm-border">
+                  <h3 className="text-sm font-semibold text-pdm-fg">SolidWorks (This Machine)</h3>
+                  <p className="text-sm text-pdm-fg-muted">
+                    Machine-specific SolidWorks settings. The DM license key is configured at the organization level.
+                  </p>
+                  
+                  {/* SolidWorks Path */}
+                  <div className="space-y-2">
+                    <label className="text-xs text-pdm-fg-muted uppercase tracking-wide">
+                      SolidWorks Installation Path (Optional)
+                    </label>
+                    <p className="text-xs text-pdm-fg-dim">
+                      Only needed if SolidWorks is installed in a non-default location on this machine.
+                    </p>
+                    <input
+                      type="text"
+                      value={solidworksPath || ''}
+                      onChange={(e) => setSolidworksPath(e.target.value || null)}
+                      placeholder="C:\Program Files\SOLIDWORKS Corp\SOLIDWORKS"
+                      className="w-full px-3 py-2 bg-pdm-bg border border-pdm-border rounded-lg text-sm text-pdm-fg placeholder-pdm-fg-dim focus:outline-none focus:border-pdm-accent"
+                    />
+                  </div>
+                  
+                  {/* Status indicator */}
+                  <div className="p-3 bg-pdm-bg rounded-lg border border-pdm-border">
+                    <div className="text-xs text-pdm-fg-dim">
+                      <strong>Org DM License:</strong>{' '}
+                      {organization?.settings?.solidworks_dm_license_key ? (
+                        <span className="text-green-400">✓ Configured (direct file access enabled)</span>
+                      ) : (
+                        <span className="text-pdm-fg-muted">Not configured (will use SolidWorks API)</span>
+                      )}
+                    </div>
                   </div>
                 </div>
                 
@@ -1570,7 +1847,7 @@ See you on the team!`
               <div className="space-y-4">
                 {/* Log Viewer Modal */}
                 {selectedLogFile && (
-                  <div className="fixed inset-0 z-[70] bg-black/60 flex items-center justify-center p-4">
+                  <div className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
                     <div className="bg-pdm-bg-light border border-pdm-border rounded-xl shadow-2xl w-[900px] max-w-[95vw] max-h-[85vh] flex flex-col overflow-hidden">
                       {/* Header */}
                       <div className="flex items-center gap-3 p-4 border-b border-pdm-border bg-pdm-sidebar">
@@ -1638,36 +1915,152 @@ See you on the team!`
                   <p className="text-sm text-pdm-fg-dim">
                     View and manage application logs for troubleshooting
                   </p>
-                  <button
-                    onClick={async () => {
-                      await window.electronAPI?.openLogsDir()
-                    }}
-                    className="flex items-center gap-2 px-3 py-1.5 text-sm text-pdm-fg-muted hover:text-pdm-fg bg-pdm-bg border border-pdm-border rounded-lg hover:border-pdm-accent transition-colors"
-                  >
-                    <FolderOpen size={14} />
-                    Open Folder
-                  </button>
+                  <div className="flex items-center gap-1">
+                    {/* Filter Dropdown */}
+                    <div className="relative">
+                      <button
+                        onClick={() => setLogFilterDropdownOpen(!logFilterDropdownOpen)}
+                        className={`p-1.5 rounded hover:bg-pdm-highlight transition-colors ${
+                          logFilter !== 'all' ? 'text-pdm-accent' : 'text-pdm-fg-muted hover:text-pdm-fg'
+                        }`}
+                        title={`Filter: ${logFilterOptions.find(o => o.value === logFilter)?.label}`}
+                      >
+                        <Filter size={16} />
+                      </button>
+                      {logFilterDropdownOpen && (
+                        <div className="absolute right-0 mt-1 py-1 w-36 bg-pdm-bg-light border border-pdm-border rounded-lg shadow-lg z-10">
+                          {logFilterOptions.map(option => (
+                            <button
+                              key={option.value}
+                              onClick={() => {
+                                setLogFilter(option.value)
+                                setLogFilterDropdownOpen(false)
+                              }}
+                              className={`w-full px-3 py-2 text-left text-sm hover:bg-pdm-highlight transition-colors flex items-center gap-2 ${
+                                logFilter === option.value ? 'text-pdm-accent' : 'text-pdm-fg-muted'
+                              }`}
+                            >
+                              {option.value === 'today' && <Calendar size={14} />}
+                              {option.value === 'week' && <Clock size={14} />}
+                              {option.value === 'all' && <FileText size={14} />}
+                              {option.label}
+                              {logFilter === option.value && <Check size={14} className="ml-auto" />}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      onClick={async () => {
+                        await window.electronAPI?.openLogsDir()
+                      }}
+                      className="p-1.5 text-pdm-fg-muted hover:text-pdm-fg rounded hover:bg-pdm-highlight transition-colors"
+                      title="Open logs folder"
+                    >
+                      <FolderOpen size={16} />
+                    </button>
+                  </div>
                 </div>
                 
                 {/* Log Files List */}
                 <div className="space-y-2">
-                  <h3 className="text-sm font-medium text-pdm-fg-dim uppercase tracking-wide">Session Logs</h3>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      {/* Select All Checkbox */}
+                      {filteredLogFiles.length > 0 && (
+                        <button
+                          onClick={toggleSelectAllLogs}
+                          className={`flex items-center justify-center w-5 h-5 border-2 rounded transition-colors ${
+                            allFilteredSelected 
+                              ? 'border-pdm-accent bg-pdm-accent' 
+                              : someFilteredSelected
+                              ? 'border-pdm-accent bg-pdm-bg'
+                              : 'border-pdm-fg-muted/40 bg-pdm-bg hover:border-pdm-accent'
+                          }`}
+                          title={allFilteredSelected ? 'Deselect all' : 'Select all'}
+                        >
+                          {allFilteredSelected ? (
+                            <Check size={14} className="text-white" />
+                          ) : someFilteredSelected ? (
+                            <div className="w-2.5 h-2.5 bg-pdm-accent rounded-sm" />
+                          ) : null}
+                        </button>
+                      )}
+                      <h3 className="text-sm font-medium text-pdm-fg-dim uppercase tracking-wide">Session Logs</h3>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {/* Bulk Actions */}
+                      {selectedLogPaths.size > 0 && (
+                        <>
+                          <button
+                            onClick={bulkCopyLogs}
+                            disabled={isBulkCopying}
+                            className="flex items-center gap-1.5 px-2 py-1 text-xs text-pdm-fg-muted hover:text-pdm-fg bg-pdm-bg border border-pdm-border rounded hover:border-pdm-accent transition-colors disabled:opacity-50"
+                            title="Copy selected logs"
+                          >
+                            {isBulkCopying ? (
+                              <Loader2 size={12} className="animate-spin" />
+                            ) : (
+                              <Copy size={12} />
+                            )}
+                            Copy ({selectedLogPaths.size})
+                          </button>
+                          {deletableSelectedCount > 0 && (
+                            <button
+                              onClick={bulkDeleteLogs}
+                              disabled={isBulkDeleting}
+                              className="flex items-center gap-1.5 px-2 py-1 text-xs text-pdm-error hover:text-pdm-error bg-pdm-bg border border-pdm-error/30 rounded hover:border-pdm-error/60 hover:bg-pdm-error/10 transition-colors disabled:opacity-50"
+                              title="Delete selected logs"
+                            >
+                              {isBulkDeleting ? (
+                                <Loader2 size={12} className="animate-spin" />
+                              ) : (
+                                <Trash2 size={12} />
+                              )}
+                              Delete ({deletableSelectedCount})
+                            </button>
+                          )}
+                        </>
+                      )}
+                      <span className="text-xs text-pdm-fg-dim">
+                        {filteredLogFiles.length} of {logFiles.length} logs
+                      </span>
+                    </div>
+                  </div>
                   
                   {isLoadingLogs ? (
                     <div className="flex items-center justify-center py-8">
                       <Loader2 size={24} className="text-pdm-fg-muted animate-spin" />
                     </div>
-                  ) : logFiles.length === 0 ? (
+                  ) : filteredLogFiles.length === 0 ? (
                     <div className="text-center py-8 text-pdm-fg-muted text-sm">
-                      No log files found
+                      {logFiles.length === 0 ? 'No log files found' : `No logs found for "${logFilterOptions.find(o => o.value === logFilter)?.label}"`}
                     </div>
                   ) : (
                     <div className="space-y-1">
-                      {logFiles.map((file) => (
+                      {filteredLogFiles.map((file) => (
                         <div
                           key={file.path}
-                          className="group flex items-center gap-3 p-3 rounded-lg border border-pdm-border bg-pdm-bg hover:border-pdm-accent transition-colors"
+                          className={`group flex items-center gap-3 p-3 rounded-lg border bg-pdm-bg transition-colors ${
+                            selectedLogPaths.has(file.path) 
+                              ? 'border-pdm-accent bg-pdm-accent/5' 
+                              : 'border-pdm-border hover:border-pdm-accent'
+                          }`}
                         >
+                          {/* Checkbox */}
+                          <button
+                            onClick={() => toggleLogSelection(file.path)}
+                            className={`flex items-center justify-center w-5 h-5 border-2 rounded transition-colors flex-shrink-0 ${
+                              selectedLogPaths.has(file.path)
+                                ? 'border-pdm-accent bg-pdm-accent'
+                                : 'border-pdm-fg-muted/40 bg-pdm-bg hover:border-pdm-accent'
+                            }`}
+                          >
+                            {selectedLogPaths.has(file.path) && (
+                              <Check size={14} className="text-white" />
+                            )}
+                          </button>
+                          
                           <FileText size={18} className={`flex-shrink-0 ${file.isCurrentSession ? 'text-pdm-accent' : 'text-pdm-fg-muted'}`} />
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2">
@@ -1687,6 +2080,19 @@ See you on the team!`
                             </div>
                           </div>
                           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            {/* Copy button */}
+                            <button
+                              onClick={() => copyLogFile(file)}
+                              disabled={copyingLogPath === file.path}
+                              className="p-1.5 hover:bg-pdm-highlight rounded transition-colors"
+                              title="Copy log content"
+                            >
+                              {copyingLogPath === file.path ? (
+                                <Loader2 size={14} className="text-pdm-fg-muted animate-spin" />
+                              ) : (
+                                <Copy size={14} className="text-pdm-fg-muted" />
+                              )}
+                            </button>
                             <button
                               onClick={() => viewLogFile(file)}
                               disabled={isLoadingLogContent}
@@ -1770,7 +2176,7 @@ See you on the team!`
                 {/* Info */}
                 <div className="p-3 bg-pdm-highlight/50 rounded-lg border border-pdm-border text-xs text-pdm-fg-dim">
                   <p>
-                    <strong>Tip:</strong> If BluePDM crashes, you can still access your logs by clicking "Open Folder" 
+                    <strong>Tip:</strong> If BluePDM crashes, you can still access your logs by clicking the folder icon 
                     to navigate to the logs directory, even after restarting the app.
                   </p>
                 </div>
@@ -1911,42 +2317,6 @@ See you on the team!`
                   </a>
                 </div>
                 
-                {/* Diagnostics */}
-                <div className="space-y-2">
-                  <h3 className="text-sm font-medium text-pdm-fg-dim uppercase tracking-wide">Diagnostics</h3>
-                  <button
-                    onClick={async () => {
-                      setIsExportingLogs(true)
-                      try {
-                        const result = await window.electronAPI?.exportLogs()
-                        if (result?.success) {
-                          addToast('success', 'Logs exported successfully')
-                        } else if (!result?.canceled) {
-                          addToast('error', result?.error || 'Failed to export logs')
-                        }
-                      } catch (err) {
-                        addToast('error', 'Failed to export logs')
-                      } finally {
-                        setIsExportingLogs(false)
-                      }
-                    }}
-                    disabled={isExportingLogs}
-                    className="w-full flex items-center gap-3 p-4 rounded-lg border border-pdm-border bg-pdm-bg hover:border-pdm-accent transition-colors cursor-pointer text-left disabled:opacity-50"
-                  >
-                    {isExportingLogs ? (
-                      <Loader2 size={20} className="text-pdm-fg-muted animate-spin" />
-                    ) : (
-                      <Download size={20} className="text-pdm-fg-muted" />
-                    )}
-                    <div className="flex-1">
-                      <div className="text-sm font-medium text-pdm-fg">Export App Logs</div>
-                      <div className="text-xs text-pdm-fg-dim">
-                        Download diagnostic logs for troubleshooting
-                      </div>
-                    </div>
-                  </button>
-                </div>
-                
                 {/* License */}
                 <div className="p-4 bg-pdm-bg rounded-lg border border-pdm-border">
                   <div className="text-xs text-pdm-fg-muted text-center">
@@ -1967,7 +2337,7 @@ See you on the team!`
       {/* Delete Vault Confirmation Dialog */}
       {deletingVault && (
         <div 
-          className="fixed inset-0 z-[60] bg-black/70 flex items-center justify-center"
+          className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center"
           onClick={closeDeleteDialog}
         >
           <div 
@@ -2049,7 +2419,7 @@ See you on the team!`
       {/* Disconnect Vault Confirmation Dialog */}
       {disconnectingVault && (
         <div 
-          className="fixed inset-0 z-[60] bg-black/70 flex items-center justify-center"
+          className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center"
           onClick={cancelDisconnect}
         >
           <div 
@@ -2206,7 +2576,7 @@ See you on the team!`
       {/* Remove User Confirmation Dialog */}
       {removingUser && (
         <div 
-          className="fixed inset-0 z-[60] bg-black/70 flex items-center justify-center"
+          className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center"
           onClick={() => !isRemoving && setRemovingUser(null)}
         >
           <div 
@@ -2292,7 +2662,7 @@ See you on the team!`
       {/* Invite User Dialog */}
       {showInviteDialog && (
         <div 
-          className="fixed inset-0 z-[60] bg-black/70 flex items-center justify-center"
+          className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center"
           onClick={() => setShowInviteDialog(false)}
         >
           <div 
@@ -2377,7 +2747,7 @@ See you on the team!`
       {/* Vault Access Editor Dialog */}
       {editingVaultAccessUser && (
         <div 
-          className="fixed inset-0 z-[60] bg-black/70 flex items-center justify-center"
+          className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center"
           onClick={() => !isSavingVaultAccess && setEditingVaultAccessUser(null)}
         >
           <div 

@@ -185,11 +185,6 @@ function ProgressToastItem({ toast }: { toast: ToastMessage }) {
           <span className="text-xs text-pdm-fg-muted tabular-nums whitespace-nowrap">
             {progress.label || `${progress.current}/${progress.total}`}
           </span>
-          {progress.speed && (
-            <span className="text-xs text-pdm-fg-muted whitespace-nowrap">
-              {progress.speed}
-            </span>
-          )}
         </div>
       )}
     </div>

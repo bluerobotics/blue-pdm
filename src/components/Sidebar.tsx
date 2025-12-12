@@ -1,6 +1,6 @@
 import { usePDMStore } from '../stores/pdmStore'
 import { ExplorerView } from './sidebar/ExplorerView'
-import { CheckoutView } from './sidebar/CheckoutView'
+import { PendingView } from './sidebar/PendingView'
 import { HistoryView } from './sidebar/HistoryView'
 import { SearchView } from './sidebar/SearchView'
 import { TrashView } from './sidebar/TrashView'
@@ -19,8 +19,8 @@ export function Sidebar({ onOpenVault, onOpenRecentVault, onRefresh }: SidebarPr
     switch (activeView) {
       case 'explorer':
         return <ExplorerView onOpenVault={onOpenVault} onOpenRecentVault={onOpenRecentVault} onRefresh={onRefresh} />
-      case 'checkout':
-        return <CheckoutView onRefresh={onRefresh} />
+      case 'pending':
+        return <PendingView onRefresh={onRefresh} />
       case 'history':
         return <HistoryView />
       case 'search':
@@ -38,7 +38,7 @@ export function Sidebar({ onOpenVault, onOpenRecentVault, onRefresh }: SidebarPr
     switch (activeView) {
       case 'explorer':
         return 'EXPLORER'
-      case 'checkout':
+      case 'pending':
         return 'PENDING'
       case 'history':
         return 'HISTORY'

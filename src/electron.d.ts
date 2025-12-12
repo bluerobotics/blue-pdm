@@ -1,5 +1,27 @@
 // Type declarations for Electron API exposed via preload
 
+// System stats result type
+interface SystemStats {
+  cpu: {
+    usage: number
+    cores: number[]
+  }
+  memory: {
+    used: number
+    total: number
+    percent: number
+  }
+  network: {
+    rxSpeed: number
+    txSpeed: number
+  }
+  disk: {
+    used: number
+    total: number
+    percent: number
+  }
+}
+
 interface PathResult {
   success: boolean
   path?: string
@@ -79,6 +101,9 @@ declare global {
       getTitleBarOverlayRect: () => Promise<{ x: number; y: number; width: number; height: number }>
       getPathForFile: (file: File) => string
       
+      // System stats
+      getSystemStats: () => Promise<SystemStats | null>
+      
       // OAuth
       openOAuthWindow: (url: string) => Promise<{ success: boolean; canceled?: boolean; error?: string }>
       
@@ -92,6 +117,7 @@ declare global {
       readLogFile: (filePath: string) => Promise<{ success: boolean; content?: string; error?: string }>
       openLogsDir: () => Promise<{ success: boolean; error?: string }>
       deleteLogFile: (filePath: string) => Promise<{ success: boolean; error?: string }>
+      cleanupOldLogs: () => Promise<{ success: boolean; deleted: number; error?: string }>
       
       // Window controls
       minimize: () => void
@@ -113,8 +139,12 @@ declare global {
       fileExists: (path: string) => Promise<boolean>
       getFileHash: (path: string) => Promise<HashResult>
       listWorkingFiles: () => Promise<FilesListResult>
+      computeFileHashes: (files: Array<{ path: string; relativePath: string; size: number; mtime: number }>) => 
+        Promise<{ success: boolean; results?: Array<{ relativePath: string; hash: string }>; error?: string }>
+      onHashProgress: (callback: (progress: { processed: number; total: number; percent: number }) => void) => () => void
       createFolder: (path: string) => Promise<OperationResult>
       deleteItem: (path: string) => Promise<OperationResult>
+      isDirEmpty: (path: string) => Promise<{ success: boolean; empty?: boolean; error?: string }>
       renameItem: (oldPath: string, newPath: string) => Promise<OperationResult>
       copyFile: (sourcePath: string, destPath: string) => Promise<OperationResult>
       moveFile: (sourcePath: string, destPath: string) => Promise<OperationResult>
@@ -149,6 +179,104 @@ declare global {
       showEDrawingsPreview: () => Promise<{ success: boolean }>
       hideEDrawingsPreview: () => Promise<{ success: boolean }>
       destroyEDrawingsPreview: () => Promise<{ success: boolean }>
+      
+      // Machine identification (for backup service)
+      getMachineId: () => Promise<string | null>
+      getMachineName: () => Promise<string | null>
+      getAppVersion: () => Promise<string>
+      
+      // Backup execution
+      checkResticInstalled: () => Promise<{ installed: boolean; version?: string; error?: string }>
+      runBackup: (config: {
+        provider: string
+        bucket: string
+        region?: string
+        endpoint?: string
+        accessKey: string
+        secretKey: string
+        resticPassword: string
+        retentionDaily: number
+        retentionWeekly: number
+        retentionMonthly: number
+        retentionYearly: number
+        localBackupEnabled?: boolean
+        localBackupPath?: string
+        metadataJson?: string  // Database metadata export as JSON string
+        vaultName?: string     // Vault name for tagging
+        vaultPath?: string     // Override vault path
+      }) => Promise<{
+        success: boolean
+        snapshotId?: string
+        error?: string
+        localBackupSuccess?: boolean
+        stats?: {
+          filesNew: number
+          filesChanged: number
+          filesUnmodified: number
+          bytesAdded: number
+          bytesTotal: number
+        }
+      }>
+      listBackupSnapshots: (config: {
+        provider: string
+        bucket: string
+        region?: string
+        endpoint?: string
+        accessKey: string
+        secretKey: string
+        resticPassword: string
+      }) => Promise<{
+        success: boolean
+        snapshots?: Array<{
+          id: string
+          time: string
+          hostname: string
+          paths: string[]
+          tags: string[]
+        }>
+        error?: string
+      }>
+      restoreFromBackup: (config: {
+        provider: string
+        bucket: string
+        region?: string
+        endpoint?: string
+        accessKey: string
+        secretKey: string
+        resticPassword: string
+        snapshotId: string
+        targetPath: string
+        specificPaths?: string[]
+      }) => Promise<{ success: boolean; hasMetadata?: boolean; error?: string }>
+      readBackupMetadata: (vaultPath: string) => Promise<{ 
+        success: boolean
+        data?: {
+          _type: string
+          _version: number
+          _exportedAt: string
+          _orgId: string
+          _orgName: string
+          _vaultId: string
+          _vaultName: string
+          files: Array<unknown>
+          fileVersions: Array<unknown>
+          fileComments: Array<unknown>
+          users: Array<unknown>
+        }
+        error?: string
+      }>
+      deleteBackupSnapshot: (config: {
+        provider: string
+        bucket: string
+        region?: string
+        endpoint?: string
+        accessKey: string
+        secretKey: string
+        resticPassword: string
+        snapshotId: string
+      }) => Promise<{ success: boolean; error?: string 
+      }>
+      onBackupProgress: (callback: (progress: { phase: string; percent: number; message: string }) => void) => () => void
       
       // Auto Updater
       checkForUpdates: () => Promise<{ success: boolean; updateInfo?: unknown; error?: string }>

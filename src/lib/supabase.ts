@@ -515,6 +515,7 @@ export async function getFiles(orgId: string, options?: {
  * Lightweight file fetch for initial vault sync - only essential columns, no joins
  * Much faster than getFiles() for large vaults
  * Automatically filters out soft-deleted files (deleted_at is set)
+ * Uses pagination to fetch ALL files (Supabase default limit is 1000)
  */
 export async function getFilesLightweight(orgId: string, vaultId?: string) {
   const logFn = typeof window !== 'undefined' && (window as any).electronAPI?.log
@@ -565,42 +566,75 @@ export async function getFilesLightweight(orgId: string, vaultId?: string) {
     }
   }
   
-  let query = client
-    .from('files')
-    .select(`
-      id,
-      file_path,
-      file_name,
-      extension,
-      file_type,
-      part_number,
-      description,
-      revision,
-      version,
-      content_hash,
-      file_size,
-      state,
-      checked_out_by,
-      checked_out_at,
-      updated_at
-    `)
-    .eq('org_id', orgId)
-    .is('deleted_at', null)  // Filter out soft-deleted files
-    .order('file_path', { ascending: true })
+  // Fetch ALL files using pagination (Supabase default limit is 1000)
+  const PAGE_SIZE = 1000
+  const allFiles: any[] = []
+  let offset = 0
+  let hasMore = true
   
-  if (vaultId) {
-    query = query.eq('vault_id', vaultId)
+  while (hasMore) {
+    let query = client
+      .from('files')
+      .select(`
+        id,
+        file_path,
+        file_name,
+        extension,
+        file_type,
+        part_number,
+        description,
+        revision,
+        version,
+        content_hash,
+        file_size,
+        state,
+        checked_out_by,
+        checked_out_at,
+        updated_at
+      `)
+      .eq('org_id', orgId)
+      .is('deleted_at', null)  // Filter out soft-deleted files
+      .order('file_path', { ascending: true })
+      .range(offset, offset + PAGE_SIZE - 1)
+    
+    if (vaultId) {
+      query = query.eq('vault_id', vaultId)
+    }
+    
+    const { data, error } = await query
+    
+    if (error) {
+      logFn('error', '[getFilesLightweight] Query error', { 
+        offset,
+        error: error.message 
+      })
+      return { files: allFiles.length > 0 ? allFiles : null, error }
+    }
+    
+    if (data && data.length > 0) {
+      allFiles.push(...data)
+      offset += data.length
+      // If we got fewer than PAGE_SIZE, we've reached the end
+      hasMore = data.length === PAGE_SIZE
+      
+      if (hasMore) {
+        logFn('debug', '[getFilesLightweight] Fetching more files', { 
+          fetchedSoFar: allFiles.length,
+          offset 
+        })
+      }
+    } else {
+      hasMore = false
+    }
   }
   
-  const { data, error } = await query
-  
   logFn('debug', '[getFilesLightweight] Result', { 
-    fileCount: data?.length || 0, 
-    hasError: !!error,
-    errorMsg: error?.message 
+    fileCount: allFiles.length, 
+    hasError: false,
+    pages: Math.ceil(allFiles.length / PAGE_SIZE)
   })
   
-  return { files: data, error }
+  return { files: allFiles, error: null }
 }
 
 /**
@@ -844,41 +878,36 @@ export async function syncFile(
     const fileType = getFileTypeFromExtension(extension)
     
     // 3. Check if file already exists in database (by vault and path)
-    // Note: This intentionally finds soft-deleted files too, so we can "resurrect" them
-    logFn('debug', '[syncFile] Checking DB for existing file', { filePath, vaultId })
-    const { data: existingDbFile, error: checkError } = await client
+    // IMPORTANT: Check for ACTIVE files (not deleted) first, then check for soft-deleted files
+    logFn('debug', '[syncFile] Checking DB for existing file', { filePath, vaultId, orgId })
+    
+    // First check for an active (non-deleted) file with matching org
+    const { data: activeFile, error: activeError } = await client
       .from('files')
-      .select('id, version, deleted_at')
+      .select('id, version, deleted_at, org_id')
       .eq('vault_id', vaultId)
       .eq('file_path', filePath)
+      .eq('org_id', orgId)
+      .is('deleted_at', null)
       .single()
     
-    if (checkError && checkError.code !== 'PGRST116') {
-      // PGRST116 = no rows returned, which is expected for new files
-      logFn('error', '[syncFile] DB check error', { filePath, error: checkError.message, code: checkError.code })
+    if (activeError && activeError.code !== 'PGRST116') {
+      logFn('error', '[syncFile] Active file check error', { filePath, error: activeError.message, code: activeError.code })
     }
     
-    if (existingDbFile) {
-      // Update existing file - also clear deleted_at to "undelete" if it was soft-deleted
-      const wasDeleted = !!existingDbFile.deleted_at
-      logFn('debug', '[syncFile] Updating existing file', { 
-        filePath, 
-        existingId: existingDbFile.id,
-        wasDeleted,
-        action: wasDeleted ? 'UNDELETING' : 'updating'
-      })
+    // If active file exists with same org, update it
+    if (activeFile) {
+      logFn('debug', '[syncFile] Updating active file', { filePath, existingId: activeFile.id })
       const { data, error } = await client
         .from('files')
         .update({
           content_hash: contentHash,
           file_size: fileSize,
-          version: existingDbFile.version + 1,
+          version: activeFile.version + 1,
           updated_at: new Date().toISOString(),
-          updated_by: userId,
-          deleted_at: null,  // Clear soft-delete flag - file is being re-uploaded
-          deleted_by: null
+          updated_by: userId
         })
-        .eq('id', existingDbFile.id)
+        .eq('id', activeFile.id)
         .select()
         .single()
       
@@ -889,8 +918,8 @@ export async function syncFile(
       
       // Create version record
       await client.from('file_versions').insert({
-        file_id: existingDbFile.id,
-        version: existingDbFile.version + 1,
+        file_id: activeFile.id,
+        version: activeFile.version + 1,
         revision: data.revision,
         content_hash: contentHash,
         file_size: fileSize,
@@ -898,7 +927,119 @@ export async function syncFile(
         created_by: userId
       })
       
-      logFn('info', '[syncFile] Update SUCCESS', { filePath, fileId: existingDbFile.id })
+      logFn('info', '[syncFile] Update SUCCESS', { filePath, fileId: activeFile.id })
+      return { file: data, error: null, isNew: false }
+    }
+    
+    // Check for soft-deleted files that might block insertion (due to UNIQUE constraint)
+    const { data: deletedFiles, error: deletedError } = await client
+      .from('files')
+      .select('id, org_id, deleted_at')
+      .eq('vault_id', vaultId)
+      .eq('file_path', filePath)
+      .not('deleted_at', 'is', null)
+    
+    if (deletedError) {
+      logFn('error', '[syncFile] Deleted file check error', { filePath, error: deletedError.message })
+    }
+    
+    // If soft-deleted files exist, permanently delete them first to clear the UNIQUE constraint
+    // This is necessary because UNIQUE(vault_id, file_path) doesn't exclude deleted files
+    if (deletedFiles && deletedFiles.length > 0) {
+      logFn('warn', '[syncFile] Found soft-deleted files blocking path, permanently deleting them', { 
+        filePath, 
+        count: deletedFiles.length,
+        fileIds: deletedFiles.map(f => f.id)
+      })
+      
+      for (const deletedFile of deletedFiles) {
+        // Delete file versions first
+        await client.from('file_versions').delete().eq('file_id', deletedFile.id)
+        // Delete file references
+        await client.from('file_references').delete().or(`parent_file_id.eq.${deletedFile.id},child_file_id.eq.${deletedFile.id}`)
+        // Delete the file record
+        const { error: hardDeleteError } = await client.from('files').delete().eq('id', deletedFile.id)
+        
+        if (hardDeleteError) {
+          logFn('error', '[syncFile] Failed to hard-delete blocking file', { 
+            filePath, 
+            fileId: deletedFile.id, 
+            error: hardDeleteError.message 
+          })
+          // Continue anyway - the insert might work if this was the only blocker
+        } else {
+          logFn('info', '[syncFile] Hard-deleted blocking file', { filePath, fileId: deletedFile.id })
+        }
+      }
+    }
+    
+    // No active file exists - check if there's any other file (shouldn't be after cleanup above)
+    const { data: existingDbFile, error: checkError } = await client
+      .from('files')
+      .select('id, version, deleted_at, org_id')
+      .eq('vault_id', vaultId)
+      .eq('file_path', filePath)
+      .single()
+    
+    if (checkError && checkError.code !== 'PGRST116') {
+      logFn('error', '[syncFile] DB check error', { filePath, error: checkError.message, code: checkError.code })
+    }
+    
+    if (existingDbFile) {
+      // This shouldn't happen after the cleanup above, but handle it just in case
+      logFn('warn', '[syncFile] File still exists after cleanup, updating it', { 
+        filePath, 
+        existingId: existingDbFile.id,
+        existingOrgId: existingDbFile.org_id,
+        expectedOrgId: orgId,
+        wasDeleted: !!existingDbFile.deleted_at
+      })
+      
+      // Update the existing file with ALL relevant fields (including org_id to fix any mismatch)
+      const { data, error } = await client
+        .from('files')
+        .update({
+          org_id: orgId,  // Fix org_id in case of mismatch
+          content_hash: contentHash,
+          file_size: fileSize,
+          file_name: fileName,
+          extension: extension,
+          file_type: fileType,
+          version: 1,  // Reset version since this is essentially a new file
+          revision: 'A',  // Reset revision
+          state: 'not_tracked',  // Reset state
+          updated_at: new Date().toISOString(),
+          updated_by: userId,
+          created_by: userId,  // Update creator since this is a new upload
+          created_at: new Date().toISOString(),  // Reset creation time
+          deleted_at: null,  // Clear soft-delete flag
+          deleted_by: null,
+          checked_out_by: null,  // Clear any checkout
+          checked_out_at: null,
+          lock_message: null
+        })
+        .eq('id', existingDbFile.id)
+        .select()
+        .single()
+      
+      if (error) {
+        logFn('error', '[syncFile] Update failed', { filePath, error: error.message })
+        throw error
+      }
+      
+      // Delete old versions and create fresh version record
+      await client.from('file_versions').delete().eq('file_id', existingDbFile.id)
+      await client.from('file_versions').insert({
+        file_id: existingDbFile.id,
+        version: 1,
+        revision: 'A',
+        content_hash: contentHash,
+        file_size: fileSize,
+        state: 'not_tracked',
+        created_by: userId
+      })
+      
+      logFn('info', '[syncFile] Reset and update SUCCESS', { filePath, fileId: existingDbFile.id })
       return { file: data, error: null, isNew: false }
     } else {
       // Create new file record
@@ -1693,6 +1834,89 @@ export async function updateFileMetadata(
   })
   
   return { success: true, file: data, error: null }
+}
+
+// ============================================
+// File Path Updates (Rename/Move)
+// ============================================
+
+/**
+ * Update a file's path on the server (for rename/move operations)
+ */
+export async function updateFilePath(
+  fileId: string,
+  newPath: string
+): Promise<{ success: boolean; error?: string }> {
+  const client = getSupabaseClient()
+  
+  // Extract file name from path
+  const fileName = newPath.includes('/') 
+    ? newPath.substring(newPath.lastIndexOf('/') + 1) 
+    : newPath
+  
+  const { error } = await client
+    .from('files')
+    .update({
+      file_path: newPath,
+      file_name: fileName,
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', fileId)
+  
+  if (error) {
+    return { success: false, error: error.message }
+  }
+  
+  return { success: true }
+}
+
+/**
+ * Update all files under a folder path (for folder rename/move)
+ * Updates file_path for all files where file_path starts with oldPath
+ */
+export async function updateFolderPath(
+  oldPath: string,
+  newPath: string
+): Promise<{ success: boolean; updated: number; error?: string }> {
+  const client = getSupabaseClient()
+  
+  // Normalize paths (ensure forward slashes, no trailing slash)
+  const normalizedOld = oldPath.replace(/\\/g, '/').replace(/\/$/, '')
+  const normalizedNew = newPath.replace(/\\/g, '/').replace(/\/$/, '')
+  
+  // Get all files under the old path
+  const { data: files, error: fetchError } = await client
+    .from('files')
+    .select('id, file_path, file_name')
+    .like('file_path', `${normalizedOld}/%`)
+  
+  if (fetchError) {
+    return { success: false, updated: 0, error: fetchError.message }
+  }
+  
+  if (!files || files.length === 0) {
+    return { success: true, updated: 0 }
+  }
+  
+  // Update each file's path
+  let updated = 0
+  for (const file of files) {
+    const updatedPath = file.file_path.replace(normalizedOld, normalizedNew)
+    
+    const { error } = await client
+      .from('files')
+      .update({
+        file_path: updatedPath,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', file.id)
+    
+    if (!error) {
+      updated++
+    }
+  }
+  
+  return { success: true, updated }
 }
 
 // ============================================

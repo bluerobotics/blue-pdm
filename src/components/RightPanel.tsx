@@ -3,6 +3,7 @@ import { usePDMStore, LocalFile } from '../stores/pdmStore'
 import { formatFileSize, getFileIconType } from '../types/pdm'
 import { formatDistanceToNow } from 'date-fns'
 import { getFileVersions } from '../lib/supabase'
+import { ContainsTab, WhereUsedTab } from './SolidWorksPanel'
 import { 
   FileBox, 
   Layers, 
@@ -311,11 +312,11 @@ export function RightPanel() {
             )}
 
             {rightPanelTab === 'whereused' && (
-              <div className="text-sm text-pdm-fg-muted text-center py-8">Coming soon</div>
+              <WhereUsedTab file={file} />
             )}
 
             {rightPanelTab === 'contains' && (
-              <div className="text-sm text-pdm-fg-muted text-center py-8">Coming soon</div>
+              <ContainsTab file={file} />
             )}
           </>
         )}

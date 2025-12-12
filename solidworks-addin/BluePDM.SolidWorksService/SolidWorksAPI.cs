@@ -1,0 +1,1181 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Runtime.InteropServices;
+using System.Threading;
+using SolidWorks.Interop.sldworks;
+using SolidWorks.Interop.swconst;
+
+namespace BluePDM.SolidWorksService
+{
+    /// <summary>
+    /// Unified SolidWorks API handler.
+    /// Uses the full SolidWorks API for all operations.
+    /// SolidWorks runs in background (hidden) when needed.
+    /// </summary>
+    public class SolidWorksAPI : IDisposable
+    {
+        private ISldWorks? _swApp;
+        private bool _weStartedSW;
+        private bool _keepRunning;
+        private bool _disposed;
+
+        public SolidWorksAPI(bool keepRunning = true)
+        {
+            _keepRunning = keepRunning;
+        }
+
+        #region Connection Management
+
+        /// <summary>
+        /// Check if SolidWorks is available on this machine
+        /// </summary>
+        public bool IsSolidWorksAvailable()
+        {
+            try
+            {
+                var swType = Type.GetTypeFromProgID("SldWorks.Application");
+                return swType != null;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private ISldWorks GetSolidWorks()
+        {
+            if (_swApp != null)
+            {
+                // Check if still running
+                try
+                {
+                    var version = _swApp.RevisionNumber();
+                    return _swApp;
+                }
+                catch
+                {
+                    _swApp = null;
+                }
+            }
+
+            // Try to connect to running instance
+            try
+            {
+                _swApp = (ISldWorks)Marshal.GetActiveObject("SldWorks.Application");
+                _weStartedSW = false;
+                return _swApp;
+            }
+            catch
+            {
+                // No running instance, start one
+            }
+
+            // Start SolidWorks
+            var swType = Type.GetTypeFromProgID("SldWorks.Application");
+            if (swType == null)
+                throw new Exception("SolidWorks is not installed on this machine");
+
+            _swApp = (ISldWorks)Activator.CreateInstance(swType)!;
+            _weStartedSW = true;
+
+            // Run hidden
+            _swApp.Visible = false;
+            _swApp.UserControl = false;
+
+            // Wait for SolidWorks to be ready
+            int attempts = 0;
+            while (!_swApp.StartupProcessCompleted && attempts < 120)
+            {
+                Thread.Sleep(500);
+                attempts++;
+            }
+
+            if (!_swApp.StartupProcessCompleted)
+                throw new Exception("SolidWorks failed to start within 60 seconds");
+
+            return _swApp;
+        }
+
+        private void CloseSolidWorksIfWeStartedIt()
+        {
+            if (!_keepRunning && _weStartedSW && _swApp != null)
+            {
+                try
+                {
+                    _swApp.ExitApp();
+                    _swApp = null;
+                    _weStartedSW = false;
+                }
+                catch { }
+            }
+        }
+
+        private ModelDoc2? OpenDocument(string filePath, out int errors, out int warnings, bool readOnly = true)
+        {
+            errors = 0;
+            warnings = 0;
+
+            var sw = GetSolidWorks();
+            var docType = GetDocumentType(filePath);
+
+            if (docType == swDocumentTypes_e.swDocNONE)
+                return null;
+
+            var options = readOnly
+                ? swOpenDocOptions_e.swOpenDocOptions_ReadOnly | swOpenDocOptions_e.swOpenDocOptions_Silent
+                : swOpenDocOptions_e.swOpenDocOptions_Silent;
+
+            return (ModelDoc2)sw.OpenDoc6(
+                filePath,
+                (int)docType,
+                (int)options,
+                "",
+                ref errors,
+                ref warnings
+            );
+        }
+
+        private void CloseDocument(string filePath)
+        {
+            try
+            {
+                _swApp?.CloseDoc(filePath);
+            }
+            catch { }
+        }
+
+        private swDocumentTypes_e GetDocumentType(string filePath)
+        {
+            var ext = Path.GetExtension(filePath).ToLowerInvariant();
+            return ext switch
+            {
+                ".sldprt" => swDocumentTypes_e.swDocPART,
+                ".sldasm" => swDocumentTypes_e.swDocASSEMBLY,
+                ".slddrw" => swDocumentTypes_e.swDocDRAWING,
+                _ => swDocumentTypes_e.swDocNONE
+            };
+        }
+
+        #endregion
+
+        #region BOM / References
+
+        /// <summary>
+        /// Get Bill of Materials from an assembly
+        /// </summary>
+        public CommandResult GetBillOfMaterials(string? filePath, bool includeChildren = true, string? configuration = null)
+        {
+            if (string.IsNullOrEmpty(filePath))
+                return new CommandResult { Success = false, Error = "Missing 'filePath'" };
+
+            if (!File.Exists(filePath))
+                return new CommandResult { Success = false, Error = $"File not found: {filePath}" };
+
+            var ext = Path.GetExtension(filePath).ToLowerInvariant();
+            if (ext != ".sldasm")
+                return new CommandResult { Success = false, Error = "BOM extraction only works on assembly files (.sldasm)" };
+
+            try
+            {
+                var doc = OpenDocument(filePath, out var errors, out var warnings);
+                if (doc == null)
+                    return new CommandResult { Success = false, Error = $"Failed to open file: errors={errors}" };
+
+                var assembly = (AssemblyDoc)doc;
+                var bom = new List<BomItem>();
+                
+                // Get active configuration if not specified
+                var configName = configuration ?? doc.ConfigurationManager.ActiveConfiguration.Name;
+
+                // Get all components
+                var components = (object[])assembly.GetComponents(false); // false = all levels
+                var quantities = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+                if (components != null)
+                {
+                    foreach (Component2 comp in components)
+                    {
+                        if (comp.IsSuppressed()) continue;
+
+                        var compPath = comp.GetPathName();
+                        if (string.IsNullOrEmpty(compPath)) continue;
+
+                        // Count quantities
+                        if (quantities.ContainsKey(compPath))
+                            quantities[compPath]++;
+                        else
+                            quantities[compPath] = 1;
+                    }
+
+                    // Build BOM with unique parts and their quantities
+                    var processed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    
+                    foreach (Component2 comp in components)
+                    {
+                        if (comp.IsSuppressed()) continue;
+
+                        var compPath = comp.GetPathName();
+                        if (string.IsNullOrEmpty(compPath) || processed.Contains(compPath)) continue;
+                        processed.Add(compPath);
+
+                        var fileName = Path.GetFileName(compPath);
+                        var compExt = Path.GetExtension(compPath).ToLowerInvariant();
+                        
+                        // Get properties from component
+                        var props = new Dictionary<string, string>();
+                        var compDoc = comp.GetModelDoc2() as ModelDoc2;
+                        if (compDoc != null)
+                        {
+                            props = ReadCustomProperties(compDoc, comp.ReferencedConfiguration);
+                        }
+
+                        bom.Add(new BomItem
+                        {
+                            FileName = fileName,
+                            FilePath = compPath,
+                            FileType = compExt == ".sldprt" ? "Part" : compExt == ".sldasm" ? "Assembly" : "Other",
+                            Quantity = quantities[compPath],
+                            Configuration = comp.ReferencedConfiguration,
+                            PartNumber = GetDictValue(props, "PartNumber") ?? GetDictValue(props, "Part Number") ?? "",
+                            Description = GetDictValue(props, "Description") ?? "",
+                            Material = GetDictValue(props, "Material") ?? "",
+                            Revision = GetDictValue(props, "Revision") ?? GetDictValue(props, "Rev") ?? "",
+                            Properties = props
+                        });
+                    }
+                }
+
+                CloseDocument(filePath);
+                CloseSolidWorksIfWeStartedIt();
+
+                return new CommandResult
+                {
+                    Success = true,
+                    Data = new
+                    {
+                        assemblyPath = filePath,
+                        configuration = configName,
+                        items = bom,
+                        totalParts = bom.Count,
+                        totalQuantity = bom.Sum(b => b.Quantity)
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                CloseSolidWorksIfWeStartedIt();
+                return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
+            }
+        }
+
+        /// <summary>
+        /// Get all external references from a file
+        /// </summary>
+        public CommandResult GetExternalReferences(string? filePath)
+        {
+            if (string.IsNullOrEmpty(filePath))
+                return new CommandResult { Success = false, Error = "Missing 'filePath'" };
+
+            if (!File.Exists(filePath))
+                return new CommandResult { Success = false, Error = $"File not found: {filePath}" };
+
+            try
+            {
+                var doc = OpenDocument(filePath, out var errors, out var warnings);
+                if (doc == null)
+                    return new CommandResult { Success = false, Error = $"Failed to open file: errors={errors}" };
+
+                var references = new List<object>();
+                var dependencies = (object[])doc.GetDependencies2(true, true, false);
+
+                if (dependencies != null)
+                {
+                    // Dependencies come in pairs: [path, bool, path, bool, ...]
+                    for (int i = 0; i < dependencies.Length; i += 2)
+                    {
+                        var refPath = dependencies[i] as string;
+                        if (string.IsNullOrEmpty(refPath)) continue;
+
+                        references.Add(new
+                        {
+                            path = refPath,
+                            fileName = Path.GetFileName(refPath),
+                            exists = File.Exists(refPath),
+                            fileType = GetFileType(refPath)
+                        });
+                    }
+                }
+
+                CloseDocument(filePath);
+                CloseSolidWorksIfWeStartedIt();
+
+                return new CommandResult
+                {
+                    Success = true,
+                    Data = new
+                    {
+                        filePath,
+                        references,
+                        count = references.Count
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                CloseSolidWorksIfWeStartedIt();
+                return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
+            }
+        }
+
+        #endregion
+
+        #region Custom Properties
+
+        /// <summary>
+        /// Get custom properties from a file
+        /// </summary>
+        public CommandResult GetCustomProperties(string? filePath, string? configuration = null)
+        {
+            if (string.IsNullOrEmpty(filePath))
+                return new CommandResult { Success = false, Error = "Missing 'filePath'" };
+
+            if (!File.Exists(filePath))
+                return new CommandResult { Success = false, Error = $"File not found: {filePath}" };
+
+            try
+            {
+                var doc = OpenDocument(filePath, out var errors, out var warnings);
+                if (doc == null)
+                    return new CommandResult { Success = false, Error = $"Failed to open file: errors={errors}" };
+
+                var fileProps = ReadCustomProperties(doc, null);
+                var configProps = new Dictionary<string, Dictionary<string, string>>();
+
+                // Get configuration-specific properties
+                var configNames = (string[])doc.GetConfigurationNames();
+                foreach (var config in configNames)
+                {
+                    if (configuration == null || config == configuration)
+                    {
+                        configProps[config] = ReadCustomProperties(doc, config);
+                    }
+                }
+
+                CloseDocument(filePath);
+                CloseSolidWorksIfWeStartedIt();
+
+                return new CommandResult
+                {
+                    Success = true,
+                    Data = new
+                    {
+                        filePath,
+                        fileProperties = fileProps,
+                        configurationProperties = configProps,
+                        configurations = configNames
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                CloseSolidWorksIfWeStartedIt();
+                return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
+            }
+        }
+
+        /// <summary>
+        /// Set custom properties on a file
+        /// </summary>
+        public CommandResult SetCustomProperties(string? filePath, Dictionary<string, string>? properties, string? configuration = null)
+        {
+            if (string.IsNullOrEmpty(filePath))
+                return new CommandResult { Success = false, Error = "Missing 'filePath'" };
+
+            if (!File.Exists(filePath))
+                return new CommandResult { Success = false, Error = $"File not found: {filePath}" };
+
+            if (properties == null || properties.Count == 0)
+                return new CommandResult { Success = false, Error = "Missing or empty 'properties'" };
+
+            try
+            {
+                var doc = OpenDocument(filePath, out var errors, out var warnings, readOnly: false);
+                if (doc == null)
+                    return new CommandResult { Success = false, Error = $"Failed to open file: errors={errors}" };
+
+                WriteCustomProperties(doc, properties, configuration);
+
+                // Save the document
+                doc.Save3(
+                    (int)swSaveAsOptions_e.swSaveAsOptions_Silent,
+                    ref errors,
+                    ref warnings
+                );
+
+                CloseDocument(filePath);
+                CloseSolidWorksIfWeStartedIt();
+
+                return new CommandResult
+                {
+                    Success = true,
+                    Data = new
+                    {
+                        filePath,
+                        propertiesSet = properties.Count,
+                        configuration = configuration ?? "(file-level)"
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                CloseSolidWorksIfWeStartedIt();
+                return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
+            }
+        }
+
+        private Dictionary<string, string> ReadCustomProperties(ModelDoc2 doc, string? configuration)
+        {
+            var props = new Dictionary<string, string>();
+
+            try
+            {
+                var ext = doc.Extension;
+                var manager = string.IsNullOrEmpty(configuration)
+                    ? ext.CustomPropertyManager[""]
+                    : ext.CustomPropertyManager[configuration];
+
+                object names = null!;
+                object types = null!;
+                object values = null!;
+                object resolved = null!;
+                object linkToProperty = null!;
+                manager.GetAll3(ref names, ref types, ref values, ref resolved, ref linkToProperty);
+
+                if (names is string[] nameArray && resolved is string[] resolvedArray)
+                {
+                    for (int i = 0; i < nameArray.Length; i++)
+                    {
+                        props[nameArray[i]] = resolvedArray[i] ?? "";
+                    }
+                }
+            }
+            catch { }
+
+            return props;
+        }
+
+        private void WriteCustomProperties(ModelDoc2 doc, Dictionary<string, string> properties, string? configuration)
+        {
+            var ext = doc.Extension;
+            var manager = string.IsNullOrEmpty(configuration)
+                ? ext.CustomPropertyManager[""]
+                : ext.CustomPropertyManager[configuration];
+
+            foreach (var prop in properties)
+            {
+                // Try to set existing property first, then add if it doesn't exist
+                var result = manager.Set2(prop.Key, prop.Value);
+                if (result != (int)swCustomInfoSetResult_e.swCustomInfoSetResult_OK)
+                {
+                    manager.Add3(prop.Key, (int)swCustomInfoType_e.swCustomInfoText, prop.Value, 
+                        (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                }
+            }
+        }
+
+        #endregion
+
+        #region Configurations
+
+        /// <summary>
+        /// Get all configurations from a file
+        /// </summary>
+        public CommandResult GetConfigurations(string? filePath)
+        {
+            if (string.IsNullOrEmpty(filePath))
+                return new CommandResult { Success = false, Error = "Missing 'filePath'" };
+
+            if (!File.Exists(filePath))
+                return new CommandResult { Success = false, Error = $"File not found: {filePath}" };
+
+            try
+            {
+                var doc = OpenDocument(filePath, out var errors, out var warnings);
+                if (doc == null)
+                    return new CommandResult { Success = false, Error = $"Failed to open file: errors={errors}" };
+
+                var configs = new List<object>();
+                var configNames = (string[])doc.GetConfigurationNames();
+                var activeConfig = doc.ConfigurationManager.ActiveConfiguration?.Name ?? "";
+
+                foreach (var name in configNames)
+                {
+                    var config = (Configuration)doc.GetConfigurationByName(name);
+                    var props = ReadCustomProperties(doc, name);
+                    
+                    configs.Add(new
+                    {
+                        name,
+                        isActive = name == activeConfig,
+                        description = config?.Description ?? "",
+                        properties = props
+                    });
+                }
+
+                CloseDocument(filePath);
+                CloseSolidWorksIfWeStartedIt();
+
+                return new CommandResult
+                {
+                    Success = true,
+                    Data = new
+                    {
+                        filePath,
+                        activeConfiguration = activeConfig,
+                        configurations = configs,
+                        count = configs.Count
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                CloseSolidWorksIfWeStartedIt();
+                return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
+            }
+        }
+
+        #endregion
+
+        #region Mass Properties
+
+        /// <summary>
+        /// Get mass properties from a part or assembly
+        /// </summary>
+        public CommandResult GetMassProperties(string? filePath, string? configuration = null)
+        {
+            if (string.IsNullOrEmpty(filePath))
+                return new CommandResult { Success = false, Error = "Missing 'filePath'" };
+
+            if (!File.Exists(filePath))
+                return new CommandResult { Success = false, Error = $"File not found: {filePath}" };
+
+            try
+            {
+                var doc = OpenDocument(filePath, out var errors, out var warnings);
+                if (doc == null)
+                    return new CommandResult { Success = false, Error = $"Failed to open file: errors={errors}" };
+
+                if (!string.IsNullOrEmpty(configuration))
+                {
+                    doc.ShowConfiguration2(configuration);
+                    doc.EditRebuild3();
+                }
+
+                var massProps = (double[])doc.Extension.GetMassProperties2(1, out var status, true);
+
+                CloseDocument(filePath);
+                CloseSolidWorksIfWeStartedIt();
+
+                if (massProps == null || status != 0)
+                {
+                    return new CommandResult
+                    {
+                        Success = false,
+                        Error = "Failed to get mass properties. Ensure the model has assigned materials."
+                    };
+                }
+
+                return new CommandResult
+                {
+                    Success = true,
+                    Data = new
+                    {
+                        filePath,
+                        configuration = configuration ?? "Active",
+                        mass = massProps[5], // kg
+                        volume = massProps[3], // m^3
+                        surfaceArea = massProps[4], // m^2
+                        centerOfMass = new { x = massProps[0], y = massProps[1], z = massProps[2] },
+                        momentsOfInertia = new { 
+                            Ixx = massProps[6], Iyy = massProps[7], Izz = massProps[8],
+                            Ixy = massProps[9], Izx = massProps[10], Iyz = massProps[11]
+                        }
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                CloseSolidWorksIfWeStartedIt();
+                return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
+            }
+        }
+
+        #endregion
+
+        #region Export Operations
+
+        /// <summary>
+        /// Export a drawing to PDF
+        /// </summary>
+        public CommandResult ExportToPdf(string? filePath, string? outputPath)
+        {
+            if (string.IsNullOrEmpty(filePath))
+                return new CommandResult { Success = false, Error = "Missing 'filePath'" };
+
+            if (!File.Exists(filePath))
+                return new CommandResult { Success = false, Error = $"File not found: {filePath}" };
+
+            try
+            {
+                var sw = GetSolidWorks();
+                int errors = 0, warnings = 0;
+
+                var doc = (ModelDoc2)sw.OpenDoc6(
+                    filePath,
+                    (int)swDocumentTypes_e.swDocDRAWING,
+                    (int)swOpenDocOptions_e.swOpenDocOptions_Silent,
+                    "",
+                    ref errors,
+                    ref warnings
+                );
+
+                if (doc == null)
+                    return new CommandResult { Success = false, Error = $"Failed to open drawing: errors={errors}" };
+
+                var finalOutputPath = outputPath ?? Path.ChangeExtension(filePath, ".pdf");
+                Directory.CreateDirectory(Path.GetDirectoryName(finalOutputPath)!);
+
+                // Set PDF export options
+                var exportData = (ExportPdfData)sw.GetExportFileData((int)swExportDataFileType_e.swExportPdfData);
+                var drawDoc = (DrawingDoc)doc;
+                var sheetNames = (string[])drawDoc.GetSheetNames();
+                exportData.SetSheets((int)swExportDataSheetsToExport_e.swExportData_ExportAllSheets, sheetNames);
+                exportData.ViewPdfAfterSaving = false;
+
+                bool success = doc.Extension.SaveAs3(
+                    finalOutputPath,
+                    (int)swSaveAsVersion_e.swSaveAsCurrentVersion,
+                    (int)swSaveAsOptions_e.swSaveAsOptions_Silent,
+                    exportData,
+                    null,
+                    ref errors,
+                    ref warnings
+                );
+
+                sw.CloseDoc(filePath);
+                CloseSolidWorksIfWeStartedIt();
+
+                if (!success)
+                    return new CommandResult { Success = false, Error = $"PDF export failed: errors={errors}" };
+
+                return new CommandResult
+                {
+                    Success = true,
+                    Data = new
+                    {
+                        inputFile = filePath,
+                        outputFile = finalOutputPath,
+                        fileSize = new FileInfo(finalOutputPath).Length
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                CloseSolidWorksIfWeStartedIt();
+                return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
+            }
+        }
+
+        /// <summary>
+        /// Export to STEP format
+        /// </summary>
+        public CommandResult ExportToStep(string? filePath, string? outputPath, string? configuration, bool exportAllConfigs)
+        {
+            if (string.IsNullOrEmpty(filePath))
+                return new CommandResult { Success = false, Error = "Missing 'filePath'" };
+
+            if (!File.Exists(filePath))
+                return new CommandResult { Success = false, Error = $"File not found: {filePath}" };
+
+            try
+            {
+                var sw = GetSolidWorks();
+                var ext = Path.GetExtension(filePath).ToLowerInvariant();
+                var docType = ext == ".sldprt" ? swDocumentTypes_e.swDocPART : swDocumentTypes_e.swDocASSEMBLY;
+
+                int errors = 0, warnings = 0;
+                var doc = (ModelDoc2)sw.OpenDoc6(
+                    filePath,
+                    (int)docType,
+                    (int)swOpenDocOptions_e.swOpenDocOptions_Silent,
+                    "",
+                    ref errors,
+                    ref warnings
+                );
+
+                if (doc == null)
+                    return new CommandResult { Success = false, Error = $"Failed to open file: errors={errors}" };
+
+                var exportedFiles = new List<string>();
+
+                if (exportAllConfigs)
+                {
+                    var configNames = (string[])doc.GetConfigurationNames();
+                    var baseName = Path.GetFileNameWithoutExtension(filePath);
+                    var outputDir = Path.GetDirectoryName(outputPath ?? filePath)!;
+                    Directory.CreateDirectory(outputDir);
+
+                    foreach (var configName in configNames)
+                    {
+                        doc.ShowConfiguration2(configName);
+                        doc.EditRebuild3();
+
+                        var configOutputPath = Path.Combine(outputDir, $"{baseName}_{configName}.step");
+
+                        bool success = doc.Extension.SaveAs3(
+                            configOutputPath,
+                            (int)swSaveAsVersion_e.swSaveAsCurrentVersion,
+                            (int)swSaveAsOptions_e.swSaveAsOptions_Silent,
+                            null, null,
+                            ref errors, ref warnings
+                        );
+
+                        if (success)
+                            exportedFiles.Add(configOutputPath);
+                    }
+                }
+                else
+                {
+                    if (!string.IsNullOrEmpty(configuration))
+                    {
+                        doc.ShowConfiguration2(configuration);
+                        doc.EditRebuild3();
+                    }
+
+                    var finalOutputPath = outputPath ?? Path.ChangeExtension(filePath, ".step");
+                    Directory.CreateDirectory(Path.GetDirectoryName(finalOutputPath)!);
+
+                    bool success = doc.Extension.SaveAs3(
+                        finalOutputPath,
+                        (int)swSaveAsVersion_e.swSaveAsCurrentVersion,
+                        (int)swSaveAsOptions_e.swSaveAsOptions_Silent,
+                        null, null,
+                        ref errors, ref warnings
+                    );
+
+                    if (success)
+                        exportedFiles.Add(finalOutputPath);
+                }
+
+                sw.CloseDoc(filePath);
+                CloseSolidWorksIfWeStartedIt();
+
+                return new CommandResult
+                {
+                    Success = exportedFiles.Count > 0,
+                    Data = new
+                    {
+                        inputFile = filePath,
+                        exportedFiles,
+                        count = exportedFiles.Count
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                CloseSolidWorksIfWeStartedIt();
+                return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
+            }
+        }
+
+        /// <summary>
+        /// Export to IGES format
+        /// </summary>
+        public CommandResult ExportToIges(string? filePath, string? outputPath)
+        {
+            if (string.IsNullOrEmpty(filePath))
+                return new CommandResult { Success = false, Error = "Missing 'filePath'" };
+
+            if (!File.Exists(filePath))
+                return new CommandResult { Success = false, Error = $"File not found: {filePath}" };
+
+            try
+            {
+                var doc = OpenDocument(filePath, out var errors, out var warnings);
+                if (doc == null)
+                    return new CommandResult { Success = false, Error = $"Failed to open file: errors={errors}" };
+
+                var finalOutputPath = outputPath ?? Path.ChangeExtension(filePath, ".igs");
+                Directory.CreateDirectory(Path.GetDirectoryName(finalOutputPath)!);
+
+                bool success = doc.Extension.SaveAs3(
+                    finalOutputPath,
+                    (int)swSaveAsVersion_e.swSaveAsCurrentVersion,
+                    (int)swSaveAsOptions_e.swSaveAsOptions_Silent,
+                    null, null,
+                    ref errors, ref warnings
+                );
+
+                CloseDocument(filePath);
+                CloseSolidWorksIfWeStartedIt();
+
+                if (!success)
+                    return new CommandResult { Success = false, Error = $"IGES export failed: errors={errors}" };
+
+                return new CommandResult
+                {
+                    Success = true,
+                    Data = new
+                    {
+                        inputFile = filePath,
+                        outputFile = finalOutputPath,
+                        fileSize = new FileInfo(finalOutputPath).Length
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                CloseSolidWorksIfWeStartedIt();
+                return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
+            }
+        }
+
+        /// <summary>
+        /// Export drawing to DXF
+        /// </summary>
+        public CommandResult ExportToDxf(string? filePath, string? outputPath)
+        {
+            if (string.IsNullOrEmpty(filePath))
+                return new CommandResult { Success = false, Error = "Missing 'filePath'" };
+
+            if (!File.Exists(filePath))
+                return new CommandResult { Success = false, Error = $"File not found: {filePath}" };
+
+            try
+            {
+                var doc = OpenDocument(filePath, out var errors, out var warnings);
+                if (doc == null)
+                    return new CommandResult { Success = false, Error = $"Failed to open file: errors={errors}" };
+
+                var finalOutputPath = outputPath ?? Path.ChangeExtension(filePath, ".dxf");
+                Directory.CreateDirectory(Path.GetDirectoryName(finalOutputPath)!);
+
+                bool success = doc.Extension.SaveAs3(
+                    finalOutputPath,
+                    (int)swSaveAsVersion_e.swSaveAsCurrentVersion,
+                    (int)swSaveAsOptions_e.swSaveAsOptions_Silent,
+                    null, null,
+                    ref errors, ref warnings
+                );
+
+                CloseDocument(filePath);
+                CloseSolidWorksIfWeStartedIt();
+
+                if (!success)
+                    return new CommandResult { Success = false, Error = $"DXF export failed: errors={errors}" };
+
+                return new CommandResult
+                {
+                    Success = true,
+                    Data = new
+                    {
+                        inputFile = filePath,
+                        outputFile = finalOutputPath,
+                        fileSize = new FileInfo(finalOutputPath).Length
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                CloseSolidWorksIfWeStartedIt();
+                return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
+            }
+        }
+
+        /// <summary>
+        /// Export model view to image
+        /// </summary>
+        public CommandResult ExportToImage(string? filePath, string? outputPath, int width = 800, int height = 600)
+        {
+            if (string.IsNullOrEmpty(filePath))
+                return new CommandResult { Success = false, Error = "Missing 'filePath'" };
+
+            if (!File.Exists(filePath))
+                return new CommandResult { Success = false, Error = $"File not found: {filePath}" };
+
+            try
+            {
+                var doc = OpenDocument(filePath, out var errors, out var warnings);
+                if (doc == null)
+                    return new CommandResult { Success = false, Error = $"Failed to open file: errors={errors}" };
+
+                var finalOutputPath = outputPath ?? Path.ChangeExtension(filePath, ".png");
+                Directory.CreateDirectory(Path.GetDirectoryName(finalOutputPath)!);
+
+                // Use SaveAs with image format
+                int saveErrors = 0, saveWarnings = 0;
+                bool success = doc.Extension.SaveAs2(
+                    finalOutputPath,
+                    (int)swSaveAsVersion_e.swSaveAsCurrentVersion,
+                    (int)swSaveAsOptions_e.swSaveAsOptions_Silent,
+                    null,
+                    "",
+                    false,
+                    ref saveErrors,
+                    ref saveWarnings
+                );
+
+                CloseDocument(filePath);
+                CloseSolidWorksIfWeStartedIt();
+
+                return new CommandResult
+                {
+                    Success = success && File.Exists(finalOutputPath),
+                    Data = new
+                    {
+                        inputFile = filePath,
+                        outputFile = finalOutputPath,
+                        width,
+                        height,
+                        fileSize = File.Exists(finalOutputPath) ? new FileInfo(finalOutputPath).Length : 0
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                CloseSolidWorksIfWeStartedIt();
+                return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
+            }
+        }
+
+        #endregion
+
+        #region Assembly Operations
+
+        /// <summary>
+        /// Replace a component in an assembly
+        /// </summary>
+        public CommandResult ReplaceComponent(string? assemblyPath, string? oldComponent, string? newComponent)
+        {
+            if (string.IsNullOrEmpty(assemblyPath))
+                return new CommandResult { Success = false, Error = "Missing 'filePath'" };
+
+            if (string.IsNullOrEmpty(oldComponent) || string.IsNullOrEmpty(newComponent))
+                return new CommandResult { Success = false, Error = "Missing 'oldComponent' or 'newComponent'" };
+
+            if (!File.Exists(newComponent))
+                return new CommandResult { Success = false, Error = $"New component not found: {newComponent}" };
+
+            try
+            {
+                var doc = OpenDocument(assemblyPath, out var errors, out var warnings, readOnly: false);
+                if (doc == null)
+                    return new CommandResult { Success = false, Error = $"Failed to open assembly: errors={errors}" };
+
+                var assembly = (AssemblyDoc)doc;
+                var components = (object[])assembly.GetComponents(false);
+                int replacedCount = 0;
+
+                foreach (Component2 comp in components)
+                {
+                    var compPath = comp.GetPathName();
+                    if (string.Equals(compPath, oldComponent, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(Path.GetFileName(compPath), Path.GetFileName(oldComponent), StringComparison.OrdinalIgnoreCase))
+                    {
+                        comp.Select4(true, null, false);
+
+                        bool replaced = assembly.ReplaceComponents2(
+                            newComponent,
+                            "", // Use active configuration
+                            false, // Keep mates
+                            (int)swReplaceComponentsConfiguration_e.swReplaceComponentsConfiguration_MatchName,
+                            true
+                        );
+
+                        if (replaced)
+                            replacedCount++;
+
+                        doc.ClearSelection2(true);
+                    }
+                }
+
+                doc.Save3(
+                    (int)swSaveAsOptions_e.swSaveAsOptions_Silent,
+                    ref errors, ref warnings
+                );
+
+                CloseDocument(assemblyPath);
+                CloseSolidWorksIfWeStartedIt();
+
+                return new CommandResult
+                {
+                    Success = replacedCount > 0,
+                    Data = new
+                    {
+                        assemblyPath,
+                        oldComponent,
+                        newComponent,
+                        replacedCount
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                CloseSolidWorksIfWeStartedIt();
+                return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
+            }
+        }
+
+        /// <summary>
+        /// Pack and Go - copy assembly with all references
+        /// </summary>
+        public CommandResult PackAndGo(string? filePath, string? outputFolder, string? prefix, string? suffix)
+        {
+            if (string.IsNullOrEmpty(filePath))
+                return new CommandResult { Success = false, Error = "Missing 'filePath'" };
+
+            if (string.IsNullOrEmpty(outputFolder))
+                return new CommandResult { Success = false, Error = "Missing 'outputFolder'" };
+
+            try
+            {
+                var sw = GetSolidWorks();
+                int errors = 0, warnings = 0;
+
+                var doc = (ModelDoc2)sw.OpenDoc6(
+                    filePath,
+                    (int)swDocumentTypes_e.swDocASSEMBLY,
+                    (int)swOpenDocOptions_e.swOpenDocOptions_Silent,
+                    "",
+                    ref errors, ref warnings
+                );
+
+                if (doc == null)
+                    return new CommandResult { Success = false, Error = $"Failed to open assembly: errors={errors}" };
+
+                Directory.CreateDirectory(outputFolder);
+
+                var packAndGo = (PackAndGo)doc.Extension.GetPackAndGo();
+                packAndGo.IncludeDrawings = true;
+                packAndGo.IncludeSimulationResults = false;
+                packAndGo.IncludeToolboxComponents = true;
+                packAndGo.FlattenToSingleFolder = true;
+                packAndGo.SetSaveToName(true, outputFolder);
+
+                object fileNamesObj = null!;
+                packAndGo.GetDocumentNames(out fileNamesObj);
+                var fileNames = (object[])fileNamesObj;
+                var newNames = new string[fileNames.Length];
+
+                for (int i = 0; i < fileNames.Length; i++)
+                {
+                    var originalName = Path.GetFileNameWithoutExtension((string)fileNames[i]);
+                    var extension = Path.GetExtension((string)fileNames[i]);
+                    var newName = $"{prefix ?? ""}{originalName}{suffix ?? ""}{extension}";
+                    newNames[i] = Path.Combine(outputFolder, newName);
+                }
+
+                packAndGo.SetDocumentSaveToNames(newNames);
+                var statuses = (int[])doc.Extension.SavePackAndGo(packAndGo);
+
+                sw.CloseDoc(filePath);
+                CloseSolidWorksIfWeStartedIt();
+
+                int successCount = 0;
+                var copiedFiles = new List<string>();
+                for (int i = 0; i < statuses.Length; i++)
+                {
+                    if (statuses[i] == 0)
+                    {
+                        successCount++;
+                        copiedFiles.Add(newNames[i]);
+                    }
+                }
+
+                return new CommandResult
+                {
+                    Success = successCount > 0,
+                    Data = new
+                    {
+                        sourceFile = filePath,
+                        outputFolder,
+                        totalFiles = fileNames.Length,
+                        copiedFiles = successCount,
+                        files = copiedFiles
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                CloseSolidWorksIfWeStartedIt();
+                return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
+            }
+        }
+
+        #endregion
+
+        #region Helpers
+
+        private string GetFileType(string filePath)
+        {
+            var ext = Path.GetExtension(filePath).ToLowerInvariant();
+            return ext switch
+            {
+                ".sldprt" => "Part",
+                ".sldasm" => "Assembly",
+                ".slddrw" => "Drawing",
+                _ => "Other"
+            };
+        }
+
+        /// <summary>
+        /// Safe dictionary value getter (replacement for GetValueOrDefault in .NET 4.8)
+        /// </summary>
+        private static string? GetDictValue(Dictionary<string, string> dict, string key)
+        {
+            if (dict.TryGetValue(key, out var value))
+                return value;
+            return null;
+        }
+
+        #endregion
+
+        #region IDisposable
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+
+            if (_weStartedSW && _swApp != null)
+            {
+                try { _swApp.ExitApp(); } catch { }
+            }
+
+            _swApp = null;
+            GC.Collect();
+        }
+
+        #endregion
+    }
+
+    /// <summary>
+    /// BOM item data structure
+    /// </summary>
+    public class BomItem
+    {
+        public string FileName { get; set; } = "";
+        public string FilePath { get; set; } = "";
+        public string FileType { get; set; } = "";
+        public int Quantity { get; set; } = 1;
+        public string Configuration { get; set; } = "";
+        public string PartNumber { get; set; } = "";
+        public string Description { get; set; } = "";
+        public string Material { get; set; } = "";
+        public string Revision { get; set; } = "";
+        public Dictionary<string, string> Properties { get; set; } = new();
+    }
+}
+

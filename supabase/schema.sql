@@ -653,6 +653,271 @@ END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- ===========================================
+-- BACKUP SYSTEM
+-- ===========================================
+
+-- Backup configuration (one per org, admin-managed)
+CREATE TABLE backup_config (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE UNIQUE,
+  
+  -- Provider settings
+  provider TEXT NOT NULL DEFAULT 'backblaze_b2',  -- 'backblaze_b2', 'aws_s3', 'google_cloud'
+  bucket TEXT,
+  region TEXT,
+  
+  -- Credentials (encrypted in app before storing)
+  access_key_encrypted TEXT,
+  secret_key_encrypted TEXT,
+  
+  -- Schedule
+  schedule_enabled BOOLEAN DEFAULT false,
+  schedule_cron TEXT DEFAULT '0 0 * * *',  -- Midnight daily by default
+  
+  -- Designated backup machine (NULL = any admin can run)
+  designated_machine_id TEXT,
+  designated_machine_name TEXT,
+  
+  -- Retention policy (GFS - Grandfather-Father-Son)
+  retention_daily INT DEFAULT 14,
+  retention_weekly INT DEFAULT 10,
+  retention_monthly INT DEFAULT 10,
+  retention_yearly INT DEFAULT 5,
+  
+  -- Metadata
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_by UUID REFERENCES users(id)
+);
+
+CREATE INDEX idx_backup_config_org_id ON backup_config(org_id);
+
+-- Backup history (log of all backup runs)
+CREATE TABLE backup_history (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  
+  -- Timing
+  started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  completed_at TIMESTAMPTZ,
+  
+  -- Status: 'running', 'success', 'failed', 'warning', 'cancelled'
+  status TEXT NOT NULL DEFAULT 'running',
+  
+  -- Which machine ran the backup
+  machine_id TEXT NOT NULL,
+  machine_name TEXT NOT NULL,
+  
+  -- Stats
+  files_total INT,
+  files_added INT,
+  files_modified INT,
+  bytes_added BIGINT,
+  bytes_total BIGINT,
+  duration_seconds INT,
+  
+  -- For restore
+  snapshot_id TEXT,  -- restic/backup tool snapshot ID
+  
+  -- Error info
+  error_message TEXT,
+  error_details JSONB,
+  
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_backup_history_org_id ON backup_history(org_id);
+CREATE INDEX idx_backup_history_started_at ON backup_history(started_at DESC);
+CREATE INDEX idx_backup_history_status ON backup_history(status);
+
+-- Machine heartbeat (tracks which machines are online and can run backups)
+CREATE TABLE backup_machines (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  machine_id TEXT NOT NULL,
+  machine_name TEXT NOT NULL,
+  
+  -- User who owns this machine
+  user_id UUID REFERENCES users(id),
+  user_email TEXT,
+  
+  -- Status
+  last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  is_designated BOOLEAN DEFAULT false,
+  
+  -- Machine info
+  platform TEXT,  -- 'win32', 'darwin', 'linux'
+  app_version TEXT,
+  
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  
+  UNIQUE(org_id, machine_id)
+);
+
+CREATE INDEX idx_backup_machines_org_id ON backup_machines(org_id);
+CREATE INDEX idx_backup_machines_last_seen ON backup_machines(last_seen);
+
+-- Backup lock (prevents concurrent backups)
+CREATE TABLE backup_locks (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE UNIQUE,
+  
+  locked_by_machine_id TEXT NOT NULL,
+  locked_by_machine_name TEXT NOT NULL,
+  locked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expires_at TIMESTAMPTZ NOT NULL,  -- Auto-expire stale locks
+  
+  -- Reference to the backup history entry
+  backup_history_id UUID REFERENCES backup_history(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_backup_locks_org_id ON backup_locks(org_id);
+CREATE INDEX idx_backup_locks_expires_at ON backup_locks(expires_at);
+
+-- Enable RLS on backup tables
+ALTER TABLE backup_config ENABLE ROW LEVEL SECURITY;
+ALTER TABLE backup_history ENABLE ROW LEVEL SECURITY;
+ALTER TABLE backup_machines ENABLE ROW LEVEL SECURITY;
+ALTER TABLE backup_locks ENABLE ROW LEVEL SECURITY;
+
+-- Backup config: All org members can read, only admins can modify
+CREATE POLICY "Users can view org backup config"
+  ON backup_config FOR SELECT
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+CREATE POLICY "Admins can insert backup config"
+  ON backup_config FOR INSERT
+  WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'));
+
+CREATE POLICY "Admins can update backup config"
+  ON backup_config FOR UPDATE
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'));
+
+CREATE POLICY "Admins can delete backup config"
+  ON backup_config FOR DELETE
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'));
+
+-- Backup history: All org members can read, authenticated users can insert
+CREATE POLICY "Users can view org backup history"
+  ON backup_history FOR SELECT
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+CREATE POLICY "Authenticated users can insert backup history"
+  ON backup_history FOR INSERT
+  WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+CREATE POLICY "Authenticated users can update backup history"
+  ON backup_history FOR UPDATE
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+-- Backup machines: All org members can read and manage their own machines
+CREATE POLICY "Users can view org backup machines"
+  ON backup_machines FOR SELECT
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+CREATE POLICY "Users can register their machines"
+  ON backup_machines FOR INSERT
+  WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+CREATE POLICY "Users can update their machines"
+  ON backup_machines FOR UPDATE
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+CREATE POLICY "Users can remove their machines"
+  ON backup_machines FOR DELETE
+  USING (
+    org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND
+    (user_id = auth.uid() OR user_id IS NULL OR 
+     auth.uid() IN (SELECT id FROM users WHERE org_id = backup_machines.org_id AND role = 'admin'))
+  );
+
+-- Backup locks: Org members can manage locks
+CREATE POLICY "Users can view org backup locks"
+  ON backup_locks FOR SELECT
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+CREATE POLICY "Users can create backup locks"
+  ON backup_locks FOR INSERT
+  WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+CREATE POLICY "Users can update backup locks"
+  ON backup_locks FOR UPDATE
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+CREATE POLICY "Users can delete backup locks"
+  ON backup_locks FOR DELETE
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+-- Function to clean up expired backup locks
+CREATE OR REPLACE FUNCTION cleanup_expired_backup_locks()
+RETURNS INTEGER AS $$
+DECLARE
+  deleted_count INTEGER;
+BEGIN
+  WITH deleted AS (
+    DELETE FROM backup_locks 
+    WHERE expires_at < NOW()
+    RETURNING id
+  )
+  SELECT COUNT(*) INTO deleted_count FROM deleted;
+  
+  RETURN deleted_count;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Function to acquire backup lock (returns true if acquired, false if already locked)
+CREATE OR REPLACE FUNCTION acquire_backup_lock(
+  p_org_id UUID,
+  p_machine_id TEXT,
+  p_machine_name TEXT,
+  p_backup_history_id UUID,
+  p_lock_duration_minutes INT DEFAULT 60
+)
+RETURNS BOOLEAN AS $$
+DECLARE
+  lock_acquired BOOLEAN := false;
+BEGIN
+  -- First, clean up expired locks
+  PERFORM cleanup_expired_backup_locks();
+  
+  -- Try to insert a new lock (will fail if one exists due to UNIQUE constraint)
+  BEGIN
+    INSERT INTO backup_locks (org_id, locked_by_machine_id, locked_by_machine_name, expires_at, backup_history_id)
+    VALUES (p_org_id, p_machine_id, p_machine_name, NOW() + (p_lock_duration_minutes || ' minutes')::interval, p_backup_history_id);
+    lock_acquired := true;
+  EXCEPTION WHEN unique_violation THEN
+    -- Lock already exists, check if it's expired
+    DELETE FROM backup_locks WHERE org_id = p_org_id AND expires_at < NOW();
+    
+    -- Try again
+    BEGIN
+      INSERT INTO backup_locks (org_id, locked_by_machine_id, locked_by_machine_name, expires_at, backup_history_id)
+      VALUES (p_org_id, p_machine_id, p_machine_name, NOW() + (p_lock_duration_minutes || ' minutes')::interval, p_backup_history_id);
+      lock_acquired := true;
+    EXCEPTION WHEN unique_violation THEN
+      lock_acquired := false;
+    END;
+  END;
+  
+  RETURN lock_acquired;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Function to release backup lock
+CREATE OR REPLACE FUNCTION release_backup_lock(p_org_id UUID, p_machine_id TEXT)
+RETURNS BOOLEAN AS $$
+DECLARE
+  deleted_count INTEGER;
+BEGIN
+  DELETE FROM backup_locks 
+  WHERE org_id = p_org_id AND locked_by_machine_id = p_machine_id;
+  
+  GET DIAGNOSTICS deleted_count = ROW_COUNT;
+  RETURN deleted_count > 0;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ===========================================
 -- USEFUL QUERIES
 -- ===========================================
 

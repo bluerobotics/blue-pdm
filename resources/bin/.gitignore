@@ -1,0 +1,17 @@
+# Ignore downloaded restic binaries (they're large and platform-specific)
+# Run "npm run download-restic" to download them
+
+# Windows
+win32/restic.exe
+
+# macOS
+darwin/restic
+
+# Linux
+linux/restic
+
+# Temporary files
+*.zip
+*.bz2
+*.tmp
+

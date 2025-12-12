@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <PlatformTarget>x64</PlatformTarget>
+    <AssemblyName>BluePDM.SolidWorksService</AssemblyName>
+    <RootNamespace>BluePDM.SolidWorksService</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    
+    <!-- Output to a predictable location for Electron to find -->
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- SolidWorks Document Manager API - LIGHTWEIGHT, NO SW LAUNCH! -->
+    <!-- Referenced directly from SolidWorks installation -->
+    <Reference Include="SolidWorks.Interop.swdocumentmgr">
+      <HintPath>C:\Program Files\SOLIDWORKS Corp\SOLIDWORKS\api\redist\SolidWorks.Interop.swdocumentmgr.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    
+    <!-- SolidWorks API - Full API for exports only (launches SW) -->
+    <PackageReference Include="SolidWorks.Interop.sldworks" Version="32.1.0" />
+    <PackageReference Include="SolidWorks.Interop.swconst" Version="32.1.0" />
+    <PackageReference Include="SolidWorks.Interop.swpublished" Version="32.1.0" />
+    
+    <!-- JSON handling for IPC with Electron -->
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+
+</Project>

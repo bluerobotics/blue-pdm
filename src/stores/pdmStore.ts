@@ -11,7 +11,7 @@ function buildFullPath(vaultPath: string, relativePath: string): string {
   return `${vaultPath}${sep}${normalizedRelative}`
 }
 
-export type SidebarView = 'explorer' | 'checkout' | 'history' | 'search' | 'trash' | 'settings'
+export type SidebarView = 'explorer' | 'pending' | 'history' | 'search' | 'trash' | 'settings'
 export type DetailsPanelTab = 'properties' | 'preview' | 'whereused' | 'contains' | 'history'
 export type PanelPosition = 'bottom' | 'right'
 export type ToastType = 'error' | 'success' | 'info' | 'warning' | 'progress' | 'update'
@@ -123,6 +123,7 @@ interface PDMState {
   // File Browser
   files: LocalFile[]
   serverFiles: ServerFile[] // Files that exist on server (for tracking deletions)
+  serverFolderPaths: Set<string> // Folder paths that exist on server (computed from serverFiles)
   selectedFiles: string[] // paths
   expandedFolders: Set<string>
   currentFolder: string
@@ -190,6 +191,10 @@ interface PDMState {
   // Preview settings
   cadPreviewMode: 'thumbnail' | 'edrawings'  // thumbnail = embedded preview, edrawings = open externally
   
+  // SolidWorks settings
+  solidworksPath: string | null  // Custom SolidWorks installation path (null = default)
+  solidworksDmLicenseKey: string | null  // Document Manager API license key for fast mode
+  
   // Display settings
   lowercaseExtensions: boolean  // Display file extensions in lowercase
   viewMode: 'list' | 'icons'    // File browser view mode
@@ -208,6 +213,11 @@ interface PDMState {
   
   // History filter (for folder-specific history view)
   historyFolderFilter: string | null
+  
+  // Terminal
+  terminalVisible: boolean
+  terminalHeight: number
+  terminalHistory: string[]  // Command history for up/down navigation
   
   // Trash filter (for folder-specific deleted files view)
   trashFolderFilter: string | null
@@ -249,6 +259,10 @@ interface PDMState {
   // Actions - Preview settings
   setCadPreviewMode: (mode: 'thumbnail' | 'edrawings') => void
   
+  // Actions - SolidWorks settings
+  setSolidworksPath: (path: string | null) => void
+  setSolidworksDmLicenseKey: (key: string | null) => void
+  
   // Actions - Display settings
   setLowercaseExtensions: (enabled: boolean) => void
   setViewMode: (mode: 'list' | 'icons') => void
@@ -280,6 +294,7 @@ interface PDMState {
   // Actions - Files
   setFiles: (files: LocalFile[]) => void
   setServerFiles: (files: ServerFile[]) => void
+  setServerFolderPaths: (paths: Set<string>) => void
   updateFileInStore: (path: string, updates: Partial<LocalFile>) => void
   removeFilesFromStore: (paths: string[]) => void
   updatePendingMetadata: (path: string, metadata: PendingMetadata) => void
@@ -320,6 +335,11 @@ interface PDMState {
   setRightPanelTab: (tab: DetailsPanelTab | null) => void
   moveTabToRight: (tab: DetailsPanelTab) => void
   moveTabToBottom: (tab: DetailsPanelTab) => void
+  
+  // Actions - Terminal
+  toggleTerminal: () => void
+  setTerminalHeight: (height: number) => void
+  addTerminalHistory: (command: string) => void
   
   // Actions - History
   setHistoryFolderFilter: (folderPath: string | null) => void
@@ -405,6 +425,7 @@ export const usePDMStore = create<PDMState>()(
       
       files: [],
       serverFiles: [],
+      serverFolderPaths: new Set<string>(),
       selectedFiles: [],
       expandedFolders: new Set<string>(),
       currentFolder: '',
@@ -459,6 +480,8 @@ export const usePDMStore = create<PDMState>()(
       recentVaults: [],
       autoConnect: true,
       cadPreviewMode: 'thumbnail',
+      solidworksPath: null,  // null = use default installation path
+      solidworksDmLicenseKey: null,  // null = fast mode disabled
       lowercaseExtensions: true,
       viewMode: 'list',
       iconSize: 96,  // Default icon size (medium)
@@ -470,6 +493,11 @@ export const usePDMStore = create<PDMState>()(
       historyFolderFilter: null,
       trashFolderFilter: null,
       ignorePatterns: {},
+      
+      // Terminal
+      terminalVisible: false,
+      terminalHeight: 250,
+      terminalHistory: [],
       
       // Actions - Toasts
       addToast: (type, message, duration = 5000) => {
@@ -550,6 +578,8 @@ export const usePDMStore = create<PDMState>()(
       },
       setAutoConnect: (autoConnect) => set({ autoConnect }),
       setCadPreviewMode: (cadPreviewMode) => set({ cadPreviewMode }),
+      setSolidworksPath: (solidworksPath) => set({ solidworksPath }),
+      setSolidworksDmLicenseKey: (solidworksDmLicenseKey) => set({ solidworksDmLicenseKey }),
       setLowercaseExtensions: (lowercaseExtensions) => set({ lowercaseExtensions }),
       setViewMode: (viewMode) => set({ viewMode }),
       setIconSize: (iconSize) => set({ iconSize: Math.max(48, Math.min(256, iconSize)) }),
@@ -665,6 +695,7 @@ export const usePDMStore = create<PDMState>()(
       // Actions - Files
       setFiles: (files) => set({ files }),
       setServerFiles: (serverFiles) => set({ serverFiles }),
+      setServerFolderPaths: (serverFolderPaths) => set({ serverFolderPaths }),
       updateFileInStore: (path, updates) => {
         set(state => ({
           files: state.files.map(f => 
@@ -845,6 +876,16 @@ export const usePDMStore = create<PDMState>()(
           detailsPanelTab: tab
         })
       },
+      
+      // Actions - Terminal
+      toggleTerminal: () => set((s) => ({ terminalVisible: !s.terminalVisible })),
+      setTerminalHeight: (height) => set({ terminalHeight: Math.max(150, Math.min(600, height)) }),
+      addTerminalHistory: (command) => set((s) => {
+        // Don't add duplicate consecutive commands
+        if (s.terminalHistory[0] === command) return s
+        // Keep last 100 commands
+        return { terminalHistory: [command, ...s.terminalHistory.slice(0, 99)] }
+      }),
       
       // Actions - History
       setHistoryFolderFilter: (folderPath) => set({ historyFolderFilter: folderPath }),
@@ -1177,6 +1218,8 @@ export const usePDMStore = create<PDMState>()(
         recentVaults: state.recentVaults,
         autoConnect: state.autoConnect,
         cadPreviewMode: state.cadPreviewMode,
+        solidworksPath: state.solidworksPath,
+        solidworksDmLicenseKey: state.solidworksDmLicenseKey,
         lowercaseExtensions: state.lowercaseExtensions,
         viewMode: state.viewMode,
         iconSize: state.iconSize,
@@ -1195,7 +1238,10 @@ export const usePDMStore = create<PDMState>()(
         rightPanelTabs: state.rightPanelTabs,
         columns: state.columns,
         expandedFolders: Array.from(state.expandedFolders),
-        ignorePatterns: state.ignorePatterns
+        ignorePatterns: state.ignorePatterns,
+        terminalVisible: state.terminalVisible,
+        terminalHeight: state.terminalHeight,
+        terminalHistory: state.terminalHistory.slice(0, 100)  // Keep last 100
       }),
       merge: (persistedState, currentState) => {
         const persisted = persistedState as Record<string, unknown>
@@ -1243,6 +1289,9 @@ export const usePDMStore = create<PDMState>()(
           expandedFolders: new Set(persisted.expandedFolders as string[] || []),
           // Ensure cadPreviewMode has a default
           cadPreviewMode: (persisted.cadPreviewMode as 'thumbnail' | 'edrawings') || 'thumbnail',
+          // Restore SolidWorks settings
+          solidworksPath: (persisted.solidworksPath as string | null) || null,
+          solidworksDmLicenseKey: (persisted.solidworksDmLicenseKey as string | null) || null,
           // Ensure lowercaseExtensions has a default (true)
           lowercaseExtensions: persisted.lowercaseExtensions !== undefined ? persisted.lowercaseExtensions as boolean : true,
           // Ensure viewMode has a default
@@ -1258,7 +1307,11 @@ export const usePDMStore = create<PDMState>()(
             return persistedCol ? { ...defaultCol, ...persistedCol } : defaultCol
           }),
           // Ensure ignorePatterns has a default
-          ignorePatterns: (persisted.ignorePatterns as Record<string, string[]>) || {}
+          ignorePatterns: (persisted.ignorePatterns as Record<string, string[]>) || {},
+          // Terminal settings
+          terminalVisible: (persisted.terminalVisible as boolean) || false,
+          terminalHeight: (persisted.terminalHeight as number) || 250,
+          terminalHistory: (persisted.terminalHistory as string[]) || []
         }
       }
     }

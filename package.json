@@ -9,7 +9,11 @@
     "preview": "vite preview",
     "electron:dev": "vite",
     "typecheck": "tsc --noEmit",
-    "release": "node scripts/release.js"
+    "release": "node scripts/release.js",
+    "download-restic": "node scripts/download-restic.js",
+    "cli": "node cli/bluepdm.js",
+    "api": "node api/server.js",
+    "api:dev": "node --watch api/server.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
@@ -18,11 +22,15 @@
     "cfb": "^1.2.2",
     "chokidar": "^5.0.0",
     "clsx": "^2.0.0",
+    "@fastify/cors": "^10.0.2",
     "date-fns": "^3.0.6",
     "electron-updater": "^6.3.9",
+    "fastify": "^5.2.1",
+    "pino-pretty": "^13.0.0",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "systeminformation": "^5.27.13",
     "zustand": "^5.0.2"
   },
   "devDependencies": {
@@ -54,6 +62,18 @@
     "files": [
       "dist/**/*",
       "dist-electron/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/bin/${platform}",
+        "to": "bin",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "asarUnpack": [
+      "resources/bin/**/*"
     ],
     "publish": {
       "provider": "github",

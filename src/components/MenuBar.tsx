@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
-import { LogOut, ChevronDown, Building2, Settings, Search, File, Folder, LayoutGrid } from 'lucide-react'
+import { LogOut, ChevronDown, Building2, Settings, Search, File, Folder, LayoutGrid, Terminal } from 'lucide-react'
 import { usePDMStore } from '../stores/pdmStore'
 import { signInWithGoogle, signOut, isSupabaseConfigured, linkUserToOrganization } from '../lib/supabase'
 import { SettingsModal } from './SettingsModal'
 import { getInitials } from '../types/pdm'
+import { SystemStats } from './SystemStats'
 
 // Helper to log to both console and electron log file
 const uiLog = (level: 'info' | 'warn' | 'error' | 'debug', message: string, data?: unknown) => {
@@ -27,7 +28,7 @@ interface MenuBarProps {
 }
 
 export function MenuBar({ minimal = false }: MenuBarProps) {
-  const { user, organization, setUser, setOrganization, addToast, setSearchQuery, searchQuery, searchType, setSearchType } = usePDMStore()
+  const { user, organization, setUser, setOrganization, addToast, setSearchQuery, searchQuery, searchType, setSearchType, terminalVisible, toggleTerminal } = usePDMStore()
   const [appVersion, setAppVersion] = useState('')
   const [isSigningIn, setIsSigningIn] = useState(false)
   const [showUserMenu, setShowUserMenu] = useState(false)
@@ -232,6 +233,28 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
         className="absolute right-0 top-0 h-full flex items-center gap-2 pl-4 titlebar-no-drag"
         style={{ paddingRight: platform === 'darwin' ? 16 : titleBarPadding }}
       >
+        {/* System Stats - hidden on welcome/signin screens */}
+        {!minimal && <SystemStats />}
+        
+        {/* Separator */}
+        {!minimal && <div className="w-px h-4 bg-pdm-border" />}
+        
+        {/* Terminal toggle - hidden on welcome/signin screens */}
+        {!minimal && (
+          <button
+            onClick={toggleTerminal}
+            className={`p-1.5 rounded hover:bg-pdm-bg-lighter transition-colors ${
+              terminalVisible 
+                ? 'text-emerald-500 bg-pdm-bg-lighter' 
+                : 'text-pdm-fg-muted hover:text-pdm-fg'
+            }`}
+            title="Toggle Terminal (Ctrl+`)"
+            data-testid="terminal-toggle"
+          >
+            <Terminal size={18} />
+          </button>
+        )}
+        
         {/* Settings gear - hidden on welcome/signin screens */}
         {!minimal && (
           <button

@@ -21,6 +21,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Download restic binary
+        run: npm run download-restic -- --current
+
       - name: Build Electron app
         run: npm run build
         env:
@@ -48,6 +51,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Download restic binary
+        run: npm run download-restic -- --current
 
       - name: Build Electron app
         run: npm run build

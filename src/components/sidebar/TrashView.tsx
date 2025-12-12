@@ -10,13 +10,14 @@ import {
   Loader2,
   FileBox,
   FolderOpen,
+  Folder,
   X,
   Search,
   ChevronDown,
   ChevronRight,
   Filter,
   List,
-  LayoutList,
+  Network,
   Database
 } from 'lucide-react'
 import { usePDMStore } from '../../stores/pdmStore'
@@ -61,7 +62,7 @@ export function TrashView() {
   const [vaultFilter, setVaultFilter] = useState<string | null>(null) // null = current vault only, 'all' = all vaults
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set())
   const [showFilters, setShowFilters] = useState(false)
-  const [viewMode, setViewMode] = useState<'folders' | 'flat'>('folders') // folders = grouped, flat = by time
+  const [viewMode, setViewMode] = useState<'files' | 'folders' | 'nested'>('files') // files = only files, folders = only folders, nested = full hierarchy
   
   // Get current vault name
   const currentVault = connectedVaults.find(v => v.id === activeVaultId)
@@ -122,11 +123,31 @@ export function TrashView() {
     })
   }, [deletedFiles, searchQuery, deletedByFilter, folderFilter])
   
-  // Group files by folder for display
+  // Separate files from folders (folders have file_type 'folder' or no extension and ends with /)
+  const { deletedFilesOnly, deletedFoldersOnly } = useMemo(() => {
+    const filesOnly: DeletedFile[] = []
+    const foldersOnly: DeletedFile[] = []
+    
+    filteredFiles.forEach(file => {
+      // Check if it's a folder - extension is empty and name has no extension
+      const isFolder = file.extension === '' && !file.file_name.includes('.')
+      
+      if (isFolder) {
+        foldersOnly.push(file)
+      } else {
+        filesOnly.push(file)
+      }
+    })
+    
+    return { deletedFilesOnly: filesOnly, deletedFoldersOnly: foldersOnly }
+  }, [filteredFiles])
+  
+  // Group files by folder for nested display
   const groupedByFolder = useMemo(() => {
     const groups = new Map<string, DeletedFile[]>()
     
-    filteredFiles.forEach(file => {
+    // Only use actual files (not folders) for nested view
+    deletedFilesOnly.forEach(file => {
       const lastSlash = file.file_path.lastIndexOf('/')
       const folder = lastSlash > 0 ? file.file_path.substring(0, lastSlash) : '/'
       
@@ -138,14 +159,21 @@ export function TrashView() {
     
     // Sort folders alphabetically
     return new Map([...groups.entries()].sort((a, b) => a[0].localeCompare(b[0])))
-  }, [filteredFiles])
+  }, [deletedFilesOnly])
   
-  // Flat list sorted by deletion time (most recent first)
-  const flatSortedFiles = useMemo(() => {
-    return [...filteredFiles].sort((a, b) => 
+  // Files sorted by deletion time (most recent first) - for file view
+  const filesSortedByTime = useMemo(() => {
+    return [...deletedFilesOnly].sort((a, b) => 
       new Date(b.deleted_at).getTime() - new Date(a.deleted_at).getTime()
     )
-  }, [filteredFiles])
+  }, [deletedFilesOnly])
+  
+  // Folders sorted by deletion time (most recent first) - for folder view
+  const foldersSortedByTime = useMemo(() => {
+    return [...deletedFoldersOnly].sort((a, b) => 
+      new Date(b.deleted_at).getTime() - new Date(a.deleted_at).getTime()
+    )
+  }, [deletedFoldersOnly])
   
   // Toggle folder expansion
   const toggleFolderExpand = (folder: string) => {
@@ -201,19 +229,26 @@ export function TrashView() {
   
   const hasActiveFilters = searchQuery || deletedByFilter || folderFilter || vaultFilter
   
-  // Select all filtered files
+  // Get the current view items (files, folders, or all files in nested view)
+  const currentViewItems = useMemo(() => {
+    if (viewMode === 'files') return deletedFilesOnly
+    if (viewMode === 'folders') return deletedFoldersOnly
+    return deletedFilesOnly // nested view shows files within folder groups
+  }, [viewMode, deletedFilesOnly, deletedFoldersOnly])
+  
+  // Select all items in current view
   const selectAll = () => {
-    if (selectedFiles.size === filteredFiles.length) {
+    if (selectedFiles.size === currentViewItems.length && currentViewItems.length > 0) {
       // All selected, deselect all
       setSelectedFiles(new Set())
     } else {
-      // Select all filtered files
-      setSelectedFiles(new Set(filteredFiles.map(f => f.id)))
+      // Select all items in current view
+      setSelectedFiles(new Set(currentViewItems.map(f => f.id)))
     }
   }
   
-  const allSelected = filteredFiles.length > 0 && selectedFiles.size === filteredFiles.length
-  const someSelected = selectedFiles.size > 0 && selectedFiles.size < filteredFiles.length
+  const allSelected = currentViewItems.length > 0 && selectedFiles.size === currentViewItems.length
+  const someSelected = selectedFiles.size > 0 && selectedFiles.size < currentViewItems.length
   
   // Load deleted files
   const loadDeletedFiles = async () => {
@@ -249,6 +284,11 @@ export function TrashView() {
       setExpandedFolders(new Set(groupedByFolder.keys()))
     }
   }, [deletedFiles])
+  
+  // Clear selection when switching view modes
+  useEffect(() => {
+    setSelectedFiles(new Set())
+  }, [viewMode])
   
   // Handle file selection
   const toggleFileSelection = (fileId: string, isShiftClick: boolean, isCtrlClick: boolean) => {
@@ -483,24 +523,58 @@ export function TrashView() {
           <div className="flex items-center gap-2 text-sm text-pdm-fg-muted">
             <Trash2 size={16} />
             <span>
-              {filteredFiles.length !== deletedFiles.length 
-                ? `${filteredFiles.length} of ${deletedFiles.length}`
-                : deletedFiles.length
-              } file{filteredFiles.length !== 1 ? 's' : ''}
+              {viewMode === 'files' ? (
+                <>
+                  {deletedFilesOnly.length} file{deletedFilesOnly.length !== 1 ? 's' : ''}
+                </>
+              ) : viewMode === 'folders' ? (
+                <>
+                  {deletedFoldersOnly.length} folder{deletedFoldersOnly.length !== 1 ? 's' : ''}
+                </>
+              ) : (
+                <>
+                  {deletedFilesOnly.length} file{deletedFilesOnly.length !== 1 ? 's' : ''} in {groupedByFolder.size} folder{groupedByFolder.size !== 1 ? 's' : ''}
+                </>
+              )}
             </span>
           </div>
           <div className="flex items-center gap-1">
-            <button
-              onClick={() => setViewMode(viewMode === 'folders' ? 'flat' : 'folders')}
-              className={`p-1 rounded transition-colors ${
-                viewMode === 'flat'
-                  ? 'bg-pdm-accent/20 text-pdm-accent'
-                  : 'hover:bg-pdm-bg-light text-pdm-fg-muted hover:text-pdm-fg'
-              }`}
-              title={viewMode === 'folders' ? 'Show by time deleted' : 'Show by folder'}
-            >
-              {viewMode === 'folders' ? <List size={14} /> : <LayoutList size={14} />}
-            </button>
+            {/* View mode toggle - three options */}
+            <div className="flex items-center bg-pdm-bg rounded border border-pdm-border">
+              <button
+                onClick={() => setViewMode('files')}
+                className={`p-1 rounded-l transition-colors ${
+                  viewMode === 'files'
+                    ? 'bg-pdm-accent/20 text-pdm-accent'
+                    : 'hover:bg-pdm-bg-light text-pdm-fg-muted hover:text-pdm-fg'
+                }`}
+                title="File view - show only deleted files"
+              >
+                <List size={14} />
+              </button>
+              <button
+                onClick={() => setViewMode('folders')}
+                className={`p-1 border-x border-pdm-border transition-colors ${
+                  viewMode === 'folders'
+                    ? 'bg-pdm-accent/20 text-pdm-accent'
+                    : 'hover:bg-pdm-bg-light text-pdm-fg-muted hover:text-pdm-fg'
+                }`}
+                title="Folder view - show only deleted folders"
+              >
+                <Folder size={14} />
+              </button>
+              <button
+                onClick={() => setViewMode('nested')}
+                className={`p-1 rounded-r transition-colors ${
+                  viewMode === 'nested'
+                    ? 'bg-pdm-accent/20 text-pdm-accent'
+                    : 'hover:bg-pdm-bg-light text-pdm-fg-muted hover:text-pdm-fg'
+                }`}
+                title="Nested view - show files in folder hierarchy"
+              >
+                <Network size={14} />
+              </button>
+            </div>
             <button
               onClick={() => setShowFilters(!showFilters)}
               className={`p-1 rounded transition-colors ${
@@ -668,7 +742,7 @@ export function TrashView() {
       </div>
       
       {/* Action buttons */}
-      {filteredFiles.length > 0 && (
+      {currentViewItems.length > 0 && (
         <div className="p-2 border-b border-pdm-border space-y-2">
           {/* Select All row */}
           <div className="flex items-center gap-2">
@@ -687,7 +761,7 @@ export function TrashView() {
                 onChange={selectAll}
                 className="w-3.5 h-3.5 rounded border-pdm-border text-pdm-accent focus:ring-pdm-accent focus:ring-offset-0 cursor-pointer"
               />
-              <span>Select All ({filteredFiles.length})</span>
+              <span>Select All ({currentViewItems.length})</span>
             </button>
             {selectedFiles.size > 0 && (
               <button
@@ -763,175 +837,261 @@ export function TrashView() {
               </button>
             )}
           </div>
-        ) : viewMode === 'folders' ? (
-          /* Folder grouped view */
+        ) : viewMode === 'files' ? (
+          /* File view - only show deleted files (not folders) */
           <div className="py-1">
-            {Array.from(groupedByFolder.entries()).map(([folder, files]) => {
-              const isExpanded = expandedFolders.has(folder)
-              const folderSelected = isFolderSelected(folder)
-              const folderPartial = isFolderPartiallySelected(folder)
-              const folderName = folder === '/' ? '(root)' : folder.split('/').pop() || folder
-              
-              return (
-                <div key={folder}>
-                  {/* Folder header - clickable to select all files in folder */}
+            {filesSortedByTime.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-12 text-pdm-fg-muted">
+                <FileText size={48} className="opacity-30 mb-3" />
+                <p className="text-sm">No deleted files</p>
+                <p className="text-xs mt-1 opacity-70">Only folders are in the trash</p>
+              </div>
+            ) : (
+              filesSortedByTime.map((file) => {
+                const isSelected = selectedFiles.has(file.id)
+                const daysRemaining = getDaysRemaining(file.deleted_at)
+                
+                return (
                   <div
-                    className={`px-2 py-1.5 flex items-center gap-1.5 cursor-pointer border-l-2 transition-colors ${
-                      folderSelected
+                    key={file.id}
+                    onClick={(e) => toggleFileSelection(file.id, e.shiftKey, e.ctrlKey || e.metaKey)}
+                    className={`px-3 py-2 cursor-pointer border-l-2 transition-colors ${
+                      isSelected
                         ? 'bg-pdm-accent/10 border-pdm-accent'
-                        : folderPartial
-                        ? 'bg-pdm-accent/5 border-pdm-accent/50'
                         : 'hover:bg-pdm-bg-light border-transparent'
                     }`}
                   >
-                    <button
-                      onClick={(e) => { e.stopPropagation(); toggleFolderExpand(folder) }}
-                      className="p-0.5 hover:bg-pdm-bg rounded text-pdm-fg-muted"
-                    >
-                      {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                    </button>
-                    <input
-                      type="checkbox"
-                      checked={folderSelected}
-                      ref={(el) => { if (el) el.indeterminate = folderPartial }}
-                      onChange={() => selectFolder(folder)}
-                      className="w-3.5 h-3.5 rounded border-pdm-border text-pdm-accent focus:ring-pdm-accent focus:ring-offset-0 cursor-pointer"
-                    />
-                    <div
-                      onClick={() => selectFolder(folder)}
-                      className="flex-1 flex items-center gap-1.5 min-w-0"
-                    >
-                      <FolderOpen size={14} className="text-pdm-fg-muted flex-shrink-0" />
-                      <span className="text-sm text-pdm-fg truncate" title={folder}>
-                        {folderName}
-                      </span>
-                      <span className="text-xs text-pdm-fg-muted">
-                        ({files.length})
-                      </span>
-                    </div>
-                  </div>
-                  
-                  {/* Files in folder */}
-                  {isExpanded && files.map((file) => {
-                    const isSelected = selectedFiles.has(file.id)
-                    const daysRemaining = getDaysRemaining(file.deleted_at)
-                    
-                    return (
-                      <div
-                        key={file.id}
-                        onClick={(e) => toggleFileSelection(file.id, e.shiftKey, e.ctrlKey || e.metaKey)}
-                        className={`pl-6 pr-3 py-2 cursor-pointer border-l-2 transition-colors ${
-                          isSelected
-                            ? 'bg-pdm-accent/10 border-pdm-accent'
-                            : 'hover:bg-pdm-bg-light border-transparent'
-                        }`}
-                      >
-                        <div className="flex items-start gap-2">
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            onChange={() => toggleFileSelection(file.id, false, true)}
-                            onClick={(e) => e.stopPropagation()}
-                            className="w-3.5 h-3.5 mt-0.5 rounded border-pdm-border text-pdm-accent focus:ring-pdm-accent focus:ring-offset-0 cursor-pointer flex-shrink-0"
-                          />
-                          <FileIcon extension={file.extension} size={16} />
-                          <div className="flex-1 min-w-0 overflow-hidden">
-                            <div className="text-sm text-pdm-fg truncate" title={file.file_name}>
-                              {file.file_name}
-                            </div>
-                            <div className="flex items-center gap-3 text-xs text-pdm-fg-muted mt-1">
-                              <span className="flex items-center gap-1">
-                                <Clock size={10} />
-                                {formatDistanceToNow(new Date(file.deleted_at), { addSuffix: true })}
-                              </span>
-                              {file.deleted_by_user && (
-                                <span className="flex items-center gap-1">
-                                  <User size={10} />
-                                  {file.deleted_by_user.full_name || file.deleted_by_user.email.split('@')[0]}
-                                </span>
-                              )}
-                            </div>
-                            {daysRemaining <= 7 && (
-                              <div className={`flex items-center gap-1 text-xs mt-1 ${
-                                daysRemaining <= 3 ? 'text-pdm-error' : 'text-pdm-warning'
-                              }`}>
-                                <AlertTriangle size={10} />
-                                {daysRemaining === 0 
-                                  ? 'Expires today!' 
-                                  : `Expires in ${daysRemaining} day${daysRemaining !== 1 ? 's' : ''}`
-                                }
-                              </div>
-                            )}
-                          </div>
+                    <div className="flex items-start gap-2">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleFileSelection(file.id, false, true)}
+                        onClick={(e) => e.stopPropagation()}
+                        className="w-3.5 h-3.5 mt-0.5 rounded border-pdm-border text-pdm-accent focus:ring-pdm-accent focus:ring-offset-0 cursor-pointer flex-shrink-0"
+                      />
+                      <FileIcon extension={file.extension} size={16} />
+                      <div className="flex-1 min-w-0 overflow-hidden">
+                        <div className="text-sm text-pdm-fg truncate" title={file.file_name}>
+                          {file.file_name}
                         </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              )
-            })}
-          </div>
-        ) : (
-          /* Flat view - sorted by time deleted */
-          <div className="py-1">
-            {flatSortedFiles.map((file) => {
-              const isSelected = selectedFiles.has(file.id)
-              const daysRemaining = getDaysRemaining(file.deleted_at)
-              
-              return (
-                <div
-                  key={file.id}
-                  onClick={(e) => toggleFileSelection(file.id, e.shiftKey, e.ctrlKey || e.metaKey)}
-                  className={`px-3 py-2 cursor-pointer border-l-2 transition-colors ${
-                    isSelected
-                      ? 'bg-pdm-accent/10 border-pdm-accent'
-                      : 'hover:bg-pdm-bg-light border-transparent'
-                  }`}
-                >
-                  <div className="flex items-start gap-2">
-                    <input
-                      type="checkbox"
-                      checked={isSelected}
-                      onChange={() => toggleFileSelection(file.id, false, true)}
-                      onClick={(e) => e.stopPropagation()}
-                      className="w-3.5 h-3.5 mt-0.5 rounded border-pdm-border text-pdm-accent focus:ring-pdm-accent focus:ring-offset-0 cursor-pointer flex-shrink-0"
-                    />
-                    <FileIcon extension={file.extension} size={16} />
-                    <div className="flex-1 min-w-0 overflow-hidden">
-                      <div className="text-sm text-pdm-fg truncate" title={file.file_name}>
-                        {file.file_name}
-                      </div>
-                      <div className="text-xs text-pdm-fg-muted truncate mt-0.5" title={file.file_path}>
-                        {file.file_path}
-                      </div>
-                      <div className="flex items-center gap-3 text-xs text-pdm-fg-muted mt-1">
-                        <span className="flex items-center gap-1">
-                          <Clock size={10} />
-                          {formatDistanceToNow(new Date(file.deleted_at), { addSuffix: true })}
-                        </span>
-                        {file.deleted_by_user && (
+                        <div className="text-xs text-pdm-fg-muted truncate mt-0.5" title={file.file_path}>
+                          {file.file_path}
+                        </div>
+                        <div className="flex items-center gap-3 text-xs text-pdm-fg-muted mt-1">
                           <span className="flex items-center gap-1">
-                            <User size={10} />
-                            {file.deleted_by_user.full_name || file.deleted_by_user.email.split('@')[0]}
+                            <Clock size={10} />
+                            {formatDistanceToNow(new Date(file.deleted_at), { addSuffix: true })}
                           </span>
+                          {file.deleted_by_user && (
+                            <span className="flex items-center gap-1">
+                              <User size={10} />
+                              {file.deleted_by_user.full_name || file.deleted_by_user.email.split('@')[0]}
+                            </span>
+                          )}
+                        </div>
+                        {daysRemaining <= 7 && (
+                          <div className={`flex items-center gap-1 text-xs mt-1 ${
+                            daysRemaining <= 3 ? 'text-pdm-error' : 'text-pdm-warning'
+                          }`}>
+                            <AlertTriangle size={10} />
+                            {daysRemaining === 0 
+                              ? 'Expires today!' 
+                              : `Expires in ${daysRemaining} day${daysRemaining !== 1 ? 's' : ''}`
+                            }
+                          </div>
                         )}
                       </div>
-                      {daysRemaining <= 7 && (
-                        <div className={`flex items-center gap-1 text-xs mt-1 ${
-                          daysRemaining <= 3 ? 'text-pdm-error' : 'text-pdm-warning'
-                        }`}>
-                          <AlertTriangle size={10} />
-                          {daysRemaining === 0 
-                            ? 'Expires today!' 
-                            : `Expires in ${daysRemaining} day${daysRemaining !== 1 ? 's' : ''}`
-                          }
-                        </div>
-                      )}
                     </div>
                   </div>
-                </div>
-              )
-            })}
+                )
+              })
+            )}
+          </div>
+        ) : viewMode === 'folders' ? (
+          /* Folder view - only show deleted folders */
+          <div className="py-1">
+            {foldersSortedByTime.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-12 text-pdm-fg-muted">
+                <Folder size={48} className="opacity-30 mb-3" />
+                <p className="text-sm">No deleted folders</p>
+                <p className="text-xs mt-1 opacity-70">Only files are in the trash</p>
+              </div>
+            ) : (
+              foldersSortedByTime.map((folder) => {
+                const isSelected = selectedFiles.has(folder.id)
+                const daysRemaining = getDaysRemaining(folder.deleted_at)
+                
+                return (
+                  <div
+                    key={folder.id}
+                    onClick={(e) => toggleFileSelection(folder.id, e.shiftKey, e.ctrlKey || e.metaKey)}
+                    className={`px-3 py-2 cursor-pointer border-l-2 transition-colors ${
+                      isSelected
+                        ? 'bg-pdm-accent/10 border-pdm-accent'
+                        : 'hover:bg-pdm-bg-light border-transparent'
+                    }`}
+                  >
+                    <div className="flex items-start gap-2">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleFileSelection(folder.id, false, true)}
+                        onClick={(e) => e.stopPropagation()}
+                        className="w-3.5 h-3.5 mt-0.5 rounded border-pdm-border text-pdm-accent focus:ring-pdm-accent focus:ring-offset-0 cursor-pointer flex-shrink-0"
+                      />
+                      <FolderOpen size={16} className="text-amber-500 flex-shrink-0 mt-0.5" />
+                      <div className="flex-1 min-w-0 overflow-hidden">
+                        <div className="text-sm text-pdm-fg truncate" title={folder.file_name}>
+                          {folder.file_name}
+                        </div>
+                        <div className="text-xs text-pdm-fg-muted truncate mt-0.5" title={folder.file_path}>
+                          {folder.file_path}
+                        </div>
+                        <div className="flex items-center gap-3 text-xs text-pdm-fg-muted mt-1">
+                          <span className="flex items-center gap-1">
+                            <Clock size={10} />
+                            {formatDistanceToNow(new Date(folder.deleted_at), { addSuffix: true })}
+                          </span>
+                          {folder.deleted_by_user && (
+                            <span className="flex items-center gap-1">
+                              <User size={10} />
+                              {folder.deleted_by_user.full_name || folder.deleted_by_user.email.split('@')[0]}
+                            </span>
+                          )}
+                        </div>
+                        {daysRemaining <= 7 && (
+                          <div className={`flex items-center gap-1 text-xs mt-1 ${
+                            daysRemaining <= 3 ? 'text-pdm-error' : 'text-pdm-warning'
+                          }`}>
+                            <AlertTriangle size={10} />
+                            {daysRemaining === 0 
+                              ? 'Expires today!' 
+                              : `Expires in ${daysRemaining} day${daysRemaining !== 1 ? 's' : ''}`
+                            }
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )
+              })
+            )}
+          </div>
+        ) : (
+          /* Nested view - show files grouped by folder hierarchy */
+          <div className="py-1">
+            {groupedByFolder.size === 0 ? (
+              <div className="flex flex-col items-center justify-center py-12 text-pdm-fg-muted">
+                <Network size={48} className="opacity-30 mb-3" />
+                <p className="text-sm">No deleted files to organize</p>
+                <p className="text-xs mt-1 opacity-70">Files will appear in their folder hierarchy</p>
+              </div>
+            ) : (
+              Array.from(groupedByFolder.entries()).map(([folder, files]) => {
+                const isExpanded = expandedFolders.has(folder)
+                const folderSelected = isFolderSelected(folder)
+                const folderPartial = isFolderPartiallySelected(folder)
+                const folderName = folder === '/' ? '(root)' : folder.split('/').pop() || folder
+                
+                return (
+                  <div key={folder}>
+                    {/* Folder header - clickable to select all files in folder */}
+                    <div
+                      className={`px-2 py-1.5 flex items-center gap-1.5 cursor-pointer border-l-2 transition-colors ${
+                        folderSelected
+                          ? 'bg-pdm-accent/10 border-pdm-accent'
+                          : folderPartial
+                          ? 'bg-pdm-accent/5 border-pdm-accent/50'
+                          : 'hover:bg-pdm-bg-light border-transparent'
+                      }`}
+                    >
+                      <button
+                        onClick={(e) => { e.stopPropagation(); toggleFolderExpand(folder) }}
+                        className="p-0.5 hover:bg-pdm-bg rounded text-pdm-fg-muted"
+                      >
+                        {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                      </button>
+                      <input
+                        type="checkbox"
+                        checked={folderSelected}
+                        ref={(el) => { if (el) el.indeterminate = folderPartial }}
+                        onChange={() => selectFolder(folder)}
+                        className="w-3.5 h-3.5 rounded border-pdm-border text-pdm-accent focus:ring-pdm-accent focus:ring-offset-0 cursor-pointer"
+                      />
+                      <div
+                        onClick={() => selectFolder(folder)}
+                        className="flex-1 flex items-center gap-1.5 min-w-0"
+                      >
+                        <FolderOpen size={14} className="text-pdm-fg-muted flex-shrink-0" />
+                        <span className="text-sm text-pdm-fg truncate" title={folder}>
+                          {folderName}
+                        </span>
+                        <span className="text-xs text-pdm-fg-muted">
+                          ({files.length})
+                        </span>
+                      </div>
+                    </div>
+                    
+                    {/* Files in folder */}
+                    {isExpanded && files.map((file) => {
+                      const isSelected = selectedFiles.has(file.id)
+                      const daysRemaining = getDaysRemaining(file.deleted_at)
+                      
+                      return (
+                        <div
+                          key={file.id}
+                          onClick={(e) => toggleFileSelection(file.id, e.shiftKey, e.ctrlKey || e.metaKey)}
+                          className={`pl-6 pr-3 py-2 cursor-pointer border-l-2 transition-colors ${
+                            isSelected
+                              ? 'bg-pdm-accent/10 border-pdm-accent'
+                              : 'hover:bg-pdm-bg-light border-transparent'
+                          }`}
+                        >
+                          <div className="flex items-start gap-2">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => toggleFileSelection(file.id, false, true)}
+                              onClick={(e) => e.stopPropagation()}
+                              className="w-3.5 h-3.5 mt-0.5 rounded border-pdm-border text-pdm-accent focus:ring-pdm-accent focus:ring-offset-0 cursor-pointer flex-shrink-0"
+                            />
+                            <FileIcon extension={file.extension} size={16} />
+                            <div className="flex-1 min-w-0 overflow-hidden">
+                              <div className="text-sm text-pdm-fg truncate" title={file.file_name}>
+                                {file.file_name}
+                              </div>
+                              <div className="flex items-center gap-3 text-xs text-pdm-fg-muted mt-1">
+                                <span className="flex items-center gap-1">
+                                  <Clock size={10} />
+                                  {formatDistanceToNow(new Date(file.deleted_at), { addSuffix: true })}
+                                </span>
+                                {file.deleted_by_user && (
+                                  <span className="flex items-center gap-1">
+                                    <User size={10} />
+                                    {file.deleted_by_user.full_name || file.deleted_by_user.email.split('@')[0]}
+                                  </span>
+                                )}
+                              </div>
+                              {daysRemaining <= 7 && (
+                                <div className={`flex items-center gap-1 text-xs mt-1 ${
+                                  daysRemaining <= 3 ? 'text-pdm-error' : 'text-pdm-warning'
+                                }`}>
+                                  <AlertTriangle size={10} />
+                                  {daysRemaining === 0 
+                                    ? 'Expires today!' 
+                                    : `Expires in ${daysRemaining} day${daysRemaining !== 1 ? 's' : ''}`
+                                  }
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )
+              })
+            )}
           </div>
         )}
       </div>
@@ -955,7 +1115,7 @@ export function TrashView() {
       {/* Empty Trash Confirmation Modal */}
       {showEmptyConfirm && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center">
-          <div className="fixed inset-0 bg-black/70" onClick={() => setShowEmptyConfirm(false)} />
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowEmptyConfirm(false)} />
           <div className="relative bg-pdm-bg-light border border-pdm-error/50 rounded-xl shadow-2xl w-[400px] overflow-hidden">
             {/* Header */}
             <div className="p-4 border-b border-pdm-border bg-pdm-error/10">
