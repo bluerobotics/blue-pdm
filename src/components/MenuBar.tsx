@@ -5,6 +5,7 @@ import { signInWithGoogle, signOut, isSupabaseConfigured, linkUserToOrganization
 import { SettingsModal } from './SettingsModal'
 import { getInitials } from '../types/pdm'
 import { SystemStats } from './SystemStats'
+import { DevicePresenceIndicator } from './DevicePresenceIndicator'
 
 // Helper to log to both console and electron log file
 const uiLog = (level: 'info' | 'warn' | 'error' | 'debug', message: string, data?: unknown) => {
@@ -36,8 +37,10 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
   const [titleBarPadding, setTitleBarPadding] = useState(140) // Default fallback
   const [platform, setPlatform] = useState<string>('win32') // Default to Windows
   const [localSearch, setLocalSearch] = useState(searchQuery || '')
+  const [availableWidth, setAvailableWidth] = useState(0)
   const menuRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const menuBarRef = useRef<HTMLDivElement>(null)
 
   // Close menu when clicking outside
   useEffect(() => {
@@ -64,6 +67,41 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
       })
     }
   }, [])
+
+  // Monitor available width for right side to collapse SystemStats when needed
+  useEffect(() => {
+    if (!menuBarRef.current) return
+
+    const updateWidth = () => {
+      if (menuBarRef.current) {
+        const rect = menuBarRef.current.getBoundingClientRect()
+        // Calculate available space for right side
+        // Search bar is max-w-lg (512px) centered, so we need to ensure right side doesn't overlap
+        const totalWidth = rect.width
+        const leftSideWidth = platform === 'darwin' ? 200 : 150 // Approximate left side width
+        const rightPadding = platform === 'darwin' ? 16 : titleBarPadding
+        const searchBarHalfWidth = 256 // Half of max-w-lg (512px)
+        // Available space for right side = total width - left side - search bar half - right padding
+        const available = totalWidth - leftSideWidth - searchBarHalfWidth - rightPadding
+        setAvailableWidth(Math.max(0, available))
+      }
+    }
+
+    // Initial calculation
+    updateWidth()
+    
+    // Use ResizeObserver for accurate measurements
+    const resizeObserver = new ResizeObserver(updateWidth)
+    resizeObserver.observe(menuBarRef.current)
+    
+    // Also listen to window resize as fallback
+    window.addEventListener('resize', updateWidth)
+
+    return () => {
+      resizeObserver.disconnect()
+      window.removeEventListener('resize', updateWidth)
+    }
+  }, [platform, titleBarPadding])
 
   const handleSignIn = async () => {
     uiLog('info', 'Sign in button clicked from MenuBar')
@@ -113,7 +151,7 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
   }
 
   return (
-    <div className="h-[38px] bg-pdm-activitybar border-b border-pdm-border select-none flex-shrink-0 titlebar-drag-region relative">
+    <div ref={menuBarRef} className="h-[38px] bg-pdm-activitybar border-b border-pdm-border select-none flex-shrink-0 titlebar-drag-region relative">
       {/* Left side - App name (add padding on macOS for window buttons) */}
       <div 
         className="absolute left-0 top-0 h-full flex items-center"
@@ -230,11 +268,11 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
 
       {/* Right side - Settings and User (with padding for window controls on Windows) */}
       <div 
-        className="absolute right-0 top-0 h-full flex items-center gap-2 pl-4 titlebar-no-drag"
+        className="absolute right-0 top-0 h-full flex items-center gap-2 pl-4 titlebar-no-drag max-w-[50%]"
         style={{ paddingRight: platform === 'darwin' ? 16 : titleBarPadding }}
       >
         {/* System Stats - hidden on welcome/signin screens */}
-        {!minimal && <SystemStats />}
+        {!minimal && <SystemStats availableWidth={availableWidth} />}
         
         {/* Separator */}
         {!minimal && <div className="w-px h-4 bg-pdm-border" />}
@@ -249,6 +287,9 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
             <Settings size={18} />
           </button>
         )}
+        
+        {/* Device presence indicator - shows how many computers are online */}
+        {!minimal && <DevicePresenceIndicator />}
         
         {user && !minimal ? (
           <div className="relative" ref={menuRef}>

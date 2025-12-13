@@ -48,13 +48,20 @@ export async function checkoutFile(
     }
   }
   
+  // Get machine ID and name for tracking
+  const { getMachineId, getMachineName } = await import('./backup')
+  const machineId = await getMachineId()
+  const machineName = await getMachineName()
+  
   // Acquire the lock
   const { data: updated, error: updateError } = await supabase
     .from('files')
     .update({
       checked_out_by: userId,
       checked_out_at: new Date().toISOString(),
-      lock_message: message || null
+      lock_message: message || null,
+      checked_out_by_machine_id: machineId,
+      checked_out_by_machine_name: machineName
     } as any)
     .eq('id', fileId)
     .eq('checked_out_by', file.checked_out_by) // Optimistic lock
@@ -85,7 +92,7 @@ export async function checkinFile(
     incrementRevision?: boolean
     newState?: FileState
   } = {}
-): Promise<{ success: boolean; file?: PDMFile; version?: FileVersion; error?: string }> {
+): Promise<{ success: boolean; file?: PDMFile; version?: FileVersion; error?: string; machineMismatchWarning?: string | null }> {
   // Get current file info
   const { data: file, error: fetchError } = await supabase
     .from('files')
@@ -100,6 +107,18 @@ export async function checkinFile(
   // Verify user has the lock
   if (file.checked_out_by !== userId) {
     return { success: false, error: 'You do not have this file checked out' }
+  }
+  
+  // Check if checking in from a different machine
+  const { getMachineId } = await import('./backup')
+  const currentMachineId = await getMachineId()
+  const checkoutMachineId = file.checked_out_by_machine_id
+  
+  // Warn if checking in from a different machine (but allow it)
+  let machineMismatchWarning: string | null = null
+  if (checkoutMachineId && checkoutMachineId !== currentMachineId) {
+    const checkoutMachineName = file.checked_out_by_machine_name || 'another computer'
+    machineMismatchWarning = `Warning: This file was checked out on ${checkoutMachineName}. You are checking it in from a different computer.`
   }
   
   // Upload file content
@@ -149,6 +168,8 @@ export async function checkinFile(
       checked_out_by: null,
       checked_out_at: null,
       lock_message: null,
+      checked_out_by_machine_id: null,
+      checked_out_by_machine_name: null,
       updated_at: new Date().toISOString(),
       updated_by: userId
     })
@@ -160,7 +181,7 @@ export async function checkinFile(
     return { success: false, error: updateError.message }
   }
   
-  return { success: true, file: updated, version: versionRecord }
+  return { success: true, file: updated, version: versionRecord, machineMismatchWarning }
 }
 
 /**
@@ -175,7 +196,9 @@ export async function undoCheckout(
     .update({
       checked_out_by: null,
       checked_out_at: null,
-      lock_message: null
+      lock_message: null,
+      checked_out_by_machine_id: null,
+      checked_out_by_machine_name: null
     })
     .eq('id', fileId)
     .eq('checked_out_by', userId)
@@ -210,7 +233,9 @@ export async function forceUnlock(
     .update({
       checked_out_by: null,
       checked_out_at: null,
-      lock_message: null
+      lock_message: null,
+      checked_out_by_machine_id: null,
+      checked_out_by_machine_name: null
     })
     .eq('id', fileId)
   

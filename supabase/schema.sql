@@ -135,6 +135,8 @@ CREATE TABLE files (
   checked_out_by UUID REFERENCES users(id),
   checked_out_at TIMESTAMPTZ,
   lock_message TEXT,
+  checked_out_by_machine_id TEXT,        -- Machine ID that checked out the file
+  checked_out_by_machine_name TEXT,      -- Machine name for display
   
   -- Timestamps
   created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -762,6 +764,36 @@ CREATE INDEX idx_backup_history_org_id ON backup_history(org_id);
 CREATE INDEX idx_backup_history_started_at ON backup_history(started_at DESC);
 CREATE INDEX idx_backup_history_status ON backup_history(status);
 
+-- ===========================================
+-- USER SESSIONS (Active Device Tracking)
+-- ===========================================
+
+CREATE TABLE user_sessions (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  org_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
+  
+  -- Device identification
+  machine_id TEXT NOT NULL,
+  machine_name TEXT NOT NULL,
+  platform TEXT,  -- 'win32', 'darwin', 'linux'
+  app_version TEXT,
+  
+  -- Status
+  last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  is_active BOOLEAN DEFAULT true,
+  
+  -- Session info
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  
+  -- One session per device per user
+  UNIQUE(user_id, machine_id)
+);
+
+CREATE INDEX idx_user_sessions_user_id ON user_sessions(user_id);
+CREATE INDEX idx_user_sessions_last_seen ON user_sessions(last_seen);
+CREATE INDEX idx_user_sessions_active ON user_sessions(user_id, is_active) WHERE is_active = true;
+
 -- Machine heartbeat (tracks which machines are online and can run backups)
 CREATE TABLE backup_machines (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -811,6 +843,16 @@ ALTER TABLE backup_config ENABLE ROW LEVEL SECURITY;
 ALTER TABLE backup_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE backup_machines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE backup_locks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_sessions ENABLE ROW LEVEL SECURITY;
+
+-- User sessions: Users can view and manage their own sessions
+CREATE POLICY "Users can view own sessions"
+  ON user_sessions FOR SELECT
+  USING (user_id = auth.uid());
+
+CREATE POLICY "Users can manage own sessions"
+  ON user_sessions FOR ALL
+  USING (user_id = auth.uid());
 
 -- Backup config: All org members can read, only admins can modify
 CREATE POLICY "Users can view org backup config"

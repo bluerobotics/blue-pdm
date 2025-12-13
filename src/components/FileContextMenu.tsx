@@ -26,7 +26,8 @@ import {
   EyeOff as EyeOffIcon,
   Link,
   ClipboardList,
-  Calendar
+  Calendar,
+  Monitor
 } from 'lucide-react'
 import { useState, useEffect, useRef, useLayoutEffect } from 'react'
 import { usePDMStore, LocalFile } from '../stores/pdmStore'
@@ -90,6 +91,9 @@ export function FileContextMenu({
   const [deleteConfirmFiles, setDeleteConfirmFiles] = useState<LocalFile[]>([])
   const [showDeleteLocalConfirm, setShowDeleteLocalConfirm] = useState(false)
   const [deleteLocalCheckedOutFiles, setDeleteLocalCheckedOutFiles] = useState<LocalFile[]>([])
+  const [showForceCheckinConfirm, setShowForceCheckinConfirm] = useState(false)
+  const [forceCheckinFiles, setForceCheckinFiles] = useState<{ filesOnDifferentMachine: LocalFile[], machineNames: string[] } | null>(null)
+  const [currentMachineId, setCurrentMachineId] = useState<string | null>(null)
   const [platform, setPlatform] = useState<string>('win32')
   const [showIgnoreSubmenu, setShowIgnoreSubmenu] = useState(false)
   const ignoreSubmenuTimeoutRef = useRef<NodeJS.Timeout | null>(null)
@@ -165,6 +169,20 @@ export function FileContextMenu({
   // Get platform for UI text
   useEffect(() => {
     window.electronAPI?.getPlatform().then(setPlatform)
+  }, [])
+  
+  // Load current machine ID for multi-device check-in detection
+  useEffect(() => {
+    const loadMachineId = async () => {
+      try {
+        const { getMachineId } = await import('@/lib/backup')
+        const machineId = await getMachineId()
+        setCurrentMachineId(machineId)
+      } catch {
+        setCurrentMachineId(null)
+      }
+    }
+    loadMachineId()
   }, [])
   
   // Check if user is watching the file
@@ -291,6 +309,31 @@ export function FileContextMenu({
   }
   
   const handleCheckin = () => {
+    // Get files that would be checked in
+    const syncedFiles = getSyncedFilesFromSelection(files, contextFiles)
+    const filesToCheckin = syncedFiles.filter(f => f.pdmData?.checked_out_by === user?.id)
+    
+    // Check if any files are checked out on a different machine
+    const filesOnDifferentMachine = filesToCheckin.filter(f => {
+      const checkoutMachineId = f.pdmData?.checked_out_by_machine_id
+      return checkoutMachineId && currentMachineId && checkoutMachineId !== currentMachineId
+    })
+    
+    if (filesOnDifferentMachine.length > 0) {
+      // Show confirmation dialog
+      const machineNames = [...new Set(filesOnDifferentMachine.map(f => f.pdmData?.checked_out_by_machine_name || 'another computer'))]
+      setForceCheckinFiles({ filesOnDifferentMachine, machineNames })
+      setShowForceCheckinConfirm(true)
+      return
+    }
+    
+    onClose()
+    executeCommand('checkin', { files: contextFiles }, { onRefresh })
+  }
+  
+  const handleForceCheckin = () => {
+    setShowForceCheckinConfirm(false)
+    setForceCheckinFiles(null)
     onClose()
     executeCommand('checkin', { files: contextFiles }, { onRefresh })
   }
@@ -1418,6 +1461,75 @@ export function FileContextMenu({
               </button>
               <button
                 onClick={() => { setShowDeleteLocalConfirm(false); onClose(); }}
+                className="btn btn-ghost w-full justify-center"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Force Check-in Confirmation Dialog */}
+      {showForceCheckinConfirm && forceCheckinFiles && (
+        <div 
+          className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center"
+          onClick={() => { setShowForceCheckinConfirm(false); setForceCheckinFiles(null); onClose(); }}
+        >
+          <div 
+            className="bg-pdm-bg-light border border-pdm-border rounded-lg p-6 max-w-md shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-pdm-warning/20 flex items-center justify-center">
+                <Monitor size={20} className="text-pdm-warning" />
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold text-pdm-fg">
+                  Check In From Different Computer
+                </h3>
+                <p className="text-sm text-pdm-fg-muted">
+                  {forceCheckinFiles.filesOnDifferentMachine.length} file{forceCheckinFiles.filesOnDifferentMachine.length > 1 ? 's are' : ' is'} checked out on {forceCheckinFiles.machineNames.join(', ')}.
+                </p>
+              </div>
+            </div>
+            
+            <div className="bg-pdm-bg rounded border border-pdm-border p-3 mb-4 max-h-40 overflow-y-auto">
+              <div className="space-y-1">
+                {forceCheckinFiles.filesOnDifferentMachine.slice(0, 5).map((f, i) => (
+                  <div key={i} className="flex items-center gap-2 text-sm">
+                    <File size={14} className="text-pdm-warning" />
+                    <span className="text-pdm-fg truncate">{f.name}</span>
+                  </div>
+                ))}
+                {forceCheckinFiles.filesOnDifferentMachine.length > 5 && (
+                  <div className="text-xs text-pdm-fg-muted">
+                    ...and {forceCheckinFiles.filesOnDifferentMachine.length - 5} more
+                  </div>
+                )}
+              </div>
+            </div>
+            
+            {/* Warning */}
+            <div className="bg-pdm-warning/10 border border-pdm-warning/30 rounded p-3 mb-4">
+              <p className="text-sm text-pdm-fg">
+                Checking in from here will <strong>discard any unsaved changes</strong> on {forceCheckinFiles.machineNames.length === 1 ? 'that' : 'those'} computer{forceCheckinFiles.machineNames.length > 1 ? 's' : ''}.
+              </p>
+              <p className="text-xs text-pdm-fg-muted mt-2">
+                The other computer{forceCheckinFiles.machineNames.length > 1 ? 's' : ''} will be notified.
+              </p>
+            </div>
+            
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={handleForceCheckin}
+                className="btn bg-pdm-warning hover:bg-pdm-warning/80 text-white w-full justify-center"
+              >
+                <ArrowUp size={14} />
+                Force Check In
+              </button>
+              <button
+                onClick={() => { setShowForceCheckinConfirm(false); setForceCheckinFiles(null); onClose(); }}
                 className="btn btn-ghost w-full justify-center"
               >
                 Cancel

@@ -111,6 +111,8 @@ export interface Database {
           checked_out_by: string | null
           checked_out_at: string | null
           lock_message: string | null
+          checked_out_by_machine_id: string | null
+          checked_out_by_machine_name: string | null
           content_hash: string | null
           file_size: number
           created_at: string
@@ -139,6 +141,8 @@ export interface Database {
           checked_out_by?: string | null
           checked_out_at?: string | null
           lock_message?: string | null
+          checked_out_by_machine_id?: string | null
+          checked_out_by_machine_name?: string | null
           content_hash?: string | null
           file_size?: number
           created_at?: string
@@ -167,6 +171,8 @@ export interface Database {
           checked_out_by?: string | null
           checked_out_at?: string | null
           lock_message?: string | null
+          checked_out_by_machine_id?: string | null
+          checked_out_by_machine_name?: string | null
           content_hash?: string | null
           file_size?: number
           created_at?: string

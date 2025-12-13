@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Cpu, MemoryStick, HardDrive, ArrowDown, ArrowUp } from 'lucide-react'
 
 interface SystemStats {
@@ -6,6 +6,10 @@ interface SystemStats {
   memory: { used: number; total: number; percent: number }
   network: { rxSpeed: number; txSpeed: number }
   disk: { used: number; total: number; percent: number }
+}
+
+interface SystemStatsProps {
+  availableWidth?: number
 }
 
 // Format bytes to human readable
@@ -24,8 +28,8 @@ function formatSpeed(bytesPerSec: number): string {
   return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`
 }
 
-// Tiny progress bar component
-function MicroBar({ percent, color }: { percent: number; color: string }) {
+// Tiny progress bar component (kept for future use)
+function _MicroBar({ percent, color }: { percent: number; color: string }) {
   return (
     <div className="w-6 h-1.5 bg-pdm-bg rounded-sm overflow-hidden">
       <div
@@ -35,6 +39,7 @@ function MicroBar({ percent, color }: { percent: number; color: string }) {
     </div>
   )
 }
+void _MicroBar // suppress unused warning
 
 // Get color based on usage percentage
 function getBarColor(percent: number): string {
@@ -43,9 +48,11 @@ function getBarColor(percent: number): string {
   return 'bg-rose-500'
 }
 
-export function SystemStats() {
+export function SystemStats({ availableWidth = Infinity }: SystemStatsProps) {
   const [stats, setStats] = useState<SystemStats | null>(null)
   const [showTooltip, setShowTooltip] = useState(false)
+  const [isHidden, setIsHidden] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     // Initial fetch
@@ -56,54 +63,51 @@ export function SystemStats() {
     return () => clearInterval(interval)
   }, [])
 
+  // Hide completely when space is very limited (prioritize search bar)
+  useEffect(() => {
+    // Hide completely when available space is less than 200px
+    // This ensures search bar always has priority
+    setIsHidden(availableWidth < 200)
+  }, [availableWidth])
+
   const fetchStats = async () => {
     if (!window.electronAPI?.getSystemStats) return
     const data = await window.electronAPI.getSystemStats()
     if (data) setStats(data)
   }
 
-  if (!stats) {
-    return (
-      <div className="flex items-center gap-3 px-2 text-xs text-pdm-fg-muted animate-pulse">
-        <span>...</span>
-      </div>
-    )
+  if (!stats || isHidden) {
+    return null
   }
 
   return (
     <div 
-      className="relative flex items-center gap-3 px-2"
+      ref={containerRef}
+      className="relative flex items-center gap-2 px-2 flex-shrink-0"
       onMouseEnter={() => setShowTooltip(true)}
       onMouseLeave={() => setShowTooltip(false)}
     >
-      {/* CPU */}
+      {/* CPU - minimal view (icon + percentage) */}
       <div className="flex items-center gap-1" title="CPU">
         <Cpu size={12} className="text-pdm-fg-muted" />
-        <MicroBar percent={stats.cpu.usage} color={getBarColor(stats.cpu.usage)} />
-        <span className="text-[10px] text-pdm-fg-dim w-6 tabular-nums">{stats.cpu.usage}%</span>
+        <span className="text-[10px] text-pdm-fg-dim w-5 tabular-nums">{stats.cpu.usage}%</span>
       </div>
 
-      {/* Memory */}
+      {/* Memory - minimal view (icon + percentage) */}
       <div className="flex items-center gap-1" title="Memory">
         <MemoryStick size={12} className="text-pdm-fg-muted" />
-        <MicroBar percent={stats.memory.percent} color={getBarColor(stats.memory.percent)} />
-        <span className="text-[10px] text-pdm-fg-dim w-6 tabular-nums">{stats.memory.percent}%</span>
+        <span className="text-[10px] text-pdm-fg-dim w-5 tabular-nums">{stats.memory.percent}%</span>
       </div>
 
-      {/* Disk */}
-      <div className="flex items-center gap-1" title="Disk">
-        <HardDrive size={12} className="text-pdm-fg-muted" />
-        <MicroBar percent={stats.disk.percent} color={getBarColor(stats.disk.percent)} />
-        <span className="text-[10px] text-pdm-fg-dim w-6 tabular-nums">{stats.disk.percent}%</span>
-      </div>
-
-      {/* Network - just arrows with speed */}
-      <div className="flex items-center gap-0.5 text-[10px] text-pdm-fg-dim" title="Network">
-        <ArrowDown size={10} className="text-emerald-500" />
-        <span className="w-12 tabular-nums">{formatSpeed(stats.network.rxSpeed)}</span>
-        <ArrowUp size={10} className="text-amber-500" />
-        <span className="w-12 tabular-nums">{formatSpeed(stats.network.txSpeed)}</span>
-      </div>
+      {/* Network - minimal view (only show if > 1 KB/s) */}
+      {(stats.network.rxSpeed >= 1024 || stats.network.txSpeed >= 1024) && (
+        <div className="flex items-center gap-0.5 text-[10px] text-pdm-fg-dim" title="Network">
+          <ArrowDown size={10} className="text-emerald-500" />
+          <span className="w-12 tabular-nums">{formatSpeed(stats.network.rxSpeed)}</span>
+          <ArrowUp size={10} className="text-amber-500" />
+          <span className="w-12 tabular-nums">{formatSpeed(stats.network.txSpeed)}</span>
+        </div>
+      )}
 
       {/* Tooltip with detailed info */}
       {showTooltip && (

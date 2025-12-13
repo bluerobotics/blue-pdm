@@ -1063,6 +1063,8 @@ export async function buildServer(): Promise<FastifyInstance> {
       checked_out_by: null,
       checked_out_at: null,
       lock_message: null,
+      checked_out_by_machine_id: null,
+      checked_out_by_machine_name: null,
       updated_at: new Date().toISOString(),
       updated_by: request.user!.id
     }

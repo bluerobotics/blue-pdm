@@ -68,6 +68,8 @@ export interface PDMFile {
   checked_out_by: string | null
   checked_out_at: string | null
   lock_message: string | null
+  checked_out_by_machine_id: string | null    // Machine ID that checked out the file
+  checked_out_by_machine_name: string | null  // Machine name for display
   checked_out_user?: {
     full_name: string | null
     email: string

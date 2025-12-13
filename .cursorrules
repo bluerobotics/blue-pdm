@@ -1,0 +1,169 @@
+# BluePDM Cursor Rules
+
+> Cursor AI reads this file for context. These rules maintain consistency and follow best practices.
+
+## Critical Rules
+⚠️ **ALWAYS update `supabase/schema.sql` when making database changes.** This file is the source of truth and must stay in sync with all migrations.
+
+## Tech Stack
+Frontend: React 19, TypeScript, Zustand, Tailwind CSS, Vite
+Backend: Supabase (PostgreSQL, Auth, Storage, Realtime)
+Desktop: Electron 34, IPC via preload script
+Native: C# SolidWorks add-in, C++ eDrawings module
+
+## Project Structure
+src/components/ - React components (sidebar views in subdir)
+src/lib/ - Business logic (commands/, supabase.ts, fileService.ts)
+src/stores/ - Zustand stores (pdmStore.ts)
+src/types/ - TypeScript definitions
+electron/ - Main process (main.ts, preload.ts)
+supabase/ - Database migrations and schema.sql
+
+## Coding Conventions
+
+### TypeScript
+- Strict mode always enabled
+- Prefer explicit types over `any`, use `unknown` when truly unknown
+- Path aliases: `@/` for `src/`
+- Naming: PascalCase (components, types), camelCase (functions, vars), UPPER_SNAKE_CASE (constants)
+- Remove unused imports/variables/parameters
+
+### React
+- Functional components with hooks only
+- State: `useState` (local UI), `usePDMStore` (global), React Query (when used for server state)
+- `useEffect`: Always include cleanup, include all dependencies, avoid infinite loops
+- `useMemo`/`useCallback`: Only for expensive computations or memoized children
+- Component patterns: Controlled inputs, compound components, avoid HOCs/render props
+- Hooks rules: Top level only, custom hooks start with `use`
+
+### File Organization
+- One component per file, co-locate related components
+- Named exports (utilities), default exports (components)
+- Imports: external → internal → relative
+- Avoid barrel exports unless necessary
+
+### Styling
+- Tailwind CSS only (no CSS modules, styled-components)
+- Use PDM theme: `pdm-bg`, `pdm-fg`, `pdm-accent`, `pdm-border`, status colors (`pdm-success`, `pdm-warning`, `pdm-error`, `pdm-info`)
+- Desktop-first, dark theme only
+- No inline styles
+
+### State Management (Zustand)
+- Single store: `src/stores/pdmStore.ts`
+- Use `persist` middleware for user preferences
+- Actions as functions, use `set` (never mutate directly)
+- Use selectors to avoid unnecessary re-renders
+
+### Electron IPC
+- All IPC via `window.electronAPI` (defined in `src/electron.d.ts`)
+- Main → Renderer: Event listeners (`onUpdateAvailable`)
+- Renderer → Main: Promise-based calls (`listWorkingFiles()`)
+- Security: Never expose Node.js APIs, context isolation enabled, validate IPC messages
+
+### Supabase
+- Client singleton from `src/lib/supabase.ts`
+- Queries: `.select()` with explicit columns (avoid `select('*')`)
+- Always check `error` field in responses
+- Realtime: Use subscriptions from `src/lib/realtime.ts`
+- Types: Generate from schema (`src/types/database.ts`)
+- RLS: Respect policies, test with different roles
+- Pagination: Use `.range()` for large datasets
+- Storage: Signed URLs for private files
+
+### File Operations
+- Platform-agnostic paths: Use `buildFullPath()` helper, normalize with `.replace(/[/\\]/g, sep)`
+- Windows: Case-insensitive matching
+- Hashes: SHA-256 for content hashing
+- Read-only: Set on files not checked out by current user
+- All file ops are async with proper error handling
+
+### Error Handling
+- User-facing: Toast notifications
+- Logging: `window.electronAPI?.log()` for structured logs
+- Console: `console.log` (debug), `console.error` (errors)
+- Graceful degradation: Handle offline mode
+- Try-catch: Wrap all async operations
+- Error boundaries: Wrap major sections (when implemented)
+
+### Performance
+- Parallel loading: Local and server files in parallel
+- Background tasks: Compute hashes after initial render
+- Debouncing: File watcher events (1 second)
+- Lazy loading: User info for checked-out files
+- Memoization: Only for expensive computations
+
+## Common Patterns
+
+### Adding Component
+1. Create in `src/components/` or subdirectory
+2. TypeScript with prop types
+3. Tailwind classes only
+4. Import from `@/` alias
+5. Default export
+
+### Adding Store Action
+1. Add to `pdmStore.ts`
+2. Use Zustand `set` function
+3. Consider `persist` for user preferences
+4. Add TypeScript types
+
+### Adding CLI Command
+1. Handler in `src/lib/commands/handlers/`
+2. Register in `src/lib/commands/index.ts`
+3. Use `executeTerminalCommand` parser
+4. Return structured results
+
+### Database Changes
+1. **ALWAYS update `supabase/schema.sql` FIRST** (source of truth)
+2. Create migration file in `supabase/` (descriptive name)
+3. Update `src/types/database.ts` if schema changes
+4. Test with local Supabase
+5. Update RLS policies and indexes
+
+### API Design (Fastify)
+- RESTful conventions
+- JSON Schema validation on all requests
+- Consistent error responses
+- JWT auth via Supabase
+- Rate limiting
+- OpenAPI/Swagger docs at `/docs`
+- Signed URLs for file access
+
+## Best Practices
+- Readability: Self-documenting code, clear variable names
+- Comments: Complex logic only, explain "why" not "what"
+- DRY: Extract common logic
+- Single Responsibility: One thing per function/component
+- Security: No secrets in code, validate inputs, sanitize paths
+- Accessibility: Keyboard navigation, ARIA labels, semantic HTML, color contrast
+- Git: Conventional commits (`type(scope): subject`), feature branches, focused PRs
+
+## Things to Avoid
+❌ `any` type without reason
+❌ Mix CSS frameworks (Tailwind only)
+❌ Expose Node.js APIs to renderer
+❌ Block UI thread with heavy operations
+❌ Hardcode paths (use platform detection)
+❌ Ignore TypeScript errors
+❌ Commit `.env` files or secrets
+❌ Inline styles (use Tailwind)
+❌ Unnecessary abstractions
+❌ Mutate Zustand state directly (use `set`)
+
+## Project-Specific Choices
+- Zustand over Redux (single store pattern)
+- Tailwind only (no CSS modules/styled-components)
+- Custom components (no Material-UI/library)
+- Manual testing focus (no test framework yet)
+- Direct Supabase access (desktop app, not via API)
+
+## When Making Changes
+1. Check existing patterns in codebase
+2. Follow established conventions
+3. Test on target platform(s)
+4. Update TypeScript types
+5. Document complex logic
+6. Consider performance impact
+7. Respect project choices (don't introduce Redux if Zustand works)
+8. Security first (path traversal, XSS, etc.)
+9. **Refactoring**: Be extra careful not to lose existing functionality - test thoroughly, preserve edge cases, maintain backward compatibility

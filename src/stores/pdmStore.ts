@@ -11,7 +11,27 @@ function buildFullPath(vaultPath: string, relativePath: string): string {
   return `${vaultPath}${sep}${normalizedRelative}`
 }
 
-export type SidebarView = 'explorer' | 'pending' | 'history' | 'search' | 'trash' | 'settings' | 'terminal' | 'reviews' | 'eco' | 'workflows' | 'google-drive'
+export type SidebarView = 
+  // PDM views
+  | 'explorer' 
+  | 'pending' 
+  | 'search' 
+  | 'workflows'  // File workflows
+  | 'history' 
+  | 'trash' 
+  | 'terminal'
+  // PLM views
+  | 'eco'        // ECO management
+  | 'ecr'        // Engineering Change Requests / Issues
+  | 'products'   // Product information
+  | 'process'    // ECO process editor
+  | 'schedule'   // ECO schedule
+  | 'reviews'    // Gate approvals & reviews
+  | 'gsd'        // ECO summary (Getting Stuff Done)
+  | 'google-drive' // Google Drive integration
+  | 'integrations' // Slack, Odoo integrations
+  // System
+  | 'settings'
 export type DetailsPanelTab = 'properties' | 'preview' | 'whereused' | 'contains' | 'history'
 export type PanelPosition = 'bottom' | 'right'
 export type ToastType = 'error' | 'success' | 'info' | 'warning' | 'progress' | 'update'
@@ -99,6 +119,19 @@ export interface ColumnConfig {
   sortable: boolean
 }
 
+// Orphaned checkout - file was force-checked-in from another machine
+export interface OrphanedCheckout {
+  fileId: string
+  fileName: string
+  filePath: string           // Relative path in vault
+  localPath: string          // Full local path
+  checkedInBy: string        // Machine name that force-checked-in
+  checkedInAt: string        // When it was checked in
+  newVersion: number         // The new server version
+  localHash?: string         // Hash of local file (if available)
+  serverHash?: string        // Hash of server file
+}
+
 interface PDMState {
   // Auth & Org
   user: User | null
@@ -144,6 +177,7 @@ interface PDMState {
   // Layout
   sidebarVisible: boolean
   sidebarWidth: number
+  activityBarMode: 'expanded' | 'collapsed' | 'hover'
   activeView: SidebarView
   detailsPanelVisible: boolean
   detailsPanelHeight: number
@@ -237,6 +271,9 @@ interface PDMState {
   // Notifications & Reviews
   unreadNotificationCount: number
   pendingReviewCount: number
+  
+  // Orphaned checkouts (files force-checked-in from another machine)
+  orphanedCheckouts: OrphanedCheckout[]
   
   // Actions - Toasts
   addToast: (type: ToastType, message: string, duration?: number) => void
@@ -341,6 +378,7 @@ interface PDMState {
   // Actions - Layout
   toggleSidebar: () => void
   setSidebarWidth: (width: number) => void
+  setActivityBarMode: (mode: 'expanded' | 'collapsed' | 'hover') => void
   setActiveView: (view: SidebarView) => void
   setGdriveNavigation: (folderId: string | null, folderName?: string, isSharedDrive?: boolean, driveId?: string) => void
   setGdriveOpenDocument: (doc: { id: string; name: string; mimeType: string; webViewLink?: string } | null) => void
@@ -379,6 +417,11 @@ interface PDMState {
   setPendingReviewCount: (count: number) => void
   incrementNotificationCount: () => void
   decrementNotificationCount: (amount?: number) => void
+  
+  // Actions - Orphaned Checkouts
+  addOrphanedCheckout: (checkout: OrphanedCheckout) => void
+  removeOrphanedCheckout: (fileId: string) => void
+  clearOrphanedCheckouts: () => void
   
   // Actions - Columns
   setColumnWidth: (id: string, width: number) => void
@@ -470,6 +513,7 @@ export const usePDMStore = create<PDMState>()(
       
       sidebarVisible: true,
       sidebarWidth: 280,
+      activityBarMode: 'hover',
       activeView: 'explorer',
       detailsPanelVisible: true,
       detailsPanelHeight: 250,
@@ -537,6 +581,7 @@ export const usePDMStore = create<PDMState>()(
       // Notifications & Reviews
       unreadNotificationCount: 0,
       pendingReviewCount: 0,
+      orphanedCheckouts: [],
       
       // Actions - Toasts
       addToast: (type, message, duration = 5000) => {
@@ -998,6 +1043,7 @@ export const usePDMStore = create<PDMState>()(
       // Actions - Layout
       toggleSidebar: () => set((s) => ({ sidebarVisible: !s.sidebarVisible })),
       setSidebarWidth: (width) => set({ sidebarWidth: Math.max(200, Math.min(900, width)) }),
+      setActivityBarMode: (mode) => set({ activityBarMode: mode }),
       setActiveView: (activeView) => set({ activeView, sidebarVisible: true }),
       setGdriveNavigation: (folderId, folderName, isSharedDrive, driveId) => set({
         gdriveCurrentFolderId: folderId,
@@ -1139,6 +1185,15 @@ export const usePDMStore = create<PDMState>()(
       decrementNotificationCount: (amount = 1) => set(state => ({ 
         unreadNotificationCount: Math.max(0, state.unreadNotificationCount - amount) 
       })),
+      
+      // Actions - Orphaned Checkouts
+      addOrphanedCheckout: (checkout) => set(state => ({
+        orphanedCheckouts: [...state.orphanedCheckouts.filter(c => c.fileId !== checkout.fileId), checkout]
+      })),
+      removeOrphanedCheckout: (fileId) => set(state => ({
+        orphanedCheckouts: state.orphanedCheckouts.filter(c => c.fileId !== fileId)
+      })),
+      clearOrphanedCheckouts: () => set({ orphanedCheckouts: [] }),
       
       // Actions - Columns
       setColumnWidth: (id, width) => {
@@ -1402,6 +1457,7 @@ export const usePDMStore = create<PDMState>()(
         activeVaultId: state.activeVaultId,
         sidebarVisible: state.sidebarVisible,
         sidebarWidth: state.sidebarWidth,
+        activityBarMode: state.activityBarMode,
         activeView: state.activeView,
         detailsPanelVisible: state.detailsPanelVisible,
         detailsPanelHeight: state.detailsPanelHeight,

@@ -1,5 +1,5 @@
-import { useState, useMemo, useCallback, memo } from 'react'
-import { Lock, File, ArrowUp, Undo2, CheckSquare, Square, Plus, Trash2, Upload, X, AlertTriangle, Shield, Unlock, FolderOpen, CloudOff } from 'lucide-react'
+import { useState, useMemo, useCallback, memo, useEffect } from 'react'
+import { Lock, File, ArrowUp, Undo2, CheckSquare, Square, Plus, Trash2, Upload, X, AlertTriangle, Shield, Unlock, FolderOpen, CloudOff, Monitor } from 'lucide-react'
 import { usePDMStore, LocalFile } from '../../stores/pdmStore'
 import { getInitials } from '../../types/pdm'
 // Use command system instead of direct supabase calls
@@ -278,6 +278,26 @@ export function PendingView({ onRefresh }: PendingViewProps) {
   const [isProcessingDeletedRemote, setIsProcessingDeletedRemote] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [processingPaths, setProcessingPaths] = useState<Set<string>>(new Set())
+  const [currentMachineId, setCurrentMachineId] = useState<string | null>(null)
+  const [forceCheckinConfirm, setForceCheckinConfirm] = useState<{
+    filesOnDifferentMachine: LocalFile[]
+    allFilesToCheckin: LocalFile[]
+    machineNames: string[]
+  } | null>(null)
+  
+  // Load current machine ID once
+  useEffect(() => {
+    const loadMachineId = async () => {
+      try {
+        const { getMachineId } = await import('@/lib/backup')
+        const machineId = await getMachineId()
+        setCurrentMachineId(machineId)
+      } catch {
+        setCurrentMachineId(null)
+      }
+    }
+    loadMachineId()
+  }, [])
   
   // Memoize expensive file filtering - only recompute when files or user changes
   const { checkedOutFiles, myCheckedOutFiles, othersCheckedOutFiles, addedFiles, deletedRemoteFiles, syncedFilesCount } = useMemo(() => {
@@ -392,25 +412,57 @@ export function PendingView({ onRefresh }: PendingViewProps) {
   const handleCheckin = useCallback(async () => {
     if (selectedFiles.size === 0) return
     
-    setIsProcessingCheckedOut(true)
-    const filesToCheckin = Array.from(selectedFiles)
-    setProcessingPaths(prev => new Set([...prev, ...filesToCheckin]))
-    setSelectedFiles(new Set())
-    
+    const filesToCheckinPaths = Array.from(selectedFiles)
     const pathToFile = new Map(myCheckedOutFiles.map(f => [f.path, f]))
-    const fileObjects = filesToCheckin.map(path => pathToFile.get(path)).filter(Boolean) as LocalFile[]
+    const fileObjects = filesToCheckinPaths.map(path => pathToFile.get(path)).filter(Boolean) as LocalFile[]
+    
+    // Check if any files are checked out on a different machine
+    const filesOnDifferentMachine = fileObjects.filter(f => {
+      const checkoutMachineId = f.pdmData?.checked_out_by_machine_id
+      return checkoutMachineId && currentMachineId && checkoutMachineId !== currentMachineId
+    })
+    
+    if (filesOnDifferentMachine.length > 0) {
+      // Show confirmation dialog
+      const machineNames = [...new Set(filesOnDifferentMachine.map(f => f.pdmData?.checked_out_by_machine_name || 'another computer'))]
+      setForceCheckinConfirm({
+        filesOnDifferentMachine,
+        allFilesToCheckin: fileObjects,
+        machineNames
+      })
+      return
+    }
+    
+    // No machine mismatch, proceed with check-in
+    await doCheckin(fileObjects, filesToCheckinPaths)
+  }, [selectedFiles, myCheckedOutFiles, currentMachineId])
+  
+  // Actual check-in execution
+  const doCheckin = useCallback(async (fileObjects: LocalFile[], filesToCheckinPaths: string[]) => {
+    setIsProcessingCheckedOut(true)
+    setProcessingPaths(prev => new Set([...prev, ...filesToCheckinPaths]))
+    setSelectedFiles(new Set())
     
     try {
       await executeCommand('checkin', { files: fileObjects }, { onRefresh })
     } finally {
       setProcessingPaths(prev => {
         const next = new Set(prev)
-        filesToCheckin.forEach(p => next.delete(p))
+        filesToCheckinPaths.forEach(p => next.delete(p))
         return next
       })
       setIsProcessingCheckedOut(false)
     }
-  }, [selectedFiles, myCheckedOutFiles, onRefresh])
+  }, [onRefresh])
+  
+  // Handle force check-in confirmation
+  const handleForceCheckin = useCallback(() => {
+    if (!forceCheckinConfirm) return
+    const { allFilesToCheckin } = forceCheckinConfirm
+    const paths = allFilesToCheckin.map(f => f.path)
+    setForceCheckinConfirm(null)
+    doCheckin(allFilesToCheckin, paths)
+  }, [forceCheckinConfirm, doCheckin])
   
   const handleCheckinAddedFiles = useCallback(async () => {
     if (selectedAddedFiles.size === 0) return
@@ -878,6 +930,54 @@ export function PendingView({ onRefresh }: PendingViewProps) {
               >
                 <Trash2 size={14} />
                 Delete Files
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Force Check-in Confirmation Dialog */}
+      {forceCheckinConfirm && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-pdm-bg-light border border-pdm-border rounded-xl shadow-2xl max-w-md w-full mx-4 overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-pdm-border">
+              <div className="flex items-center gap-2 text-pdm-warning">
+                <Monitor size={18} />
+                <span className="font-medium">Check In From Different Computer</span>
+              </div>
+              <button
+                onClick={() => setForceCheckinConfirm(null)}
+                className="p-1 rounded hover:bg-pdm-bg transition-colors text-pdm-fg-muted hover:text-pdm-fg"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            
+            <div className="p-4">
+              <p className="text-sm text-pdm-fg mb-3">
+                <span className="font-semibold text-pdm-warning">{forceCheckinConfirm.filesOnDifferentMachine.length}</span> file{forceCheckinConfirm.filesOnDifferentMachine.length > 1 ? 's are' : ' is'} checked out on <span className="font-semibold">{forceCheckinConfirm.machineNames.join(', ')}</span>.
+              </p>
+              <p className="text-sm text-pdm-fg mb-3">
+                Checking in from here will discard any unsaved changes on {forceCheckinConfirm.machineNames.length === 1 ? 'that' : 'those'} computer{forceCheckinConfirm.machineNames.length > 1 ? 's' : ''}.
+              </p>
+              <div className="bg-pdm-warning/10 border border-pdm-warning/30 rounded-lg px-3 py-2 text-xs text-pdm-warning">
+                The other computer{forceCheckinConfirm.machineNames.length > 1 ? 's' : ''} will be notified that {forceCheckinConfirm.filesOnDifferentMachine.length > 1 ? 'these files were' : 'this file was'} force checked in.
+              </div>
+            </div>
+            
+            <div className="flex justify-end gap-2 px-4 py-3 bg-pdm-bg border-t border-pdm-border">
+              <button
+                onClick={() => setForceCheckinConfirm(null)}
+                className="btn btn-ghost btn-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleForceCheckin}
+                className="btn btn-sm bg-pdm-warning hover:bg-pdm-warning/80 text-pdm-bg flex items-center gap-1"
+              >
+                <ArrowUp size={14} />
+                Force Check In
               </button>
             </div>
           </div>

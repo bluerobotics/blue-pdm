@@ -289,6 +289,13 @@ export async function signInWithGoogle() {
 
 export async function signOut() {
   const client = getSupabaseClient()
+  
+  // Get current user to end their session
+  const { data: { user } } = await client.auth.getUser()
+  if (user) {
+    await endDeviceSession(user.id)
+  }
+  
   const { error } = await client.auth.signOut()
   return { error }
 }
@@ -1108,10 +1115,15 @@ function getFileTypeFromExtension(ext: string): 'part' | 'assembly' | 'drawing' 
 export async function checkoutFile(fileId: string, userId: string, message?: string) {
   const client = getSupabaseClient()
   
+  // Get machine ID and name for tracking
+  const { getMachineId, getMachineName } = await import('./backup')
+  const machineId = await getMachineId()
+  const machineName = await getMachineName()
+  
   // First check if file is already checked out
   const { data: file, error: fetchError } = await client
     .from('files')
-    .select('id, file_name, checked_out_by, checked_out_user:users!checked_out_by(email, full_name, avatar_url)')
+    .select('id, file_name, checked_out_by, checked_out_by_machine_id, checked_out_user:users!checked_out_by(email, full_name, avatar_url)')
     .eq('id', fileId)
     .single()
   
@@ -1133,7 +1145,9 @@ export async function checkoutFile(fileId: string, userId: string, message?: str
     .update({
       checked_out_by: userId,
       checked_out_at: new Date().toISOString(),
-      lock_message: message || null
+      lock_message: message || null,
+      checked_out_by_machine_id: machineId,
+      checked_out_by_machine_name: machineName
     })
     .eq('id', fileId)
     .select()
@@ -1170,7 +1184,7 @@ export async function checkinFile(
       revision?: string
     }
   }
-): Promise<{ success: boolean; file?: any; error?: string | null; contentChanged?: boolean; metadataChanged?: boolean }> {
+): Promise<{ success: boolean; file?: any; error?: string | null; contentChanged?: boolean; metadataChanged?: boolean; machineMismatchWarning?: string | null }> {
   const client = getSupabaseClient()
   
   // First verify the user has the file checked out
@@ -1188,11 +1202,25 @@ export async function checkinFile(
     return { success: false, error: 'You do not have this file checked out' }
   }
   
+  // Check if checking in from a different machine
+  const { getMachineId } = await import('./backup')
+  const currentMachineId = await getMachineId()
+  const checkoutMachineId = file.checked_out_by_machine_id
+  
+  // Warn if checking in from a different machine (but allow it)
+  let machineMismatchWarning: string | null = null
+  if (checkoutMachineId && checkoutMachineId !== currentMachineId) {
+    const checkoutMachineName = file.checked_out_by_machine_name || 'another computer'
+    machineMismatchWarning = `Warning: This file was checked out on ${checkoutMachineName}. You are checking it in from a different computer.`
+  }
+  
   // Prepare update data
   const updateData: Record<string, any> = {
     checked_out_by: null,
     checked_out_at: null,
     lock_message: null,
+    checked_out_by_machine_id: null,
+    checked_out_by_machine_name: null,
     updated_at: new Date().toISOString(),
     updated_by: userId
   }
@@ -1300,7 +1328,7 @@ export async function checkinFile(
     }
   })
   
-  return { success: true, file: data, error: null, contentChanged, metadataChanged }
+  return { success: true, file: data, error: null, contentChanged, metadataChanged, machineMismatchWarning }
 }
 
 export async function undoCheckout(fileId: string, userId: string) {
@@ -1328,7 +1356,9 @@ export async function undoCheckout(fileId: string, userId: string) {
     .update({
       checked_out_by: null,
       checked_out_at: null,
-      lock_message: null
+      lock_message: null,
+      checked_out_by_machine_id: null,
+      checked_out_by_machine_name: null
     })
     .eq('id', fileId)
     .select()
@@ -3396,4 +3426,192 @@ export async function getFileECOs(
   }
   
   return { ecos: data || [] }
+}
+
+// ============================================
+// User Sessions (Active Device Tracking)
+// ============================================
+
+export interface UserSession {
+  id: string
+  user_id: string
+  org_id: string | null
+  machine_id: string
+  machine_name: string
+  platform: string | null
+  app_version: string | null
+  last_seen: string
+  is_active: boolean
+  created_at: string
+}
+
+let heartbeatInterval: NodeJS.Timeout | null = null
+
+/**
+ * Register or update the current device session
+ */
+export async function registerDeviceSession(
+  userId: string,
+  orgId: string | null
+): Promise<{ success: boolean; session?: UserSession; error?: string }> {
+  const client = getSupabaseClient()
+  
+  // Get machine info
+  const { getMachineId, getMachineName } = await import('./backup')
+  const machineId = await getMachineId()
+  const machineName = await getMachineName()
+  const platform = await window.electronAPI?.getPlatform() || 'unknown'
+  const appVersion = await window.electronAPI?.getAppVersion() || 'unknown'
+  
+  // Upsert the session
+  const { data, error } = await client
+    .from('user_sessions')
+    .upsert({
+      user_id: userId,
+      org_id: orgId,
+      machine_id: machineId,
+      machine_name: machineName,
+      platform,
+      app_version: appVersion,
+      last_seen: new Date().toISOString(),
+      is_active: true
+    }, {
+      onConflict: 'user_id,machine_id'
+    })
+    .select()
+    .single()
+  
+  if (error) {
+    console.error('[Session] Failed to register device:', error.message)
+    return { success: false, error: error.message }
+  }
+  
+  console.log('[Session] Device registered:', machineName)
+  return { success: true, session: data }
+}
+
+/**
+ * Send a heartbeat to keep the session alive
+ */
+export async function sendSessionHeartbeat(userId: string): Promise<void> {
+  const client = getSupabaseClient()
+  
+  const { getMachineId } = await import('./backup')
+  const machineId = await getMachineId()
+  
+  const { error } = await client
+    .from('user_sessions')
+    .update({ 
+      last_seen: new Date().toISOString(),
+      is_active: true
+    })
+    .eq('user_id', userId)
+    .eq('machine_id', machineId)
+  
+  if (error) {
+    console.error('[Session] Heartbeat failed:', error.message)
+  }
+}
+
+/**
+ * Start periodic heartbeat (call once when app starts)
+ */
+export function startSessionHeartbeat(userId: string): void {
+  // Clear any existing interval
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval)
+  }
+  
+  // Send heartbeat every 60 seconds
+  heartbeatInterval = setInterval(() => {
+    sendSessionHeartbeat(userId)
+  }, 60000)
+  
+  // Send initial heartbeat
+  sendSessionHeartbeat(userId)
+}
+
+/**
+ * Stop the heartbeat (call when app closes or user signs out)
+ */
+export function stopSessionHeartbeat(): void {
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval)
+    heartbeatInterval = null
+  }
+}
+
+/**
+ * Mark the current session as inactive (on sign out or app close)
+ */
+export async function endDeviceSession(userId: string): Promise<void> {
+  const client = getSupabaseClient()
+  
+  const { getMachineId } = await import('./backup')
+  const machineId = await getMachineId()
+  
+  await client
+    .from('user_sessions')
+    .update({ is_active: false })
+    .eq('user_id', userId)
+    .eq('machine_id', machineId)
+  
+  stopSessionHeartbeat()
+}
+
+/**
+ * Get all active sessions for the current user
+ * Returns sessions that have been seen in the last 2 minutes
+ */
+export async function getActiveSessions(userId: string): Promise<{ sessions: UserSession[]; error?: string }> {
+  const client = getSupabaseClient()
+  
+  // Get sessions active within the last 2 minutes
+  const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString()
+  
+  const { data, error } = await client
+    .from('user_sessions')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('is_active', true)
+    .gte('last_seen', twoMinutesAgo)
+    .order('last_seen', { ascending: false })
+  
+  if (error) {
+    return { sessions: [], error: error.message }
+  }
+  
+  return { sessions: data || [] }
+}
+
+/**
+ * Subscribe to session changes for realtime updates
+ */
+export function subscribeToSessions(
+  userId: string,
+  onSessionChange: (sessions: UserSession[]) => void
+): () => void {
+  const client = getSupabaseClient()
+  
+  const channel = client
+    .channel(`user_sessions:${userId}`)
+    .on<UserSession>(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'user_sessions',
+        filter: `user_id=eq.${userId}`
+      },
+      async () => {
+        // When any session changes, fetch all active sessions
+        const { sessions } = await getActiveSessions(userId)
+        onSessionChange(sessions)
+      }
+    )
+    .subscribe()
+  
+  return () => {
+    channel.unsubscribe()
+  }
 }

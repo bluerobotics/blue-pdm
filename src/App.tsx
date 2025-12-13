@@ -1,5 +1,8 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { usePDMStore } from './stores/pdmStore'
+import { SettingsContent } from './components/SettingsContent'
+
+type SettingsTab = 'account' | 'vault' | 'organization' | 'backup' | 'solidworks' | 'integrations' | 'api' | 'preferences' | 'logs' | 'about'
 import { supabase, getCurrentSession, isSupabaseConfigured, getFilesLightweight, getCheckedOutUsers, linkUserToOrganization, getUserProfile, setCurrentAccessToken } from './lib/supabase'
 import { subscribeToFiles, subscribeToActivity, unsubscribeAll } from './lib/realtime'
 // Backup services removed - now handled directly via restic
@@ -14,6 +17,7 @@ import { SetupScreen } from './components/SetupScreen'
 import { Toast } from './components/Toast'
 import { RightPanel } from './components/RightPanel'
 import { GoogleDrivePanel } from './components/GoogleDrivePanel'
+import { OrphanedCheckoutsContainer } from './components/OrphanedCheckoutDialog'
 import { executeTerminalCommand } from './lib/commands/parser'
 
 // Build full path using the correct separator for the platform
@@ -68,6 +72,7 @@ function App() {
   const [isResizingSidebar, setIsResizingSidebar] = useState(false)
   const [isResizingDetails, setIsResizingDetails] = useState(false)
   const [isResizingRightPanel, setIsResizingRightPanel] = useState(false)
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('account')
   
   // Track if Supabase is configured (can change at runtime)
   const [supabaseReady, setSupabaseReady] = useState(() => isSupabaseConfigured())
@@ -1103,6 +1108,45 @@ function App() {
             console.log('[Realtime] File updated:', newFile.file_name)
             updateFilePdmData(newFile.id, newFile)
             
+            // Check for force check-in from different machine (your file was released)
+            // This happens when: you had file checked out on this machine, but it was checked in from elsewhere
+            if (oldFile?.checked_out_by === currentUserId && !newFile.checked_out_by) {
+              // The file that was checked out by current user is now not checked out
+              // Check if it was force-checked-in from a different machine
+              const oldMachineId = oldFile?.checked_out_by_machine_id
+              
+              // Get current machine ID to compare
+              import('@/lib/backup').then(async ({ getMachineId }) => {
+                const currentMachineId = await getMachineId()
+                
+                if (oldMachineId && oldMachineId === currentMachineId) {
+                  // File was checked out on THIS machine but released from elsewhere
+                  // This is a force check-in scenario!
+                  console.log('[Realtime] Force check-in detected! File:', newFile.file_name, 'Your local changes may need attention.')
+                  
+                  // Get the machine name that did the force check-in
+                  const checkedInByMachine = newFile.checked_out_by_machine_name || 'another computer'
+                  
+                  // Get current vault path for building local path
+                  const { vaultPath, addOrphanedCheckout } = usePDMStore.getState()
+                  
+                  // Add to orphaned checkouts list - this will trigger the dialog
+                  addOrphanedCheckout({
+                    fileId: newFile.id,
+                    fileName: newFile.file_name,
+                    filePath: newFile.file_path,
+                    localPath: vaultPath ? buildFullPath(vaultPath, newFile.file_path) : newFile.file_path,
+                    checkedInBy: checkedInByMachine,
+                    checkedInAt: newFile.updated_at,
+                    newVersion: newFile.version,
+                    serverHash: newFile.content_hash || undefined
+                  })
+                }
+              }).catch(() => {
+                // Couldn't get machine ID, just show normal notification
+              })
+            }
+            
             // Notify about important changes from other users
             if (newFile.updated_by && newFile.updated_by !== currentUserId) {
               // Check for checkout changes
@@ -1293,6 +1337,8 @@ function App() {
               onOpenVault={handleOpenVault}
               onOpenRecentVault={handleOpenRecentVault}
               onRefresh={loadFiles}
+              settingsTab={settingsTab}
+              onSettingsTabChange={setSettingsTab}
             />
             <div
               className="w-1.5 bg-pdm-border hover:bg-pdm-accent cursor-col-resize transition-colors flex-shrink-0 relative group"
@@ -1313,6 +1359,9 @@ function App() {
           ) : activeView === 'google-drive' ? (
             /* Google Drive View - replaces entire main content area */
             <GoogleDrivePanel />
+          ) : activeView === 'settings' ? (
+            /* Settings View - replaces entire main content area */
+            <SettingsContent activeTab={settingsTab} />
           ) : (
             <>
               {/* File Browser */}
@@ -1353,6 +1402,9 @@ function App() {
 
       <StatusBar />
       <Toast />
+      
+      {/* Orphaned Checkouts Dialog */}
+      <OrphanedCheckoutsContainer onRefresh={loadFiles} />
     </div>
   )
 }

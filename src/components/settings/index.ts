@@ -1,0 +1,11 @@
+export { AccountSettings } from './AccountSettings'
+export { VaultSettings } from './VaultSettings'
+export { OrganizationSettings } from './OrganizationSettings'
+export { BackupSettings } from './BackupSettings'
+export { SolidWorksSettings } from './SolidWorksSettings'
+export { IntegrationsSettings } from './IntegrationsSettings'
+export { ApiSettings } from './ApiSettings'
+export { PreferencesSettings } from './PreferencesSettings'
+export { LogsSettings } from './LogsSettings'
+export { AboutSettings } from './AboutSettings'
+

@@ -54,7 +54,8 @@ import {
   Check,
   ClipboardList,
   Calendar,
-  Plus
+  Plus,
+  Monitor
 } from 'lucide-react'
 import { usePDMStore, LocalFile } from '../stores/pdmStore'
 import { getFileIconType, formatFileSize, STATE_INFO, getInitials } from '../types/pdm'
@@ -73,6 +74,7 @@ import {
 } from '../lib/supabase'
 // Use command system for PDM operations
 import { executeCommand } from '../lib/commands'
+import { getSyncedFilesFromSelection } from '../lib/commands/types'
 import { format } from 'date-fns'
 
 // Build full path using the correct separator for the platform
@@ -95,6 +97,7 @@ interface FileIconCardProps {
   isSelected: boolean
   allFiles: LocalFile[]
   processingPaths: Set<string>  // Paths currently being processed
+  currentMachineId: string | null  // Current machine ID for multi-device checkout detection
   onClick: (e: React.MouseEvent) => void
   onDoubleClick: () => void
   onContextMenu: (e: React.MouseEvent) => void
@@ -105,7 +108,7 @@ interface FileIconCardProps {
   onStateChange?: (file: LocalFile, newState: string) => void
 }
 
-function FileIconCard({ file, iconSize, isSelected, allFiles, processingPaths, onClick, onDoubleClick, onContextMenu, onDownload, onCheckout, onCheckin, onUpload, onStateChange }: FileIconCardProps) {
+function FileIconCard({ file, iconSize, isSelected, allFiles, processingPaths, currentMachineId, onClick, onDoubleClick, onContextMenu, onDownload, onCheckout, onCheckin, onUpload, onStateChange }: FileIconCardProps) {
   const [thumbnail, setThumbnail] = useState<string | null>(null)
   const [thumbnailError, setThumbnailError] = useState(false)
   const [loadingThumbnail, setLoadingThumbnail] = useState(false)
@@ -226,7 +229,7 @@ function FileIconCard({ file, iconSize, isSelected, allFiles, processingPaths, o
   }
   
   // Get checkout users for file/folder
-  const getCheckoutUsers = (): Array<{ id: string; name: string; avatar_url?: string; isMe: boolean }> => {
+  const getCheckoutUsers = (): Array<{ id: string; name: string; avatar_url?: string; isMe: boolean; isDifferentMachine?: boolean; machineName?: string }> => {
     if (file.isDirectory) {
       // For folders, get unique users who have checked out files inside
       const folderPrefix = file.relativePath + '/'
@@ -236,17 +239,23 @@ function FileIconCard({ file, iconSize, isSelected, allFiles, processingPaths, o
         f.relativePath.startsWith(folderPrefix)
       )
       
-      const usersMap = new Map<string, { id: string; name: string; avatar_url?: string; isMe: boolean }>()
+      const usersMap = new Map<string, { id: string; name: string; avatar_url?: string; isMe: boolean; isDifferentMachine?: boolean; machineName?: string }>()
       for (const f of folderFiles) {
         const checkoutUserId = f.pdmData!.checked_out_by!
         if (!usersMap.has(checkoutUserId)) {
           const isMe = checkoutUserId === user?.id
+          const checkoutMachineId = f.pdmData?.checked_out_by_machine_id
+          const checkoutMachineName = f.pdmData?.checked_out_by_machine_name
+          const isDifferentMachine = isMe && checkoutMachineId && currentMachineId && checkoutMachineId !== currentMachineId
+          
           if (isMe) {
             usersMap.set(checkoutUserId, {
               id: checkoutUserId,
               name: user?.full_name || user?.email || 'You',
               avatar_url: user?.avatar_url || undefined,
-              isMe: true
+              isMe: true,
+              isDifferentMachine: isDifferentMachine || false,
+              machineName: checkoutMachineName ?? undefined
             })
           } else {
             const checkedOutUser = (f.pdmData as any).checked_out_user
@@ -254,7 +263,9 @@ function FileIconCard({ file, iconSize, isSelected, allFiles, processingPaths, o
               id: checkoutUserId,
               name: checkedOutUser?.full_name || checkedOutUser?.email?.split('@')[0] || 'Someone',
               avatar_url: checkedOutUser?.avatar_url,
-              isMe: false
+              isMe: false,
+              isDifferentMachine: false,
+              machineName: undefined
             })
           }
         }
@@ -263,12 +274,18 @@ function FileIconCard({ file, iconSize, isSelected, allFiles, processingPaths, o
     } else if (file.pdmData?.checked_out_by) {
       // Single file checkout
       const isMe = file.pdmData.checked_out_by === user?.id
+      const checkoutMachineId = file.pdmData.checked_out_by_machine_id
+      const checkoutMachineName = file.pdmData.checked_out_by_machine_name
+      const isDifferentMachine = isMe && checkoutMachineId && currentMachineId && checkoutMachineId !== currentMachineId
+      
       if (isMe) {
         return [{
           id: file.pdmData.checked_out_by,
           name: user?.full_name || user?.email || 'You',
           avatar_url: user?.avatar_url || undefined,
-          isMe: true
+          isMe: true,
+          isDifferentMachine: isDifferentMachine || false,
+          machineName: checkoutMachineName ?? undefined
         }]
       } else {
         const checkedOutUser = (file.pdmData as any).checked_out_user
@@ -276,7 +293,9 @@ function FileIconCard({ file, iconSize, isSelected, allFiles, processingPaths, o
           id: file.pdmData.checked_out_by,
           name: checkedOutUser?.full_name || checkedOutUser?.email?.split('@')[0] || 'Someone',
           avatar_url: checkedOutUser?.avatar_url,
-          isMe: false
+          isMe: false,
+          isDifferentMachine: false,
+          machineName: undefined
         }]
       }
     }
@@ -428,12 +447,13 @@ function FileIconCard({ file, iconSize, isSelected, allFiles, processingPaths, o
                         zIndex: 3 - i,
                         marginLeft: i > 0 ? -avatarSize * 0.3 : 0
                       }}
+                      title={u.isDifferentMachine && u.machineName ? `Checked out on ${u.machineName} (different computer)` : undefined}
                     >
                       {u.avatar_url ? (
                         <img 
                           src={u.avatar_url} 
                           alt={u.name}
-                          className={`rounded-full ring-2 ${u.isMe ? 'ring-pdm-accent' : 'ring-pdm-bg-light'} bg-pdm-bg object-cover`}
+                          className={`rounded-full ring-2 ${u.isMe ? (u.isDifferentMachine ? 'ring-pdm-warning' : 'ring-pdm-accent') : 'ring-pdm-bg-light'} bg-pdm-bg object-cover`}
                           style={{ width: avatarSize, height: avatarSize }}
                           onError={(e) => {
                             const target = e.target as HTMLImageElement
@@ -443,11 +463,24 @@ function FileIconCard({ file, iconSize, isSelected, allFiles, processingPaths, o
                         />
                       ) : null}
                       <div 
-                        className={`rounded-full ring-2 ${u.isMe ? 'ring-pdm-accent bg-pdm-accent/30 text-pdm-accent' : 'ring-pdm-bg-light bg-pdm-fg-muted/30 text-pdm-fg'} flex items-center justify-center font-medium ${u.avatar_url ? 'hidden' : ''}`}
+                        className={`rounded-full ring-2 ${u.isMe ? (u.isDifferentMachine ? 'ring-pdm-warning bg-pdm-warning/30 text-pdm-warning' : 'ring-pdm-accent bg-pdm-accent/30 text-pdm-accent') : 'ring-pdm-bg-light bg-pdm-fg-muted/30 text-pdm-fg'} flex items-center justify-center font-medium ${u.avatar_url ? 'hidden' : ''}`}
                         style={{ width: avatarSize, height: avatarSize, fontSize: avatarFontSize }}
                       >
                         {getInitials(u.name)}
                       </div>
+                      {/* Indicator for different machine */}
+                      {u.isDifferentMachine && (
+                        <div 
+                          className="absolute -bottom-0.5 -right-0.5 bg-pdm-warning rounded-full p-0.5"
+                          style={{ width: avatarSize * 0.4, height: avatarSize * 0.4 }}
+                          title={`Checked out on ${u.machineName || 'another computer'}`}
+                        >
+                          <Monitor 
+                            size={avatarSize * 0.3} 
+                            className="text-pdm-bg w-full h-full" 
+                          />
+                        </div>
+                      )}
                     </div>
                   ))}
                   {checkoutUsers.length > 3 && (
@@ -988,6 +1021,9 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
   const [columnContextMenu, setColumnContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [draggingColumn, setDraggingColumn] = useState<string | null>(null)
   
+  // Current machine ID for multi-device checkout detection (loaded once)
+  const [currentMachineId, setCurrentMachineId] = useState<string | null>(null)
+  
   // Conflict resolution dialog state
   interface FileConflict {
     sourcePath: string
@@ -1265,6 +1301,36 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
   // Inline action: Check in a single file or folder (uses command system)
   const handleInlineCheckin = (e: React.MouseEvent, file: LocalFile) => {
     e.stopPropagation()
+    
+    // Get all files that would be checked in
+    const filesToCheckin = getSyncedFilesFromSelection(files, [file])
+      .filter(f => f.pdmData?.checked_out_by === user?.id)
+    
+    // Check if any files are checked out on a different machine
+    const filesOnDifferentMachine = filesToCheckin.filter(f => {
+      const checkoutMachineId = f.pdmData?.checked_out_by_machine_id
+      return checkoutMachineId && currentMachineId && checkoutMachineId !== currentMachineId
+    })
+    
+    if (filesOnDifferentMachine.length > 0) {
+      // Show confirmation dialog for force check-in
+      const machineNames = [...new Set(filesOnDifferentMachine.map(f => f.pdmData?.checked_out_by_machine_name || 'another computer'))]
+      const machineList = machineNames.join(', ')
+      
+      setCustomConfirm({
+        title: 'Check In From Different Computer',
+        message: `${filesOnDifferentMachine.length === 1 ? 'This file is' : `${filesOnDifferentMachine.length} files are`} checked out on ${machineList}. Checking in from here will discard any unsaved changes on ${machineNames.length === 1 ? 'that' : 'those'} computer${machineNames.length === 1 ? '' : 's'}.`,
+        warning: `The other computer${machineNames.length === 1 ? '' : 's'} will be notified that ${filesOnDifferentMachine.length === 1 ? 'this file was' : 'these files were'} force checked in.`,
+        confirmText: 'Force Check In',
+        confirmDanger: true,
+        onConfirm: () => {
+          setCustomConfirm(null)
+          executeCommand('checkin', { files: [file] }, { onRefresh })
+        }
+      })
+      return
+    }
+    
     executeCommand('checkin', { files: [file] }, { onRefresh })
   }
 
@@ -1651,6 +1717,20 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
     
     setIsAddingToECO(false)
   }
+  
+  // Load current machine ID once for multi-device checkout detection
+  useEffect(() => {
+    const loadMachineId = async () => {
+      try {
+        const { getMachineId } = await import('@/lib/backup')
+        const machineId = await getMachineId()
+        setCurrentMachineId(machineId)
+      } catch {
+        setCurrentMachineId(null)
+      }
+    }
+    loadMachineId()
+  }, [])
   
   // Check if user is watching a file when context menu opens
   useEffect(() => {
@@ -3708,14 +3788,22 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
           const checkoutAvatarUrl = isMe ? user?.avatar_url : checkoutUser?.avatar_url
           const checkoutName = isMe ? 'You' : (checkoutUser?.full_name || checkoutUser?.email?.split('@')[0] || 'Someone')
           
+          // Check if checked out on different machine (only for current user)
+          const checkoutMachineId = file.pdmData.checked_out_by_machine_id
+          const checkoutMachineName = file.pdmData.checked_out_by_machine_name
+          const isDifferentMachine = isMe && checkoutMachineId && currentMachineId && checkoutMachineId !== currentMachineId
+          
           return (
-            <span className={`flex items-center gap-1 ${isMe ? 'text-pdm-warning' : 'text-pdm-error'}`} title={`Checked out by ${checkoutName}`}>
+            <span 
+              className={`flex items-center gap-1 ${isMe ? 'text-pdm-warning' : 'text-pdm-error'}`} 
+              title={isDifferentMachine ? `Checked out by ${checkoutName} on ${checkoutMachineName || 'another computer'} (different computer)` : `Checked out by ${checkoutName}`}
+            >
               <div className="relative w-5 h-5 flex-shrink-0">
                 {checkoutAvatarUrl ? (
                   <img 
                     src={checkoutAvatarUrl} 
                     alt={checkoutName}
-                    className={`w-5 h-5 rounded-full ring-1 ${isMe ? 'ring-pdm-warning' : 'ring-pdm-error'} object-cover`}
+                    className={`w-5 h-5 rounded-full ring-1 ${isMe ? (isDifferentMachine ? 'ring-pdm-warning' : 'ring-pdm-warning') : 'ring-pdm-error'} object-cover`}
                     onError={(e) => {
                       // Hide broken image and show fallback
                       const target = e.target as HTMLImageElement
@@ -3727,6 +3815,18 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                 <div className={`w-5 h-5 rounded-full ring-1 ${isMe ? 'ring-pdm-warning bg-pdm-warning/30' : 'ring-pdm-error bg-pdm-error/30'} flex items-center justify-center text-[9px] font-medium absolute inset-0 ${checkoutAvatarUrl ? 'hidden' : ''}`}>
                   {getInitials(checkoutName)}
                 </div>
+                {isDifferentMachine && (
+                  <div 
+                    className="absolute -bottom-0.5 -right-0.5 bg-pdm-warning rounded-full p-0.5"
+                    style={{ width: 8, height: 8 }}
+                    title={`Checked out on ${checkoutMachineName || 'another computer'}`}
+                  >
+                    <Monitor 
+                      size={6} 
+                      className="text-pdm-bg w-full h-full" 
+                    />
+                  </div>
+                )}
               </div>
               Checked Out
             </span>
@@ -4134,6 +4234,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                 isSelected={selectedFiles.includes(file.path)}
                 allFiles={files}
                 processingPaths={processingFolders}
+                currentMachineId={currentMachineId}
                 onClick={(e) => handleRowClick(e, file, index)}
                 onDoubleClick={() => handleRowDoubleClick(file)}
                 onContextMenu={(e) => handleContextMenu(e, file)}

@@ -1,23 +1,36 @@
 import { usePDMStore } from '../stores/pdmStore'
+// PDM Views
 import { ExplorerView } from './sidebar/ExplorerView'
 import { PendingView } from './sidebar/PendingView'
-import { HistoryView } from './sidebar/HistoryView'
 import { SearchView } from './sidebar/SearchView'
-import { TrashView } from './sidebar/TrashView'
-import { SettingsView } from './sidebar/SettingsView'
-import { TerminalView } from './sidebar/TerminalView'
 import { WorkflowsView } from './sidebar/WorkflowsView'
+import { HistoryView } from './sidebar/HistoryView'
+import { TrashView } from './sidebar/TrashView'
+import { TerminalView } from './sidebar/TerminalView'
+// PLM Views
 import { ECOView } from './sidebar/ECOView'
+import { ECRView } from './sidebar/ECRView'
+import { ProductsView } from './sidebar/ProductsView'
+import { ProcessView } from './sidebar/ProcessView'
+import { ScheduleView } from './sidebar/ScheduleView'
 import { ReviewsView } from './sidebar/ReviewsView'
+import { GSDView } from './sidebar/GSDView'
 import { GoogleDriveView } from './sidebar/GoogleDriveView'
+import { IntegrationsView } from './sidebar/IntegrationsView'
+// System Views
+import { SettingsNavigation } from './sidebar/SettingsNavigation'
+
+type SettingsTab = 'account' | 'vault' | 'organization' | 'backup' | 'solidworks' | 'integrations' | 'api' | 'preferences' | 'logs' | 'about'
 
 interface SidebarProps {
   onOpenVault: () => void
   onOpenRecentVault: (path: string) => void
   onRefresh: (silent?: boolean) => void
+  settingsTab?: SettingsTab
+  onSettingsTabChange?: (tab: SettingsTab) => void
 }
 
-export function Sidebar({ onOpenVault, onOpenRecentVault, onRefresh }: SidebarProps) {
+export function Sidebar({ onOpenVault, onOpenRecentVault, onRefresh, settingsTab = 'account', onSettingsTabChange }: SidebarProps) {
   const { activeView, sidebarWidth, connectedVaults, setGdriveNavigation, gdriveCurrentFolderId } = usePDMStore()
 
   const handleGdriveNavigate = (folderId: string | null, folderName?: string, isSharedDrive?: boolean, driveId?: string) => {
@@ -26,28 +39,43 @@ export function Sidebar({ onOpenVault, onOpenRecentVault, onRefresh }: SidebarPr
 
   const renderView = () => {
     switch (activeView) {
+      // PDM Views
       case 'explorer':
         return <ExplorerView onOpenVault={onOpenVault} onOpenRecentVault={onOpenRecentVault} onRefresh={onRefresh} />
       case 'pending':
         return <PendingView onRefresh={onRefresh} />
-      case 'history':
-        return <HistoryView />
-      case 'eco':
-        return <ECOView />
-      case 'reviews':
-        return <ReviewsView />
       case 'search':
         return <SearchView />
-      case 'trash':
-        return <TrashView />
-      case 'settings':
-        return <SettingsView />
-      case 'terminal':
-        return <TerminalView onRefresh={onRefresh} />
       case 'workflows':
         return <WorkflowsView />
+      case 'history':
+        return <HistoryView />
+      case 'trash':
+        return <TrashView />
+      case 'terminal':
+        return <TerminalView onRefresh={onRefresh} />
+      // PLM Views
+      case 'eco':
+        return <ECOView />
+      case 'ecr':
+        return <ECRView />
+      case 'products':
+        return <ProductsView />
+      case 'process':
+        return <ProcessView />
+      case 'schedule':
+        return <ScheduleView />
+      case 'reviews':
+        return <ReviewsView />
+      case 'gsd':
+        return <GSDView />
       case 'google-drive':
         return <GoogleDriveView onNavigate={handleGdriveNavigate} currentFolderId={gdriveCurrentFolderId} />
+      case 'integrations':
+        return <IntegrationsView />
+      // System Views
+      case 'settings':
+        return <SettingsNavigation activeTab={settingsTab} onTabChange={onSettingsTabChange || (() => {})} />
       default:
         return <ExplorerView onOpenVault={onOpenVault} onOpenRecentVault={onOpenRecentVault} />
     }
@@ -55,28 +83,43 @@ export function Sidebar({ onOpenVault, onOpenRecentVault, onRefresh }: SidebarPr
 
   const getTitle = () => {
     switch (activeView) {
+      // PDM Views
       case 'explorer':
         return 'EXPLORER'
       case 'pending':
         return 'PENDING'
-      case 'history':
-        return 'HISTORY'
-      case 'eco':
-        return 'ECO MANAGER'
-      case 'reviews':
-        return 'REVIEWS'
       case 'search':
         return 'SEARCH'
+      case 'workflows':
+        return 'FILE WORKFLOWS'
+      case 'history':
+        return 'HISTORY'
       case 'trash':
         return 'TRASH'
-      case 'settings':
-        return 'SETTINGS'
       case 'terminal':
         return 'TERMINAL'
-      case 'workflows':
-        return 'WORKFLOWS'
+      // PLM Views
+      case 'eco':
+        return 'ECOs'
+      case 'ecr':
+        return 'ECRs / ISSUES'
+      case 'products':
+        return 'PRODUCTS'
+      case 'process':
+        return 'PROCESS EDITOR'
+      case 'schedule':
+        return 'SCHEDULE'
+      case 'reviews':
+        return 'REVIEWS'
+      case 'gsd':
+        return 'GSD SUMMARY'
       case 'google-drive':
         return 'GOOGLE DRIVE'
+      case 'integrations':
+        return 'INTEGRATIONS'
+      // System Views
+      case 'settings':
+        return 'SETTINGS'
       default:
         return ''
     }
