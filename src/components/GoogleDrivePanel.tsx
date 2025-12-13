@@ -95,7 +95,7 @@ type SortBy = 'name' | 'modifiedTime' | 'size'
 type DriveSource = 'my-drive' | 'shared-drives'
 
 export function GoogleDrivePanel() {
-  const { addToast, organization, user, gdriveCurrentFolderId, gdriveCurrentFolderName, gdriveIsSharedDrive, gdriveDriveId, gdriveOpenDocument, setGdriveOpenDocument } = usePDMStore()
+  const { addToast, organization, user, gdriveCurrentFolderId, gdriveCurrentFolderName, gdriveIsSharedDrive, gdriveDriveId, gdriveOpenDocument, setGdriveOpenDocument, incrementGdriveAuthVersion } = usePDMStore()
   
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
@@ -245,6 +245,7 @@ export function GoogleDrivePanel() {
             localStorage.setItem('gdrive_refresh_token', result.refreshToken)
           }
           setIsAuthenticated(true)
+          incrementGdriveAuthVersion() // Notify sidebar to refresh
           fetchUserInfo(result.accessToken)
           loadFiles('root')
           addToast('success', 'Connected to Google Drive')
@@ -278,6 +279,7 @@ export function GoogleDrivePanel() {
     setIsAuthenticated(false)
     setUserInfo(null)
     setFiles([])
+    incrementGdriveAuthVersion() // Notify sidebar to refresh
     addToast('info', 'Disconnected from Google Drive')
   }
   
@@ -955,13 +957,29 @@ export function GoogleDrivePanel() {
         </div>
         
         {/* Document content */}
-        <div className="flex-1 overflow-hidden bg-white">
+        <div className="flex-1 overflow-hidden bg-white relative">
+          {/* First-time sign-in info */}
+          {!localStorage.getItem('gdrive_iframe_info_dismissed') && (
+            <div className="absolute top-0 left-0 right-0 z-10 bg-blue-600 text-white px-4 py-2 text-sm flex items-center justify-between">
+              <span>First time? You may need to sign in to Google once within this view to enable editing.</span>
+              <button
+                onClick={() => {
+                  localStorage.setItem('gdrive_iframe_info_dismissed', 'true')
+                  // Force re-render
+                  setGdriveOpenDocument({ ...gdriveOpenDocument })
+                }}
+                className="ml-4 px-2 py-0.5 bg-white/20 hover:bg-white/30 rounded text-xs"
+              >
+                Got it
+              </button>
+            </div>
+          )}
           <iframe
             src={getEditableUrl(gdriveOpenDocument as GoogleDriveFile)}
             className="w-full h-full border-0"
             title={gdriveOpenDocument.name}
             allow="clipboard-read; clipboard-write; fullscreen"
-            sandbox="allow-same-origin allow-scripts allow-popups allow-forms allow-modals"
+            sandbox="allow-same-origin allow-scripts allow-popups allow-forms allow-modals allow-top-navigation-by-user-activation"
           />
         </div>
       </div>

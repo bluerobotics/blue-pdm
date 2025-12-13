@@ -287,6 +287,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   downloadUpdate: () => ipcRenderer.invoke('updater:download'),
   installUpdate: () => ipcRenderer.invoke('updater:install'),
   getUpdateStatus: () => ipcRenderer.invoke('updater:get-status'),
+  postponeUpdate: (version: string) => ipcRenderer.invoke('updater:postpone', version),
+  clearUpdateReminder: () => ipcRenderer.invoke('updater:clear-reminder'),
+  getUpdateReminder: () => ipcRenderer.invoke('updater:get-reminder'),
   
   // Update event listeners
   onUpdateChecking: (callback: () => void) => {
@@ -550,6 +553,9 @@ declare global {
         updateDownloaded: boolean
         downloadProgress: { percent: number; bytesPerSecond: number; transferred: number; total: number } | null
       }>
+      postponeUpdate: (version: string) => Promise<{ success: boolean }>
+      clearUpdateReminder: () => Promise<{ success: boolean }>
+      getUpdateReminder: () => Promise<{ version: string; postponedAt: number } | null>
       
       // Update event listeners
       onUpdateChecking: (callback: () => void) => () => void

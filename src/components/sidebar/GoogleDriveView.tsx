@@ -71,7 +71,7 @@ const STORAGE_KEYS = {
 }
 
 export function GoogleDriveView({ onNavigate, onFileSelect, currentFolderId }: GoogleDriveViewProps) {
-  const { addToast, setGdriveOpenDocument } = usePDMStore()
+  const { addToast, setGdriveOpenDocument, gdriveAuthVersion } = usePDMStore()
   
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
@@ -102,10 +102,10 @@ export function GoogleDriveView({ onNavigate, onFileSelect, currentFolderId }: G
     localStorage.setItem(STORAGE_KEYS.EXPANDED_FOLDERS, JSON.stringify([...expandedFolders]))
   }, [expandedFolders])
   
-  // Check authentication status on mount
+  // Check authentication status on mount and when auth version changes
   useEffect(() => {
     checkAuthStatus()
-  }, [])
+  }, [gdriveAuthVersion])
   
   const checkAuthStatus = async () => {
     try {
@@ -406,7 +406,7 @@ export function GoogleDriveView({ onNavigate, onFileSelect, currentFolderId }: G
                     }
                   }
                 }}
-                className={`w-full flex items-center gap-1.5 px-2 py-1 text-sm hover:bg-pdm-highlight rounded transition-colors cursor-pointer ${
+                className={`w-full flex items-center gap-1.5 px-2 py-1 text-sm hover:bg-pdm-highlight rounded transition-colors cursor-pointer select-none ${
                   isSelected ? 'bg-pdm-accent/20 text-pdm-accent' : 
                   currentFolderId === file.id ? 'bg-pdm-highlight text-pdm-accent' : 'text-pdm-fg'
                 }`}

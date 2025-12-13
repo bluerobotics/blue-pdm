@@ -3517,6 +3517,68 @@ let updateAvailable: UpdateInfo | null = null
 let updateDownloaded = false
 let downloadProgress: ProgressInfo | null = null
 
+// Update reminder state persistence
+interface UpdateReminder {
+  version: string
+  postponedAt: number  // timestamp
+}
+
+const updateReminderFile = path.join(app.getPath('userData'), 'update-reminder.json')
+
+function loadUpdateReminder(): UpdateReminder | null {
+  try {
+    if (fs.existsSync(updateReminderFile)) {
+      const data = fs.readFileSync(updateReminderFile, 'utf-8')
+      return JSON.parse(data)
+    }
+  } catch (err) {
+    console.error('Failed to load update reminder:', err)
+  }
+  return null
+}
+
+function saveUpdateReminder(reminder: UpdateReminder): void {
+  try {
+    fs.writeFileSync(updateReminderFile, JSON.stringify(reminder, null, 2))
+  } catch (err) {
+    console.error('Failed to save update reminder:', err)
+  }
+}
+
+function clearUpdateReminder(): void {
+  try {
+    if (fs.existsSync(updateReminderFile)) {
+      fs.unlinkSync(updateReminderFile)
+    }
+  } catch (err) {
+    console.error('Failed to clear update reminder:', err)
+  }
+}
+
+function shouldShowUpdate(version: string): boolean {
+  const reminder = loadUpdateReminder()
+  if (!reminder) return true
+  
+  // If it's a different version, show it
+  if (reminder.version !== version) {
+    clearUpdateReminder()
+    return true
+  }
+  
+  // Check if 24 hours have passed
+  const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000
+  const timeSincePostponed = Date.now() - reminder.postponedAt
+  
+  if (timeSincePostponed >= TWENTY_FOUR_HOURS) {
+    log(`Update reminder expired (${Math.round(timeSincePostponed / 1000 / 60 / 60)} hours), showing update`)
+    clearUpdateReminder()
+    return true
+  }
+  
+  log(`Update postponed ${Math.round(timeSincePostponed / 1000 / 60)} minutes ago, will remind in ${Math.round((TWENTY_FOUR_HOURS - timeSincePostponed) / 1000 / 60)} minutes`)
+  return false
+}
+
 // Auto-updater event handlers
 autoUpdater.on('checking-for-update', () => {
   log('Checking for updates...')
@@ -3526,12 +3588,19 @@ autoUpdater.on('checking-for-update', () => {
 autoUpdater.on('update-available', (info: UpdateInfo) => {
   log('Update available:', info.version)
   updateAvailable = info
+  
+  // Check if user has postponed this update recently
+  if (shouldShowUpdate(info.version)) {
+    mainWindow?.webContents.send('updater:available', {
+      version: info.version,
+      releaseDate: info.releaseDate,
+      releaseNotes: info.releaseNotes
+    })
+  } else {
+    log('Update notification suppressed - user postponed recently')
+  }
+  
   isUserInitiatedCheck = false
-  mainWindow?.webContents.send('updater:available', {
-    version: info.version,
-    releaseDate: info.releaseDate,
-    releaseNotes: info.releaseNotes
-  })
 })
 
 autoUpdater.on('update-not-available', (info: UpdateInfo) => {
@@ -3635,6 +3704,29 @@ ipcMain.handle('updater:get-status', () => {
       total: downloadProgress.total
     } : null
   }
+})
+
+// Postpone update reminder (remind later)
+ipcMain.handle('updater:postpone', (_, version: string) => {
+  log(`User postponed update for version ${version}`)
+  saveUpdateReminder({
+    version,
+    postponedAt: Date.now()
+  })
+  return { success: true }
+})
+
+// Clear update reminder (e.g., when user clicks download)
+ipcMain.handle('updater:clear-reminder', () => {
+  log('Clearing update reminder')
+  clearUpdateReminder()
+  return { success: true }
+})
+
+// Get reminder status
+ipcMain.handle('updater:get-reminder', () => {
+  const reminder = loadUpdateReminder()
+  return reminder
 })
 
 // ============================================

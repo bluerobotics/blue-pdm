@@ -161,6 +161,7 @@ interface PDMState {
   gdriveDriveId: string | null  // For shared drives
   gdriveIsSharedDrive: boolean
   gdriveOpenDocument: { id: string; name: string; mimeType: string; webViewLink?: string } | null
+  gdriveAuthVersion: number  // Incremented on auth changes to trigger sidebar refresh
   
   // Columns configuration
   columns: ColumnConfig[]
@@ -343,6 +344,7 @@ interface PDMState {
   setActiveView: (view: SidebarView) => void
   setGdriveNavigation: (folderId: string | null, folderName?: string, isSharedDrive?: boolean, driveId?: string) => void
   setGdriveOpenDocument: (doc: { id: string; name: string; mimeType: string; webViewLink?: string } | null) => void
+  incrementGdriveAuthVersion: () => void
   toggleDetailsPanel: () => void
   setDetailsPanelHeight: (height: number) => void
   setDetailsPanelTab: (tab: DetailsPanelTab) => void
@@ -484,6 +486,7 @@ export const usePDMStore = create<PDMState>()(
       gdriveDriveId: null,
       gdriveIsSharedDrive: false,
       gdriveOpenDocument: null,
+      gdriveAuthVersion: 0,
       
       columns: defaultColumns,
       
@@ -1003,6 +1006,7 @@ export const usePDMStore = create<PDMState>()(
         gdriveDriveId: driveId || null
       }),
       setGdriveOpenDocument: (doc) => set({ gdriveOpenDocument: doc }),
+      incrementGdriveAuthVersion: () => set((s) => ({ gdriveAuthVersion: s.gdriveAuthVersion + 1 })),
       toggleDetailsPanel: () => set((s) => ({ detailsPanelVisible: !s.detailsPanelVisible })),
       setDetailsPanelHeight: (height) => set({ detailsPanelHeight: Math.max(100, Math.min(1200, height)) }),
       setDetailsPanelTab: (detailsPanelTab) => set({ detailsPanelTab }),

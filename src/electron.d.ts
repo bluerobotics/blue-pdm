@@ -351,6 +351,9 @@ declare global {
         updateDownloaded: boolean
         downloadProgress: { percent: number; bytesPerSecond: number; transferred: number; total: number } | null
       }>
+      postponeUpdate: (version: string) => Promise<{ success: boolean }>
+      clearUpdateReminder: () => Promise<{ success: boolean }>
+      getUpdateReminder: () => Promise<{ version: string; postponedAt: number } | null>
       
       // Update event listeners
       onUpdateChecking: (callback: () => void) => () => void

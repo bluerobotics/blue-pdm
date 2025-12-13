@@ -36,11 +36,14 @@ export function Toast() {
 }
 
 function UpdateToastItem({ toast, onDismiss }: { toast: ToastMessage; onDismiss: () => void }) {
-  const { updateDownloading, updateDownloaded, updateProgress, setUpdateDownloading } = usePDMStore()
+  const { updateDownloading, updateDownloaded, updateProgress, updateAvailable, setUpdateDownloading } = usePDMStore()
   const [isExiting, setIsExiting] = useState(false)
 
   const handleDownload = async () => {
     if (updateDownloading || updateDownloaded) return
+    
+    // Clear any existing reminder when user clicks download
+    window.electronAPI.clearUpdateReminder()
     
     setUpdateDownloading(true)
     try {
@@ -61,6 +64,17 @@ function UpdateToastItem({ toast, onDismiss }: { toast: ToastMessage; onDismiss:
     } catch (err) {
       console.error('Install error:', err)
     }
+  }
+
+  const handleLater = async () => {
+    // Save the reminder for this version
+    const version = updateAvailable?.version || toast.message.replace('Update available: v', '')
+    if (version) {
+      await window.electronAPI.postponeUpdate(version)
+      console.log(`[Update] Postponed update for version ${version}, will remind on next startup or in 24 hours`)
+    }
+    setIsExiting(true)
+    setTimeout(onDismiss, 200)
   }
 
   const handleDismiss = () => {
@@ -124,14 +138,23 @@ function UpdateToastItem({ toast, onDismiss }: { toast: ToastMessage; onDismiss:
       {/* Action Buttons */}
       <div className="flex items-center gap-2">
         {!updateDownloading && !updateDownloaded && (
-          <button
-            onClick={handleDownload}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium
-              bg-pdm-accent text-white hover:bg-pdm-accent/90 transition-colors"
-          >
-            <Download size={12} />
-            Download Update
-          </button>
+          <>
+            <button
+              onClick={handleDownload}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium
+                bg-pdm-accent text-white hover:bg-pdm-accent/90 transition-colors"
+            >
+              <Download size={12} />
+              Download Update
+            </button>
+            <button
+              onClick={handleLater}
+              className="px-3 py-1.5 rounded-md text-xs text-pdm-fg-muted hover:text-pdm-fg transition-colors"
+              title="Remind me on next startup or in 24 hours"
+            >
+              Later
+            </button>
+          </>
         )}
         
         {updateDownloading && !updateDownloaded && (
@@ -142,23 +165,23 @@ function UpdateToastItem({ toast, onDismiss }: { toast: ToastMessage; onDismiss:
         )}
         
         {updateDownloaded && (
-          <button
-            onClick={handleInstall}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium
-              bg-green-600 text-white hover:bg-green-500 transition-colors"
-          >
-            <RefreshCw size={12} />
-            Restart & Install
-          </button>
-        )}
-        
-        {updateDownloaded && (
-          <button
-            onClick={handleDismiss}
-            className="px-3 py-1.5 rounded-md text-xs text-pdm-fg-muted hover:text-pdm-fg transition-colors"
-          >
-            Later
-          </button>
+          <>
+            <button
+              onClick={handleInstall}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium
+                bg-green-600 text-white hover:bg-green-500 transition-colors"
+            >
+              <RefreshCw size={12} />
+              Restart & Install
+            </button>
+            <button
+              onClick={handleLater}
+              className="px-3 py-1.5 rounded-md text-xs text-pdm-fg-muted hover:text-pdm-fg transition-colors"
+              title="Remind me on next startup or in 24 hours"
+            >
+              Later
+            </button>
+          </>
         )}
       </div>
     </div>
