@@ -37,7 +37,7 @@ export type SidebarView =
 export type DetailsPanelTab = 'properties' | 'preview' | 'whereused' | 'contains' | 'history'
 export type PanelPosition = 'bottom' | 'right'
 export type ToastType = 'error' | 'success' | 'info' | 'warning' | 'progress' | 'update'
-export type ThemeMode = 'dark' | 'deep-blue' | 'light' | 'christmas' | 'system'
+export type ThemeMode = 'dark' | 'deep-blue' | 'light' | 'christmas' | 'halloween' | 'system'
 export type Language = 'en' | 'fr' | 'de' | 'es' | 'it' | 'pt' | 'ja' | 'zh-CN' | 'zh-TW' | 'ko' | 'nl' | 'sv' | 'pl' | 'ru' | 'sindarin'
 export type DiffStatus = 'added' | 'modified' | 'deleted' | 'outdated' | 'cloud' | 'cloud_new' | 'moved' | 'ignored' | 'deleted_remote'
 
@@ -249,6 +249,10 @@ interface PDMState {
   listRowSize: number           // Row height for list view (16-64 pixels)
   theme: ThemeMode              // Theme: dark, light, blue, or system
   language: Language            // UI language
+  christmasSnowOpacity: number  // Christmas theme snow opacity (0-100)
+  christmasSleighEnabled: boolean // Christmas theme sleigh animation enabled
+  halloweenSparksEnabled: boolean  // Halloween theme bonfire sparks enabled
+  halloweenGhostsOpacity: number // Halloween theme ghost opacity (0-100)
   
   // Pinned items (quick access)
   pinnedFolders: { path: string; vaultId: string; vaultName: string; isDirectory: boolean }[]
@@ -335,6 +339,10 @@ interface PDMState {
   setListRowSize: (size: number) => void
   setTheme: (theme: ThemeMode) => void
   setLanguage: (language: Language) => void
+  setChristmasSnowOpacity: (opacity: number) => void
+  setChristmasSleighEnabled: (enabled: boolean) => void
+  setHalloweenSparksEnabled: (enabled: boolean) => void
+  setHalloweenGhostsOpacity: (opacity: number) => void
   
   // Actions - Pinned items
   pinFolder: (path: string, vaultId: string, vaultName: string, isDirectory: boolean) => void
@@ -593,6 +601,10 @@ export const usePDMStore = create<PDMState>()(
       listRowSize: 24, // Default list row height
       theme: 'dark',  // Default theme
       language: 'en',  // Default language
+      christmasSnowOpacity: 50,  // Default 50%
+      christmasSleighEnabled: true,  // Default ON
+      halloweenSparksEnabled: true,  // Default ON
+      halloweenGhostsOpacity: 50,  // Default 50%
       pinnedFolders: [],
       pinnedSectionExpanded: true,
       processingFolders: new Set(),
@@ -703,6 +715,10 @@ export const usePDMStore = create<PDMState>()(
       setListRowSize: (listRowSize) => set({ listRowSize: Math.max(16, Math.min(64, listRowSize)) }),
       setTheme: (theme) => set({ theme }),
       setLanguage: (language) => set({ language }),
+      setChristmasSnowOpacity: (christmasSnowOpacity) => set({ christmasSnowOpacity }),
+      setChristmasSleighEnabled: (christmasSleighEnabled) => set({ christmasSleighEnabled }),
+      setHalloweenSparksEnabled: (halloweenSparksEnabled) => set({ halloweenSparksEnabled }),
+      setHalloweenGhostsOpacity: (halloweenGhostsOpacity) => set({ halloweenGhostsOpacity }),
       
       // Actions - Pinned items
       pinFolder: (path, vaultId, vaultName, isDirectory) => {
@@ -1563,6 +1579,10 @@ export const usePDMStore = create<PDMState>()(
         listRowSize: state.listRowSize,
         theme: state.theme,
         language: state.language,
+        christmasSnowOpacity: state.christmasSnowOpacity,
+        christmasSleighEnabled: state.christmasSleighEnabled,
+        halloweenSparksEnabled: state.halloweenSparksEnabled,
+        halloweenGhostsOpacity: state.halloweenGhostsOpacity,
         pinnedFolders: state.pinnedFolders,
         pinnedSectionExpanded: state.pinnedSectionExpanded,
         connectedVaults: state.connectedVaults,

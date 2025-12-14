@@ -268,6 +268,135 @@
   color: #3fb950;
 }
 
+/* 🎃 Halloween Theme - Spooky & Atmospheric 👻 */
+[data-theme="halloween"] {
+  --plm-bg: #0d0d0d;
+  --plm-bg-light: #1a1a1a;
+  --plm-bg-lighter: #242424;
+  --plm-bg-secondary: #1a1a1a;
+  --plm-sidebar: #0d0d0d;
+  --plm-activitybar: #080808;
+  --plm-panel: #0d0d0d;
+  --plm-input: #1f1f1f;
+  --plm-border: #2d2d2d;
+  --plm-border-light: #3d3d3d;
+  --plm-fg: #e8e8e8;
+  --plm-fg-dim: #b0b0b0;
+  --plm-fg-muted: #6b6b6b;
+  --plm-accent: #ff6b2b; /* Pumpkin orange */
+  --plm-accent-hover: #ff5500;
+  --plm-accent-dim: #cc5522;
+  --plm-selection: rgba(255, 107, 43, 0.25);
+  --plm-highlight: rgba(255, 107, 43, 0.12);
+  /* Halloween status colors */
+  --plm-success: #50fa7b; /* Ghostly green */
+  --plm-warning: #ffb86c; /* Candy corn orange */
+  --plm-error: #ff5555; /* Blood red */
+  --plm-info: #8be9fd; /* Ghostly cyan */
+  /* File state colors */
+  --plm-wip: #ffb86c;
+  --plm-released: #50fa7b;
+  --plm-in-review: #8be9fd;
+  --plm-obsolete: #6b6b6b;
+  --plm-locked: #ff5555;
+  /* Titlebar height */
+  --titlebar-height: 30px;
+  /* Halloween special colors */
+  --halloween-orange: #ff6b2b;
+  --halloween-purple: #bd93f9;
+  --halloween-green: #50fa7b;
+  --halloween-black: #0d0d0d;
+  --halloween-blood: #8b0000;
+}
+
+/* Halloween theme scrollbar */
+[data-theme="halloween"] ::-webkit-scrollbar-thumb {
+  background: rgba(255, 107, 43, 0.4);
+}
+
+[data-theme="halloween"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 107, 43, 0.6);
+}
+
+/* 🎃 Halloween Theme UI Enhancements 👻 */
+
+/* Sidebar header bar - Spooky purple */
+[data-theme="halloween"] .sidebar-header {
+  background: linear-gradient(180deg, #1a0a2e 0%, #150826 100%);
+  color: #e8e8e8;
+}
+
+/* Breadcrumb/Toolbar bar - Dark purple */
+[data-theme="halloween"] .bg-plm-bg-light {
+  background: linear-gradient(180deg, #1a0a2e 0%, #150826 100%) !important;
+}
+
+/* Column headers - Dark purple background */
+[data-theme="halloween"] .file-table th {
+  background: linear-gradient(180deg, #1a0a2e 0%, #12061f 100%);
+  color: #e8e8e8;
+  border-bottom-color: #bd93f9;
+}
+
+[data-theme="halloween"] .file-table th:hover {
+  background: linear-gradient(180deg, #220d3a 0%, #1a0a2e 100%);
+}
+
+/* Active tab with purple */
+[data-theme="halloween"] .tab.active {
+  border-bottom-color: #bd93f9;
+  color: #bd93f9;
+}
+
+/* Primary buttons stay orange (Pumpkin) */
+[data-theme="halloween"] .btn-primary {
+  background: linear-gradient(135deg, #ff6b2b 0%, #cc5522 100%);
+}
+
+[data-theme="halloween"] .btn-primary:hover:not(:disabled) {
+  background: linear-gradient(135deg, #ff7a40 0%, #ff6b2b 100%);
+}
+
+/* Selection highlights with purple tint */
+[data-theme="halloween"] .file-table tr.selected,
+[data-theme="halloween"] .tree-item.selected {
+  background: rgba(189, 147, 249, 0.2);
+}
+
+/* Hover with subtle purple */
+[data-theme="halloween"] .file-table tr:hover:not(.selected),
+[data-theme="halloween"] .tree-item:hover:not(.selected) {
+  background: rgba(189, 147, 249, 0.1);
+}
+
+/* Context menu hover */
+[data-theme="halloween"] .context-menu-item:hover {
+  background: rgba(189, 147, 249, 0.25);
+}
+
+/* Input focus ring purple */
+[data-theme="halloween"] input:focus,
+[data-theme="halloween"] textarea:focus,
+[data-theme="halloween"] select:focus {
+  border-color: #bd93f9;
+}
+
+/* Sidebar header area with subtle purple */
+[data-theme="halloween"] .bg-plm-sidebar {
+  background: linear-gradient(180deg, #0d0d0d 0%, #0f0a14 100%);
+}
+
+/* Panel headers with purple accent */
+[data-theme="halloween"] .panel-header {
+  background: rgba(189, 147, 249, 0.1);
+}
+
+/* Success/released badges spooky green */
+[data-theme="halloween"] .state-badge.released {
+  background: rgba(80, 250, 123, 0.25);
+  color: #50fa7b;
+}
+
 *, *::before, *::after {
   box-sizing: border-box;
 }

@@ -138,11 +138,25 @@ export function GoogleDrivePanel() {
   const [renameValue, setRenameValue] = useState('')
   const renameInputRef = useRef<HTMLInputElement>(null)
   
+  // Iframe refresh key (increment to force reload after auth)
+  const [iframeKey, setIframeKey] = useState(0)
+  
   // Fetch org credentials and check auth status on mount
   useEffect(() => {
     loadOrgCredentials()
     checkAuthStatus()
   }, [organization?.id])
+  
+  // Listen for Google iframe session authentication (when user closes sign-in popup)
+  useEffect(() => {
+    const cleanup = window.electronAPI?.onGdriveSessionAuthenticated?.(() => {
+      console.log('[GoogleDrive] Auth window closed, refreshing iframe')
+      // Force iframe to reload by incrementing key
+      setIframeKey(prev => prev + 1)
+      addToast('info', 'Refreshing document...')
+    })
+    return () => cleanup?.()
+  }, [addToast])
   
   // Load Google Drive credentials from organization settings
   const loadOrgCredentials = async () => {
@@ -962,8 +976,8 @@ export function GoogleDrivePanel() {
           {!localStorage.getItem('gdrive_iframe_info_dismissed') && (
             <div className="absolute top-0 left-0 right-0 z-10 bg-amber-600 text-white px-4 py-2 text-sm flex items-center justify-between">
               <span>
-                <strong>Note:</strong> If Google asks you to sign in below, that's normal — the embedded view uses a separate session from BluePLM.
-                You only need to do this once.
+                <strong>First time?</strong> Google may ask you to sign in — this is a one-time setup.
+                Save your password when prompted and BluePDM will remember it.
               </span>
               <button
                 onClick={() => {
@@ -973,16 +987,17 @@ export function GoogleDrivePanel() {
                 }}
                 className="ml-4 px-3 py-1 bg-white/20 hover:bg-white/30 rounded text-xs font-medium"
               >
-                Dismiss
+                Got it
               </button>
             </div>
           )}
           <iframe
+            key={iframeKey}
             src={getEditableUrl(gdriveOpenDocument as GoogleDriveFile)}
             className="w-full h-full border-0"
             title={gdriveOpenDocument.name}
             allow="clipboard-read; clipboard-write; fullscreen"
-            sandbox="allow-same-origin allow-scripts allow-popups allow-popups-to-escape-sandbox allow-forms allow-modals allow-top-navigation allow-top-navigation-by-user-activation"
+            sandbox="allow-same-origin allow-scripts allow-popups allow-forms allow-modals allow-top-navigation allow-top-navigation-by-user-activation"
           />
         </div>
       </div>

@@ -119,6 +119,8 @@ declare global {
         expiry?: number
         error?: string 
       }>
+      // Listen for Google Drive iframe session authentication (when user signs in via popup)
+      onGdriveSessionAuthenticated: (callback: () => void) => () => void
       
       // Logging
       getLogs: () => Promise<Array<{ timestamp: string; level: string; message: string; data?: unknown }>>

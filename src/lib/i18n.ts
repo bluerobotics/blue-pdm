@@ -207,6 +207,8 @@ const en: TranslationDict = {
     themeLightDesc: 'VS Code Light+ style',
     themeChristmas: '🎄 Christmas',
     themeChristmasDesc: 'Festive with snow, sleighs & bells!',
+    themeHalloween: '🎃 Halloween',
+    themeHalloweenDesc: 'Spooky with bonfire sparks, ghosts & pumpkins!',
     themeSystem: 'System',
     themeSystemDesc: 'Follow OS preference',
     
@@ -504,6 +506,8 @@ const fr: TranslationDict = {
     themeLightDesc: 'Style VS Code Light+',
     themeChristmas: '🎄 Noël',
     themeChristmasDesc: 'Festif avec neige, traîneaux et cloches !',
+    themeHalloween: '🎃 Halloween',
+    themeHalloweenDesc: 'Effrayant avec étincelles de feu, fantômes et citrouilles !',
     themeSystem: 'Système',
     themeSystemDesc: 'Suivre les préférences du système',
     
@@ -794,6 +798,8 @@ const de: TranslationDict = {
     themeLightDesc: 'VS Code Light+ Stil',
     themeChristmas: '🎄 Weihnachten',
     themeChristmasDesc: 'Festlich mit Schnee, Schlitten & Glocken!',
+    themeHalloween: '🎃 Halloween',
+    themeHalloweenDesc: 'Gruselig mit Lagerfeuerfunken, Geistern & Kürbissen!',
     themeSystem: 'System',
     themeSystemDesc: 'Systemeinstellung folgen',
     
@@ -1084,6 +1090,8 @@ const es: TranslationDict = {
     themeLightDesc: 'Estilo VS Code Light+',
     themeChristmas: '🎄 Navidad',
     themeChristmasDesc: '¡Festivo con nieve, trineos y campanas!',
+    themeHalloween: '🎃 Halloween',
+    themeHalloweenDesc: '¡Espeluznante con chispas de fogata, fantasmas y calabazas!',
     themeSystem: 'Sistema',
     themeSystemDesc: 'Seguir preferencia del sistema',
     
@@ -1374,6 +1382,8 @@ const zhCN: TranslationDict = {
     themeLightDesc: 'VS Code Light+ 风格',
     themeChristmas: '🎄 圣诞节',
     themeChristmasDesc: '雪花、雪橇和铃铛的节日氛围！',
+    themeHalloween: '🎃 万圣节',
+    themeHalloweenDesc: '篝火火花、鬼魂和南瓜的恐怖氛围！',
     themeSystem: '跟随系统',
     themeSystemDesc: '跟随操作系统偏好',
     
@@ -1664,6 +1674,8 @@ const zhTW: TranslationDict = {
     themeLightDesc: 'VS Code Light+ 風格',
     themeChristmas: '🎄 聖誕節',
     themeChristmasDesc: '雪花、雪橇和鈴鐺的節日氛圍！',
+    themeHalloween: '🎃 萬聖節',
+    themeHalloweenDesc: '篝火火花、鬼魂和南瓜的恐怖氛圍！',
     themeSystem: '跟隨系統',
     themeSystemDesc: '跟隨作業系統偏好',
     
@@ -1954,6 +1966,8 @@ const pt: TranslationDict = {
     themeLightDesc: 'Estilo VS Code Light+',
     themeChristmas: '🎄 Natal',
     themeChristmasDesc: 'Festivo com neve, trenós e sinos!',
+    themeHalloween: '🎃 Halloween',
+    themeHalloweenDesc: 'Assustador com fagulhas de fogueira, fantasmas e abóboras!',
     themeSystem: 'Sistema',
     themeSystemDesc: 'Seguir preferência do sistema',
     

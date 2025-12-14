@@ -26,11 +26,14 @@ interface Star {
 
 export function ChristmasEffects() {
   const theme = usePDMStore(s => s.theme)
+  const snowOpacity = usePDMStore(s => s.christmasSnowOpacity)
+  const sleighEnabled = usePDMStore(s => s.christmasSleighEnabled)
+  const setSnowOpacity = usePDMStore(s => s.setChristmasSnowOpacity)
+  const setSleighEnabled = usePDMStore(s => s.setChristmasSleighEnabled)
+  
   const [snowflakes, setSnowflakes] = useState<Snowflake[]>([])
   const [stars, setStars] = useState<Star[]>([])
   const [sleighPosition, setSleighPosition] = useState({ x: -300, y: 80, visible: false })
-  const [sleighEnabled, setSleighEnabled] = useState(true) // Default ON
-  const [snowOpacity, setSnowOpacity] = useState(50) // 0-100, default 50%
   const [showControls, setShowControls] = useState(false)
   const animationRef = useRef<number>(0)
   const sleighTimeoutRef = useRef<NodeJS.Timeout | null>(null)
@@ -382,7 +385,7 @@ export function ChristmasEffects() {
             <div className="flex items-center justify-between px-1">
               <span className="text-plm-fg">🛷 Sleigh</span>
               <button
-                onClick={() => setSleighEnabled(s => !s)}
+                onClick={() => setSleighEnabled(!sleighEnabled)}
                 className={`relative w-10 h-5 rounded-full transition-colors ${
                   sleighEnabled ? 'bg-green-600' : 'bg-plm-border'
                 }`}

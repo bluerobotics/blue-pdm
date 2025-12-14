@@ -88,6 +88,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openOAuthWindow: (url: string) => ipcRenderer.invoke('auth:open-oauth-window', url),
   openGoogleDriveAuth: (credentials?: { clientId?: string; clientSecret?: string }) => 
     ipcRenderer.invoke('auth:google-drive', credentials),
+  // Listen for Google Drive iframe session authentication (when user signs in via popup)
+  onGdriveSessionAuthenticated: (callback: () => void) => {
+    const handler = () => callback()
+    ipcRenderer.on('gdrive:session-authenticated', handler)
+    return () => ipcRenderer.removeListener('gdrive:session-authenticated', handler)
+  },
   getPlatform: () => ipcRenderer.invoke('app:get-platform'),
   getTitleBarOverlayRect: (): Promise<TitleBarOverlayRect> => ipcRenderer.invoke('app:get-titlebar-overlay-rect'),
   setTitleBarOverlay: (options: { color: string; symbolColor: string }) => ipcRenderer.invoke('app:set-titlebar-overlay', options),

@@ -20,6 +20,7 @@ import { RightPanel } from './components/RightPanel'
 import { OrphanedCheckoutsContainer } from './components/OrphanedCheckoutDialog'
 import { GoogleDrivePanel } from './components/GoogleDrivePanel'
 import { ChristmasEffects } from './components/ChristmasEffects'
+import { HalloweenEffects } from './components/HalloweenEffects'
 import { executeTerminalCommand } from './lib/commands/parser'
 
 // Build full path using the correct separator for the platform
@@ -37,11 +38,53 @@ const titleBarOverlayColors: Record<string, { color: string; symbolColor: string
   'deep-blue': { color: '#071320', symbolColor: '#e3f2fd' },
   'light': { color: '#f0f0f0', symbolColor: '#333333' },
   'christmas': { color: '#1a0a0a', symbolColor: '#ff6b6b' },
+  'halloween': { color: '#080808', symbolColor: '#ff6b2b' },
+}
+
+// Check if we should auto-apply a seasonal theme
+// Returns the seasonal theme if applicable, or null if no override
+function getSeasonalThemeOverride(): 'halloween' | 'christmas' | null {
+  const now = new Date()
+  const month = now.getMonth() // 0-indexed: 0 = Jan, 9 = Oct, 10 = Nov, 11 = Dec
+  
+  // Halloween: October 1-31 (month 9)
+  if (month === 9) {
+    return 'halloween'
+  }
+  
+  // Christmas: December 1-31 (month 11)
+  if (month === 11) {
+    return 'christmas'
+  }
+  
+  return null
 }
 
 // Apply theme to document and update titlebar overlay
+// Auto-applies seasonal themes (Halloween on Oct 1, Christmas on Dec 1)
 function useTheme() {
   const theme = usePDMStore(s => s.theme)
+  const setTheme = usePDMStore(s => s.setTheme)
+  
+  // Auto-apply seasonal theme on mount (only once per session per month change)
+  useEffect(() => {
+    const seasonalTheme = getSeasonalThemeOverride()
+    
+    // If we're in a seasonal period and user's theme is NOT already the seasonal theme,
+    // auto-switch to the seasonal theme
+    if (seasonalTheme && theme !== seasonalTheme) {
+      // Check if we've already auto-switched this month (stored in sessionStorage)
+      const storageKey = `seasonal-theme-applied-${seasonalTheme}`
+      const alreadyApplied = sessionStorage.getItem(storageKey)
+      
+      if (!alreadyApplied) {
+        // Auto-switch to seasonal theme
+        setTheme(seasonalTheme)
+        sessionStorage.setItem(storageKey, 'true')
+        console.log(`🎃🎄 Auto-applying ${seasonalTheme} theme for the season!`)
+      }
+    }
+  }, []) // Only run on mount
   
   useEffect(() => {
     // Determine the actual theme to apply
@@ -1420,6 +1463,9 @@ function App() {
     <div className="h-screen flex flex-col bg-plm-bg overflow-hidden relative">
       {/* 🎄 Christmas Effects - snow, sleigh, stars when theme is active */}
       <ChristmasEffects />
+      
+      {/* 🎃 Halloween Effects - bats, ghosts, pumpkins when theme is active */}
+      <HalloweenEffects />
       
       <MenuBar
         onOpenVault={handleOpenVault}

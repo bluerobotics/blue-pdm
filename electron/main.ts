@@ -403,7 +403,59 @@ function createWindow() {
     })
   }
 
+  // Keep track of Google auth windows to prevent garbage collection
+  let googleAuthWindow: BrowserWindow | null = null
+  
+  // Handle popup windows from iframes (like Google sign-in)
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    log('[Window] Popup requested:', url.substring(0, 100))
+    
+    // Google auth URLs should open in an Electron window to keep session cookies in Electron
+    const isGoogleAuth = url.includes('accounts.google.com') || 
+                         url.includes('google.com/o/oauth2') ||
+                         url.includes('google.com/signin')
+    
+    if (isGoogleAuth) {
+      log('[Window] Opening Google auth in Electron window')
+      
+      // Close existing auth window if any
+      if (googleAuthWindow && !googleAuthWindow.isDestroyed()) {
+        googleAuthWindow.close()
+      }
+      
+      // Create a popup window for Google sign-in - uses same session as main window
+      googleAuthWindow = new BrowserWindow({
+        width: 500,
+        height: 700,
+        parent: mainWindow || undefined,
+        modal: false,
+        show: true,
+        title: 'Sign in to Google - Close when done',
+        webPreferences: {
+          nodeIntegration: false,
+          contextIsolation: true
+        }
+      })
+      
+      googleAuthWindow.loadURL(url)
+      
+      // Log navigation for debugging
+      googleAuthWindow.webContents.on('did-navigate', (_, navUrl) => {
+        log('[Window] Auth window navigated to:', navUrl.substring(0, 80))
+      })
+      
+      // When user closes the window, refresh the iframe
+      googleAuthWindow.on('closed', () => {
+        log('[Window] Google auth window closed')
+        googleAuthWindow = null
+        mainWindow?.webContents.send('gdrive:session-authenticated')
+      })
+      
+      return { action: 'deny' }
+    }
+    
+    // All other URLs open in external browser
+    log('[Window] Opening in external browser:', url.substring(0, 80))
     shell.openExternal(url)
     return { action: 'deny' }
   })
