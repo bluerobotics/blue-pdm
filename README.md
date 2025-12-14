@@ -1,6 +1,6 @@
 # BluePLM
 
-Product Data Management for engineering teams. Built with Electron, React, and Supabase.
+Open source Product Lifecycle Management for everyone who builds. Built with Electron, React, and Supabase.
 
 ![BluePLM Screenshot](assets/screenshot.png)
 
