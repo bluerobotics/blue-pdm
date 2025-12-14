@@ -702,16 +702,19 @@ const authPlugin: FastifyPluginAsync = async (fastify) => {
   fastify.decorateRequest('supabase', null)
   fastify.decorateRequest('accessToken', null)
   
+  // Store reference to logger for use in authenticate
+  const log = fastify.log
+  
   fastify.decorate('authenticate', async function(
     request: FastifyRequest, 
     reply: FastifyReply
   ): Promise<void> {
-    request.log.info('[Auth] authenticate() called')
+    log.info('>>> [Auth] authenticate() ENTRY')
     const authHeader = request.headers.authorization
-    request.log.info({ msg: '[Auth] Header check', hasAuth: !!authHeader, authPrefix: authHeader?.substring(0, 20) })
+    log.info({ msg: '>>> [Auth] Header check', hasAuth: !!authHeader, authPrefix: authHeader?.substring(0, 20) })
     
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      request.log.warn('[Auth] Missing or invalid auth header')
+      log.warn('>>> [Auth] Missing or invalid auth header')
       return reply.code(401).send({ 
         error: 'Unauthorized',
         message: 'Missing or invalid Authorization header'
@@ -722,7 +725,7 @@ const authPlugin: FastifyPluginAsync = async (fastify) => {
     
     // Check for literal "undefined" string (frontend bug protection)
     if (!token || token === 'undefined' || token === 'null') {
-      request.log.warn('[Auth] Empty or invalid token string')
+      log.warn('>>> [Auth] Empty or invalid token string')
       return reply.code(401).send({ 
         error: 'Unauthorized',
         message: 'Invalid or missing access token'
@@ -735,8 +738,8 @@ const authPlugin: FastifyPluginAsync = async (fastify) => {
       
       if (error || !user) {
         // Log detailed auth failure for debugging
-        request.log.error({ 
-          msg: '[Auth] Token verification failed',
+        log.error({ 
+          msg: '>>> [Auth] Token verification failed',
           error: error?.message,
           errorCode: error?.code,
           hasUser: !!user,
@@ -756,7 +759,7 @@ const authPlugin: FastifyPluginAsync = async (fastify) => {
         .single()
       
       if (profileError || !profile) {
-        request.log.error({ msg: '[Auth] Profile lookup failed', error: profileError?.message })
+        log.error({ msg: '>>> [Auth] Profile lookup failed', error: profileError?.message })
         return reply.code(401).send({ 
           error: 'Profile not found',
           message: 'User profile does not exist'
@@ -764,7 +767,7 @@ const authPlugin: FastifyPluginAsync = async (fastify) => {
       }
       
       if (!profile.org_id) {
-        request.log.warn({ msg: '[Auth] User has no organization', email: profile.email })
+        log.warn({ msg: '>>> [Auth] User has no organization', email: profile.email })
         return reply.code(403).send({ 
           error: 'No organization',
           message: 'User is not a member of any organization'
@@ -775,9 +778,9 @@ const authPlugin: FastifyPluginAsync = async (fastify) => {
       request.user = profile as UserProfile
       request.supabase = supabase
       request.accessToken = token
-      request.log.info({ msg: '[Auth] Authenticated', email: profile.email })
+      log.info({ msg: '>>> [Auth] Authenticated', email: profile.email })
     } catch (err) {
-      request.log.error({ msg: '[Auth] Unexpected error', error: err })
+      log.error({ msg: '>>> [Auth] Unexpected error', error: err })
       return reply.code(500).send({ 
         error: 'Auth error',
         message: err instanceof Error ? err.message : 'Unknown error'
