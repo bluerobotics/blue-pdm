@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Cpu, MemoryStick, HardDrive, ArrowDown, ArrowUp } from 'lucide-react'
+import { Cpu, MemoryStick, HardDrive, ArrowDown, ArrowUp, Activity, ChevronLeft, ChevronRight } from 'lucide-react'
 
 interface SystemStats {
   cpu: { usage: number; cores: number[] }
@@ -48,11 +48,30 @@ function getBarColor(percent: number): string {
   return 'bg-rose-500'
 }
 
+// Get dot color class based on usage
+function getDotColor(percent: number): string {
+  if (percent < 50) return 'bg-emerald-500'
+  if (percent < 75) return 'bg-amber-500'
+  return 'bg-rose-500'
+}
+
 export function SystemStats({ availableWidth = Infinity }: SystemStatsProps) {
   const [stats, setStats] = useState<SystemStats | null>(null)
   const [showTooltip, setShowTooltip] = useState(false)
   const [isHidden, setIsHidden] = useState(false)
+  const [isCollapsed, setIsCollapsed] = useState(() => {
+    // Load from localStorage, default to collapsed
+    const saved = localStorage.getItem('systemStats.collapsed')
+    return saved !== 'false' // Default to true (collapsed)
+  })
   const containerRef = useRef<HTMLDivElement>(null)
+  
+  // Persist collapsed state
+  const toggleCollapsed = () => {
+    const newState = !isCollapsed
+    setIsCollapsed(newState)
+    localStorage.setItem('systemStats.collapsed', String(newState))
+  }
 
   useEffect(() => {
     // Initial fetch
@@ -80,6 +99,132 @@ export function SystemStats({ availableWidth = Infinity }: SystemStatsProps) {
     return null
   }
 
+  // Collapsed view - shows compact activity indicator with 4 dots
+  if (isCollapsed) {
+    return (
+      <div
+        ref={containerRef}
+        className="relative flex items-center gap-1 px-1.5 flex-shrink-0"
+        onMouseEnter={() => setShowTooltip(true)}
+        onMouseLeave={() => setShowTooltip(false)}
+      >
+        {/* Expand button */}
+        <button
+          onClick={toggleCollapsed}
+          className="flex items-center gap-1.5 px-1.5 py-1 rounded hover:bg-plm-bg-lighter transition-colors group"
+          title="Expand system stats"
+        >
+          <Activity size={12} className="text-plm-fg-muted group-hover:text-plm-fg" />
+          {/* 4 dots representing CPU, Memory, Disk, Network */}
+          <div className="flex items-center gap-1">
+            <div className={`w-1.5 h-1.5 rounded-full ${getDotColor(stats.cpu.usage)}`} title={`CPU: ${stats.cpu.usage}%`} />
+            <div className={`w-1.5 h-1.5 rounded-full ${getDotColor(stats.memory.percent)}`} title={`Memory: ${stats.memory.percent}%`} />
+            <div className={`w-1.5 h-1.5 rounded-full ${getDotColor(stats.disk.percent)}`} title={`Disk: ${stats.disk.percent}%`} />
+            <div className={`w-1.5 h-1.5 rounded-full ${
+              stats.network.rxSpeed >= 1024 || stats.network.txSpeed >= 1024 ? 'bg-sky-500' : 'bg-plm-fg-muted/30'
+            }`} title="Network" />
+          </div>
+          <ChevronRight size={10} className="text-plm-fg-muted group-hover:text-plm-fg" />
+        </button>
+
+        {/* Tooltip with detailed info (same as expanded) */}
+        {showTooltip && (
+          <div className="absolute top-full right-0 mt-2 p-3 bg-plm-bg-light border border-plm-border rounded-lg shadow-xl z-50 text-xs min-w-[220px]">
+            <div className="space-y-3">
+              {/* CPU Details */}
+              <div>
+                <div className="flex items-center justify-between text-plm-fg mb-1.5">
+                  <span className="flex items-center gap-1.5">
+                    <Cpu size={12} />
+                    CPU
+                  </span>
+                  <span className="font-medium tabular-nums">{stats.cpu.usage}%</span>
+                </div>
+                <div className="flex gap-0.5">
+                  {stats.cpu.cores.map((core, i) => (
+                    <div
+                      key={i}
+                      className="flex-1 h-3 bg-plm-bg rounded-sm overflow-hidden"
+                      title={`Core ${i}: ${core}%`}
+                    >
+                      <div
+                        className={`h-full transition-all duration-300 ${getBarColor(core)}`}
+                        style={{ width: `${core}%` }}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <div className="text-plm-fg-muted text-[10px] mt-1">
+                  {stats.cpu.cores.length} cores
+                </div>
+              </div>
+
+              {/* Memory Details */}
+              <div>
+                <div className="flex items-center justify-between text-plm-fg mb-1.5">
+                  <span className="flex items-center gap-1.5">
+                    <MemoryStick size={12} />
+                    Memory
+                  </span>
+                  <span className="font-medium tabular-nums">{stats.memory.percent}%</span>
+                </div>
+                <div className="h-2 bg-plm-bg rounded-sm overflow-hidden">
+                  <div
+                    className={`h-full transition-all duration-300 ${getBarColor(stats.memory.percent)}`}
+                    style={{ width: `${stats.memory.percent}%` }}
+                  />
+                </div>
+                <div className="text-plm-fg-muted text-[10px] mt-1">
+                  {formatBytes(stats.memory.used)} / {formatBytes(stats.memory.total)}
+                </div>
+              </div>
+
+              {/* Disk Details */}
+              <div>
+                <div className="flex items-center justify-between text-plm-fg mb-1.5">
+                  <span className="flex items-center gap-1.5">
+                    <HardDrive size={12} />
+                    Disk
+                  </span>
+                  <span className="font-medium tabular-nums">{stats.disk.percent}%</span>
+                </div>
+                <div className="h-2 bg-plm-bg rounded-sm overflow-hidden">
+                  <div
+                    className={`h-full transition-all duration-300 ${getBarColor(stats.disk.percent)}`}
+                    style={{ width: `${stats.disk.percent}%` }}
+                  />
+                </div>
+                <div className="text-plm-fg-muted text-[10px] mt-1">
+                  {formatBytes(stats.disk.used)} / {formatBytes(stats.disk.total)}
+                </div>
+              </div>
+
+              {/* Network Details */}
+              <div>
+                <div className="flex items-center gap-1.5 text-plm-fg mb-1.5">
+                  <ArrowDown size={12} className="text-emerald-500" />
+                  <ArrowUp size={12} className="text-amber-500" />
+                  Network
+                </div>
+                <div className="flex justify-between text-plm-fg-muted">
+                  <span className="flex items-center gap-1">
+                    <ArrowDown size={10} className="text-emerald-500" />
+                    {formatSpeed(stats.network.rxSpeed)}
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <ArrowUp size={10} className="text-amber-500" />
+                    {formatSpeed(stats.network.txSpeed)}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // Expanded view - full stats
   return (
     <div 
       ref={containerRef}
@@ -87,6 +232,15 @@ export function SystemStats({ availableWidth = Infinity }: SystemStatsProps) {
       onMouseEnter={() => setShowTooltip(true)}
       onMouseLeave={() => setShowTooltip(false)}
     >
+      {/* Collapse button */}
+      <button
+        onClick={toggleCollapsed}
+        className="p-0.5 rounded hover:bg-plm-bg-lighter transition-colors group"
+        title="Collapse system stats"
+      >
+        <ChevronLeft size={12} className="text-plm-fg-muted group-hover:text-plm-fg" />
+      </button>
+
       {/* CPU - minimal view (icon + percentage) */}
       <div className="flex items-center gap-1" title="CPU">
         <Cpu size={12} className="text-plm-fg-muted" />

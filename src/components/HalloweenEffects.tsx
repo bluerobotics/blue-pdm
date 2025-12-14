@@ -49,11 +49,11 @@ export function HalloweenEffects() {
   const [pumpkins, setPumpkins] = useState<Pumpkin[]>([])
   const [showControls, setShowControls] = useState(false)
   const animationRef = useRef<number>(0)
-  const sparksSpeedRef = useRef(sparksSpeed)
+  const sparksSpeedRef = useRef(sparksSpeed ?? 40) // Default to 40 if undefined
   
   // Keep speed ref in sync
   useEffect(() => {
-    sparksSpeedRef.current = sparksSpeed
+    sparksSpeedRef.current = sparksSpeed ?? 40
   }, [sparksSpeed])
   
   // Only render if Halloween theme is active
@@ -88,13 +88,13 @@ export function HalloweenEffects() {
     }
     
     const newGhosts: Ghost[] = []
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 12; i++) {
       newGhosts.push({
         id: i,
-        x: Math.random() * 100,
-        y: Math.random() * 60 + 10,
-        size: Math.random() * 30 + 20,
-        opacity: Math.random() * 0.3 + 0.1,
+        x: Math.random() * 90 + 5,
+        y: Math.random() * 70 + 5,
+        size: Math.random() * 40 + 40, // Bigger ghosts (40-80px)
+        opacity: Math.random() * 0.4 + 0.3, // Higher opacity (0.3-0.7)
         floatSpeed: Math.random() * 0.02 + 0.01,
         floatOffset: Math.random() * Math.PI * 2,
       })
@@ -264,32 +264,46 @@ export function HalloweenEffects() {
         />
       </div>
       
-      {/* Floating ghosts - behind content but visible */}
-      <div className="fixed inset-0 pointer-events-none overflow-hidden" style={{ zIndex: -7 }}>
-        {ghosts.map(ghost => (
-          <div
-            key={ghost.id}
-            style={{
-              position: 'absolute',
-              left: `${ghost.x}%`,
-              top: `${ghost.y + Math.sin(ghost.floatOffset) * 3}%`,
-              width: `${ghost.size}px`,
-              height: `${ghost.size * 1.3}px`,
-              opacity: ghost.opacity * (ghostsOpacity / 100),
-              filter: 'blur(1px)',
-            }}
-          >
-            {/* Ghost SVG */}
-            <svg viewBox="0 0 40 52" fill="white" style={{ width: '100%', height: '100%' }}>
-              <path d="M20 0 C8 0 0 10 0 22 L0 42 L8 35 L16 42 L24 35 L32 42 L40 35 L40 22 C40 10 32 0 20 0 Z" 
-                    fillOpacity="0.6" />
-              <circle cx="12" cy="18" r="4" fill="#0d0d0d" fillOpacity="0.8" />
-              <circle cx="28" cy="18" r="4" fill="#0d0d0d" fillOpacity="0.8" />
-              <ellipse cx="20" cy="28" rx="5" ry="6" fill="#0d0d0d" fillOpacity="0.6" />
-            </svg>
-          </div>
-        ))}
-      </div>
+      {/* Floating ghosts - in front of backgrounds, behind sparks */}
+      {(ghostsOpacity ?? 50) > 0 && (
+        <div className="fixed inset-0 pointer-events-none overflow-hidden" style={{ zIndex: 9998 }}>
+          {ghosts.map(ghost => (
+            <div
+              key={ghost.id}
+              style={{
+                position: 'absolute',
+                left: `${ghost.x}%`,
+                top: `${ghost.y + Math.sin(ghost.floatOffset) * 5}%`,
+                width: `${ghost.size}px`,
+                height: `${ghost.size * 1.3}px`,
+                opacity: ghost.opacity * ((ghostsOpacity ?? 50) / 100),
+              }}
+            >
+              {/* Ghost SVG */}
+              <svg viewBox="0 0 40 52" style={{ width: '100%', height: '100%' }}>
+                <defs>
+                  <filter id={`ghost-glow-${ghost.id}`}>
+                    <feGaussianBlur stdDeviation="2" result="blur" />
+                    <feMerge>
+                      <feMergeNode in="blur" />
+                      <feMergeNode in="SourceGraphic" />
+                    </feMerge>
+                  </filter>
+                </defs>
+                <path 
+                  d="M20 0 C8 0 0 10 0 22 L0 42 L8 35 L16 42 L24 35 L32 42 L40 35 L40 22 C40 10 32 0 20 0 Z" 
+                  fill="white"
+                  fillOpacity="0.85"
+                  filter={`url(#ghost-glow-${ghost.id})`}
+                />
+                <circle cx="12" cy="18" r="4" fill="#1a1a1a" fillOpacity="0.9" />
+                <circle cx="28" cy="18" r="4" fill="#1a1a1a" fillOpacity="0.9" />
+                <ellipse cx="20" cy="28" rx="5" ry="6" fill="#1a1a1a" fillOpacity="0.7" />
+              </svg>
+            </div>
+          ))}
+        </div>
+      )}
       
       {/* Bonfire sparks floating upward - in front of everything! */}
       {sparksOpacity > 0 && (

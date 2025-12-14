@@ -131,29 +131,24 @@ export function DevicePresenceIndicator() {
 
   if (!user || !isRegistered) return null
 
-  const deviceCount = sessions.length
   const otherDevices = sessions.filter(s => s.machine_id !== currentMachineId)
   const currentDevice = sessions.find(s => s.machine_id === currentMachineId)
+  const hasOtherDevices = otherDevices.length > 0
+  const deviceCount = sessions.length
+
+  // Only show the indicator if there are other devices signed in
+  if (!hasOtherDevices) return null
 
   return (
     <div className="relative" ref={dropdownRef}>
       {/* Indicator Button */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className={`
-          flex items-center gap-1 px-2 py-1 rounded-md
-          transition-colors text-xs
-          ${deviceCount > 1 
-            ? 'bg-plm-accent/20 text-plm-accent hover:bg-plm-accent/30' 
-            : 'bg-plm-bg-lighter text-plm-fg-muted hover:bg-plm-bg-light hover:text-plm-fg'
-          }
-        `}
+        className="flex items-center gap-1 px-2 py-1 rounded-md transition-colors text-xs bg-plm-accent/20 text-plm-accent hover:bg-plm-accent/30"
         title={`${deviceCount} device${deviceCount !== 1 ? 's' : ''} online`}
       >
         <Monitor size={14} />
-        {deviceCount > 1 && (
-          <span className="font-medium">{deviceCount}</span>
-        )}
+        <span className="font-medium">{deviceCount}</span>
         <ChevronDown size={12} className={`transition-transform ${isOpen ? 'rotate-180' : ''}`} />
       </button>
 
@@ -170,59 +165,59 @@ export function DevicePresenceIndicator() {
             </div>
           </div>
 
-          {/* Device List */}
+          {/* Device List - All devices in the same list */}
           <div className="max-h-64 overflow-y-auto">
-            {/* Current device first */}
-            {currentDevice && (
-              <div className="px-3 py-2 border-b border-plm-border bg-plm-accent/5">
-                <div className="flex items-center gap-2">
-                  <div className="text-plm-accent">
-                    {getPlatformIcon(currentDevice.platform, 16)}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-plm-fg truncate">
-                        {currentDevice.machine_name}
-                      </span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-plm-accent/20 text-plm-accent font-medium">
-                        This device
-                      </span>
+            {sessions.map((session) => {
+              const isCurrentDevice = session.machine_id === currentMachineId
+              return (
+                <div 
+                  key={session.id} 
+                  className={`px-3 py-2 border-b border-plm-border last:border-b-0 transition-colors ${
+                    isCurrentDevice ? 'bg-plm-accent/5' : 'hover:bg-plm-bg-lighter'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <div className={isCurrentDevice ? 'text-plm-accent' : 'text-plm-fg-muted'}>
+                      {getPlatformIcon(session.platform, 16)}
                     </div>
-                    <div className="flex items-center gap-2 text-xs text-plm-fg-muted">
-                      <span>{currentDevice.platform}</span>
-                      <span>•</span>
-                      <span>v{currentDevice.app_version}</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium text-plm-fg truncate">
+                          {session.machine_name}
+                        </span>
+                        {isCurrentDevice && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-plm-accent/20 text-plm-accent font-medium">
+                            This device
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 text-xs text-plm-fg-muted">
+                        {!isCurrentDevice && (
+                          <>
+                            <Clock size={10} />
+                            <span>{formatLastSeen(session.last_seen)}</span>
+                            <span>•</span>
+                          </>
+                        )}
+                        <span>{session.platform}</span>
+                        {isCurrentDevice && (
+                          <>
+                            <span>•</span>
+                            <span>v{session.app_version}</span>
+                          </>
+                        )}
+                      </div>
                     </div>
+                    <div 
+                      className={`w-2 h-2 rounded-full bg-plm-success ${isCurrentDevice ? 'animate-pulse' : ''}`} 
+                      title={isCurrentDevice ? 'Active' : 'Online'} 
+                    />
                   </div>
-                  <div className="w-2 h-2 rounded-full bg-plm-success animate-pulse" title="Active" />
                 </div>
-              </div>
-            )}
+              )
+            })}
 
-            {/* Other devices */}
-            {otherDevices.map((session) => (
-              <div key={session.id} className="px-3 py-2 border-b border-plm-border last:border-b-0 hover:bg-plm-bg-lighter transition-colors">
-                <div className="flex items-center gap-2">
-                  <div className="text-plm-fg-muted">
-                    {getPlatformIcon(session.platform, 16)}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium text-plm-fg truncate">
-                      {session.machine_name}
-                    </div>
-                    <div className="flex items-center gap-2 text-xs text-plm-fg-muted">
-                      <Clock size={10} />
-                      <span>{formatLastSeen(session.last_seen)}</span>
-                      <span>•</span>
-                      <span>{session.platform}</span>
-                    </div>
-                  </div>
-                  <div className="w-2 h-2 rounded-full bg-plm-success" title="Online" />
-                </div>
-              </div>
-            ))}
-
-            {/* Empty state */}
+            {/* Empty state - shouldn't show since we hide component when no other devices */}
             {sessions.length === 0 && (
               <div className="px-3 py-4 text-center text-sm text-plm-fg-muted">
                 <WifiOff size={20} className="mx-auto mb-2 opacity-50" />
