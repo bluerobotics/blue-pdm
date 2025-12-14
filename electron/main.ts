@@ -430,7 +430,7 @@ function createWindow() {
         parent: mainWindow || undefined,
         modal: false,
         show: true,
-        title: 'Sign in to Google - Close when done',
+        title: 'Sign in to Google',
         webPreferences: {
           nodeIntegration: false,
           contextIsolation: true
@@ -439,12 +439,27 @@ function createWindow() {
       
       googleAuthWindow.loadURL(url)
       
-      // Log navigation for debugging
+      // Auto-close when sign-in completes (navigates to actual Google Docs/Drive content)
       googleAuthWindow.webContents.on('did-navigate', (_, navUrl) => {
         log('[Window] Auth window navigated to:', navUrl.substring(0, 80))
+        
+        // Check if we've landed on actual document/drive content (sign-in complete)
+        const isDocumentUrl = 
+          navUrl.includes('docs.google.com/document/d/') ||
+          navUrl.includes('docs.google.com/spreadsheets/d/') ||
+          navUrl.includes('docs.google.com/presentation/d/') ||
+          navUrl.includes('docs.google.com/forms/d/') ||
+          navUrl.includes('drive.google.com/file/d/')
+        
+        if (isDocumentUrl) {
+          log('[Window] Sign-in complete, closing auth window and refreshing main view')
+          if (googleAuthWindow && !googleAuthWindow.isDestroyed()) {
+            googleAuthWindow.close()
+          }
+        }
       })
       
-      // When user closes the window, refresh the iframe
+      // When window closes (auto or manual), refresh the iframe
       googleAuthWindow.on('closed', () => {
         log('[Window] Google auth window closed')
         googleAuthWindow = null

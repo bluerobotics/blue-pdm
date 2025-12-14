@@ -10,7 +10,7 @@ interface Spark {
   y: number
   size: number
   speed: number
-  opacity: number
+  baseOpacity: number // Original opacity (doesn't change)
   wobble: number
   wobbleSpeed: number
   color: string // orange to red gradient
@@ -101,18 +101,18 @@ export function HalloweenEffects() {
       return
     }
     
-    // Create initial sparks
+    // Create initial sparks - spread them throughout the screen so some are visible immediately
     const initialSparks: Spark[] = []
-    for (let i = 0; i < 60; i++) {
+    for (let i = 0; i < 80; i++) {
       initialSparks.push({
         id: i,
-        x: Math.random() * 100, // Spread across bottom
-        y: 100 + Math.random() * 20, // Start below screen
+        x: Math.random() * 100, // Spread across screen
+        y: Math.random() * 120, // Spread from top to below screen (some visible immediately)
         size: Math.random() * 4 + 2,
-        speed: Math.random() * 1.5 + 0.5,
-        opacity: Math.random() * 0.8 + 0.2,
+        speed: Math.random() * 2 + 1, // Faster speed (1-3)
+        baseOpacity: Math.random() * 0.8 + 0.2,
         wobble: Math.random() * Math.PI * 2,
-        wobbleSpeed: Math.random() * 0.08 + 0.02,
+        wobbleSpeed: Math.random() * 0.05 + 0.02,
         color: sparkColors[Math.floor(Math.random() * sparkColors.length)],
       })
     }
@@ -121,24 +121,26 @@ export function HalloweenEffects() {
     // Animate sparks floating upward
     const animate = () => {
       setSparks(prev => prev.map(spark => {
-        let newY = spark.y - spark.speed * 0.15 // Float upward
+        let newY = spark.y - spark.speed * 0.3 // Float upward (faster!)
         let newWobble = spark.wobble + spark.wobbleSpeed
-        let newX = spark.x + Math.sin(newWobble) * 0.15 // Gentle side-to-side
-        let newOpacity = spark.opacity
+        let newX = spark.x + Math.sin(newWobble) * 0.1 // Gentle side-to-side
+        let newBaseOpacity = spark.baseOpacity
         
-        // Fade out as they rise
-        if (newY < 60) {
-          newOpacity = spark.opacity * (newY / 60)
-        }
-        
-        // Reset if off screen top or faded out
-        if (newY < 0 || newOpacity < 0.05) {
-          newY = 100 + Math.random() * 10
+        // Reset if off screen top
+        if (newY < -5) {
+          newY = 105 + Math.random() * 10
           newX = Math.random() * 100
-          newOpacity = Math.random() * 0.8 + 0.2
-          spark.color = sparkColors[Math.floor(Math.random() * sparkColors.length)]
-          spark.size = Math.random() * 4 + 2
-          spark.speed = Math.random() * 1.5 + 0.5
+          newBaseOpacity = Math.random() * 0.8 + 0.2
+          return {
+            ...spark,
+            x: newX,
+            y: newY,
+            wobble: newWobble,
+            baseOpacity: newBaseOpacity,
+            color: sparkColors[Math.floor(Math.random() * sparkColors.length)],
+            size: Math.random() * 4 + 2,
+            speed: Math.random() * 2 + 1,
+          }
         }
         
         return {
@@ -146,7 +148,6 @@ export function HalloweenEffects() {
           x: newX,
           y: newY,
           wobble: newWobble,
-          opacity: newOpacity,
         }
       }))
       
@@ -283,23 +284,31 @@ export function HalloweenEffects() {
       {/* Bonfire sparks floating upward - in front of everything! */}
       {sparksOpacity > 0 && (
         <div className="fixed inset-0 pointer-events-none overflow-hidden" style={{ zIndex: 9999 }}>
-          {sparks.map(spark => (
-            <div
-              key={spark.id}
-              style={{
-                position: 'absolute',
-                left: `${spark.x}%`,
-                top: `${spark.y}%`,
-                width: `${spark.size}px`,
-                height: `${spark.size}px`,
-                borderRadius: '50%',
-                backgroundColor: spark.color,
-                opacity: spark.opacity * (sparksOpacity / 100),
-                boxShadow: `0 0 ${spark.size * 2}px ${spark.color}, 0 0 ${spark.size}px ${spark.color}`,
-                filter: 'blur(0.5px)',
-              }}
-            />
-          ))}
+          {sparks.map(spark => {
+            // Calculate display opacity - fade out in top 30% of screen
+            let displayOpacity = spark.baseOpacity
+            if (spark.y < 30) {
+              displayOpacity = spark.baseOpacity * (spark.y / 30)
+            }
+            
+            return (
+              <div
+                key={spark.id}
+                style={{
+                  position: 'absolute',
+                  left: `${spark.x}%`,
+                  top: `${spark.y}%`,
+                  width: `${spark.size}px`,
+                  height: `${spark.size}px`,
+                  borderRadius: '50%',
+                  backgroundColor: spark.color,
+                  opacity: displayOpacity * (sparksOpacity / 100),
+                  boxShadow: `0 0 ${spark.size * 2}px ${spark.color}, 0 0 ${spark.size}px ${spark.color}`,
+                  filter: 'blur(0.5px)',
+                }}
+              />
+            )
+          })}
         </div>
       )}
       

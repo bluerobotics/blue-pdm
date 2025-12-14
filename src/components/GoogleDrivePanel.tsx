@@ -147,13 +147,13 @@ export function GoogleDrivePanel() {
     checkAuthStatus()
   }, [organization?.id])
   
-  // Listen for Google iframe session authentication (when user closes sign-in popup)
+  // Listen for Google iframe session authentication (when sign-in completes)
   useEffect(() => {
     const cleanup = window.electronAPI?.onGdriveSessionAuthenticated?.(() => {
-      console.log('[GoogleDrive] Auth window closed, refreshing iframe')
+      console.log('[GoogleDrive] Sign-in complete, refreshing iframe')
       // Force iframe to reload by incrementing key
       setIframeKey(prev => prev + 1)
-      addToast('info', 'Refreshing document...')
+      addToast('success', 'Signed in - loading document')
     })
     return () => cleanup?.()
   }, [addToast])
