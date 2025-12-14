@@ -3204,11 +3204,15 @@ export async function buildServer(): Promise<FastifyInstance> {
       }
     },
     preHandler: fastify.authenticate
-  }, async (request) => {
+  }, async (request, reply) => {
+    if (!request.user) {
+      return reply.code(401).send({ error: 'Unauthorized', message: 'Authentication required' })
+    }
+    
     const { data, error } = await supabase
       .from('organization_integrations')
       .select('*')
-      .eq('org_id', request.user!.org_id)
+      .eq('org_id', request.user.org_id)
       .eq('integration_type', 'odoo')
       .single()
     
@@ -3251,7 +3255,10 @@ export async function buildServer(): Promise<FastifyInstance> {
     },
     preHandler: fastify.authenticate
   }, async (request, reply) => {
-    if (request.user!.role !== 'admin') {
+    if (!request.user) {
+      return reply.code(401).send({ error: 'Unauthorized', message: 'Authentication required' })
+    }
+    if (request.user.role !== 'admin') {
       return reply.code(403).send({ error: 'Forbidden', message: 'Only admins can configure integrations' })
     }
     
@@ -3280,7 +3287,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     const { error } = await supabase
       .from('organization_integrations')
       .upsert({
-        org_id: request.user!.org_id,
+        org_id: request.user.org_id,
         integration_type: 'odoo',
         settings: { url: normalizedUrl, database, username },
         credentials_encrypted: api_key, // In production, encrypt this
@@ -3288,7 +3295,7 @@ export async function buildServer(): Promise<FastifyInstance> {
         is_connected: true,
         last_connected_at: new Date().toISOString(),
         auto_sync: auto_sync || false,
-        updated_by: request.user!.id
+        updated_by: request.user.id
       }, {
         onConflict: 'org_id,integration_type'
       })
@@ -3355,7 +3362,10 @@ export async function buildServer(): Promise<FastifyInstance> {
     },
     preHandler: fastify.authenticate
   }, async (request, reply) => {
-    if (request.user!.role !== 'admin' && request.user!.role !== 'engineer') {
+    if (!request.user) {
+      return reply.code(401).send({ error: 'Unauthorized', message: 'Authentication required' })
+    }
+    if (request.user.role !== 'admin' && request.user.role !== 'engineer') {
       return reply.code(403).send({ error: 'Forbidden', message: 'Only admins and engineers can sync' })
     }
     
@@ -3363,7 +3373,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     const { data: integration, error: intError } = await supabase
       .from('organization_integrations')
       .select('*')
-      .eq('org_id', request.user!.org_id)
+      .eq('org_id', request.user.org_id)
       .eq('integration_type', 'odoo')
       .single()
     
@@ -3403,12 +3413,12 @@ export async function buildServer(): Promise<FastifyInstance> {
         const { data: existing } = await supabase
           .from('suppliers')
           .select('id')
-          .eq('org_id', request.user!.org_id)
+          .eq('org_id', request.user.org_id)
           .eq('erp_id', String(odooSupplier.id))
           .single()
         
         const supplierData = {
-          org_id: request.user!.org_id,
+          org_id: request.user.org_id,
           name: odooSupplier.name,
           code: odooSupplier.ref || null,
           contact_email: odooSupplier.email || null,
@@ -3423,7 +3433,7 @@ export async function buildServer(): Promise<FastifyInstance> {
           is_active: odooSupplier.active !== false,
           erp_id: String(odooSupplier.id),
           erp_synced_at: new Date().toISOString(),
-          updated_by: request.user!.id
+          updated_by: request.user.id
         }
         
         if (existing) {
@@ -3439,7 +3449,7 @@ export async function buildServer(): Promise<FastifyInstance> {
             .from('suppliers')
             .insert({
               ...supplierData,
-              created_by: request.user!.id
+              created_by: request.user.id
             })
           created++
         }
@@ -3464,7 +3474,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     await supabase
       .from('integration_sync_log')
       .insert({
-        org_id: request.user!.org_id,
+        org_id: request.user.org_id,
         integration_id: integration.id,
         sync_type: 'suppliers',
         sync_direction: 'pull',
@@ -3475,7 +3485,7 @@ export async function buildServer(): Promise<FastifyInstance> {
         records_updated: updated,
         records_skipped: skipped,
         records_errored: errors,
-        triggered_by: request.user!.id,
+        triggered_by: request.user.id,
         trigger_type: 'manual'
       })
     
@@ -3498,7 +3508,10 @@ export async function buildServer(): Promise<FastifyInstance> {
     },
     preHandler: fastify.authenticate
   }, async (request, reply) => {
-    if (request.user!.role !== 'admin') {
+    if (!request.user) {
+      return reply.code(401).send({ error: 'Unauthorized', message: 'Authentication required' })
+    }
+    if (request.user.role !== 'admin') {
       return reply.code(403).send({ error: 'Forbidden', message: 'Only admins can disconnect integrations' })
     }
     
@@ -3508,9 +3521,9 @@ export async function buildServer(): Promise<FastifyInstance> {
         is_active: false,
         is_connected: false,
         credentials_encrypted: null,
-        updated_by: request.user!.id
+        updated_by: request.user.id
       })
-      .eq('org_id', request.user!.org_id)
+      .eq('org_id', request.user.org_id)
       .eq('integration_type', 'odoo')
     
     if (error) throw error
