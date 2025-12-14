@@ -391,13 +391,25 @@ function RFQDetailView({
     try {
       // Get org branding info (use db wrapper for new columns)
       const { data: orgData } = await db.from('organizations')
-        .select('name, logo_url, address_line1, address_line2, city, state, postal_code, country, phone, website, contact_email, rfq_settings')
+        .select('name, logo_url, logo_storage_path, address_line1, address_line2, city, state, postal_code, country, phone, website, contact_email, rfq_settings')
         .eq('id', organization.id)
         .single()
 
+      // Get fresh signed URL for logo if storage path exists
+      let logoUrl = (orgData as Record<string, unknown>)?.logo_url as string | null
+      const logoStoragePath = (orgData as Record<string, unknown>)?.logo_storage_path as string | null
+      if (logoStoragePath) {
+        const { data: signedData } = await supabase.storage
+          .from('vault')
+          .createSignedUrl(logoStoragePath, 60 * 60) // 1 hour is plenty for PDF gen
+        if (signedData?.signedUrl) {
+          logoUrl = signedData.signedUrl
+        }
+      }
+
       const orgBranding: OrgBranding = {
         name: (orgData as Record<string, unknown>)?.name as string || organization.name,
-        logo_url: (orgData as Record<string, unknown>)?.logo_url as string | null,
+        logo_url: logoUrl,
         address_line1: (orgData as Record<string, unknown>)?.address_line1 as string | null,
         address_line2: (orgData as Record<string, unknown>)?.address_line2 as string | null,
         city: (orgData as Record<string, unknown>)?.city as string | null,

@@ -132,30 +132,20 @@ export function Sidebar({ onOpenVault, onOpenRecentVault, onRefresh, settingsTab
     }
   }
 
-  // Settings view has a different header style
-  const isSettings = activeView === 'settings'
-
   return (
     <div
       className="bg-plm-sidebar flex flex-col overflow-hidden"
       style={{ width: effectiveWidth }}
     >
-      {isSettings ? (
-        /* Settings header - bigger, more padding, like Supabase */
-        <div className="h-12 flex items-center px-6 border-b border-plm-border">
-          <h4 className="text-xl font-medium text-plm-fg">Settings</h4>
-        </div>
-      ) : (
-        /* Default header - compact uppercase */
-        <div className="h-9 flex items-center justify-between px-4 text-[11px] font-semibold text-plm-fg-dim tracking-wide border-b border-plm-border">
-          <span>{getTitle()}</span>
-          {activeView === 'explorer' && connectedVaults.length > 0 && (
-            <span className="text-plm-fg-muted font-normal">
-              {connectedVaults.length} vault{connectedVaults.length > 1 ? 's' : ''}
-            </span>
-          )}
-        </div>
-      )}
+      {/* Sidebar header - compact uppercase style for all views */}
+      <div className="sidebar-header h-9 flex items-center justify-between px-4 text-[11px] font-semibold text-plm-fg-dim tracking-wide border-b border-plm-border">
+        <span>{getTitle()}</span>
+        {activeView === 'explorer' && connectedVaults.length > 0 && (
+          <span className="text-plm-fg-muted font-normal">
+            {connectedVaults.length} vault{connectedVaults.length > 1 ? 's' : ''}
+          </span>
+        )}
+      </div>
       <div className="flex-1 overflow-auto">
         {renderView()}
       </div>

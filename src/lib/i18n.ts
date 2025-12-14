@@ -205,6 +205,8 @@ const en: TranslationDict = {
     themeDeepBlueDesc: 'Ocean blue theme',
     themeLight: 'Light',
     themeLightDesc: 'VS Code Light+ style',
+    themeChristmas: '🎄 Christmas',
+    themeChristmasDesc: 'Festive with snow, sleighs & bells!',
     themeSystem: 'System',
     themeSystemDesc: 'Follow OS preference',
     
@@ -500,6 +502,8 @@ const fr: TranslationDict = {
     themeDeepBlueDesc: 'Thème bleu océan',
     themeLight: 'Clair',
     themeLightDesc: 'Style VS Code Light+',
+    themeChristmas: '🎄 Noël',
+    themeChristmasDesc: 'Festif avec neige, traîneaux et cloches !',
     themeSystem: 'Système',
     themeSystemDesc: 'Suivre les préférences du système',
     
@@ -788,6 +792,8 @@ const de: TranslationDict = {
     themeDeepBlueDesc: 'Ozeanblau-Thema',
     themeLight: 'Hell',
     themeLightDesc: 'VS Code Light+ Stil',
+    themeChristmas: '🎄 Weihnachten',
+    themeChristmasDesc: 'Festlich mit Schnee, Schlitten & Glocken!',
     themeSystem: 'System',
     themeSystemDesc: 'Systemeinstellung folgen',
     
@@ -1076,6 +1082,8 @@ const es: TranslationDict = {
     themeDeepBlueDesc: 'Tema azul océano',
     themeLight: 'Claro',
     themeLightDesc: 'Estilo VS Code Light+',
+    themeChristmas: '🎄 Navidad',
+    themeChristmasDesc: '¡Festivo con nieve, trineos y campanas!',
     themeSystem: 'Sistema',
     themeSystemDesc: 'Seguir preferencia del sistema',
     
@@ -1364,6 +1372,8 @@ const zhCN: TranslationDict = {
     themeDeepBlueDesc: '海洋蓝主题',
     themeLight: '浅色',
     themeLightDesc: 'VS Code Light+ 风格',
+    themeChristmas: '🎄 圣诞节',
+    themeChristmasDesc: '雪花、雪橇和铃铛的节日氛围！',
     themeSystem: '跟随系统',
     themeSystemDesc: '跟随操作系统偏好',
     
@@ -1652,6 +1662,8 @@ const zhTW: TranslationDict = {
     themeDeepBlueDesc: '海洋藍主題',
     themeLight: '淺色',
     themeLightDesc: 'VS Code Light+ 風格',
+    themeChristmas: '🎄 聖誕節',
+    themeChristmasDesc: '雪花、雪橇和鈴鐺的節日氛圍！',
     themeSystem: '跟隨系統',
     themeSystemDesc: '跟隨作業系統偏好',
     
@@ -1940,6 +1952,8 @@ const pt: TranslationDict = {
     themeDeepBlueDesc: 'Tema azul oceano',
     themeLight: 'Claro',
     themeLightDesc: 'Estilo VS Code Light+',
+    themeChristmas: '🎄 Natal',
+    themeChristmasDesc: 'Festivo com neve, trenós e sinos!',
     themeSystem: 'Sistema',
     themeSystemDesc: 'Seguir preferência do sistema',
     

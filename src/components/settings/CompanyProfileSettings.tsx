@@ -62,8 +62,20 @@ export function CompanyProfileSettings() {
 
         if (error) throw error
         
+        // If we have a storage path, get a fresh signed URL
+        let logoUrl = data?.logo_url || null
+        if (data?.logo_storage_path) {
+          const { data: signedData } = await supabase.storage
+            .from('vault')
+            .createSignedUrl(data.logo_storage_path, 60 * 60 * 24 * 365) // 1 year
+          
+          if (signedData?.signedUrl) {
+            logoUrl = signedData.signedUrl
+          }
+        }
+        
         setProfile({
-          logo_url: data?.logo_url || null,
+          logo_url: logoUrl,
           logo_storage_path: data?.logo_storage_path || null,
           address_line1: data?.address_line1 || null,
           address_line2: data?.address_line2 || null,
@@ -103,24 +115,28 @@ export function CompanyProfileSettings() {
 
     setUploadingLogo(true)
     try {
-      // Upload to storage
-      const filePath = `${organization.id}/logo.${file.name.split('.').pop()}`
+      // Upload to vault bucket under _assets folder
+      const ext = file.name.split('.').pop()?.toLowerCase() || 'png'
+      const filePath = `${organization.id}/_assets/logo.${ext}`
+      
       const { error: uploadError } = await supabase.storage
-        .from('org-assets')
+        .from('vault')
         .upload(filePath, file, { upsert: true })
 
       if (uploadError) throw uploadError
 
-      // Get public URL
-      const { data: urlData } = supabase.storage
-        .from('org-assets')
-        .getPublicUrl(filePath)
+      // Get a signed URL (valid for 1 year - will refresh when loading profile)
+      const { data: signedData, error: signedError } = await supabase.storage
+        .from('vault')
+        .createSignedUrl(filePath, 60 * 60 * 24 * 365) // 1 year
 
-      // Update organization
+      if (signedError) throw signedError
+
+      // Update organization with signed URL and storage path
       const { error: updateError } = await supabase
         .from('organizations')
         .update({
-          logo_url: urlData.publicUrl,
+          logo_url: signedData.signedUrl,
           logo_storage_path: filePath
         })
         .eq('id', organization.id)
@@ -129,7 +145,7 @@ export function CompanyProfileSettings() {
 
       setProfile(prev => ({
         ...prev,
-        logo_url: urlData.publicUrl,
+        logo_url: signedData.signedUrl,
         logo_storage_path: filePath
       }))
 
@@ -150,7 +166,7 @@ export function CompanyProfileSettings() {
       // Delete from storage if exists
       if (profile.logo_storage_path) {
         await supabase.storage
-          .from('org-assets')
+          .from('vault')
           .remove([profile.logo_storage_path])
       }
 

@@ -139,6 +139,135 @@
   --titlebar-height: 30px;
 }
 
+/* 🎄 Christmas Theme - Festive & Magical 🎅 */
+[data-theme="christmas"] {
+  --plm-bg: #0d1117;
+  --plm-bg-light: #161b22;
+  --plm-bg-lighter: #1c2128;
+  --plm-bg-secondary: #161b22;
+  --plm-sidebar: #0d1117;
+  --plm-activitybar: #0a0e13;
+  --plm-panel: #0d1117;
+  --plm-input: #1c2128;
+  --plm-border: #2d333b;
+  --plm-border-light: #3d444d;
+  --plm-fg: #f0f6fc;
+  --plm-fg-dim: #c9d1d9;
+  --plm-fg-muted: #8b949e;
+  --plm-accent: #c41e3a; /* Christmas red */
+  --plm-accent-hover: #a61830;
+  --plm-accent-dim: #8b1428;
+  --plm-selection: rgba(196, 30, 58, 0.25);
+  --plm-highlight: rgba(196, 30, 58, 0.12);
+  /* Christmas status colors */
+  --plm-success: #2ea043; /* Christmas green */
+  --plm-warning: #d4a72c; /* Gold */
+  --plm-error: #f85149;
+  --plm-info: #58a6ff;
+  /* File state colors */
+  --plm-wip: #d4a72c;
+  --plm-released: #2ea043;
+  --plm-in-review: #58a6ff;
+  --plm-obsolete: #6e7681;
+  --plm-locked: #f85149;
+  /* Titlebar height */
+  --titlebar-height: 30px;
+  /* Christmas special colors */
+  --christmas-red: #c41e3a;
+  --christmas-green: #2ea043;
+  --christmas-gold: #d4a72c;
+  --christmas-snow: #f0f6fc;
+  --christmas-pine: #1a4d2e;
+}
+
+/* Christmas theme scrollbar */
+[data-theme="christmas"] ::-webkit-scrollbar-thumb {
+  background: rgba(196, 30, 58, 0.4);
+}
+
+[data-theme="christmas"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(196, 30, 58, 0.6);
+}
+
+/* 🎄 Christmas Theme UI Enhancements 🎅 */
+
+/* Sidebar header bar - Christmas green */
+[data-theme="christmas"] .sidebar-header {
+  background: linear-gradient(180deg, #1a4d2e 0%, #15422a 100%);
+  color: #f0f6fc;
+}
+
+/* Breadcrumb/Toolbar bar - Christmas green */
+[data-theme="christmas"] .bg-plm-bg-light {
+  background: linear-gradient(180deg, #1a4d2e 0%, #15422a 100%) !important;
+}
+
+/* Column headers - Christmas green background */
+[data-theme="christmas"] .file-table th {
+  background: linear-gradient(180deg, #1a4d2e 0%, #143d24 100%);
+  color: #f0f6fc;
+  border-bottom-color: #2ea043;
+}
+
+[data-theme="christmas"] .file-table th:hover {
+  background: linear-gradient(180deg, #1f5c36 0%, #1a4d2e 100%);
+}
+
+/* Active tab with green */
+[data-theme="christmas"] .tab.active {
+  border-bottom-color: #2ea043;
+  color: #3fb950;
+}
+
+/* Primary buttons stay red (Christmas red) */
+[data-theme="christmas"] .btn-primary {
+  background: linear-gradient(135deg, #c41e3a 0%, #a61830 100%);
+}
+
+[data-theme="christmas"] .btn-primary:hover:not(:disabled) {
+  background: linear-gradient(135deg, #d42a46 0%, #c41e3a 100%);
+}
+
+/* Selection highlights with green tint */
+[data-theme="christmas"] .file-table tr.selected,
+[data-theme="christmas"] .tree-item.selected {
+  background: rgba(46, 160, 67, 0.2);
+}
+
+/* Hover with subtle green */
+[data-theme="christmas"] .file-table tr:hover:not(.selected),
+[data-theme="christmas"] .tree-item:hover:not(.selected) {
+  background: rgba(46, 160, 67, 0.1);
+}
+
+/* Context menu hover */
+[data-theme="christmas"] .context-menu-item:hover {
+  background: rgba(46, 160, 67, 0.25);
+}
+
+/* Input focus ring green */
+[data-theme="christmas"] input:focus,
+[data-theme="christmas"] textarea:focus,
+[data-theme="christmas"] select:focus {
+  border-color: #2ea043;
+}
+
+/* Sidebar header area with subtle green */
+[data-theme="christmas"] .bg-plm-sidebar {
+  background: linear-gradient(180deg, #0d1117 0%, #0f1419 100%);
+}
+
+/* Panel headers with green accent */
+[data-theme="christmas"] .panel-header {
+  background: rgba(46, 160, 67, 0.1);
+}
+
+/* Success/released badges extra festive */
+[data-theme="christmas"] .state-badge.released {
+  background: rgba(46, 160, 67, 0.25);
+  color: #3fb950;
+}
+
 *, *::before, *::after {
   box-sizing: border-box;
 }

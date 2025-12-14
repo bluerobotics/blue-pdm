@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin: 0; padding: 0; background-color: #0f172a; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="min-height: 100vh;">
+    <tr>
+      <td align="center" style="padding: 40px 20px;">
+        <table role="presentation" width="100%" style="max-width: 480px; background: linear-gradient(145deg, #1e293b 0%, #0f172a 100%); border-radius: 16px; border: 1px solid #334155; overflow: hidden;">
+          <!-- Header -->
+          <tr>
+            <td style="padding: 40px 40px 24px; text-align: center;">
+              <table role="presentation" cellspacing="0" cellpadding="0" style="margin: 0 auto 24px;">
+                <tr>
+                  <td style="vertical-align: middle; padding-right: 10px;">
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                      <path d="M2 17L12 22L22 17" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                      <path d="M2 12L12 17L22 12" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  </td>
+                  <td style="vertical-align: middle;">
+                    <span style="color: #f1f5f9; font-size: 22px; font-weight: 600; letter-spacing: -0.3px;">bluePLM</span>
+                  </td>
+                </tr>
+              </table>
+              <h1 style="margin: 0; color: #f1f5f9; font-size: 24px; font-weight: 600;">Confirm email change 📧</h1>
+            </td>
+          </tr>
+          <!-- Body -->
+          <tr>
+            <td style="padding: 0 40px 32px;">
+              <p style="margin: 0 0 24px; color: #94a3b8; font-size: 16px; line-height: 1.6;">
+                You requested to change your email address. Please confirm this change by clicking the button below.
+              </p>
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                <tr>
+                  <td align="center">
+                    <a href="{{ .ConfirmationURL }}" style="display: inline-block; background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: #ffffff; text-decoration: none; padding: 14px 32px; border-radius: 8px; font-size: 16px; font-weight: 600; box-shadow: 0 4px 14px rgba(59, 130, 246, 0.4);">Confirm New Email</a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <!-- Warning -->
+          <tr>
+            <td style="padding: 0 40px 32px;">
+              <div style="background-color: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.2); border-radius: 8px; padding: 16px;">
+                <p style="margin: 0; color: #fbbf24; font-size: 13px; line-height: 1.5;">
+                  ⚠️ If you didn't request this change, please secure your account immediately by resetting your password.
+                </p>
+              </div>
+            </td>
+          </tr>
+          <!-- Footer -->
+          <tr>
+            <td style="padding: 24px 40px; background-color: rgba(0,0,0,0.2); border-top: 1px solid #334155;">
+              <p style="margin: 0; color: #475569; font-size: 12px;">
+                © 2025 bluePLM. All rights reserved.
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+

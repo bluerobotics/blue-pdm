@@ -19,6 +19,7 @@ import { Toast } from './components/Toast'
 import { RightPanel } from './components/RightPanel'
 import { OrphanedCheckoutsContainer } from './components/OrphanedCheckoutDialog'
 import { GoogleDrivePanel } from './components/GoogleDrivePanel'
+import { ChristmasEffects } from './components/ChristmasEffects'
 import { executeTerminalCommand } from './lib/commands/parser'
 
 // Build full path using the correct separator for the platform
@@ -35,6 +36,7 @@ const titleBarOverlayColors: Record<string, { color: string; symbolColor: string
   'dark': { color: '#181818', symbolColor: '#cccccc' },
   'deep-blue': { color: '#071320', symbolColor: '#e3f2fd' },
   'light': { color: '#f0f0f0', symbolColor: '#333333' },
+  'christmas': { color: '#1a0a0a', symbolColor: '#ff6b6b' },
 }
 
 // Apply theme to document and update titlebar overlay
@@ -1415,7 +1417,10 @@ function App() {
   }
 
   return (
-    <div className="h-screen flex flex-col bg-plm-bg overflow-hidden">
+    <div className="h-screen flex flex-col bg-plm-bg overflow-hidden relative">
+      {/* 🎄 Christmas Effects - snow, sleigh, stars when theme is active */}
+      <ChristmasEffects />
+      
       <MenuBar
         onOpenVault={handleOpenVault}
         onRefresh={loadFiles}
@@ -1435,8 +1440,10 @@ function App() {
               settingsTab={settingsTab}
               onSettingsTabChange={setSettingsTab}
             />
-            {/* Hide resize handle for settings view (fixed width) */}
-            {activeView !== 'settings' && (
+            {/* Resize handle for non-settings views, simple border for settings */}
+            {activeView === 'settings' ? (
+              <div className="w-px bg-plm-border flex-shrink-0" />
+            ) : (
               <div
                 className="w-1.5 bg-plm-border hover:bg-plm-accent cursor-col-resize transition-colors flex-shrink-0 relative group"
                 onMouseDown={() => setIsResizingSidebar(true)}
