@@ -702,87 +702,88 @@ const authPlugin: FastifyPluginAsync = async (fastify) => {
   fastify.decorateRequest('supabase', null)
   fastify.decorateRequest('accessToken', null)
   
-  // Store reference to logger for use in authenticate
-  const log = fastify.log
-  
   fastify.decorate('authenticate', async function(
     request: FastifyRequest, 
     reply: FastifyReply
   ): Promise<void> {
-    log.info('>>> [Auth] authenticate() ENTRY')
-    const authHeader = request.headers.authorization
-    log.info({ msg: '>>> [Auth] Header check', hasAuth: !!authHeader, authPrefix: authHeader?.substring(0, 20) })
+    // Use console.log as fallback to ensure we see output
+    console.log('>>> [Auth] authenticate() ENTRY - v2.1.8')
+    fastify.log.info('>>> [Auth] authenticate() ENTRY')
     
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      log.warn('>>> [Auth] Missing or invalid auth header')
-      reply.code(401).send({ 
-        error: 'Unauthorized',
-        message: 'Missing or invalid Authorization header'
-      })
-      throw new Error('Auth: Missing header')
+    try {
+      const authHeader = request.headers.authorization
+      console.log('>>> [Auth] Header:', authHeader ? authHeader.substring(0, 30) + '...' : 'NONE')
+      
+      if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        console.log('>>> [Auth] FAIL: Missing or invalid auth header')
+        reply.code(401).send({ 
+          error: 'Unauthorized',
+          message: 'Missing or invalid Authorization header'
+        })
+        throw new Error('Auth: Missing header')
+      }
+      
+      const token = authHeader.substring(7)
+      
+      if (!token || token === 'undefined' || token === 'null') {
+        console.log('>>> [Auth] FAIL: Empty or invalid token string')
+        reply.code(401).send({ 
+          error: 'Unauthorized',
+          message: 'Invalid or missing access token'
+        })
+        throw new Error('Auth: Invalid token string')
+      }
+      
+      console.log('>>> [Auth] Verifying token with Supabase...')
+      const supabase = createSupabaseClient(token)
+      const { data: { user }, error } = await supabase.auth.getUser(token)
+      
+      if (error || !user) {
+        console.log('>>> [Auth] FAIL: Token verification failed:', error?.message)
+        reply.code(401).send({ 
+          error: 'Invalid token',
+          message: error?.message || 'Token verification failed',
+          hint: 'Ensure API server SUPABASE_URL matches your app\'s Supabase project'
+        })
+        throw new Error('Auth: Token verification failed')
+      }
+      
+      console.log('>>> [Auth] Token valid, looking up profile for user:', user.id)
+      const { data: profile, error: profileError } = await supabase
+        .from('users')
+        .select('id, email, role, org_id, full_name')
+        .eq('id', user.id)
+        .single()
+      
+      if (profileError || !profile) {
+        console.log('>>> [Auth] FAIL: Profile lookup failed:', profileError?.message)
+        reply.code(401).send({ 
+          error: 'Profile not found',
+          message: 'User profile does not exist'
+        })
+        throw new Error('Auth: Profile not found')
+      }
+      
+      if (!profile.org_id) {
+        console.log('>>> [Auth] FAIL: User has no organization:', profile.email)
+        reply.code(403).send({ 
+          error: 'No organization',
+          message: 'User is not a member of any organization'
+        })
+        throw new Error('Auth: No organization')
+      }
+      
+      // Success - set user on request
+      request.user = profile as UserProfile
+      request.supabase = supabase
+      request.accessToken = token
+      console.log('>>> [Auth] SUCCESS: Authenticated', profile.email)
+      fastify.log.info({ msg: '>>> [Auth] Authenticated', email: profile.email })
+    } catch (err) {
+      // Re-throw to stop the request lifecycle
+      console.log('>>> [Auth] Exception caught:', err instanceof Error ? err.message : err)
+      throw err
     }
-    
-    const token = authHeader.substring(7)
-    
-    // Check for literal "undefined" string (frontend bug protection)
-    if (!token || token === 'undefined' || token === 'null') {
-      log.warn('>>> [Auth] Empty or invalid token string')
-      reply.code(401).send({ 
-        error: 'Unauthorized',
-        message: 'Invalid or missing access token'
-      })
-      throw new Error('Auth: Invalid token string')
-    }
-    
-    const supabase = createSupabaseClient(token)
-    const { data: { user }, error } = await supabase.auth.getUser(token)
-    
-    if (error || !user) {
-      // Log detailed auth failure for debugging
-      log.error({ 
-        msg: '>>> [Auth] Token verification failed',
-        error: error?.message,
-        errorCode: error?.code,
-        hasUser: !!user,
-        tokenPrefix: token.substring(0, 20) + '...'
-      })
-      reply.code(401).send({ 
-        error: 'Invalid token',
-        message: error?.message || 'Token verification failed',
-        hint: 'Ensure API server SUPABASE_URL matches your app\'s Supabase project'
-      })
-      throw new Error('Auth: Token verification failed')
-    }
-    
-    const { data: profile, error: profileError } = await supabase
-      .from('users')
-      .select('id, email, role, org_id, full_name')
-      .eq('id', user.id)
-      .single()
-    
-    if (profileError || !profile) {
-      log.error({ msg: '>>> [Auth] Profile lookup failed', error: profileError?.message })
-      reply.code(401).send({ 
-        error: 'Profile not found',
-        message: 'User profile does not exist'
-      })
-      throw new Error('Auth: Profile not found')
-    }
-    
-    if (!profile.org_id) {
-      log.warn({ msg: '>>> [Auth] User has no organization', email: profile.email })
-      reply.code(403).send({ 
-        error: 'No organization',
-        message: 'User is not a member of any organization'
-      })
-      throw new Error('Auth: No organization')
-    }
-    
-    // Success - set user on request
-    request.user = profile as UserProfile
-    request.supabase = supabase
-    request.accessToken = token
-    log.info({ msg: '>>> [Auth] Authenticated', email: profile.email })
   })
 }
 
