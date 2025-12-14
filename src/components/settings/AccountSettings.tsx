@@ -330,20 +330,18 @@ export function AccountSettings() {
                           <span className={`w-1.5 h-1.5 rounded-full bg-plm-success ${isCurrentDevice ? 'animate-pulse' : ''}`} />
                           {formatLastSeen(session.last_seen)}
                         </div>
-                        {!isCurrentDevice && (
-                          <button
-                            onClick={() => handleRemoteSignOut(session.id)}
-                            disabled={isSigningOut}
-                            className="p-1.5 rounded hover:bg-plm-error/20 text-plm-fg-muted hover:text-plm-error transition-colors disabled:opacity-50"
-                            title="Sign out this device"
-                          >
-                            {isSigningOut ? (
-                              <Loader2 size={14} className="animate-spin" />
-                            ) : (
-                              <LogOut size={14} />
-                            )}
-                          </button>
-                        )}
+                        <button
+                          onClick={() => isCurrentDevice ? handleSignOut() : handleRemoteSignOut(session.id)}
+                          disabled={isSigningOut}
+                          className="p-1.5 rounded hover:bg-plm-error/20 text-plm-fg-muted hover:text-plm-error transition-colors disabled:opacity-50"
+                          title={isCurrentDevice ? "Sign out" : "Sign out this device"}
+                        >
+                          {isSigningOut ? (
+                            <Loader2 size={14} className="animate-spin" />
+                          ) : (
+                            <LogOut size={14} />
+                          )}
+                        </button>
                       </div>
                     </div>
                   )
@@ -621,16 +619,6 @@ export function AccountSettings() {
         </div>
       </section>
 
-      {/* Account actions */}
-      <section>
-        <button
-          onClick={handleSignOut}
-          className="w-full flex items-center gap-2 px-4 py-3 text-base text-plm-error bg-plm-error/5 hover:bg-plm-error/10 rounded-lg border border-plm-error/20 transition-colors"
-        >
-          <LogOut size={18} />
-          Sign Out
-        </button>
-      </section>
     </div>
   )
 }

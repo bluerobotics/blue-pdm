@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { LogOut, ChevronDown, Building2, Search, File, Folder, LayoutGrid, Database, ZoomIn, Minus, Plus, RotateCcw } from 'lucide-react'
+import { LogOut, ChevronDown, Building2, Search, File, Folder, LayoutGrid, Database, ZoomIn, Minus, Plus, RotateCcw, Monitor, Laptop, Loader2 } from 'lucide-react'
 import { usePDMStore } from '../stores/pdmStore'
-import { signInWithGoogle, signOut, isSupabaseConfigured, linkUserToOrganization } from '../lib/supabase'
+import { signInWithGoogle, signOut, isSupabaseConfigured, linkUserToOrganization, getActiveSessions, endRemoteSession, UserSession } from '../lib/supabase'
 import { getInitials } from '../types/pdm'
 import { SystemStats } from './SystemStats'
-import { DevicePresenceIndicator } from './DevicePresenceIndicator'
+import { getMachineId } from '../lib/backup'
 
 // Helper to log to both console and electron log file
 const uiLog = (level: 'info' | 'warn' | 'error' | 'debug', message: string, data?: unknown) => {
@@ -48,6 +48,9 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
   const [showVaultDropdown, setShowVaultDropdown] = useState(false)
   const [showZoomDropdown, setShowZoomDropdown] = useState(false)
   const [zoomFactor, setZoomFactor] = useState(1)
+  const [sessions, setSessions] = useState<UserSession[]>([])
+  const [currentMachineId, setCurrentMachineId] = useState<string | null>(null)
+  const [signingOutSessionId, setSigningOutSessionId] = useState<string | null>(null)
   const vaultDropdownRef = useRef<HTMLDivElement>(null)
   const zoomDropdownRef = useRef<HTMLDivElement>(null)
   const [titleBarPadding, setTitleBarPadding] = useState(140) // Default fallback
@@ -90,6 +93,37 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
       })
     }
   }, [])
+
+  // Load sessions when user menu is opened
+  useEffect(() => {
+    if (!user?.id || !showUserMenu) return
+    
+    const loadSessions = async () => {
+      const machineId = await getMachineId()
+      setCurrentMachineId(machineId)
+      const { sessions: activeSessions } = await getActiveSessions(user.id)
+      setSessions(activeSessions)
+    }
+    
+    loadSessions()
+  }, [user?.id, showUserMenu])
+
+  const handleRemoteSignOut = async (sessionId: string) => {
+    setSigningOutSessionId(sessionId)
+    try {
+      const { success } = await endRemoteSession(sessionId)
+      if (success) {
+        setSessions(prev => prev.filter(s => s.id !== sessionId))
+      }
+    } finally {
+      setSigningOutSessionId(null)
+    }
+  }
+
+  const getPlatformIcon = (p: string | null, size: number = 12) => {
+    if (p === 'darwin') return <Laptop size={size} />
+    return <Monitor size={size} />
+  }
   
   // Zoom handlers
   const handleZoomIn = useCallback(async () => {
@@ -458,9 +492,6 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
           </div>
         )}
         
-        {/* Device presence indicator - shows how many computers are online */}
-        {!minimal && <DevicePresenceIndicator />}
-        
         {user && !minimal ? (
           <div className="relative" ref={menuRef}>
             <button 
@@ -559,6 +590,56 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
                       >
                         Link
                       </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Sessions */}
+                <div className="px-4 py-2 border-b border-plm-border">
+                  <div className="text-[10px] uppercase tracking-wide text-plm-fg-dim mb-1.5">Sessions</div>
+                  <div className="space-y-1">
+                    {sessions.map(session => {
+                      const isCurrentDevice = session.machine_id === currentMachineId
+                      const isSigningOut = signingOutSessionId === session.id
+                      return (
+                        <div 
+                          key={session.id}
+                          className={`flex items-center gap-2 py-1 px-1.5 rounded text-xs ${
+                            isCurrentDevice ? 'bg-plm-accent/10' : ''
+                          }`}
+                        >
+                          <span className={isCurrentDevice ? 'text-plm-accent' : 'text-plm-fg-muted'}>
+                            {getPlatformIcon(session.platform)}
+                          </span>
+                          <span className={`flex-1 truncate ${isCurrentDevice ? 'text-plm-fg' : 'text-plm-fg-muted'}`}>
+                            {session.machine_name}
+                          </span>
+                          {isCurrentDevice ? (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-plm-accent/20 text-plm-accent">
+                              this device
+                            </span>
+                          ) : (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                handleRemoteSignOut(session.id)
+                              }}
+                              disabled={isSigningOut}
+                              className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-plm-bg-lighter hover:bg-plm-error/20 text-plm-fg-dim hover:text-plm-error transition-colors disabled:opacity-50"
+                            >
+                              {isSigningOut ? (
+                                <Loader2 size={10} className="animate-spin" />
+                              ) : (
+                                <LogOut size={10} />
+                              )}
+                              <span>Sign out</span>
+                            </button>
+                          )}
+                        </div>
+                      )
+                    })}
+                    {sessions.length === 0 && (
+                      <div className="text-xs text-plm-fg-dim py-1">No active sessions</div>
                     )}
                   </div>
                 </div>
