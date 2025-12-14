@@ -652,17 +652,26 @@ async function fetchOdooSuppliers(
     let supplierIds: unknown = []
     let queryUsed = 'none'
     
+    // Helper to check if result is a valid array of IDs
+    const isValidIdArray = (result: unknown): result is number[] => 
+      Array.isArray(result) && result.length > 0
+    
     // Strategy 1: supplier_rank > 0 (partners with purchase history in Odoo 13+)
-    supplierIds = await odooXmlRpc(normalizedUrl, 'object', 'execute_kw', [
-      database, uid, apiKey,
-      'res.partner', 'search',
-      [[['supplier_rank', '>', 0]]],
-      { limit: 5000 }
-    ])
-    queryUsed = 'supplier_rank'
+    try {
+      supplierIds = await odooXmlRpc(normalizedUrl, 'object', 'execute_kw', [
+        database, uid, apiKey,
+        'res.partner', 'search',
+        [[['supplier_rank', '>', 0]]],
+        { limit: 5000 }
+      ])
+      queryUsed = 'supplier_rank'
+      debug.supplier_ids_type = `supplier_rank:${typeof supplierIds}${Array.isArray(supplierIds) ? `[${supplierIds.length}]` : ''}`
+    } catch (e) {
+      debug.supplier_ids_type = `supplier_rank:error:${e}`
+    }
     
     // Strategy 2: If no results, try 'supplier' boolean (older Odoo)
-    if (!supplierIds || (Array.isArray(supplierIds) && supplierIds.length === 0)) {
+    if (!isValidIdArray(supplierIds)) {
       try {
         supplierIds = await odooXmlRpc(normalizedUrl, 'object', 'execute_kw', [
           database, uid, apiKey,
@@ -671,23 +680,29 @@ async function fetchOdooSuppliers(
           { limit: 5000 }
         ])
         queryUsed = 'supplier_boolean'
+        debug.supplier_ids_type += ` → supplier_boolean:${typeof supplierIds}${Array.isArray(supplierIds) ? `[${supplierIds.length}]` : ''}`
       } catch {
-        // Field might not exist, continue
+        debug.supplier_ids_type += ' → supplier_boolean:field_not_found'
       }
     }
     
     // Strategy 3: If still no results, get all companies (broad search)
-    if (!supplierIds || (Array.isArray(supplierIds) && supplierIds.length === 0)) {
-      supplierIds = await odooXmlRpc(normalizedUrl, 'object', 'execute_kw', [
-        database, uid, apiKey,
-        'res.partner', 'search',
-        [[['is_company', '=', true], ['active', '=', true]]],
-        { limit: 5000 }
-      ])
-      queryUsed = 'is_company'
+    if (!isValidIdArray(supplierIds)) {
+      try {
+        supplierIds = await odooXmlRpc(normalizedUrl, 'object', 'execute_kw', [
+          database, uid, apiKey,
+          'res.partner', 'search',
+          [[['is_company', '=', true], ['active', '=', true]]],
+          { limit: 5000 }
+        ])
+        queryUsed = 'is_company'
+        debug.supplier_ids_type += ` → is_company:${typeof supplierIds}${Array.isArray(supplierIds) ? `[${supplierIds.length}]` : ''}`
+      } catch (e) {
+        debug.supplier_ids_type += ` → is_company:error:${e}`
+      }
     }
     
-    debug.supplier_ids_type = queryUsed + ':' + typeof supplierIds + (Array.isArray(supplierIds) ? '[]' : '')
+    // debug.supplier_ids_type is set in the query strategies above
     
     // Ensure supplierIds is an array
     const ids = Array.isArray(supplierIds) ? supplierIds : []
