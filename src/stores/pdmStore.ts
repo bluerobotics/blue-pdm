@@ -30,8 +30,6 @@ export type SidebarView =
   | 'gsd'        // ECO summary (Getting Stuff Done)
   | 'suppliers'  // Supplier database
   | 'supplier-portal'  // Supplier portal
-  | 'google-drive' // Google Drive integration
-  | 'integrations' // Slack, Odoo integrations
   // System
   | 'settings'
 export type DetailsPanelTab = 'properties' | 'preview' | 'whereused' | 'contains' | 'history'

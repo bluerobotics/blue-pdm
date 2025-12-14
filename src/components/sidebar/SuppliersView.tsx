@@ -91,8 +91,8 @@ export function SuppliersView() {
         loadSuppliers()
       } else {
         if (data.message?.includes('not configured')) {
-          addToast('warning', 'Odoo not configured. Go to Integrations to set it up.')
-          setActiveView('integrations')
+          addToast('warning', 'Odoo not configured. Go to Settings > Google Drive & ERP to set it up.')
+          setActiveView('settings')
         } else {
           addToast('error', data.message || 'Sync failed')
         }

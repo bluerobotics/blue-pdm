@@ -238,8 +238,6 @@ const en: TranslationDict = {
     reviews: 'Reviews/Approvals',
     suppliers: 'Suppliers',
     supplierPortal: 'Supplier Portal',
-    googleDrive: 'Google Drive',
-    integrations: 'Integrations',
     settings: 'Settings',
     
     // Sidebar control
@@ -529,8 +527,6 @@ const fr: TranslationDict = {
     reviews: 'Révisions/Approbations',
     suppliers: 'Fournisseurs',
     supplierPortal: 'Portail fournisseurs',
-    googleDrive: 'Google Drive',
-    integrations: 'Intégrations',
     settings: 'Paramètres',
     
     sidebarControl: 'Contrôle de la barre latérale',
@@ -814,8 +810,6 @@ const de: TranslationDict = {
     reviews: 'Prüfungen/Genehmigungen',
     suppliers: 'Lieferanten',
     supplierPortal: 'Lieferantenportal',
-    googleDrive: 'Google Drive',
-    integrations: 'Integrationen',
     settings: 'Einstellungen',
     
     sidebarControl: 'Seitenleistensteuerung',
@@ -1099,8 +1093,6 @@ const es: TranslationDict = {
     reviews: 'Revisiones/Aprobaciones',
     suppliers: 'Proveedores',
     supplierPortal: 'Portal de proveedores',
-    googleDrive: 'Google Drive',
-    integrations: 'Integraciones',
     settings: 'Configuración',
     
     sidebarControl: 'Control de barra lateral',
@@ -1384,8 +1376,6 @@ const zhCN: TranslationDict = {
     reviews: '审核/批准',
     suppliers: '供应商',
     supplierPortal: '供应商门户',
-    googleDrive: 'Google Drive',
-    integrations: '集成',
     settings: '设置',
     
     sidebarControl: '侧边栏控制',
@@ -1669,8 +1659,6 @@ const zhTW: TranslationDict = {
     reviews: '審核/核准',
     suppliers: '供應商',
     supplierPortal: '供應商入口',
-    googleDrive: 'Google Drive',
-    integrations: '整合',
     settings: '設定',
     
     sidebarControl: '側邊欄控制',
@@ -1954,8 +1942,6 @@ const pt: TranslationDict = {
     reviews: 'Revisões/Aprovações',
     suppliers: 'Fornecedores',
     supplierPortal: 'Portal de Fornecedores',
-    googleDrive: 'Google Drive',
-    integrations: 'Integrações',
     settings: 'Definições',
     
     sidebarControl: 'Controlo da barra lateral',

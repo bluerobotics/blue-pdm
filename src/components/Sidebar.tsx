@@ -17,8 +17,6 @@ import { ReviewsView } from './sidebar/ReviewsView'
 import { GSDView } from './sidebar/GSDView'
 import { SuppliersView } from './sidebar/SuppliersView'
 import { SupplierPortalView } from './sidebar/SupplierPortalView'
-import { GoogleDriveView } from './sidebar/GoogleDriveView'
-import { IntegrationsView } from './sidebar/IntegrationsView'
 // System Views
 import { SettingsNavigation } from './sidebar/SettingsNavigation'
 
@@ -36,14 +34,10 @@ interface SidebarProps {
 const SETTINGS_SIDEBAR_WIDTH = 200
 
 export function Sidebar({ onOpenVault, onOpenRecentVault, onRefresh, settingsTab = 'account', onSettingsTabChange }: SidebarProps) {
-  const { activeView, sidebarWidth, connectedVaults, setGdriveNavigation, gdriveCurrentFolderId } = usePDMStore()
+  const { activeView, sidebarWidth, connectedVaults } = usePDMStore()
   
   // Settings view uses fixed width, others use resizable width
   const effectiveWidth = activeView === 'settings' ? SETTINGS_SIDEBAR_WIDTH : sidebarWidth
-
-  const handleGdriveNavigate = (folderId: string | null, folderName?: string, isSharedDrive?: boolean, driveId?: string) => {
-    setGdriveNavigation(folderId, folderName, isSharedDrive, driveId)
-  }
 
   const renderView = () => {
     switch (activeView) {
@@ -81,10 +75,6 @@ export function Sidebar({ onOpenVault, onOpenRecentVault, onRefresh, settingsTab
         return <SuppliersView />
       case 'supplier-portal':
         return <SupplierPortalView />
-      case 'google-drive':
-        return <GoogleDriveView onNavigate={handleGdriveNavigate} currentFolderId={gdriveCurrentFolderId} />
-      case 'integrations':
-        return <IntegrationsView />
       // System Views
       case 'settings':
         return <SettingsNavigation activeTab={settingsTab} onTabChange={onSettingsTabChange || (() => {})} />
@@ -129,10 +119,6 @@ export function Sidebar({ onOpenVault, onOpenRecentVault, onRefresh, settingsTab
         return 'SUPPLIERS'
       case 'supplier-portal':
         return 'SUPPLIER PORTAL'
-      case 'google-drive':
-        return 'GOOGLE DRIVE'
-      case 'integrations':
-        return 'INTEGRATIONS'
       // System Views
       case 'settings':
         return 'SETTINGS'

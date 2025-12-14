@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { HardDrive, Loader2, Check, Eye, EyeOff, Puzzle, ShoppingCart, RefreshCw, AlertCircle, Plug, ExternalLink } from 'lucide-react'
+import { HardDrive, Loader2, Check, Eye, EyeOff, Puzzle, ShoppingCart, RefreshCw, AlertCircle, Plug, ExternalLink, MessageSquare } from 'lucide-react'
 import { usePDMStore } from '../../stores/pdmStore'
 import { supabase } from '../../lib/supabase'
 
@@ -17,8 +17,22 @@ interface OdooSettings {
   auto_sync: boolean
 }
 
+const API_URL_KEY = 'bluepdm_api_url'
+const DEFAULT_API_URL = 'http://localhost:3001'
+
+// Get the configured API URL (org settings > localStorage > env > default)
+function getApiUrl(organization: { settings?: { api_url?: string } } | null): string {
+  return organization?.settings?.api_url 
+    || localStorage.getItem(API_URL_KEY) 
+    || import.meta.env.VITE_API_URL 
+    || DEFAULT_API_URL
+}
+
 export function IntegrationsSettings() {
   const { user, organization, addToast } = usePDMStore()
+  
+  // Get the API URL from org settings or fallback
+  const apiUrl = getApiUrl(organization)
   
   // Google Drive settings state
   const [gdriveClientId, setGdriveClientId] = useState('')
@@ -27,6 +41,9 @@ export function IntegrationsSettings() {
   const [isLoadingGdrive, setIsLoadingGdrive] = useState(false)
   const [isSavingGdrive, setIsSavingGdrive] = useState(false)
   const [showGdriveSecret, setShowGdriveSecret] = useState(false)
+  
+  // API server status
+  const [apiServerOnline, setApiServerOnline] = useState<boolean | null>(null)
   
   // Odoo settings state
   const [odooSettings, setOdooSettings] = useState<OdooSettings | null>(null)
@@ -102,15 +119,32 @@ export function IntegrationsSettings() {
     }
   }
   
+  // Check API server status
+  const checkApiServer = async () => {
+    try {
+      const response = await fetch(`${apiUrl}/health`, {
+        signal: AbortSignal.timeout(3000)
+      })
+      setApiServerOnline(response.ok)
+      return response.ok
+    } catch {
+      setApiServerOnline(false)
+      return false
+    }
+  }
+  
   // Odoo functions
   const loadOdooSettings = async () => {
     setIsLoadingOdoo(true)
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/integrations/odoo`, {
+      const response = await fetch(`${apiUrl}/integrations/odoo`, {
         headers: {
           'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
-        }
+        },
+        signal: AbortSignal.timeout(5000)
       })
+      
+      setApiServerOnline(true)
       
       if (response.ok) {
         const data = await response.json()
@@ -123,6 +157,10 @@ export function IntegrationsSettings() {
         }
       }
     } catch (err) {
+      // Check if it's a connection error
+      if (err instanceof TypeError && err.message.includes('fetch')) {
+        setApiServerOnline(false)
+      }
       console.error('Failed to load Odoo settings:', err)
     } finally {
       setIsLoadingOdoo(false)
@@ -139,7 +177,7 @@ export function IntegrationsSettings() {
     setOdooTestResult(null)
 
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/integrations/odoo/test`, {
+      const response = await fetch(`${apiUrl}/integrations/odoo/test`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -150,7 +188,8 @@ export function IntegrationsSettings() {
           database: odooDatabase, 
           username: odooUsername, 
           api_key: odooApiKey 
-        })
+        }),
+        signal: AbortSignal.timeout(15000)
       })
 
       const data = await response.json()
@@ -161,7 +200,12 @@ export function IntegrationsSettings() {
         setOdooTestResult({ success: false, message: data.message || data.error || 'Connection failed' })
       }
     } catch (err) {
-      setOdooTestResult({ success: false, message: String(err) })
+      if (err instanceof TypeError && err.message.includes('fetch')) {
+        setApiServerOnline(false)
+        setOdooTestResult({ success: false, message: 'API server is offline. Run "npm run api" locally.' })
+      } else {
+        setOdooTestResult({ success: false, message: String(err) })
+      }
     } finally {
       setIsTestingOdoo(false)
     }
@@ -176,7 +220,7 @@ export function IntegrationsSettings() {
     setIsSavingOdoo(true)
 
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/integrations/odoo`, {
+      const response = await fetch(`${apiUrl}/integrations/odoo`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -209,7 +253,7 @@ export function IntegrationsSettings() {
     setIsSyncingOdoo(true)
 
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/integrations/odoo/sync/suppliers`, {
+      const response = await fetch(`${apiUrl}/integrations/odoo/sync/suppliers`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -236,7 +280,7 @@ export function IntegrationsSettings() {
     if (!confirm('Are you sure you want to disconnect Odoo?')) return
 
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/integrations/odoo`, {
+      const response = await fetch(`${apiUrl}/integrations/odoo`, {
         method: 'DELETE',
         headers: {
           'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
@@ -398,14 +442,37 @@ export function IntegrationsSettings() {
         </div>
         
         <div className="space-y-4 p-4 bg-pdm-bg rounded-lg border border-pdm-border">
+          {/* API Server Offline Warning */}
+          {apiServerOnline === false && (
+            <div className="flex items-start gap-3 p-3 bg-pdm-warning/10 border border-pdm-warning/30 rounded-lg">
+              <AlertCircle size={18} className="text-pdm-warning flex-shrink-0 mt-0.5" />
+              <div className="text-sm">
+                <div className="font-medium text-pdm-warning">API Server Offline</div>
+                <p className="text-pdm-fg-muted mt-1">
+                  Odoo integration requires the BluePDM API server.{' '}
+                  <span className="text-pdm-fg">Run <code className="px-1.5 py-0.5 bg-pdm-sidebar rounded">npm run api</code> locally</span>
+                  {' '}or configure an external API URL in Settings → REST API.
+                </p>
+                <button
+                  onClick={checkApiServer}
+                  className="mt-2 text-pdm-accent hover:underline flex items-center gap-1"
+                >
+                  <RefreshCw size={12} />
+                  Retry connection
+                </button>
+              </div>
+            </div>
+          )}
+          
           {/* Enable toggle */}
           <div className="flex items-center justify-between">
             <span className="text-base text-pdm-fg">Enable Odoo Integration</span>
             <button
               onClick={() => setOdooEnabled(!odooEnabled)}
+              disabled={apiServerOnline === false}
               className={`w-11 h-6 rounded-full transition-colors relative ${
                 odooEnabled ? 'bg-pdm-accent' : 'bg-pdm-border'
-              }`}
+              } ${apiServerOnline === false ? 'opacity-50 cursor-not-allowed' : ''}`}
             >
               <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
                 odooEnabled ? 'translate-x-6' : 'translate-x-1'
@@ -413,7 +480,7 @@ export function IntegrationsSettings() {
             </button>
           </div>
           
-          {odooEnabled && (
+          {odooEnabled && apiServerOnline !== false && (
             <>
               {/* Status banner if connected */}
               {odooSettings?.is_connected && (
@@ -563,11 +630,63 @@ export function IntegrationsSettings() {
         </div>
       </div>
       
-      {/* More integrations placeholder */}
-      <div className="pt-4 border-t border-pdm-border">
-        <p className="text-base text-pdm-fg-muted text-center">
-          More integrations coming soon (Slack, Webhooks)...
-        </p>
+      {/* Slack Integration */}
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <div className="w-12 h-12 rounded-lg bg-[#4A154B] flex items-center justify-center">
+            <MessageSquare size={24} className="text-white" />
+          </div>
+          <div className="flex-1">
+            <h3 className="text-base font-medium text-pdm-fg">Slack</h3>
+            <p className="text-sm text-pdm-fg-muted">
+              Approval reminders, review notifications, ECO channels
+            </p>
+          </div>
+          <span className="px-2 py-1 text-xs font-medium bg-pdm-fg-muted/20 text-pdm-fg-muted rounded">
+            COMING SOON
+          </span>
+        </div>
+        
+        <div className="p-4 bg-pdm-bg rounded-lg border border-pdm-border">
+          <p className="text-sm text-pdm-fg-muted">
+            Slack integration will enable:
+          </p>
+          <ul className="mt-2 text-sm text-pdm-fg-muted list-disc list-inside space-y-1">
+            <li>Automatic notifications for pending approvals</li>
+            <li>ECO status updates in dedicated channels</li>
+            <li>Review reminders and escalations</li>
+            <li>File check-in/check-out alerts</li>
+          </ul>
+        </div>
+      </div>
+      
+      {/* Webhooks Integration */}
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <div className="w-12 h-12 rounded-lg bg-pdm-sidebar flex items-center justify-center">
+            <Plug size={24} className="text-pdm-fg-muted" />
+          </div>
+          <div className="flex-1">
+            <h3 className="text-base font-medium text-pdm-fg">Webhooks</h3>
+            <p className="text-sm text-pdm-fg-muted">
+              Custom integrations via HTTP webhooks
+            </p>
+          </div>
+          <span className="px-2 py-1 text-xs font-medium bg-pdm-fg-muted/20 text-pdm-fg-muted rounded">
+            COMING SOON
+          </span>
+        </div>
+        
+        <div className="p-4 bg-pdm-bg rounded-lg border border-pdm-border">
+          <p className="text-sm text-pdm-fg-muted">
+            Webhooks will allow you to:
+          </p>
+          <ul className="mt-2 text-sm text-pdm-fg-muted list-disc list-inside space-y-1">
+            <li>Trigger external workflows on file events</li>
+            <li>Send data to your custom endpoints</li>
+            <li>Integrate with any HTTP-compatible service</li>
+          </ul>
+        </div>
       </div>
     </div>
   )

@@ -32,7 +32,7 @@ const settingsSections: SettingsSection[] = [
     category: 'Integrations',
     items: [
       { id: 'solidworks', label: 'SolidWorks' },
-      { id: 'integrations', label: 'Third Party' },
+      { id: 'integrations', label: 'Google Drive & ERP' },
       { id: 'api', label: 'REST API' },
     ]
   },

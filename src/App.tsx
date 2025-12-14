@@ -17,7 +17,6 @@ import { SetupScreen } from './components/SetupScreen'
 import { OnboardingScreen } from './components/OnboardingScreen'
 import { Toast } from './components/Toast'
 import { RightPanel } from './components/RightPanel'
-import { GoogleDrivePanel } from './components/GoogleDrivePanel'
 import { OrphanedCheckoutsContainer } from './components/OrphanedCheckoutDialog'
 import { executeTerminalCommand } from './lib/commands/parser'
 
@@ -1415,9 +1414,6 @@ function App() {
             <WelcomeScreen 
               onOpenRecentVault={handleOpenRecentVault}
             />
-          ) : activeView === 'google-drive' ? (
-            /* Google Drive View - replaces entire main content area */
-            <GoogleDrivePanel />
           ) : activeView === 'settings' ? (
             /* Settings View - replaces entire main content area */
             <SettingsContent activeTab={settingsTab} />
