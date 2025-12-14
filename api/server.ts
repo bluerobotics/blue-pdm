@@ -3272,7 +3272,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       return reply.code(401).send({ error: 'Unauthorized', message: 'Authentication required' })
     }
     
-    const { data, error } = await supabase
+    const { data, error } = await request.supabase!
       .from('organization_integrations')
       .select('*')
       .eq('org_id', request.user.org_id)
@@ -3356,7 +3356,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     }
     
     // Always save the settings (even if connection failed)
-    const { error } = await supabase
+    const { error } = await request.supabase!
       .from('organization_integrations')
       .upsert({
         org_id: request.user.org_id,
@@ -3449,7 +3449,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     }
     
     // Get Odoo integration settings
-    const { data: integration, error: intError } = await supabase
+    const { data: integration, error: intError } = await request.supabase!
       .from('organization_integrations')
       .select('*')
       .eq('org_id', request.user.org_id)
@@ -3470,7 +3470,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     
     if (!odooSuppliers.success) {
       // Update integration status with error
-      await supabase
+      await request.supabase!
         .from('organization_integrations')
         .update({
           last_sync_at: new Date().toISOString(),
@@ -3489,7 +3489,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     for (const odooSupplier of odooSuppliers.suppliers) {
       try {
         // Check if supplier already exists by erp_id
-        const { data: existing } = await supabase
+        const { data: existing } = await request.supabase!
           .from('suppliers')
           .select('id')
           .eq('org_id', request.user.org_id)
@@ -3517,14 +3517,14 @@ export async function buildServer(): Promise<FastifyInstance> {
         
         if (existing) {
           // Update existing supplier
-          await supabase
+          await request.supabase!
             .from('suppliers')
             .update(supplierData)
             .eq('id', existing.id)
           updated++
         } else {
           // Create new supplier
-          await supabase
+          await request.supabase!
             .from('suppliers')
             .insert({
               ...supplierData,
@@ -3539,7 +3539,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     }
     
     // Update integration status
-    await supabase
+    await request.supabase!
       .from('organization_integrations')
       .update({
         last_sync_at: new Date().toISOString(),
@@ -3550,7 +3550,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       .eq('id', integration.id)
     
     // Log the sync
-    await supabase
+    await request.supabase!
       .from('integration_sync_log')
       .insert({
         org_id: request.user.org_id,
@@ -3594,7 +3594,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       return reply.code(403).send({ error: 'Forbidden', message: 'Only admins can disconnect integrations' })
     }
     
-    const { error } = await supabase
+    const { error } = await request.supabase!
       .from('organization_integrations')
       .update({
         is_active: false,
