@@ -11,96 +11,77 @@ Product Data Management for engineering teams. Built with Electron, React, and S
 
 ## Features
 
-- **Check In / Check Out** with exclusive file locking
-- **Version control** with full history and rollback
-- **File state management** (WIP, In Review, Released, Obsolete)
-- **SolidWorks integration** with thumbnail previews and [native add-in](#solidworks-add-in)
-- **Where-used analysis** for tracking assembly references
-- **Cloud sync** via Supabase with real-time collaboration
-- **Offline mode** for local-only workflows
+### Core PDM
+- **Check In / Check Out** — Exclusive file locking with multi-machine tracking
+- **Version Control** — Full history with rollback to any previous version
+- **File States** — WIP → In Review → Released → Obsolete with customizable workflows
+- **Real-time Sync** — Instant updates across all connected clients via Supabase
+- **Multi-vault Support** — Organize files into separate vaults with per-vault permissions
+- **Trash & Recovery** — Soft delete with restore or permanent delete options
 
-## Getting Started as a New User
+### Engineering Change Management
+- **ECO Management** — Create and track Engineering Change Orders with file attachments
+- **Visual Workflow Builder** — Drag-and-drop canvas to design state transitions and approval gates
+- **Reviews & Notifications** — Request reviews, set due dates/priority, track approvals
 
-1. **Download** the latest release from the [releases page](https://github.com/bluerobotics/blue-plm/releases)
+### Integrations
+- **SolidWorks** — Thumbnail extraction, native add-in (check in/out from toolbar)
+- **Google Drive** — Browse, edit Docs/Sheets/Slides inline, connect Shared Drives
+- **REST API** — Fastify + Swagger for ERP/automation, signed URLs, webhooks
+- **Odoo** — Sync suppliers and products with your Odoo instance
+- **Backups** — Automated encrypted backups via Restic (local, S3, Backblaze, SFTP)
+
+### Desktop App
+- **Built-in Terminal** — CLI with file ops, queries, and batch commands
+- **Drag & Drop** — Import from Windows Explorer, drag files out to other apps
+- **Ignore Patterns** — Exclude files/folders from sync (`.gitignore` style)
+- **Icon & List Views** — Adjustable thumbnail sizes, Windows shell icons
+- **Offline Mode** — Work locally when disconnected
+
+## Quick Start
+
+### For Users
+1. **Download** from the [releases page](https://github.com/bluerobotics/blue-plm/releases)
 2. **Install** and launch BluePLM
-3. **Enter your organization's Supabase credentials** (your admin will provide these)
-4. **Sign in with Google** using your work email
-5. **Connect to a vault** from the Organization tab
+3. **Enter** your organization's Supabase URL and anon key (from your admin)
+4. **Sign in with Google**
+5. **Connect** to a vault from Settings → Organization
 
-That's it! You can now check out files, make changes, and check them back in.
+### For Admins
 
-## Getting Started as a New Org / Admin
+<details>
+<summary><strong>1. Create a Supabase Project</strong></summary>
 
-### 1. Create a Supabase Project
+1. Sign up at [supabase.com](https://supabase.com)
+2. Create a new project
+3. Note your **Project URL** and **anon/public key** (Settings → API)
+</details>
 
-1. Sign up at [supabase.com](https://supabase.com) and create a new project
-2. Note your **Project URL** and **anon/public key** from Settings → API
-
-### 2. Set Up Google OAuth
+<details>
+<summary><strong>2. Set Up Google OAuth</strong></summary>
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
-2. Create a new OAuth 2.0 Client ID (Web application)
-3. Add `https://your-project.supabase.co/auth/v1/callback` to Authorized redirect URIs
-4. In Supabase: Authentication → Providers → Google → Enable and paste your Client ID/Secret
-5. Add `http://localhost` to Supabase's Redirect URLs (for the Electron app)
+2. Create OAuth 2.0 Client ID (Web application)
+3. Add `https://your-project.supabase.co/auth/v1/callback` to redirect URIs
+4. In Supabase: Authentication → Providers → Google → Enable and add credentials
+5. Add `http://localhost` to Supabase Redirect URLs
+</details>
 
-### 3. Set Up Storage
+<details>
+<summary><strong>3. Set Up Storage & Database</strong></summary>
 
-1. In Supabase: Storage → New Bucket → Name it `vault` → Set to **Private**
+1. Create a private bucket named `vault` (Storage → New Bucket)
+2. Run [`supabase/schema.sql`](supabase/schema.sql) in the SQL Editor
+3. Create your organization:
+   ```sql
+   INSERT INTO organizations (name, slug, email_domains)
+   VALUES ('Your Company', 'your-company', ARRAY['yourcompany.com']);
+   ```
+</details>
 
-### 4. Run the Database Schema
-
-1. Go to SQL Editor in Supabase
-2. Copy and run the contents of [`supabase/schema.sql`](supabase/schema.sql)
-
-### 5. Create Your Organization
-
-```sql
-INSERT INTO organizations (name, slug, email_domains)
-VALUES ('Your Company', 'your-company', ARRAY['yourcompany.com']);
-```
-
-Replace with your company name and email domain. Users signing in with emails matching that domain will automatically join your organization.
-
-### 6. Share Credentials with Your Team
-
-Give your team members:
-- Your Supabase **Project URL** 
-- Your Supabase **anon/public key**
-
-They'll enter these on first launch of BluePLM.
-
-### 7. Create Vaults
-
-Once signed in as admin, go to **Settings → Organization** to create vaults for your team.
-
-## Building from Source
-
-```bash
-git clone https://github.com/bluerobotics/blue-plm.git
-cd blue-plm
-npm install
-npm run build
-```
-
-For development with hot reload:
-
-```bash
-npm run dev
-```
-
-### Environment Variables (Optional)
-
-For development, create a `.env` file:
-
-```
-VITE_SUPABASE_URL=https://your-project.supabase.co
-VITE_SUPABASE_ANON_KEY=your-anon-key
-```
+Share your **Project URL** and **anon key** with team members. Users with matching email domains auto-join.
 
 ## File Storage
-
-Local vaults are stored in platform-specific locations:
 
 | Platform | Path |
 |----------|------|
@@ -110,39 +91,60 @@ Local vaults are stored in platform-specific locations:
 
 ## SolidWorks Add-in
 
-BluePLM includes a native SolidWorks add-in for seamless integration. Check out, check in, and view file status directly within SolidWorks without switching applications.
+Native SolidWorks integration with toolbar buttons and task pane.
 
-**Features:**
-- Check out/in from the SolidWorks toolbar
-- Task pane showing file status, version, and state
-- Automatic read-only mode for non-checked-out files
-- Custom properties sync with BluePLM metadata
+**Features:** Check out/in from toolbar • File status in task pane • Auto read-only mode • Custom properties sync
 
 **Installation:**
-1. Download `BluePLM.SolidWorks.dll` from the [releases page](https://github.com/bluerobotics/blue-plm/releases)
-2. Run as Administrator: `RegAsm.exe /codebase BluePLM.SolidWorks.dll`
-3. Restart SolidWorks and enable the add-in from Tools → Add-ins
+1. Download `BluePLM.SolidWorks.dll` from [releases](https://github.com/bluerobotics/blue-plm/releases)
+2. Run as admin: `RegAsm.exe /codebase BluePLM.SolidWorks.dll`
+3. Enable in SolidWorks: Tools → Add-ins
 
-See the [SolidWorks Add-in README](solidworks-addin/README.md) for detailed instructions.
+See [SolidWorks Add-in README](solidworks-addin/README.md) for details.
+
+## Building from Source
+
+```bash
+git clone https://github.com/bluerobotics/blue-plm.git
+cd blue-plm
+npm install
+npm run dev      # Development with hot reload
+npm run build    # Production build
+```
+
+Optional `.env` for development:
+```
+VITE_SUPABASE_URL=https://your-project.supabase.co
+VITE_SUPABASE_ANON_KEY=your-anon-key
+```
+
+## Roadmap
+
+| Feature | Status | Description |
+|---------|--------|-------------|
+| Engineering Change Requests (ECRs) | 🔜 Planned | Track issues and change requests linked to files/ECOs |
+| ECO Schedule | 🔜 Planned | Timeline view of milestones, deadlines, and release dates |
+| ECO Dashboard (GSD) | 🔜 Planned | Progress tracking, blockers, and attention items |
+| ECO Process Editor | 🔜 Planned | Define stages, gates, approvers, and automation rules |
+| Product Catalog | 🔜 Planned | Manage product info, lifecycle, and configurations |
+| Tab Navigation | 🔜 Planned | Multi-tab browsing with pinning and split views |
+| Item Number Database | 🔜 Planned | Serialization settings, revision tracking, navigation |
+| Offline Conflict Resolution | 🔜 Planned | Smart merge when coming back online |
+| Folder History | 🔜 Planned | Version history for entire folders |
+| Undo Check-in | 🔜 Planned | Restore previous version from history panel |
+| SolidWorks Configurations | 🔜 Planned | Configuration management and metadata sync |
 
 ## Tech Stack
 
-**Desktop App:**
-- Electron 34
-- React 19
-- TypeScript
-- Tailwind CSS
-- Zustand
-- Supabase (PostgreSQL, Auth, Storage)
+**Desktop App:** Electron 34 • React 19 • TypeScript • Tailwind CSS • Zustand • Supabase
 
-**SolidWorks Add-in:**
-- C# / .NET Framework 4.8
-- SolidWorks API
-- Windows Forms
+**SolidWorks Add-in:** C# • .NET Framework 4.8 • SolidWorks API
+
+**API Server:** Fastify • TypeScript • Docker
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT — see [LICENSE](LICENSE)
 
 ---
 
