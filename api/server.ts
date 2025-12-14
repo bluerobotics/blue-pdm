@@ -738,7 +738,8 @@ async function fetchOdooSuppliers(
     
     if (ids.length === 0) {
       debug.timing_ms = Date.now() - startTime
-      return { success: true, suppliers: [], debug }
+      const debugWithXml = { ...debug, raw_xml_samples: getLastXmlResponses() }
+      return { success: true, suppliers: [], debug: debugWithXml }
     }
     
     // Read supplier details
