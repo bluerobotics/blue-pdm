@@ -9,6 +9,10 @@
 
 FROM node:20-alpine
 
+# Build arg for git commit SHA (passed from CI)
+ARG GIT_COMMIT_SHA
+ENV BUILD_COMMIT_SHA=${GIT_COMMIT_SHA}
+
 WORKDIR /app
 
 # Install dependencies first (for caching)

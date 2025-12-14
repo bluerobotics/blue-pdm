@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { usePDMStore } from './stores/pdmStore'
 import { SettingsContent } from './components/SettingsContent'
 
-type SettingsTab = 'account' | 'vault' | 'organization' | 'branding' | 'metadata-columns' | 'backup' | 'solidworks' | 'integrations' | 'api' | 'preferences' | 'logs' | 'about'
+type SettingsTab = 'account' | 'vault' | 'organization' | 'branding' | 'metadata-columns' | 'backup' | 'solidworks' | 'google-drive' | 'odoo' | 'slack' | 'webhooks' | 'api' | 'preferences' | 'logs' | 'about'
 import { supabase, getCurrentSession, isSupabaseConfigured, getFilesLightweight, getCheckedOutUsers, linkUserToOrganization, getUserProfile, setCurrentAccessToken } from './lib/supabase'
 import { subscribeToFiles, subscribeToActivity, unsubscribeAll } from './lib/realtime'
 // Backup services removed - now handled directly via restic

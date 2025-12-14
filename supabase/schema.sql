@@ -33,8 +33,10 @@ CREATE TABLE organizations (
     "allowed_extensions": [],
     "require_description": false,
     "require_approval_for_release": true,
-    "max_file_size_mb": 500
+    "max_file_size_mb": 500,
+    "column_defaults": []
   }'::jsonb,
+  -- column_defaults format: [{ "id": "name", "width": 280, "visible": true }, ...]
   created_at TIMESTAMPTZ DEFAULT NOW(),
   
   -- Google Drive integration

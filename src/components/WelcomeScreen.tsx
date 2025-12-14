@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react'
-import { FolderPlus, Loader2, HardDrive, WifiOff, LogIn, Check, Settings, Database, Link, User, Truck, Mail, Phone, ArrowLeft, Eye, EyeOff } from 'lucide-react'
+import { FolderPlus, Loader2, HardDrive, WifiOff, LogIn, Check, Database, Link, User, Truck, Mail, Phone, ArrowLeft, Eye, EyeOff } from 'lucide-react'
 import { usePDMStore, ConnectedVault } from '../stores/pdmStore'
 import { signInWithGoogle, signInWithEmail, signUpWithEmail, signInWithPhone, verifyPhoneOTP, isSupabaseConfigured, supabase } from '../lib/supabase'
 import { getInitials } from '../types/pdm'
-import { SettingsModal } from './deprecated_SettingsModal'
+import { LogsModal } from './LogsModal'
 import { LanguageSelector } from './LanguageSelector'
 import { useTranslation } from '../lib/i18n'
 import type { AccountType } from '../types/database'
@@ -77,7 +77,7 @@ export function WelcomeScreen({ onOpenRecentVault }: WelcomeScreenProps) {
   
   const [isConnectingVault, setIsConnectingVault] = useState(false)  // Local vault connection state
   const [isSigningIn, setIsSigningIn] = useState(false)
-  const [showSettingsModal, setShowSettingsModal] = useState(false)
+  const [showLogsModal, setShowLogsModal] = useState(false)
   
   // Account type selection state
   const [accountType, setAccountType] = useState<AccountType | null>(null)
@@ -1199,14 +1199,13 @@ export function WelcomeScreen({ onOpenRecentVault }: WelcomeScreenProps) {
           </div>
         )}
 
-        {/* Settings Button */}
+        {/* Logs/Troubleshoot Button */}
         <div className="mb-6">
           <button
-            onClick={() => setShowSettingsModal(true)}
-            className="w-full btn btn-secondary gap-2 justify-center py-3"
+            onClick={() => setShowLogsModal(true)}
+            className="w-full btn btn-ghost gap-2 justify-center py-2 text-sm text-pdm-fg-muted hover:text-pdm-fg"
           >
-            <Settings size={18} />
-            {t('common.settings')}
+            View Logs
           </button>
         </div>
 
@@ -1216,9 +1215,9 @@ export function WelcomeScreen({ onOpenRecentVault }: WelcomeScreenProps) {
         </div>
       </div>
       
-      {/* Settings Modal */}
-      {showSettingsModal && (
-        <SettingsModal onClose={() => setShowSettingsModal(false)} />
+      {/* Logs Modal */}
+      {showLogsModal && (
+        <LogsModal onClose={() => setShowLogsModal(false)} />
       )}
     </div>
   )

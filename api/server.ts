@@ -705,10 +705,19 @@ const authPlugin: FastifyPluginAsync = async (fastify) => {
         error: 'Unauthorized',
         message: 'Missing or invalid Authorization header'
       })
-      return
+      throw new Error('Unauthorized')
     }
     
     const token = authHeader.substring(7)
+    
+    // Check for literal "undefined" string (frontend bug protection)
+    if (!token || token === 'undefined' || token === 'null') {
+      reply.code(401).send({ 
+        error: 'Unauthorized',
+        message: 'Invalid or missing access token'
+      })
+      throw new Error('Invalid token')
+    }
     
     try {
       const supabase = createSupabaseClient(token)
@@ -719,7 +728,7 @@ const authPlugin: FastifyPluginAsync = async (fastify) => {
           error: 'Invalid token',
           message: error?.message || 'Token verification failed'
         })
-        return
+        throw new Error('Token verification failed')
       }
       
       const { data: profile, error: profileError } = await supabase
@@ -733,7 +742,7 @@ const authPlugin: FastifyPluginAsync = async (fastify) => {
           error: 'Profile not found',
           message: 'User profile does not exist'
         })
-        return
+        throw new Error('Profile not found')
       }
       
       if (!profile.org_id) {
@@ -741,18 +750,22 @@ const authPlugin: FastifyPluginAsync = async (fastify) => {
           error: 'No organization',
           message: 'User is not a member of any organization'
         })
-        return
+        throw new Error('No organization')
       }
       
       request.user = profile as UserProfile
       request.supabase = supabase
       request.accessToken = token
     } catch (err) {
-      request.log.error(err, 'Authentication error')
-      reply.code(500).send({ 
-        error: 'Auth error',
-        message: err instanceof Error ? err.message : 'Unknown error'
-      })
+      // Only handle unexpected errors, not our thrown auth errors
+      if (!reply.sent) {
+        request.log.error(err, 'Authentication error')
+        reply.code(500).send({ 
+          error: 'Auth error',
+          message: err instanceof Error ? err.message : 'Unknown error'
+        })
+      }
+      throw err
     }
   })
 }
@@ -782,7 +795,12 @@ export async function buildServer(): Promise<FastifyInstance> {
   const corsOrigins = process.env.CORS_ORIGINS 
     ? process.env.CORS_ORIGINS.split(',').map(o => o.trim())
     : true // Allow all in dev
-  await fastify.register(cors, { origin: corsOrigins })
+  await fastify.register(cors, { 
+    origin: corsOrigins,
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+  })
   
   // Register Rate Limiting
   await fastify.register(rateLimit, {

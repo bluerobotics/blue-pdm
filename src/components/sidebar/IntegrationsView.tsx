@@ -16,6 +16,20 @@ import {
 import { usePDMStore } from '../../stores/pdmStore'
 import { supabase } from '../../lib/supabase'
 
+const API_URL_KEY = 'bluepdm_api_url'
+const DEFAULT_API_URL = 'http://127.0.0.1:3001'
+
+// Helper to get API URL from org settings or localStorage
+function getApiUrl(organization: { settings?: { api_url?: string } } | null): string {
+  return organization?.settings?.api_url || localStorage.getItem(API_URL_KEY) || DEFAULT_API_URL
+}
+
+// Helper to get valid auth token
+async function getAuthToken(): Promise<string | null> {
+  const { data: { session } } = await supabase.auth.getSession()
+  return session?.access_token || null
+}
+
 interface OdooSettings {
   configured: boolean
   settings?: {
@@ -73,7 +87,7 @@ function OdooConfigPanel({
   onSave: () => void
   onRefresh: () => void
 }) {
-  const { addToast } = usePDMStore()
+  const { addToast, organization } = usePDMStore()
   const [url, setUrl] = useState(settings?.settings?.url || '')
   const [database, setDatabase] = useState(settings?.settings?.database || '')
   const [username, setUsername] = useState(settings?.settings?.username || '')
@@ -84,9 +98,17 @@ function OdooConfigPanel({
   const [syncing, setSyncing] = useState(false)
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
 
+  const apiUrl = getApiUrl(organization)
+
   const handleTest = async () => {
     if (!url || !database || !username || !apiKey) {
       addToast('warning', 'Please fill in all fields')
+      return
+    }
+
+    const token = await getAuthToken()
+    if (!token) {
+      addToast('error', 'Session expired. Please log in again.')
       return
     }
 
@@ -94,11 +116,11 @@ function OdooConfigPanel({
     setTestResult(null)
 
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/integrations/odoo/test`, {
+      const response = await fetch(`${apiUrl}/integrations/odoo/test`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({ url, database, username, api_key: apiKey })
       })
@@ -123,14 +145,20 @@ function OdooConfigPanel({
       return
     }
 
+    const token = await getAuthToken()
+    if (!token) {
+      addToast('error', 'Session expired. Please log in again.')
+      return
+    }
+
     setSaving(true)
 
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/integrations/odoo`, {
+      const response = await fetch(`${apiUrl}/integrations/odoo`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({ url, database, username, api_key: apiKey })
       })
@@ -152,14 +180,20 @@ function OdooConfigPanel({
   }
 
   const handleSync = async () => {
+    const token = await getAuthToken()
+    if (!token) {
+      addToast('error', 'Session expired. Please log in again.')
+      return
+    }
+
     setSyncing(true)
 
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/integrations/odoo/sync/suppliers`, {
+      const response = await fetch(`${apiUrl}/integrations/odoo/sync/suppliers`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
+          'Authorization': `Bearer ${token}`
         }
       })
 
@@ -181,11 +215,17 @@ function OdooConfigPanel({
   const handleDisconnect = async () => {
     if (!confirm('Are you sure you want to disconnect Odoo?')) return
 
+    const token = await getAuthToken()
+    if (!token) {
+      addToast('error', 'Session expired. Please log in again.')
+      return
+    }
+
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/integrations/odoo`, {
+      const response = await fetch(`${apiUrl}/integrations/odoo`, {
         method: 'DELETE',
         headers: {
-          'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
+          'Authorization': `Bearer ${token}`
         }
       })
 
@@ -362,21 +402,33 @@ function OdooConfigPanel({
 }
 
 export function IntegrationsView() {
+  const { organization } = usePDMStore()
   const [showOdooConfig, setShowOdooConfig] = useState(false)
   const [odooSettings, setOdooSettings] = useState<OdooSettings | null>(null)
   const [loading, setLoading] = useState(true)
 
+  const apiUrl = getApiUrl(organization)
+
   const loadOdooSettings = async () => {
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/integrations/odoo`, {
+      const token = await getAuthToken()
+      if (!token) {
+        console.warn('[IntegrationsView] No auth token available')
+        setLoading(false)
+        return
+      }
+
+      const response = await fetch(`${apiUrl}/integrations/odoo`, {
         headers: {
-          'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
+          'Authorization': `Bearer ${token}`
         }
       })
       
       if (response.ok) {
         const data = await response.json()
         setOdooSettings(data)
+      } else {
+        console.warn('[IntegrationsView] Failed to load Odoo settings:', response.status)
       }
     } catch (err) {
       console.error('Failed to load Odoo settings:', err)
@@ -387,7 +439,7 @@ export function IntegrationsView() {
 
   useEffect(() => {
     loadOdooSettings()
-  }, [])
+  }, [apiUrl])
 
   if (showOdooConfig) {
     return (

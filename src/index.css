@@ -24,13 +24,13 @@
   --pdm-selection: #264f78;
   --pdm-highlight: rgba(0, 120, 212, 0.15);
   /* Status colors */
-  --pdm-success: #4ec9b0;
+  --pdm-success: #4ade80;
   --pdm-warning: #dcdcaa;
   --pdm-error: #f14c4c;
   --pdm-info: #3794ff;
   /* File state colors */
   --pdm-wip: #dcdcaa;
-  --pdm-released: #4ec9b0;
+  --pdm-released: #4ade80;
   --pdm-in-review: #3794ff;
   --pdm-obsolete: #6b7280;
   --pdm-locked: #f14c4c;

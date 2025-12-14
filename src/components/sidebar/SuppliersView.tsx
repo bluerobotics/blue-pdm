@@ -19,6 +19,13 @@ import {
 import { usePDMStore } from '../../stores/pdmStore'
 import { supabase } from '../../lib/supabase'
 
+const API_URL_KEY = 'bluepdm_api_url'
+const DEFAULT_API_URL = 'http://127.0.0.1:3001'
+
+function getApiUrl(organization: { settings?: { api_url?: string } } | null): string {
+  return organization?.settings?.api_url || localStorage.getItem(API_URL_KEY) || DEFAULT_API_URL
+}
+
 interface Supplier {
   id: string
   name: string
@@ -75,12 +82,21 @@ export function SuppliersView() {
     setSyncing(true)
 
     try {
-      const session = await supabase.auth.getSession()
-      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/integrations/odoo/sync/suppliers`, {
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      
+      if (!token) {
+        addToast('error', 'Session expired. Please log in again.')
+        setSyncing(false)
+        return
+      }
+
+      const apiUrl = getApiUrl(organization)
+      const response = await fetch(`${apiUrl}/integrations/odoo/sync/suppliers`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.data.session?.access_token}`
+          'Authorization': `Bearer ${token}`
         }
       })
 

@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { PDMFile, FileState, Organization, User } from '../types/pdm'
+import { supabase } from '../lib/supabase'
 
 // Build full path using the correct separator for the platform
 function buildFullPath(vaultPath: string, relativePath: string): string {
@@ -441,6 +442,9 @@ interface PDMState {
   setColumnWidth: (id: string, width: number) => void
   toggleColumnVisibility: (id: string) => void
   reorderColumns: (columns: ColumnConfig[]) => void
+  saveOrgColumnDefaults: () => Promise<{ success: boolean; error?: string }>
+  loadOrgColumnDefaults: () => Promise<{ success: boolean; error?: string }>
+  resetColumnsToDefaults: () => void
   
   // Actions - Status
   setIsLoading: (loading: boolean) => void
@@ -1235,6 +1239,78 @@ export const usePDMStore = create<PDMState>()(
         })
       },
       reorderColumns: (columns) => set({ columns }),
+      
+      saveOrgColumnDefaults: async () => {
+        const { organization, columns, user } = get()
+        if (!organization?.id) {
+          return { success: false, error: 'No organization connected' }
+        }
+        if (user?.role !== 'admin') {
+          return { success: false, error: 'Only admins can save org defaults' }
+        }
+        
+        try {
+          // Save column configs (just id, width, visible - not label/sortable which are fixed)
+          const columnDefaults = columns.map(c => ({
+            id: c.id,
+            width: c.width,
+            visible: c.visible
+          }))
+          
+          const { error } = await (supabase.rpc as any)('set_org_column_defaults', {
+            p_org_id: organization.id,
+            p_column_defaults: columnDefaults
+          })
+          
+          if (error) throw error
+          return { success: true }
+        } catch (err) {
+          console.error('Failed to save org column defaults:', err)
+          return { success: false, error: err instanceof Error ? err.message : 'Unknown error' }
+        }
+      },
+      
+      loadOrgColumnDefaults: async () => {
+        const { organization, columns } = get()
+        if (!organization?.id) {
+          return { success: false, error: 'No organization connected' }
+        }
+        
+        try {
+          const { data, error } = await (supabase.rpc as any)('get_org_column_defaults', {
+            p_org_id: organization.id
+          })
+          
+          if (error) throw error
+          
+          if (!data || !Array.isArray(data) || data.length === 0) {
+            return { success: false, error: 'No org defaults configured' }
+          }
+          
+          // Merge org defaults with current columns (preserving label/sortable)
+          const updatedColumns = columns.map(col => {
+            const orgDefault = data.find((d: { id: string }) => d.id === col.id)
+            if (orgDefault) {
+              return {
+                ...col,
+                width: orgDefault.width ?? col.width,
+                visible: orgDefault.visible ?? col.visible
+              }
+            }
+            return col
+          })
+          
+          set({ columns: updatedColumns })
+          return { success: true }
+        } catch (err) {
+          console.error('Failed to load org column defaults:', err)
+          return { success: false, error: err instanceof Error ? err.message : 'Unknown error' }
+        }
+      },
+      
+      resetColumnsToDefaults: () => {
+        set({ columns: defaultColumns })
+      },
       
       // Actions - Status
       setIsLoading: (isLoading) => set({ isLoading }),

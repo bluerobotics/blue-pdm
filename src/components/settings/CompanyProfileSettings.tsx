@@ -1,15 +1,11 @@
 // @ts-nocheck - Supabase type inference issues with new columns
 import { useState, useEffect } from 'react'
 import { 
-  Building2, 
   Upload, 
   Loader2, 
-  Check, 
   MapPin,
   Phone,
   Globe,
-  Mail,
-  FileText,
   Save,
   Image as ImageIcon,
   X
@@ -17,7 +13,7 @@ import {
 import { usePDMStore } from '@/stores/pdmStore'
 import { supabase } from '@/lib/supabase'
 
-interface OrgBranding {
+interface CompanyProfile {
   logo_url: string | null
   logo_storage_path: string | null
   address_line1: string | null
@@ -29,40 +25,15 @@ interface OrgBranding {
   phone: string | null
   website: string | null
   contact_email: string | null
-  rfq_settings: {
-    default_payment_terms: string
-    default_incoterms: string
-    default_valid_days: number
-    show_company_logo: boolean
-    show_revision_column: boolean
-    show_material_column: boolean
-    show_finish_column: boolean
-    show_notes_column: boolean
-    terms_and_conditions: string
-    footer_text: string
-  } | null
 }
 
-const DEFAULT_RFQ_SETTINGS = {
-  default_payment_terms: 'Net 30',
-  default_incoterms: 'FOB',
-  default_valid_days: 30,
-  show_company_logo: true,
-  show_revision_column: true,
-  show_material_column: true,
-  show_finish_column: true,
-  show_notes_column: true,
-  terms_and_conditions: '',
-  footer_text: ''
-}
-
-export function BrandingSettings() {
+export function CompanyProfileSettings() {
   const { organization, user, addToast } = usePDMStore()
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [uploadingLogo, setUploadingLogo] = useState(false)
   
-  const [branding, setBranding] = useState<OrgBranding>({
+  const [profile, setProfile] = useState<CompanyProfile>({
     logo_url: null,
     logo_storage_path: null,
     address_line1: null,
@@ -73,26 +44,25 @@ export function BrandingSettings() {
     country: 'USA',
     phone: null,
     website: null,
-    contact_email: null,
-    rfq_settings: DEFAULT_RFQ_SETTINGS
+    contact_email: null
   })
 
-  // Load current branding
+  // Load current profile
   useEffect(() => {
     if (!organization?.id) return
 
-    const loadBranding = async () => {
+    const loadProfile = async () => {
       setLoading(true)
       try {
         const { data, error } = await supabase
           .from('organizations')
-          .select('logo_url, logo_storage_path, address_line1, address_line2, city, state, postal_code, country, phone, website, contact_email, rfq_settings')
+          .select('logo_url, logo_storage_path, address_line1, address_line2, city, state, postal_code, country, phone, website, contact_email')
           .eq('id', organization.id)
           .single()
 
         if (error) throw error
         
-        setBranding({
+        setProfile({
           logo_url: data?.logo_url || null,
           logo_storage_path: data?.logo_storage_path || null,
           address_line1: data?.address_line1 || null,
@@ -103,17 +73,16 @@ export function BrandingSettings() {
           country: data?.country || 'USA',
           phone: data?.phone || null,
           website: data?.website || null,
-          contact_email: data?.contact_email || null,
-          rfq_settings: data?.rfq_settings || DEFAULT_RFQ_SETTINGS
+          contact_email: data?.contact_email || null
         })
       } catch (err) {
-        console.error('Failed to load branding:', err)
+        console.error('Failed to load company profile:', err)
       } finally {
         setLoading(false)
       }
     }
 
-    loadBranding()
+    loadProfile()
   }, [organization?.id])
 
   // Handle logo upload
@@ -158,7 +127,7 @@ export function BrandingSettings() {
 
       if (updateError) throw updateError
 
-      setBranding(prev => ({
+      setProfile(prev => ({
         ...prev,
         logo_url: urlData.publicUrl,
         logo_storage_path: filePath
@@ -179,10 +148,10 @@ export function BrandingSettings() {
 
     try {
       // Delete from storage if exists
-      if (branding.logo_storage_path) {
+      if (profile.logo_storage_path) {
         await supabase.storage
           .from('org-assets')
-          .remove([branding.logo_storage_path])
+          .remove([profile.logo_storage_path])
       }
 
       // Update organization
@@ -196,7 +165,7 @@ export function BrandingSettings() {
 
       if (error) throw error
 
-      setBranding(prev => ({
+      setProfile(prev => ({
         ...prev,
         logo_url: null,
         logo_storage_path: null
@@ -218,43 +187,31 @@ export function BrandingSettings() {
       const { error } = await supabase
         .from('organizations')
         .update({
-          address_line1: branding.address_line1 || null,
-          address_line2: branding.address_line2 || null,
-          city: branding.city || null,
-          state: branding.state || null,
-          postal_code: branding.postal_code || null,
-          country: branding.country || 'USA',
-          phone: branding.phone || null,
-          website: branding.website || null,
-          contact_email: branding.contact_email || null,
-          rfq_settings: branding.rfq_settings
+          address_line1: profile.address_line1 || null,
+          address_line2: profile.address_line2 || null,
+          city: profile.city || null,
+          state: profile.state || null,
+          postal_code: profile.postal_code || null,
+          country: profile.country || 'USA',
+          phone: profile.phone || null,
+          website: profile.website || null,
+          contact_email: profile.contact_email || null
         })
         .eq('id', organization.id)
 
       if (error) throw error
-      addToast('success', 'Settings saved')
+      addToast('success', 'Company profile saved')
     } catch (err) {
-      console.error('Failed to save settings:', err)
-      addToast('error', 'Failed to save settings')
+      console.error('Failed to save company profile:', err)
+      addToast('error', 'Failed to save company profile')
     } finally {
       setSaving(false)
     }
   }
 
   // Update a single field
-  const updateField = (field: keyof OrgBranding, value: string | null) => {
-    setBranding(prev => ({ ...prev, [field]: value }))
-  }
-
-  // Update RFQ settings
-  const updateRfqSetting = (key: string, value: string | number | boolean) => {
-    setBranding(prev => ({
-      ...prev,
-      rfq_settings: {
-        ...(prev.rfq_settings || DEFAULT_RFQ_SETTINGS),
-        [key]: value
-      }
-    }))
+  const updateField = (field: keyof CompanyProfile, value: string | null) => {
+    setProfile(prev => ({ ...prev, [field]: value }))
   }
 
   if (!organization) {
@@ -268,7 +225,7 @@ export function BrandingSettings() {
   if (user?.role !== 'admin') {
     return (
       <div className="text-center py-12 text-pdm-fg-muted">
-        Only administrators can manage branding settings
+        Only administrators can manage company profile
       </div>
     )
   }
@@ -281,8 +238,6 @@ export function BrandingSettings() {
     )
   }
 
-  const rfqSettings = branding.rfq_settings || DEFAULT_RFQ_SETTINGS
-
   return (
     <div className="space-y-6">
       {/* Company Logo */}
@@ -293,10 +248,10 @@ export function BrandingSettings() {
         </div>
 
         <div className="flex items-start gap-4">
-          {branding.logo_url ? (
+          {profile.logo_url ? (
             <div className="relative">
               <img 
-                src={branding.logo_url} 
+                src={profile.logo_url} 
                 alt="Company logo" 
                 className="h-16 max-w-48 object-contain rounded border border-pdm-border bg-white p-2"
               />
@@ -321,7 +276,7 @@ export function BrandingSettings() {
               ) : (
                 <Upload size={14} />
               )}
-              {branding.logo_url ? 'Replace Logo' : 'Upload Logo'}
+              {profile.logo_url ? 'Replace Logo' : 'Upload Logo'}
               <input
                 type="file"
                 accept="image/*"
@@ -349,7 +304,7 @@ export function BrandingSettings() {
             <label className="text-sm text-pdm-fg-muted block mb-1">Address Line 1</label>
             <input
               type="text"
-              value={branding.address_line1 || ''}
+              value={profile.address_line1 || ''}
               onChange={(e) => updateField('address_line1', e.target.value)}
               placeholder="123 Main Street"
               className="w-full px-3 py-2 bg-pdm-input border border-pdm-border rounded text-sm text-pdm-fg placeholder:text-pdm-fg-muted/50 focus:outline-none focus:border-pdm-accent"
@@ -359,7 +314,7 @@ export function BrandingSettings() {
             <label className="text-sm text-pdm-fg-muted block mb-1">Address Line 2</label>
             <input
               type="text"
-              value={branding.address_line2 || ''}
+              value={profile.address_line2 || ''}
               onChange={(e) => updateField('address_line2', e.target.value)}
               placeholder="Suite 100"
               className="w-full px-3 py-2 bg-pdm-input border border-pdm-border rounded text-sm text-pdm-fg placeholder:text-pdm-fg-muted/50 focus:outline-none focus:border-pdm-accent"
@@ -369,7 +324,7 @@ export function BrandingSettings() {
             <label className="text-sm text-pdm-fg-muted block mb-1">City</label>
             <input
               type="text"
-              value={branding.city || ''}
+              value={profile.city || ''}
               onChange={(e) => updateField('city', e.target.value)}
               placeholder="San Francisco"
               className="w-full px-3 py-2 bg-pdm-input border border-pdm-border rounded text-sm text-pdm-fg placeholder:text-pdm-fg-muted/50 focus:outline-none focus:border-pdm-accent"
@@ -379,7 +334,7 @@ export function BrandingSettings() {
             <label className="text-sm text-pdm-fg-muted block mb-1">State/Province</label>
             <input
               type="text"
-              value={branding.state || ''}
+              value={profile.state || ''}
               onChange={(e) => updateField('state', e.target.value)}
               placeholder="CA"
               className="w-full px-3 py-2 bg-pdm-input border border-pdm-border rounded text-sm text-pdm-fg placeholder:text-pdm-fg-muted/50 focus:outline-none focus:border-pdm-accent"
@@ -389,7 +344,7 @@ export function BrandingSettings() {
             <label className="text-sm text-pdm-fg-muted block mb-1">Postal Code</label>
             <input
               type="text"
-              value={branding.postal_code || ''}
+              value={profile.postal_code || ''}
               onChange={(e) => updateField('postal_code', e.target.value)}
               placeholder="94102"
               className="w-full px-3 py-2 bg-pdm-input border border-pdm-border rounded text-sm text-pdm-fg placeholder:text-pdm-fg-muted/50 focus:outline-none focus:border-pdm-accent"
@@ -399,7 +354,7 @@ export function BrandingSettings() {
             <label className="text-sm text-pdm-fg-muted block mb-1">Country</label>
             <input
               type="text"
-              value={branding.country || ''}
+              value={profile.country || ''}
               onChange={(e) => updateField('country', e.target.value)}
               placeholder="USA"
               className="w-full px-3 py-2 bg-pdm-input border border-pdm-border rounded text-sm text-pdm-fg placeholder:text-pdm-fg-muted/50 focus:outline-none focus:border-pdm-accent"
@@ -420,7 +375,7 @@ export function BrandingSettings() {
             <label className="text-sm text-pdm-fg-muted block mb-1">Phone</label>
             <input
               type="text"
-              value={branding.phone || ''}
+              value={profile.phone || ''}
               onChange={(e) => updateField('phone', e.target.value)}
               placeholder="+1 (555) 123-4567"
               className="w-full px-3 py-2 bg-pdm-input border border-pdm-border rounded text-sm text-pdm-fg placeholder:text-pdm-fg-muted/50 focus:outline-none focus:border-pdm-accent"
@@ -430,7 +385,7 @@ export function BrandingSettings() {
             <label className="text-sm text-pdm-fg-muted block mb-1">Email</label>
             <input
               type="email"
-              value={branding.contact_email || ''}
+              value={profile.contact_email || ''}
               onChange={(e) => updateField('contact_email', e.target.value)}
               placeholder="purchasing@company.com"
               className="w-full px-3 py-2 bg-pdm-input border border-pdm-border rounded text-sm text-pdm-fg placeholder:text-pdm-fg-muted/50 focus:outline-none focus:border-pdm-accent"
@@ -438,133 +393,16 @@ export function BrandingSettings() {
           </div>
           <div className="col-span-2">
             <label className="text-sm text-pdm-fg-muted block mb-1">Website</label>
-            <input
-              type="url"
-              value={branding.website || ''}
-              onChange={(e) => updateField('website', e.target.value)}
-              placeholder="https://www.company.com"
-              className="w-full px-3 py-2 bg-pdm-input border border-pdm-border rounded text-sm text-pdm-fg placeholder:text-pdm-fg-muted/50 focus:outline-none focus:border-pdm-accent"
-            />
-          </div>
-        </div>
-      </div>
-
-      {/* RFQ Template Settings */}
-      <div className="p-4 bg-pdm-bg rounded-lg border border-pdm-border">
-        <div className="flex items-center gap-2 mb-4">
-          <FileText size={20} className="text-pdm-accent" />
-          <h3 className="text-base font-medium text-pdm-fg">RFQ Template Settings</h3>
-        </div>
-
-        <div className="space-y-4">
-          {/* Default values */}
-          <div className="grid grid-cols-3 gap-3">
-            <div>
-              <label className="text-sm text-pdm-fg-muted block mb-1">Payment Terms</label>
+            <div className="relative">
+              <Globe size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-pdm-fg-muted" />
               <input
-                type="text"
-                value={rfqSettings.default_payment_terms}
-                onChange={(e) => updateRfqSetting('default_payment_terms', e.target.value)}
-                placeholder="Net 30"
-                className="w-full px-3 py-2 bg-pdm-input border border-pdm-border rounded text-sm text-pdm-fg placeholder:text-pdm-fg-muted/50 focus:outline-none focus:border-pdm-accent"
+                type="url"
+                value={profile.website || ''}
+                onChange={(e) => updateField('website', e.target.value)}
+                placeholder="https://www.company.com"
+                className="w-full pl-9 pr-3 py-2 bg-pdm-input border border-pdm-border rounded text-sm text-pdm-fg placeholder:text-pdm-fg-muted/50 focus:outline-none focus:border-pdm-accent"
               />
             </div>
-            <div>
-              <label className="text-sm text-pdm-fg-muted block mb-1">Incoterms</label>
-              <input
-                type="text"
-                value={rfqSettings.default_incoterms}
-                onChange={(e) => updateRfqSetting('default_incoterms', e.target.value)}
-                placeholder="FOB"
-                className="w-full px-3 py-2 bg-pdm-input border border-pdm-border rounded text-sm text-pdm-fg placeholder:text-pdm-fg-muted/50 focus:outline-none focus:border-pdm-accent"
-              />
-            </div>
-            <div>
-              <label className="text-sm text-pdm-fg-muted block mb-1">Quote Valid (days)</label>
-              <input
-                type="number"
-                value={rfqSettings.default_valid_days}
-                onChange={(e) => updateRfqSetting('default_valid_days', parseInt(e.target.value) || 30)}
-                min="1"
-                className="w-full px-3 py-2 bg-pdm-input border border-pdm-border rounded text-sm text-pdm-fg focus:outline-none focus:border-pdm-accent"
-              />
-            </div>
-          </div>
-
-          {/* Column visibility */}
-          <div>
-            <label className="text-sm text-pdm-fg-muted block mb-2">RFQ Document Columns</label>
-            <div className="grid grid-cols-2 gap-2">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={rfqSettings.show_company_logo}
-                  onChange={(e) => updateRfqSetting('show_company_logo', e.target.checked)}
-                  className="rounded"
-                />
-                <span className="text-sm text-pdm-fg">Show company logo</span>
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={rfqSettings.show_revision_column}
-                  onChange={(e) => updateRfqSetting('show_revision_column', e.target.checked)}
-                  className="rounded"
-                />
-                <span className="text-sm text-pdm-fg">Show revision column</span>
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={rfqSettings.show_material_column}
-                  onChange={(e) => updateRfqSetting('show_material_column', e.target.checked)}
-                  className="rounded"
-                />
-                <span className="text-sm text-pdm-fg">Show material column</span>
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={rfqSettings.show_finish_column}
-                  onChange={(e) => updateRfqSetting('show_finish_column', e.target.checked)}
-                  className="rounded"
-                />
-                <span className="text-sm text-pdm-fg">Show finish column</span>
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={rfqSettings.show_notes_column}
-                  onChange={(e) => updateRfqSetting('show_notes_column', e.target.checked)}
-                  className="rounded"
-                />
-                <span className="text-sm text-pdm-fg">Show notes column</span>
-              </label>
-            </div>
-          </div>
-
-          {/* Terms and conditions */}
-          <div>
-            <label className="text-sm text-pdm-fg-muted block mb-1">Terms and Conditions</label>
-            <textarea
-              value={rfqSettings.terms_and_conditions}
-              onChange={(e) => updateRfqSetting('terms_and_conditions', e.target.value)}
-              rows={4}
-              placeholder="Enter standard terms and conditions for RFQ documents..."
-              className="w-full px-3 py-2 bg-pdm-input border border-pdm-border rounded text-sm text-pdm-fg placeholder:text-pdm-fg-muted/50 focus:outline-none focus:border-pdm-accent resize-none"
-            />
-          </div>
-
-          {/* Footer text */}
-          <div>
-            <label className="text-sm text-pdm-fg-muted block mb-1">Footer Text</label>
-            <input
-              type="text"
-              value={rfqSettings.footer_text}
-              onChange={(e) => updateRfqSetting('footer_text', e.target.value)}
-              placeholder="Custom footer text for RFQ documents"
-              className="w-full px-3 py-2 bg-pdm-input border border-pdm-border rounded text-sm text-pdm-fg placeholder:text-pdm-fg-muted/50 focus:outline-none focus:border-pdm-accent"
-            />
           </div>
         </div>
       </div>
@@ -581,7 +419,7 @@ export function BrandingSettings() {
           ) : (
             <Save size={16} />
           )}
-          Save Settings
+          Save Profile
         </button>
       </div>
     </div>

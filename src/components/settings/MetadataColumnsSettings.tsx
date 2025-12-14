@@ -1,20 +1,12 @@
 import { useState, useEffect } from 'react'
 import { 
-  Columns3, 
   Plus, 
   Trash2, 
   Pencil, 
-  GripVertical, 
-  Check, 
   X, 
   Loader2,
   Eye,
   EyeOff,
-  Type,
-  Hash,
-  Calendar,
-  ToggleLeft,
-  List,
   ChevronUp,
   ChevronDown,
   AlertTriangle
@@ -22,15 +14,6 @@ import {
 import { usePDMStore } from '../../stores/pdmStore'
 import { supabase } from '../../lib/supabase'
 import type { FileMetadataColumn, MetadataColumnType } from '../../types/database'
-
-// Type icons for visual display
-const TYPE_ICONS: Record<MetadataColumnType, typeof Type> = {
-  text: Type,
-  number: Hash,
-  date: Calendar,
-  boolean: ToggleLeft,
-  select: List
-}
 
 const TYPE_LABELS: Record<MetadataColumnType, string> = {
   text: 'Text',
@@ -66,11 +49,23 @@ const DEFAULT_COLUMN: EditingColumn = {
 }
 
 export function MetadataColumnsSettings() {
-  const { user, organization, addToast } = usePDMStore()
+  const { 
+    user, 
+    organization, 
+    addToast, 
+    columns: builtinColumns, 
+    toggleColumnVisibility, 
+    setColumnWidth,
+    saveOrgColumnDefaults,
+    loadOrgColumnDefaults,
+    resetColumnsToDefaults
+  } = usePDMStore()
   
   const [columns, setColumns] = useState<FileMetadataColumn[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
+  const [isSavingDefaults, setIsSavingDefaults] = useState(false)
+  const [isLoadingDefaults, setIsLoadingDefaults] = useState(false)
   
   // Editing state
   const [editingColumn, setEditingColumn] = useState<EditingColumn | null>(null)
@@ -80,6 +75,38 @@ export function MetadataColumnsSettings() {
   
   // Select options editing
   const [newOption, setNewOption] = useState('')
+  
+  // Handle saving org defaults
+  const handleSaveOrgDefaults = async () => {
+    setIsSavingDefaults(true)
+    const result = await saveOrgColumnDefaults()
+    setIsSavingDefaults(false)
+    
+    if (result.success) {
+      addToast('success', 'Saved as organization defaults')
+    } else {
+      addToast('error', result.error || 'Failed to save defaults')
+    }
+  }
+  
+  // Handle loading org defaults
+  const handleLoadOrgDefaults = async () => {
+    setIsLoadingDefaults(true)
+    const result = await loadOrgColumnDefaults()
+    setIsLoadingDefaults(false)
+    
+    if (result.success) {
+      addToast('success', 'Loaded organization defaults')
+    } else {
+      addToast('error', result.error || 'Failed to load defaults')
+    }
+  }
+  
+  // Handle reset to app defaults
+  const handleResetToDefaults = () => {
+    resetColumnsToDefaults()
+    addToast('info', 'Reset to application defaults')
+  }
 
   // Load columns
   useEffect(() => {
@@ -291,51 +318,103 @@ export function MetadataColumnsSettings() {
     })
   }
 
-  if (!organization) {
-    return (
-      <div className="text-center py-12 text-pdm-fg-muted text-base">
-        No organization connected
-      </div>
-    )
-  }
-
-  if (user?.role !== 'admin') {
-    return (
-      <div className="text-center py-12 text-pdm-fg-muted text-base">
-        Only organization admins can manage metadata columns
-      </div>
-    )
-  }
+  const isAdmin = user?.role === 'admin'
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+      {/* Built-in Columns Section */}
+      <div className="space-y-3">
         <div>
-          <div className="flex items-center gap-2 text-sm text-pdm-fg-muted uppercase tracking-wide font-medium">
-            <Columns3 size={16} />
-            Custom Metadata Columns
-          </div>
-          <p className="text-base text-pdm-fg-muted mt-1">
-            Define custom properties that appear as columns in the file browser
+          <h3 className="text-sm text-pdm-fg-muted uppercase tracking-wide font-medium">
+            Built-in Columns
+          </h3>
+          <p className="text-sm text-pdm-fg-dim mt-1">
+            Standard columns. {isAdmin ? 'Set default width and visibility for your organization.' : 'Toggle visibility to show/hide.'}
           </p>
         </div>
-        {!isCreating && !editingColumn && (
-          <button
-            onClick={() => {
-              setEditingColumn({ ...DEFAULT_COLUMN })
-              setIsCreating(true)
-            }}
-            className="btn btn-primary btn-sm flex items-center gap-1"
-          >
-            <Plus size={14} />
-            Add Column
-          </button>
-        )}
+
+        {/* Table header */}
+        <div className="grid grid-cols-[1fr_80px_60px] gap-2 px-3 py-1.5 text-xs text-pdm-fg-muted uppercase tracking-wide border-b border-pdm-border">
+          <span>Column</span>
+          <span className="text-center">Width</span>
+          <span className="text-center">Visible</span>
+        </div>
+
+        {/* Column rows */}
+        <div className="space-y-0.5">
+          {builtinColumns.map((column) => (
+            <div 
+              key={column.id}
+              className={`grid grid-cols-[1fr_80px_60px] gap-2 px-3 py-2 rounded hover:bg-pdm-highlight/50 transition-colors items-center ${!column.visible ? 'opacity-50' : ''}`}
+            >
+              <span className="text-sm text-pdm-fg">{column.label}</span>
+              
+              {/* Width input (admin only) */}
+              {isAdmin ? (
+                <input
+                  type="number"
+                  value={column.width}
+                  onChange={(e) => setColumnWidth(column.id, Math.max(40, parseInt(e.target.value) || 40))}
+                  className="w-full bg-pdm-bg border border-pdm-border rounded px-2 py-1 text-xs text-center focus:border-pdm-accent focus:outline-none"
+                  min={40}
+                  max={500}
+                />
+              ) : (
+                <span className="text-xs text-pdm-fg-muted text-center">{column.width}px</span>
+              )}
+              
+              {/* Visibility toggle */}
+              <div className="flex justify-center">
+                <button
+                  onClick={() => toggleColumnVisibility(column.id)}
+                  className="p-1 hover:bg-pdm-highlight rounded transition-colors"
+                  title={column.visible ? 'Hide column' : 'Show column'}
+                >
+                  {column.visible ? (
+                    <Eye size={14} className="text-pdm-accent" />
+                  ) : (
+                    <EyeOff size={14} className="text-pdm-fg-muted" />
+                  )}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
 
-      {/* Create/Edit Form */}
-      {editingColumn && (
+      {/* Divider */}
+      <div className="border-t border-pdm-border" />
+
+      {/* Custom Columns Section */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm text-pdm-fg-muted uppercase tracking-wide font-medium">
+              Custom Columns
+            </h3>
+            <p className="text-sm text-pdm-fg-dim mt-1">
+              {isAdmin 
+                ? 'Define custom properties that appear in the file browser.'
+                : 'Custom properties defined by your organization admin.'
+              }
+            </p>
+          </div>
+          {isAdmin && !isCreating && !editingColumn && organization && (
+            <button
+              onClick={() => {
+                setEditingColumn({ ...DEFAULT_COLUMN })
+                setIsCreating(true)
+              }}
+              className="btn btn-primary btn-sm flex items-center gap-1"
+            >
+              <Plus size={14} />
+              Add Column
+            </button>
+          )}
+        </div>
+
+        {/* Create/Edit Form (admin only) */}
+        {isAdmin && editingColumn && (
         <div className="p-4 bg-pdm-bg rounded-lg border border-pdm-accent space-y-4">
           <h3 className="font-medium text-pdm-fg">
             {isCreating ? 'New Column' : 'Edit Column'}
@@ -548,138 +627,157 @@ export function MetadataColumnsSettings() {
         </div>
       )}
 
-      {/* Columns List */}
-      {isLoading ? (
-        <div className="flex items-center justify-center py-8">
-          <Loader2 className="animate-spin text-pdm-fg-muted" size={24} />
-        </div>
-      ) : columns.length === 0 && !isCreating ? (
-        <div className="text-center py-8 text-pdm-fg-muted text-base border border-dashed border-pdm-border rounded-lg">
-          <Columns3 size={32} className="mx-auto mb-2 opacity-50" />
-          <p>No custom metadata columns defined</p>
-          <p className="text-sm mt-1">Add columns to track custom properties like Material, Weight, Supplier, etc.</p>
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {columns.map((column, index) => {
-            const TypeIcon = TYPE_ICONS[column.data_type]
-            
-            return (
-              <div 
-                key={column.id}
-                className="flex items-center gap-3 p-3 rounded-lg bg-pdm-bg border border-pdm-border hover:border-pdm-border-light transition-colors group"
-              >
-                {/* Drag handle */}
-                <div className="flex flex-col gap-0.5">
-                  <button
-                    onClick={() => handleMoveColumn(column, 'up')}
-                    disabled={index === 0}
-                    className="p-0.5 text-pdm-fg-muted hover:text-pdm-fg disabled:opacity-30"
-                  >
-                    <ChevronUp size={14} />
-                  </button>
-                  <button
-                    onClick={() => handleMoveColumn(column, 'down')}
-                    disabled={index === columns.length - 1}
-                    className="p-0.5 text-pdm-fg-muted hover:text-pdm-fg disabled:opacity-30"
-                  >
-                    <ChevronDown size={14} />
-                  </button>
-                </div>
-                
-                <GripVertical size={16} className="text-pdm-fg-dim flex-shrink-0" />
-                
-                {/* Type icon */}
-                <div className={`p-1.5 rounded ${column.visible ? 'bg-pdm-accent/20 text-pdm-accent' : 'bg-pdm-fg-muted/20 text-pdm-fg-muted'}`}>
-                  <TypeIcon size={16} />
-                </div>
-                
-                {/* Column info */}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-base text-pdm-fg font-medium">{column.label}</span>
-                    {!column.visible && (
-                      <span className="text-xs px-1.5 py-0.5 bg-pdm-fg-muted/20 text-pdm-fg-muted rounded">
-                        Hidden
-                      </span>
-                    )}
-                    {column.required && (
-                      <span className="text-xs px-1.5 py-0.5 bg-pdm-warning/20 text-pdm-warning rounded">
-                        Required
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-sm text-pdm-fg-muted flex items-center gap-2">
-                    <code className="font-mono text-xs bg-pdm-bg-light px-1 rounded">
-                      {column.name}
-                    </code>
-                    <span>•</span>
-                    <span>{TYPE_LABELS[column.data_type]}</span>
-                    <span>•</span>
-                    <span>{column.width}px</span>
-                    {column.data_type === 'select' && column.select_options.length > 0 && (
-                      <>
-                        <span>•</span>
-                        <span>{column.select_options.length} options</span>
-                      </>
-                    )}
-                  </div>
-                </div>
-                
-                {/* Actions */}
-                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button
-                    onClick={() => handleToggleVisibility(column)}
-                    className="p-1.5 hover:bg-pdm-highlight rounded transition-colors"
-                    title={column.visible ? 'Hide column' : 'Show column'}
-                  >
-                    {column.visible ? (
-                      <Eye size={14} className="text-pdm-fg-muted" />
-                    ) : (
-                      <EyeOff size={14} className="text-pdm-fg-muted" />
-                    )}
-                  </button>
-                  <button
-                    onClick={() => {
-                      setEditingColumn({
-                        id: column.id,
-                        name: column.name,
-                        label: column.label,
-                        data_type: column.data_type,
-                        select_options: column.select_options || [],
-                        width: column.width,
-                        visible: column.visible,
-                        sortable: column.sortable,
-                        required: column.required,
-                        default_value: column.default_value || ''
-                      })
-                      setIsCreating(false)
-                    }}
-                    className="p-1.5 hover:bg-pdm-highlight rounded transition-colors"
-                    title="Edit column"
-                  >
-                    <Pencil size={14} className="text-pdm-fg-muted" />
-                  </button>
-                  <button
-                    onClick={() => setDeletingColumn(column)}
-                    className="p-1.5 hover:bg-pdm-error/20 rounded transition-colors"
-                    title="Delete column"
-                  >
-                    <Trash2 size={14} className="text-pdm-error" />
-                  </button>
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      )}
+        {/* Custom Columns List */}
+        {!organization ? (
+          <div className="text-center py-6 text-pdm-fg-muted text-sm border border-dashed border-pdm-border rounded-lg">
+            Connect to an organization to view custom columns
+          </div>
+        ) : isLoading ? (
+          <div className="flex items-center justify-center py-6">
+            <Loader2 className="animate-spin text-pdm-fg-muted" size={20} />
+          </div>
+        ) : columns.length === 0 && !isCreating ? (
+          <div className="text-center py-6 text-pdm-fg-muted text-sm border border-dashed border-pdm-border rounded-lg">
+            <p>No custom columns defined</p>
+            {isAdmin && (
+              <p className="text-xs mt-1 text-pdm-fg-dim">Click "Add Column" to create custom properties like Material, Weight, etc.</p>
+            )}
+          </div>
+        ) : (
+          <>
+            {/* Table header */}
+            <div className="grid grid-cols-[1fr_80px_80px_60px_auto] gap-2 px-3 py-1.5 text-xs text-pdm-fg-muted uppercase tracking-wide border-b border-pdm-border">
+              <span>Column</span>
+              <span className="text-center">Type</span>
+              <span className="text-center">Width</span>
+              <span className="text-center">Visible</span>
+              {isAdmin && <span className="text-center w-20">Actions</span>}
+            </div>
 
-      {/* Info box */}
-      <div className="p-3 bg-pdm-bg rounded-lg border border-pdm-border">
-        <p className="text-sm text-pdm-fg-muted">
-          <strong>How it works:</strong> Custom metadata columns appear in the file browser alongside 
-          standard columns like Name, Version, and State. Values are stored in each file's custom properties 
-          and can be edited in the Properties panel.
+            {/* Column rows */}
+            <div className="space-y-0.5">
+              {columns.map((column, index) => (
+                <div 
+                  key={column.id}
+                  className={`grid grid-cols-[1fr_80px_80px_60px_auto] gap-2 px-3 py-2 rounded hover:bg-pdm-highlight/50 transition-colors items-center group ${!column.visible ? 'opacity-50' : ''}`}
+                >
+                  {/* Name with reorder buttons (admin) */}
+                  <div className="flex items-center gap-2">
+                    {isAdmin && (
+                      <div className="flex flex-col opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={() => handleMoveColumn(column, 'up')}
+                          disabled={index === 0}
+                          className="p-0 text-pdm-fg-muted hover:text-pdm-fg disabled:opacity-30"
+                        >
+                          <ChevronUp size={12} />
+                        </button>
+                        <button
+                          onClick={() => handleMoveColumn(column, 'down')}
+                          disabled={index === columns.length - 1}
+                          className="p-0 text-pdm-fg-muted hover:text-pdm-fg disabled:opacity-30"
+                        >
+                          <ChevronDown size={12} />
+                        </button>
+                      </div>
+                    )}
+                    <span className="text-sm text-pdm-fg">{column.label}</span>
+                    {column.required && (
+                      <span className="text-[10px] px-1 py-0.5 bg-pdm-warning/20 text-pdm-warning rounded">req</span>
+                    )}
+                  </div>
+                  
+                  {/* Type */}
+                  <span className="text-xs text-pdm-fg-muted text-center">{TYPE_LABELS[column.data_type]}</span>
+                  
+                  {/* Width */}
+                  <span className="text-xs text-pdm-fg-muted text-center">{column.width}px</span>
+                  
+                  {/* Visibility toggle */}
+                  <div className="flex justify-center">
+                    <button
+                      onClick={() => handleToggleVisibility(column)}
+                      className="p-1 hover:bg-pdm-highlight rounded transition-colors"
+                      title={column.visible ? 'Hide column' : 'Show column'}
+                    >
+                      {column.visible ? (
+                        <Eye size={14} className="text-pdm-accent" />
+                      ) : (
+                        <EyeOff size={14} className="text-pdm-fg-muted" />
+                      )}
+                    </button>
+                  </div>
+                  
+                  {/* Actions (admin only) */}
+                  {isAdmin && (
+                    <div className="flex items-center justify-center gap-1 w-20">
+                      <button
+                        onClick={() => {
+                          setEditingColumn({
+                            id: column.id,
+                            name: column.name,
+                            label: column.label,
+                            data_type: column.data_type,
+                            select_options: column.select_options || [],
+                            width: column.width,
+                            visible: column.visible,
+                            sortable: column.sortable,
+                            required: column.required,
+                            default_value: column.default_value || ''
+                          })
+                          setIsCreating(false)
+                        }}
+                        className="p-1 hover:bg-pdm-highlight rounded transition-colors"
+                        title="Edit column"
+                      >
+                        <Pencil size={12} className="text-pdm-fg-muted" />
+                      </button>
+                      <button
+                        onClick={() => setDeletingColumn(column)}
+                        className="p-1 hover:bg-pdm-error/20 rounded transition-colors"
+                        title="Delete column"
+                      >
+                        <Trash2 size={12} className="text-pdm-error" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Actions & Info */}
+      <div className="p-4 bg-pdm-bg rounded border border-pdm-border space-y-3">
+        <div className="flex flex-wrap gap-2">
+          {isAdmin && organization && (
+            <button
+              onClick={handleSaveOrgDefaults}
+              disabled={isSavingDefaults}
+              className="btn btn-primary btn-sm"
+            >
+              {isSavingDefaults ? 'Saving...' : 'Save as Org Defaults'}
+            </button>
+          )}
+          {organization && (
+            <button
+              onClick={handleLoadOrgDefaults}
+              disabled={isLoadingDefaults}
+              className="btn btn-ghost btn-sm"
+            >
+              {isLoadingDefaults ? 'Loading...' : 'Load Org Defaults'}
+            </button>
+          )}
+          <button
+            onClick={handleResetToDefaults}
+            className="btn btn-ghost btn-sm text-pdm-fg-muted"
+          >
+            Reset to App Defaults
+          </button>
+        </div>
+        <p className="text-xs text-pdm-fg-dim">
+          Column settings are saved locally per user. {isAdmin && 'Use "Save as Org Defaults" to set the starting configuration for new team members.'}
         </p>
       </div>
 
