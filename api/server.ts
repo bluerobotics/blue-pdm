@@ -610,39 +610,57 @@ async function fetchOdooSuppliers(
 ): Promise<{ success: boolean; suppliers: OdooSupplier[]; error?: string }> {
   const normalizedUrl = normalizeOdooUrl(url)
   try {
+    console.log('[Odoo] Authenticating to:', normalizedUrl)
+    
     // Authenticate first
     const uid = await odooXmlRpc(normalizedUrl, 'common', 'authenticate', [
       database, username, apiKey, {}
     ])
+    
+    console.log('[Odoo] Auth result uid:', uid)
     
     if (!uid || uid === false) {
       return { success: false, suppliers: [], error: 'Authentication failed' }
     }
     
     // Search for suppliers (partners with supplier_rank > 0)
+    console.log('[Odoo] Searching for suppliers...')
     const supplierIds = await odooXmlRpc(normalizedUrl, 'object', 'execute_kw', [
       database, uid, apiKey,
       'res.partner', 'search',
       [[['supplier_rank', '>', 0]]],
       { limit: 5000 }  // Reasonable limit
-    ]) as number[]
+    ])
     
-    if (!supplierIds || supplierIds.length === 0) {
+    console.log('[Odoo] Supplier IDs result:', typeof supplierIds, Array.isArray(supplierIds) ? supplierIds.length : supplierIds)
+    
+    // Ensure supplierIds is an array
+    const ids = Array.isArray(supplierIds) ? supplierIds : []
+    
+    if (ids.length === 0) {
+      console.log('[Odoo] No suppliers found')
       return { success: true, suppliers: [] }
     }
     
     // Read supplier details
-    const suppliers = await odooXmlRpc(normalizedUrl, 'object', 'execute_kw', [
+    console.log('[Odoo] Reading', ids.length, 'supplier details...')
+    const suppliersResult = await odooXmlRpc(normalizedUrl, 'object', 'execute_kw', [
       database, uid, apiKey,
       'res.partner', 'read',
-      [supplierIds, [
+      [ids, [
         'id', 'name', 'ref', 'email', 'phone', 'mobile', 'website',
         'street', 'street2', 'city', 'zip', 'state_id', 'country_id', 'active'
       ]]
-    ]) as OdooSupplier[]
+    ])
+    
+    console.log('[Odoo] Suppliers result type:', typeof suppliersResult, Array.isArray(suppliersResult) ? suppliersResult.length : 'not array')
+    
+    // Ensure result is an array
+    const suppliers = Array.isArray(suppliersResult) ? suppliersResult as OdooSupplier[] : []
     
     return { success: true, suppliers }
   } catch (err) {
+    console.error('[Odoo] Error:', err)
     return { success: false, suppliers: [], error: String(err) }
   }
 }
@@ -3483,10 +3501,25 @@ export async function buildServer(): Promise<FastifyInstance> {
       return reply.code(400).send({ error: 'Sync failed', message: odooSuppliers.error })
     }
     
+    // Safety check - ensure suppliers is an array
+    const suppliers = Array.isArray(odooSuppliers.suppliers) ? odooSuppliers.suppliers : []
+    console.log(`[Odoo Sync] Found ${suppliers.length} suppliers from Odoo`)
+    
+    if (suppliers.length === 0) {
+      return { 
+        success: true, 
+        created: 0, 
+        updated: 0, 
+        skipped: 0, 
+        errors: 0,
+        message: 'No suppliers found in Odoo with supplier_rank > 0' 
+      }
+    }
+    
     // Process suppliers
     let created = 0, updated = 0, skipped = 0, errors = 0
     
-    for (const odooSupplier of odooSuppliers.suppliers) {
+    for (const odooSupplier of suppliers) {
       try {
         // Check if supplier already exists by erp_id
         const { data: existing } = await request.supabase!

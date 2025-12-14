@@ -1113,6 +1113,134 @@ export interface Database {
           created_at?: string
         }
       }
+      // Webhooks
+      webhooks: {
+        Row: {
+          id: string
+          org_id: string
+          name: string
+          description: string | null
+          url: string
+          secret: string
+          events: WebhookEvent[]
+          is_active: boolean
+          trigger_filter: 'everyone' | 'roles' | 'users'
+          trigger_roles: string[]
+          trigger_user_ids: string[]
+          custom_headers: Record<string, string>
+          max_retries: number
+          retry_delay_seconds: number
+          timeout_seconds: number
+          created_at: string
+          created_by: string | null
+          updated_at: string
+          updated_by: string | null
+          last_triggered_at: string | null
+          success_count: number
+          failure_count: number
+        }
+        Insert: {
+          id?: string
+          org_id: string
+          name: string
+          description?: string | null
+          url: string
+          secret: string
+          events?: WebhookEvent[]
+          is_active?: boolean
+          trigger_filter?: 'everyone' | 'roles' | 'users'
+          trigger_roles?: string[]
+          trigger_user_ids?: string[]
+          custom_headers?: Record<string, string>
+          max_retries?: number
+          retry_delay_seconds?: number
+          timeout_seconds?: number
+          created_at?: string
+          created_by?: string | null
+          updated_at?: string
+          updated_by?: string | null
+          last_triggered_at?: string | null
+          success_count?: number
+          failure_count?: number
+        }
+        Update: {
+          id?: string
+          org_id?: string
+          name?: string
+          description?: string | null
+          url?: string
+          secret?: string
+          events?: WebhookEvent[]
+          is_active?: boolean
+          trigger_filter?: 'everyone' | 'roles' | 'users'
+          trigger_roles?: string[]
+          trigger_user_ids?: string[]
+          custom_headers?: Record<string, string>
+          max_retries?: number
+          retry_delay_seconds?: number
+          timeout_seconds?: number
+          created_at?: string
+          created_by?: string | null
+          updated_at?: string
+          updated_by?: string | null
+          last_triggered_at?: string | null
+          success_count?: number
+          failure_count?: number
+        }
+      }
+      webhook_deliveries: {
+        Row: {
+          id: string
+          webhook_id: string
+          org_id: string
+          event_type: WebhookEvent
+          event_id: string | null
+          payload: Record<string, unknown>
+          status: WebhookDeliveryStatus
+          attempt_count: number
+          response_status: number | null
+          response_body: string | null
+          response_headers: Record<string, string> | null
+          created_at: string
+          delivered_at: string | null
+          next_retry_at: string | null
+          last_error: string | null
+        }
+        Insert: {
+          id?: string
+          webhook_id: string
+          org_id: string
+          event_type: WebhookEvent
+          event_id?: string | null
+          payload: Record<string, unknown>
+          status?: WebhookDeliveryStatus
+          attempt_count?: number
+          response_status?: number | null
+          response_body?: string | null
+          response_headers?: Record<string, string> | null
+          created_at?: string
+          delivered_at?: string | null
+          next_retry_at?: string | null
+          last_error?: string | null
+        }
+        Update: {
+          id?: string
+          webhook_id?: string
+          org_id?: string
+          event_type?: WebhookEvent
+          event_id?: string | null
+          payload?: Record<string, unknown>
+          status?: WebhookDeliveryStatus
+          attempt_count?: number
+          response_status?: number | null
+          response_body?: string | null
+          response_headers?: Record<string, string> | null
+          created_at?: string
+          delivered_at?: string | null
+          next_retry_at?: string | null
+          last_error?: string | null
+        }
+      }
       // Supplier contacts (supplier portal users)
       supplier_contacts: {
         Row: {
@@ -1366,6 +1494,8 @@ export interface Database {
       supplier_auth_method: 'email' | 'phone' | 'wechat'
       supplier_invitation_status: 'pending' | 'accepted' | 'expired' | 'cancelled'
       metadata_column_type: 'text' | 'number' | 'date' | 'boolean' | 'select'
+      webhook_event: 'file.created' | 'file.updated' | 'file.deleted' | 'file.checked_out' | 'file.checked_in' | 'file.state_changed' | 'file.revision_changed' | 'review.requested' | 'review.approved' | 'review.rejected' | 'eco.created' | 'eco.completed'
+      webhook_delivery_status: 'pending' | 'success' | 'failed' | 'retrying'
     }
     CompositeTypes: Record<string, never>
   }
@@ -1436,6 +1566,71 @@ export interface SupplierAccountCheck {
 // ===========================================
 
 export type MetadataColumnType = 'text' | 'number' | 'date' | 'boolean' | 'select'
+
+// ===========================================
+// Webhook Types
+// ===========================================
+
+export type WebhookEvent = 
+  | 'file.created'
+  | 'file.updated'
+  | 'file.deleted'
+  | 'file.checked_out'
+  | 'file.checked_in'
+  | 'file.state_changed'
+  | 'file.revision_changed'
+  | 'review.requested'
+  | 'review.approved'
+  | 'review.rejected'
+  | 'eco.created'
+  | 'eco.completed'
+
+export type WebhookDeliveryStatus = 'pending' | 'success' | 'failed' | 'retrying'
+
+export type WebhookTriggerFilter = 'everyone' | 'roles' | 'users'
+
+export interface Webhook {
+  id: string
+  org_id: string
+  name: string
+  description: string | null
+  url: string
+  secret: string
+  events: WebhookEvent[]
+  is_active: boolean
+  trigger_filter: WebhookTriggerFilter
+  trigger_roles: string[]
+  trigger_user_ids: string[]
+  custom_headers: Record<string, string>
+  max_retries: number
+  retry_delay_seconds: number
+  timeout_seconds: number
+  created_at: string
+  created_by: string | null
+  updated_at: string
+  updated_by: string | null
+  last_triggered_at: string | null
+  success_count: number
+  failure_count: number
+}
+
+export interface WebhookDelivery {
+  id: string
+  webhook_id: string
+  org_id: string
+  event_type: WebhookEvent
+  event_id: string | null
+  payload: Record<string, unknown>
+  status: WebhookDeliveryStatus
+  attempt_count: number
+  response_status: number | null
+  response_body: string | null
+  response_headers: Record<string, string> | null
+  created_at: string
+  delivered_at: string | null
+  next_retry_at: string | null
+  last_error: string | null
+}
 
 export interface FileMetadataColumn {
   id: string

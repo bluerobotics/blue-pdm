@@ -1,5 +1,6 @@
 import {
-  AccountSettings,
+  ProfileSettings,
+  PreferencesSettings,
   OrganizationSettings,
   CompanyProfileSettings,
   RFQSettings,
@@ -12,10 +13,11 @@ import {
   WebhooksSettings,
   ApiSettings,
   LogsSettings,
-  AboutSettings
+  AboutSettings,
+  SupabaseSettings
 } from './settings'
 
-type SettingsTab = 'account' | 'organization' | 'company-profile' | 'rfq' | 'metadata-columns' | 'backup' | 'solidworks' | 'google-drive' | 'odoo' | 'slack' | 'webhooks' | 'api' | 'logs' | 'about'
+type SettingsTab = 'profile' | 'preferences' | 'organization' | 'company-profile' | 'rfq' | 'metadata-columns' | 'backup' | 'solidworks' | 'google-drive' | 'odoo' | 'slack' | 'webhooks' | 'api' | 'supabase' | 'logs' | 'about'
 
 interface SettingsContentProps {
   activeTab: SettingsTab
@@ -24,8 +26,10 @@ interface SettingsContentProps {
 export function SettingsContent({ activeTab }: SettingsContentProps) {
   const renderContent = () => {
     switch (activeTab) {
-      case 'account':
-        return <AccountSettings />
+      case 'profile':
+        return <ProfileSettings />
+      case 'preferences':
+        return <PreferencesSettings />
       case 'organization':
         return <OrganizationSettings />
       case 'company-profile':
@@ -48,12 +52,14 @@ export function SettingsContent({ activeTab }: SettingsContentProps) {
         return <WebhooksSettings />
       case 'api':
         return <ApiSettings />
+      case 'supabase':
+        return <SupabaseSettings />
       case 'logs':
         return <LogsSettings />
       case 'about':
         return <AboutSettings />
       default:
-        return <AccountSettings />
+        return <ProfileSettings />
     }
   }
 

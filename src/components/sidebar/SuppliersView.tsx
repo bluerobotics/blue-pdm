@@ -95,7 +95,6 @@ export function SuppliersView() {
       const response = await fetch(`${apiUrl}/integrations/odoo/sync/suppliers`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         }
       })

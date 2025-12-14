@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react'
 import {
-  Mail, 
   LogOut, 
   Monitor, 
   Laptop, 
@@ -23,10 +22,8 @@ import {
 } from 'lucide-react'
 import { usePDMStore, ThemeMode, Language } from '../../stores/pdmStore'
 import { signOut, getSupabaseClient, endRemoteSession } from '../../lib/supabase'
-import { getInitials } from '../../types/pdm'
 import { getMachineId } from '../../lib/backup'
 import { useTranslation } from '../../lib/i18n'
-import { ContributionHistory } from './ContributionHistory'
 
 interface UserSession {
   id: string
@@ -50,7 +47,7 @@ const languageOptions: { value: Language; label: string; nativeLabel: string }[]
   { value: 'sindarin', label: 'Sindarin (Elvish)', nativeLabel: '🧝 Tengwar' },
 ]
 
-export function AccountSettings() {
+export function PreferencesSettings() {
   const { t } = useTranslation()
   const { 
     user, 
@@ -224,51 +221,6 @@ export function AccountSettings() {
 
   return (
     <div className="space-y-8">
-      {/* User profile card */}
-      <section>
-        <h2 className="text-sm text-plm-fg-muted uppercase tracking-wide font-medium mb-3">
-          Profile
-        </h2>
-        <div className="flex items-center gap-4 p-4 bg-plm-bg rounded-lg border border-plm-border">
-          {user.avatar_url ? (
-            <>
-              <img 
-                src={user.avatar_url} 
-                alt={user.full_name || user.email}
-                className="w-16 h-16 rounded-full"
-                onError={(e) => {
-                  const target = e.target as HTMLImageElement
-                  target.style.display = 'none'
-                  target.nextElementSibling?.classList.remove('hidden')
-                }}
-              />
-              <div className="w-16 h-16 rounded-full bg-plm-accent flex items-center justify-center text-xl text-white font-semibold hidden">
-                {getInitials(user.full_name || user.email)}
-              </div>
-            </>
-          ) : (
-            <div className="w-16 h-16 rounded-full bg-plm-accent flex items-center justify-center text-xl text-white font-semibold">
-              {getInitials(user.full_name || user.email)}
-            </div>
-          )}
-          <div className="flex-1 min-w-0">
-            <div className="text-xl font-medium text-plm-fg truncate">
-              {user.full_name || 'No name'}
-            </div>
-            <div className="text-base text-plm-fg-muted truncate flex items-center gap-1.5">
-              <Mail size={16} />
-              {user.email}
-            </div>
-            <div className="text-sm text-plm-fg-dim mt-1">
-              Role: <span className="capitalize">{user.role}</span>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Contribution History */}
-      <ContributionHistory />
-
       {/* Sessions */}
       <section>
         <h2 className="text-sm text-plm-fg-muted uppercase tracking-wide font-medium mb-3">
@@ -626,3 +578,4 @@ export function AccountSettings() {
     </div>
   )
 }
+

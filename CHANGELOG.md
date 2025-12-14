@@ -2,6 +2,21 @@
 
 All notable changes to BluePLM will be documented in this file.
 
+## [2.2.0] - UNRELEASED
+
+### Added
+- **Webhooks Integration**: Send HTTP notifications to external services when events occur in BluePLM
+  - Configure webhooks in Settings → Webhooks (admin-only)
+  - 12 event types: file created/updated/deleted, check-in/check-out, state changes, reviews, ECOs
+  - HMAC-SHA256 signature verification for secure payloads
+  - User filtering: trigger webhooks for everyone, specific roles, or specific users
+  - Built-in test button to verify webhook endpoints
+  - Delivery history with status tracking (success, failed, retrying)
+  - Auto-retry failed deliveries with configurable retry count and delay
+  - Enable/disable toggle per webhook
+
+---
+
 ## [2.1.1] - 2025-12-12
 
 ### Fixed

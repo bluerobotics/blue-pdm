@@ -30,6 +30,7 @@ import { usePDMStore, ConnectedVault } from '../../stores/pdmStore'
 import { supabase, getCurrentConfig, updateUserRole, removeUserFromOrg, getOrgVaultAccess, setUserVaultAccess } from '../../lib/supabase'
 import { generateOrgCode } from '../../lib/supabaseConfig'
 import { getInitials } from '../../types/pdm'
+import { UserProfileModal } from './UserProfileModal'
 
 // Build vault path based on platform
 function buildVaultPath(platform: string, vaultSlug: string): string {
@@ -120,6 +121,9 @@ export function OrganizationSettings() {
   
   // Organization logo
   const [orgLogoUrl, setOrgLogoUrl] = useState<string | null>(null)
+  
+  // User profile modal
+  const [viewingUserId, setViewingUserId] = useState<string | null>(null)
   
   // Get platform on mount
   useEffect(() => {
@@ -969,38 +973,44 @@ See you on the team!`
                   key={orgUser.id}
                   className="flex items-center gap-3 p-3 rounded-lg hover:bg-plm-highlight transition-colors group"
                 >
-                  {orgUser.avatar_url ? (
-                    <img 
-                      src={orgUser.avatar_url} 
-                      alt={orgUser.full_name || orgUser.email}
-                      className="w-10 h-10 rounded-full"
-                      onError={(e) => {
-                        const target = e.target as HTMLImageElement
-                        target.style.display = 'none'
-                      }}
-                    />
-                  ) : (
-                    <div className="w-10 h-10 rounded-full bg-plm-fg-muted/20 flex items-center justify-center text-sm font-medium">
-                      {getInitials(orgUser.full_name || orgUser.email)}
+                  {/* Clickable avatar and name to open profile */}
+                  <button
+                    onClick={() => setViewingUserId(orgUser.id)}
+                    className="flex items-center gap-3 flex-1 min-w-0 text-left hover:opacity-80 transition-opacity"
+                  >
+                    {orgUser.avatar_url ? (
+                      <img 
+                        src={orgUser.avatar_url} 
+                        alt={orgUser.full_name || orgUser.email}
+                        className="w-10 h-10 rounded-full"
+                        onError={(e) => {
+                          const target = e.target as HTMLImageElement
+                          target.style.display = 'none'
+                        }}
+                      />
+                    ) : (
+                      <div className="w-10 h-10 rounded-full bg-plm-fg-muted/20 flex items-center justify-center text-sm font-medium">
+                        {getInitials(orgUser.full_name || orgUser.email)}
+                      </div>
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <div className="text-base text-plm-fg truncate flex items-center gap-2">
+                        {orgUser.full_name || orgUser.email}
+                        {isCurrentUser && (
+                          <span className="text-sm text-plm-fg-dim">(you)</span>
+                        )}
+                      </div>
+                      <div className="text-sm text-plm-fg-muted truncate flex items-center gap-2">
+                        {orgUser.email}
+                        {orgUser.role !== 'admin' && getUserVaultAccessCount(orgUser.id) > 0 && (
+                          <span className="flex items-center gap-1 px-1.5 py-0.5 bg-plm-fg-muted/10 rounded text-plm-fg-dim">
+                            <Lock size={12} />
+                            {getUserVaultAccessCount(orgUser.id)} vault{getUserVaultAccessCount(orgUser.id) !== 1 ? 's' : ''}
+                          </span>
+                        )}
+                      </div>
                     </div>
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <div className="text-base text-plm-fg truncate flex items-center gap-2">
-                      {orgUser.full_name || orgUser.email}
-                      {isCurrentUser && (
-                        <span className="text-sm text-plm-fg-dim">(you)</span>
-                      )}
-                    </div>
-                    <div className="text-sm text-plm-fg-muted truncate flex items-center gap-2">
-                      {orgUser.email}
-                      {orgUser.role !== 'admin' && getUserVaultAccessCount(orgUser.id) > 0 && (
-                        <span className="flex items-center gap-1 px-1.5 py-0.5 bg-plm-fg-muted/10 rounded text-plm-fg-dim">
-                          <Lock size={12} />
-                          {getUserVaultAccessCount(orgUser.id)} vault{getUserVaultAccessCount(orgUser.id) !== 1 ? 's' : ''}
-                        </span>
-                      )}
-                    </div>
-                  </div>
+                  </button>
                   
                   {/* Role badge / dropdown */}
                   <div className="relative">
@@ -1080,6 +1090,14 @@ See you on the team!`
                 </div>
               )
             })}
+            
+            {/* User Profile Modal */}
+            {viewingUserId && (
+              <UserProfileModal
+                userId={viewingUserId}
+                onClose={() => setViewingUserId(null)}
+              />
+            )}
           </div>
         )}
         

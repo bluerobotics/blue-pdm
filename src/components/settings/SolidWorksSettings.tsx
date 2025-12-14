@@ -1,14 +1,14 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Image, ExternalLink, FolderOpen, Info, Key, Download, Play, Square, Loader2, Zap, Check } from 'lucide-react'
+import { Image, ExternalLink, FolderOpen, Info, Key, Download, Play, Square, Loader2, Check } from 'lucide-react'
 import { usePDMStore } from '../../stores/pdmStore'
 import { supabase } from '../../lib/supabase'
 
 // Hook to manage SolidWorks service connection (minimal version for settings)
 function useSolidWorksServiceStatus() {
-  const [status, setStatus] = useState<{ running: boolean; version?: string; directAccessEnabled?: boolean }>({ running: false })
+  const [status, setStatus] = useState<{ running: boolean; version?: string; directAccessEnabled?: boolean; error?: string }>({ running: false })
   const [isStarting, setIsStarting] = useState(false)
   const [isStopping, setIsStopping] = useState(false)
-  const { addToast, organization } = usePDMStore()
+  const { addToast, organization, autoStartSolidworksService } = usePDMStore()
   
   // Get DM license key from organization settings
   const dmLicenseKey = organization?.settings?.solidworks_dm_license_key
@@ -17,10 +17,12 @@ function useSolidWorksServiceStatus() {
     try {
       const result = await window.electronAPI?.solidworks?.getServiceStatus()
       if (result?.success && result.data) {
-        setStatus(result.data)
+        setStatus({ ...result.data, error: undefined })
+      } else if (result?.error) {
+        setStatus(prev => ({ ...prev, running: false, error: result.error }))
       }
-    } catch {
-      setStatus({ running: false })
+    } catch (err) {
+      setStatus({ running: false, error: String(err) })
     }
   }, [])
 
@@ -33,16 +35,16 @@ function useSolidWorksServiceStatus() {
         setStatus({ 
           running: true, 
           version: (result.data as any)?.version,
-          directAccessEnabled
+          directAccessEnabled,
+          error: undefined
         })
-        const modeMsg = directAccessEnabled 
-          ? ' (direct file access)' 
-          : ' (using SolidWorks API)'
-        addToast('success', `SolidWorks service started${modeMsg}`)
+        addToast('success', 'SolidWorks service started')
       } else {
+        setStatus({ running: false, error: result?.error || 'Failed to start' })
         addToast('error', result?.error || 'Failed to start SolidWorks service')
       }
     } catch (err) {
+      setStatus({ running: false, error: String(err) })
       addToast('error', `Failed to start service: ${err}`)
     } finally {
       setIsStarting(false)
@@ -54,7 +56,7 @@ function useSolidWorksServiceStatus() {
     try {
       const result = await window.electronAPI?.solidworks?.stopService()
       if (result?.success) {
-        setStatus({ running: false })
+        setStatus({ running: false, error: undefined })
         addToast('info', 'SolidWorks service stopped')
       } else {
         addToast('error', 'Failed to stop SolidWorks service')
@@ -73,7 +75,10 @@ function useSolidWorksServiceStatus() {
     return () => clearInterval(interval)
   }, [checkStatus])
 
-  return { status, isStarting, isStopping, startService, stopService, checkStatus }
+  // Determine if we should show error state (auto-start enabled but not running with error)
+  const hasError = autoStartSolidworksService && !status.running && !!status.error
+
+  return { status, isStarting, isStopping, startService, stopService, checkStatus, hasError }
 }
 
 export function SolidWorksSettings() {
@@ -90,7 +95,7 @@ export function SolidWorksSettings() {
     setAutoStartSolidworksService
   } = usePDMStore()
   
-  const { status, isStarting, isStopping, startService, stopService } = useSolidWorksServiceStatus()
+  const { status, isStarting, isStopping, startService, stopService, hasError } = useSolidWorksServiceStatus()
   const isAdmin = user?.role === 'admin'
 
   return (
@@ -104,21 +109,25 @@ export function SolidWorksSettings() {
           {/* Status indicator */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className={`w-3 h-3 rounded-full ${status.running ? 'bg-green-500 animate-pulse' : 'bg-plm-fg-dim'}`} />
+              <div className={`w-3 h-3 rounded-full ${
+                status.running 
+                  ? 'bg-green-500' 
+                  : hasError 
+                    ? 'bg-red-500' 
+                    : 'bg-plm-fg-dim'
+              }`} />
               <div>
-                <div className="text-base text-plm-fg font-medium">
-                  {status.running ? 'Running' : 'Stopped'}
+                <div className={`text-base font-medium ${hasError ? 'text-red-400' : 'text-plm-fg'}`}>
+                  {status.running ? 'Running' : hasError ? 'Error' : 'Stopped'}
                 </div>
-                {status.running && status.version && (
+                {status.running && (
                   <div className="text-sm text-plm-fg-muted">
-                    {status.directAccessEnabled ? (
-                      <span className="flex items-center gap-1">
-                        <Zap size={12} className="text-yellow-400" />
-                        Fast mode (Document Manager API)
-                      </span>
-                    ) : (
-                      'Using SolidWorks API'
-                    )}
+                    {status.directAccessEnabled ? 'Fast mode (Document Manager)' : 'Using SolidWorks API'}
+                  </div>
+                )}
+                {hasError && status.error && (
+                  <div className="text-xs text-red-400/80 max-w-xs truncate" title={status.error}>
+                    {status.error}
                   </div>
                 )}
               </div>
@@ -237,14 +246,25 @@ export function SolidWorksSettings() {
         <div className="p-4 bg-plm-bg rounded-lg border border-plm-border space-y-3">
           <div className="flex items-start gap-3">
             <FolderOpen size={20} className="text-plm-fg-muted mt-0.5 flex-shrink-0" />
-            <div className="flex-1 min-w-0">
+            <div className="flex-1 min-w-0 flex gap-2">
               <input
                 type="text"
                 value={solidworksPath || ''}
                 onChange={(e) => setSolidworksPath(e.target.value || null)}
                 placeholder="C:\Program Files\SOLIDWORKS Corp\SOLIDWORKS"
-                className="w-full bg-plm-bg-secondary border border-plm-border rounded-lg px-3 py-2 text-base font-mono text-plm-fg placeholder:text-plm-fg-dim focus:border-plm-accent focus:outline-none"
+                className="flex-1 bg-plm-bg-secondary border border-plm-border rounded-lg px-3 py-2 text-base font-mono text-plm-fg placeholder:text-plm-fg-dim focus:border-plm-accent focus:outline-none"
               />
+              <button
+                onClick={async () => {
+                  const result = await window.electronAPI?.selectFolder()
+                  if (result?.success && result.path) {
+                    setSolidworksPath(result.path)
+                  }
+                }}
+                className="px-3 py-2 bg-plm-bg-secondary border border-plm-border rounded-lg text-sm text-plm-fg hover:border-plm-accent transition-colors flex-shrink-0"
+              >
+                Browse
+              </button>
             </div>
           </div>
           <div className="flex items-start gap-2 text-sm text-plm-fg-muted">

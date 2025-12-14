@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react'
 import { usePDMStore } from '../../stores/pdmStore'
-import { supabase } from '../../lib/supabase'
+import { supabase, isSupabaseConfigured } from '../../lib/supabase'
 
-type SettingsTab = 'account' | 'organization' | 'metadata-columns' | 'company-profile' | 'rfq' | 'backup' | 'solidworks' | 'google-drive' | 'odoo' | 'slack' | 'webhooks' | 'api' | 'logs' | 'about'
+type SettingsTab = 'profile' | 'preferences' | 'organization' | 'metadata-columns' | 'company-profile' | 'rfq' | 'backup' | 'solidworks' | 'google-drive' | 'odoo' | 'slack' | 'webhooks' | 'api' | 'supabase' | 'logs' | 'about'
 
 type IntegrationStatus = 'online' | 'offline' | 'not-configured' | 'coming-soon'
 
@@ -20,7 +20,8 @@ const settingsSections: SettingsSection[] = [
   {
     category: 'Account',
     items: [
-      { id: 'account', label: 'Profile & Preferences' },
+      { id: 'profile', label: 'Profile' },
+      { id: 'preferences', label: 'Preferences' },
     ]
   },
   {
@@ -36,6 +37,7 @@ const settingsSections: SettingsSection[] = [
   {
     category: 'Integrations',
     items: [
+      { id: 'supabase', label: 'Supabase' },
       { id: 'solidworks', label: 'SolidWorks' },
       { id: 'google-drive', label: 'Google Drive' },
       { id: 'odoo', label: 'Odoo ERP' },
@@ -53,7 +55,7 @@ const settingsSections: SettingsSection[] = [
   },
 ]
 
-const integrationIds = ['solidworks', 'google-drive', 'odoo', 'slack', 'webhooks', 'api'] as const
+const integrationIds = ['supabase', 'solidworks', 'google-drive', 'odoo', 'slack', 'webhooks', 'api'] as const
 
 const API_URL_KEY = 'blueplm_api_url'
 const DEFAULT_API_URL = 'http://localhost:3001'
@@ -69,7 +71,7 @@ function StatusDot({ status }: { status: IntegrationStatus }) {
   const colors: Record<IntegrationStatus, string> = {
     'online': 'bg-plm-success',
     'offline': 'bg-plm-error',
-    'not-configured': 'bg-plm-warning',
+    'not-configured': 'bg-plm-fg-muted/40',
     'coming-soon': 'bg-plm-fg-muted/40',
   }
   
@@ -91,28 +93,55 @@ function StatusDot({ status }: { status: IntegrationStatus }) {
 export function SettingsNavigation({ activeTab, onTabChange }: SettingsNavigationProps) {
   const { organization, solidworksPath } = usePDMStore()
   const [statuses, setStatuses] = useState<Record<string, IntegrationStatus>>({
+    'supabase': 'not-configured',
     'solidworks': 'not-configured',
     'google-drive': 'not-configured',
     'odoo': 'not-configured',
-    'slack': 'coming-soon',
+    'slack': 'not-configured',
     'webhooks': 'coming-soon',
     'api': 'not-configured',
   })
   
   useEffect(() => {
     checkIntegrationStatuses()
+    // Poll for status changes every 5 seconds (for SolidWorks service, etc.)
+    const interval = setInterval(checkIntegrationStatuses, 5000)
+    return () => clearInterval(interval)
   }, [organization?.id, solidworksPath])
   
   const checkIntegrationStatuses = async () => {
     const newStatuses = { ...statuses }
     const apiUrl = getApiUrl(organization)
     
-    // SolidWorks - check if path is configured
-    if (solidworksPath) {
-      // Check if the path exists (via electron API if available)
-      newStatuses['solidworks'] = 'online'
+    // Supabase - check if configured and connected
+    if (isSupabaseConfigured()) {
+      try {
+        const { error } = await supabase.from('organizations').select('id').limit(1)
+        if (error && (error.message.includes('Invalid API key') || error.code === 'PGRST301')) {
+          newStatuses['supabase'] = 'offline'
+        } else {
+          newStatuses['supabase'] = 'online'
+        }
+      } catch {
+        newStatuses['supabase'] = 'offline'
+      }
     } else {
-      newStatuses['solidworks'] = 'not-configured'
+      newStatuses['supabase'] = 'not-configured'
+    }
+    
+    // SolidWorks - check if service is running
+    try {
+      const swResult = await window.electronAPI?.solidworks?.getServiceStatus()
+      if (swResult?.success && swResult.data?.running) {
+        newStatuses['solidworks'] = 'online'
+      } else if (solidworksPath) {
+        // Path configured but service not running
+        newStatuses['solidworks'] = 'offline'
+      } else {
+        newStatuses['solidworks'] = 'not-configured'
+      }
+    } catch {
+      newStatuses['solidworks'] = solidworksPath ? 'offline' : 'not-configured'
     }
     
     // Google Drive - check org settings
@@ -144,25 +173,38 @@ export function SettingsNavigation({ activeTab, onTabChange }: SettingsNavigatio
       if (response.ok) {
         newStatuses['api'] = 'online'
         
-        // Odoo - check if connected (only if API is online)
+        // Odoo - check if connected (only if API is online AND we have a valid token)
         try {
-          const odooResponse = await fetch(`${apiUrl}/integrations/odoo`, {
-            headers: {
-              'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
-            },
-            signal: AbortSignal.timeout(3000)
-          })
-          if (odooResponse.ok) {
-            const odooData = await odooResponse.json()
-            if (odooData.is_connected) {
-              newStatuses['odoo'] = 'online'
-            } else if (odooData.configured) {
-              newStatuses['odoo'] = 'offline'
+          const { data: { session } } = await supabase.auth.getSession()
+          const token = session?.access_token
+          
+          if (token) {
+            const odooResponse = await fetch(`${apiUrl}/integrations/odoo`, {
+              headers: {
+                'Authorization': `Bearer ${token}`
+              },
+              signal: AbortSignal.timeout(3000)
+            })
+            if (odooResponse.ok) {
+              const odooData = await odooResponse.json()
+              if (odooData.is_connected) {
+                newStatuses['odoo'] = 'online'
+              } else if (odooData.configured) {
+                newStatuses['odoo'] = 'offline'
+              } else {
+                newStatuses['odoo'] = 'not-configured'
+              }
             } else {
+              // API returned error - could be 401/403
+              console.warn('[SettingsNav] Odoo status check failed:', odooResponse.status)
               newStatuses['odoo'] = 'not-configured'
             }
+          } else {
+            // No token available - user not logged in
+            newStatuses['odoo'] = 'not-configured'
           }
-        } catch {
+        } catch (err) {
+          console.warn('[SettingsNav] Failed to check Odoo status:', err)
           newStatuses['odoo'] = 'not-configured'
         }
       } else {
@@ -174,8 +216,43 @@ export function SettingsNavigation({ activeTab, onTabChange }: SettingsNavigatio
       newStatuses['odoo'] = 'offline'
     }
     
-    // Slack & Webhooks - always coming soon
-    newStatuses['slack'] = 'coming-soon'
+    // Slack - check if connected (only if API is online)
+    if (newStatuses['api'] === 'online') {
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        const token = session?.access_token
+        
+        if (token) {
+          const slackResponse = await fetch(`${apiUrl}/integrations/slack`, {
+            headers: {
+              'Authorization': `Bearer ${token}`
+            },
+            signal: AbortSignal.timeout(3000)
+          })
+          if (slackResponse.ok) {
+            const slackData = await slackResponse.json()
+            if (slackData.is_connected) {
+              newStatuses['slack'] = 'online'
+            } else if (slackData.configured) {
+              newStatuses['slack'] = 'offline'
+            } else {
+              newStatuses['slack'] = 'not-configured'
+            }
+          } else {
+            newStatuses['slack'] = 'not-configured'
+          }
+        } else {
+          newStatuses['slack'] = 'not-configured'
+        }
+      } catch (err) {
+        console.warn('[SettingsNav] Failed to check Slack status:', err)
+        newStatuses['slack'] = 'not-configured'
+      }
+    } else {
+      newStatuses['slack'] = 'not-configured'
+    }
+    
+    // Webhooks - coming soon
     newStatuses['webhooks'] = 'coming-soon'
     
     setStatuses(newStatuses)

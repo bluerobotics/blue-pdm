@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { LogOut, ChevronDown, Building2, Search, File, Folder, LayoutGrid, Database, ZoomIn, Minus, Plus, RotateCcw, Monitor, Laptop, Loader2, Settings } from 'lucide-react'
+import { LogOut, ChevronDown, Building2, Search, File, Folder, LayoutGrid, Database, ZoomIn, Minus, Plus, RotateCcw, Monitor, Laptop, Loader2, User, SlidersHorizontal } from 'lucide-react'
 import { usePDMStore } from '../stores/pdmStore'
 import { signInWithGoogle, signOut, isSupabaseConfigured, linkUserToOrganization, getActiveSessions, endRemoteSession, UserSession, supabase } from '../lib/supabase'
 import { getInitials } from '../types/pdm'
@@ -643,17 +643,33 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
                   </div>
                 </div>
 
-                {/* Profile & Settings */}
+                {/* Profile & Preferences */}
                 <div className="py-1 border-b border-plm-border">
                   <button 
                     onClick={() => {
                       setShowUserMenu(false)
                       setActiveView('settings')
+                      setTimeout(() => {
+                        window.dispatchEvent(new CustomEvent('navigate-settings-tab', { detail: 'profile' }))
+                      }, 0)
                     }}
                     className="w-full flex items-center gap-3 px-4 py-2 text-sm text-plm-fg hover:bg-plm-bg-lighter transition-colors"
                   >
-                    <Settings size={14} />
-                    Settings
+                    <User size={14} />
+                    Profile
+                  </button>
+                  <button 
+                    onClick={() => {
+                      setShowUserMenu(false)
+                      setActiveView('settings')
+                      setTimeout(() => {
+                        window.dispatchEvent(new CustomEvent('navigate-settings-tab', { detail: 'preferences' }))
+                      }, 0)
+                    }}
+                    className="w-full flex items-center gap-3 px-4 py-2 text-sm text-plm-fg hover:bg-plm-bg-lighter transition-colors"
+                  >
+                    <SlidersHorizontal size={14} />
+                    Preferences
                   </button>
                 </div>
 

@@ -21,7 +21,7 @@ import { GoogleDriveView } from './sidebar/GoogleDriveView'
 // System Views
 import { SettingsNavigation } from './sidebar/SettingsNavigation'
 
-type SettingsTab = 'account' | 'vault' | 'organization' | 'company-profile' | 'rfq' | 'metadata-columns' | 'backup' | 'solidworks' | 'google-drive' | 'odoo' | 'slack' | 'webhooks' | 'api' | 'preferences' | 'logs' | 'about'
+type SettingsTab = 'profile' | 'preferences' | 'vault' | 'organization' | 'company-profile' | 'rfq' | 'metadata-columns' | 'backup' | 'solidworks' | 'google-drive' | 'odoo' | 'slack' | 'webhooks' | 'api' | 'logs' | 'about'
 
 interface SidebarProps {
   onOpenVault: () => void
@@ -34,7 +34,7 @@ interface SidebarProps {
 // Fixed width for settings view (not resizable)
 const SETTINGS_SIDEBAR_WIDTH = 200
 
-export function Sidebar({ onOpenVault, onOpenRecentVault, onRefresh, settingsTab = 'account', onSettingsTabChange }: SidebarProps) {
+export function Sidebar({ onOpenVault, onOpenRecentVault, onRefresh, settingsTab = 'profile', onSettingsTabChange }: SidebarProps) {
   const { activeView, sidebarWidth, connectedVaults } = usePDMStore()
   
   // Settings view uses fixed width, others use resizable width

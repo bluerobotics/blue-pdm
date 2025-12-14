@@ -2700,3 +2700,174 @@ END;
 $$ LANGUAGE plpgsql;
 
 GRANT EXECUTE ON FUNCTION update_org_branding(UUID, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT) TO authenticated;
+
+-- ===========================================
+-- COMMON TRIGGER FUNCTIONS
+-- ===========================================
+
+-- Function to auto-update updated_at timestamp
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ===========================================
+-- WEBHOOKS
+-- ===========================================
+
+CREATE TYPE webhook_event AS ENUM (
+  'file.created',
+  'file.updated', 
+  'file.deleted',
+  'file.checked_out',
+  'file.checked_in',
+  'file.state_changed',
+  'file.revision_changed',
+  'review.requested',
+  'review.approved',
+  'review.rejected',
+  'eco.created',
+  'eco.completed'
+);
+
+CREATE TYPE webhook_delivery_status AS ENUM (
+  'pending',
+  'success',
+  'failed',
+  'retrying'
+);
+
+CREATE TABLE webhooks (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  
+  -- Basic info
+  name TEXT NOT NULL,
+  description TEXT,
+  url TEXT NOT NULL,
+  
+  -- Security
+  secret TEXT NOT NULL, -- Used for HMAC-SHA256 signature
+  
+  -- Configuration
+  events webhook_event[] NOT NULL DEFAULT '{}',
+  is_active BOOLEAN DEFAULT TRUE,
+  
+  -- User filtering: who triggers this webhook
+  trigger_filter TEXT DEFAULT 'everyone' CHECK (trigger_filter IN ('everyone', 'roles', 'users')),
+  trigger_roles TEXT[] DEFAULT '{}',
+  trigger_user_ids UUID[] DEFAULT '{}',
+  
+  -- Headers (optional custom headers to send)
+  custom_headers JSONB DEFAULT '{}'::jsonb,
+  
+  -- Retry configuration
+  max_retries INTEGER DEFAULT 3,
+  retry_delay_seconds INTEGER DEFAULT 60,
+  timeout_seconds INTEGER DEFAULT 30,
+  
+  -- Metadata
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  
+  -- Stats
+  last_triggered_at TIMESTAMPTZ,
+  success_count INTEGER DEFAULT 0,
+  failure_count INTEGER DEFAULT 0
+);
+
+CREATE INDEX idx_webhooks_org_id ON webhooks(org_id);
+CREATE INDEX idx_webhooks_active ON webhooks(org_id, is_active) WHERE is_active = TRUE;
+
+CREATE TABLE webhook_deliveries (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  webhook_id UUID NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  
+  -- Event details
+  event_type webhook_event NOT NULL,
+  event_id UUID, -- Reference to the source event (file_id, review_id, etc.)
+  payload JSONB NOT NULL,
+  
+  -- Delivery status
+  status webhook_delivery_status DEFAULT 'pending',
+  attempt_count INTEGER DEFAULT 0,
+  
+  -- Response details
+  response_status INTEGER,
+  response_body TEXT,
+  response_headers JSONB,
+  
+  -- Timing
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  delivered_at TIMESTAMPTZ,
+  next_retry_at TIMESTAMPTZ,
+  
+  -- Error tracking
+  last_error TEXT
+);
+
+CREATE INDEX idx_webhook_deliveries_webhook_id ON webhook_deliveries(webhook_id);
+CREATE INDEX idx_webhook_deliveries_org_id ON webhook_deliveries(org_id);
+CREATE INDEX idx_webhook_deliveries_status ON webhook_deliveries(status) WHERE status IN ('pending', 'retrying');
+CREATE INDEX idx_webhook_deliveries_created_at ON webhook_deliveries(created_at DESC);
+
+-- Webhooks RLS
+ALTER TABLE webhooks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE webhook_deliveries ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view their org webhooks"
+  ON webhooks FOR SELECT
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+CREATE POLICY "Admins can insert webhooks"
+  ON webhooks FOR INSERT
+  WITH CHECK (
+    org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin')
+  );
+
+CREATE POLICY "Admins can update webhooks"
+  ON webhooks FOR UPDATE
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'));
+
+CREATE POLICY "Admins can delete webhooks"
+  ON webhooks FOR DELETE
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'));
+
+CREATE POLICY "Users can view their org webhook deliveries"
+  ON webhook_deliveries FOR SELECT
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+CREATE POLICY "Service can insert webhook deliveries"
+  ON webhook_deliveries FOR INSERT
+  WITH CHECK (TRUE);
+
+CREATE POLICY "Service can update webhook deliveries"
+  ON webhook_deliveries FOR UPDATE
+  USING (TRUE);
+
+-- Webhook helper functions
+CREATE OR REPLACE FUNCTION get_webhooks_for_event(
+  p_org_id UUID,
+  p_event_type webhook_event
+)
+RETURNS SETOF webhooks
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT *
+  FROM webhooks
+  WHERE org_id = p_org_id
+    AND is_active = TRUE
+    AND p_event_type = ANY(events);
+$$;
+
+CREATE TRIGGER webhooks_updated_at
+  BEFORE UPDATE ON webhooks
+  FOR EACH ROW
+  EXECUTE FUNCTION update_updated_at_column();

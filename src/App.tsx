@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { usePDMStore } from './stores/pdmStore'
 import { SettingsContent } from './components/SettingsContent'
 
-type SettingsTab = 'account' | 'vault' | 'organization' | 'branding' | 'metadata-columns' | 'backup' | 'solidworks' | 'google-drive' | 'odoo' | 'slack' | 'webhooks' | 'api' | 'preferences' | 'logs' | 'about'
+type SettingsTab = 'profile' | 'preferences' | 'vault' | 'organization' | 'branding' | 'metadata-columns' | 'backup' | 'solidworks' | 'google-drive' | 'odoo' | 'slack' | 'webhooks' | 'api' | 'logs' | 'about'
 import { supabase, getCurrentSession, isSupabaseConfigured, getFilesLightweight, getCheckedOutUsers, linkUserToOrganization, getUserProfile, setCurrentAccessToken, registerDeviceSession, startSessionHeartbeat, stopSessionHeartbeat } from './lib/supabase'
 import { subscribeToFiles, subscribeToActivity, unsubscribeAll } from './lib/realtime'
 // Backup services removed - now handled directly via restic
@@ -71,16 +71,16 @@ function useTheme() {
     const seasonalTheme = getSeasonalThemeOverride()
     
     // If we're in a seasonal period and user's theme is NOT already the seasonal theme,
-    // auto-switch to the seasonal theme
+    // auto-switch to the seasonal theme (only once per season)
     if (seasonalTheme && theme !== seasonalTheme) {
-      // Check if we've already auto-switched this month (stored in sessionStorage)
+      // Check if we've already auto-switched this season (stored in localStorage to persist across restarts)
       const storageKey = `seasonal-theme-applied-${seasonalTheme}`
-      const alreadyApplied = sessionStorage.getItem(storageKey)
+      const alreadyApplied = localStorage.getItem(storageKey)
       
       if (!alreadyApplied) {
         // Auto-switch to seasonal theme
         setTheme(seasonalTheme)
-        sessionStorage.setItem(storageKey, 'true')
+        localStorage.setItem(storageKey, 'true')
         console.log(`🎃🎄 Auto-applying ${seasonalTheme} theme for the season!`)
       }
     }
@@ -175,7 +175,16 @@ function App() {
   const [isResizingSidebar, setIsResizingSidebar] = useState(false)
   const [isResizingDetails, setIsResizingDetails] = useState(false)
   const [isResizingRightPanel, setIsResizingRightPanel] = useState(false)
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>('account')
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('profile')
+  
+  // Listen for settings tab navigation from MenuBar buttons
+  useEffect(() => {
+    const handleNavigateSettingsTab = (e: CustomEvent<SettingsTab>) => {
+      setSettingsTab(e.detail)
+    }
+    window.addEventListener('navigate-settings-tab', handleNavigateSettingsTab as EventListener)
+    return () => window.removeEventListener('navigate-settings-tab', handleNavigateSettingsTab as EventListener)
+  }, [])
   
   // Track if Supabase is configured (can change at runtime)
   const [supabaseReady, setSupabaseReady] = useState(() => isSupabaseConfigured())

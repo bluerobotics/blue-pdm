@@ -139,7 +139,7 @@ function OdooConfigPanel({
     }
   }
 
-  const handleSave = async () => {
+  const handleSave = async (skipTest: boolean = false) => {
     if (!url || !database || !username || !apiKey) {
       addToast('warning', 'Please fill in all fields')
       return
@@ -148,8 +148,11 @@ function OdooConfigPanel({
     const token = await getAuthToken()
     if (!token) {
       addToast('error', 'Session expired. Please log in again.')
+      console.error('[IntegrationsView] No auth token available')
       return
     }
+
+    console.log('[IntegrationsView] Saving with token:', token.substring(0, 20) + '...')
 
     setSaving(true)
 
@@ -160,19 +163,30 @@ function OdooConfigPanel({
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({ url, database, username, api_key: apiKey })
+        body: JSON.stringify({ url, database, username, api_key: apiKey, skip_test: skipTest })
       })
 
       const data = await response.json()
+      console.log('[IntegrationsView] Response:', response.status, data)
 
       if (response.ok) {
-        addToast('success', 'Odoo integration configured successfully!')
+        if (data.connection_error) {
+          addToast('warning', `Saved! But connection failed: ${data.connection_error}`)
+        } else {
+          addToast('success', data.message || 'Odoo credentials saved!')
+        }
         onSave()
         onRefresh()
       } else {
-        addToast('error', data.message || 'Failed to save configuration')
+        // Show more detailed error for auth issues
+        if (response.status === 401) {
+          addToast('error', `Auth failed: ${data.message || 'Check API server Supabase config'}`)
+        } else {
+          addToast('error', data.message || 'Failed to save configuration')
+        }
       }
     } catch (err) {
+      console.error('[IntegrationsView] Error:', err)
       addToast('error', `Error: ${err}`)
     } finally {
       setSaving(false)
@@ -346,22 +360,30 @@ function OdooConfigPanel({
       </div>
 
       {/* Actions */}
-      <div className="flex gap-2 pt-2">
+      <div className="grid grid-cols-3 gap-2 pt-2">
         <button
           onClick={handleTest}
           disabled={testing || !url || !database || !username || !apiKey}
-          className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-plm-highlight hover:bg-plm-highlight/80 text-plm-fg rounded text-sm font-medium transition-colors disabled:opacity-50"
+          className="flex items-center justify-center gap-2 px-3 py-2 bg-plm-sidebar border border-plm-border hover:bg-plm-highlight text-plm-fg rounded text-sm font-medium transition-colors disabled:opacity-50"
         >
           {testing ? <Loader2 size={14} className="animate-spin" /> : <Plug size={14} />}
           Test
         </button>
         <button
-          onClick={handleSave}
+          onClick={() => handleSave(true)}
           disabled={saving || !url || !database || !username || !apiKey}
-          className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-plm-accent hover:bg-plm-accent/90 text-white rounded text-sm font-medium transition-colors disabled:opacity-50"
+          className="flex items-center justify-center gap-2 px-3 py-2 bg-plm-sidebar border border-plm-border hover:bg-plm-highlight text-plm-fg rounded text-sm font-medium transition-colors disabled:opacity-50"
         >
           {saving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
           Save
+        </button>
+        <button
+          onClick={() => handleSave(false)}
+          disabled={saving || !url || !database || !username || !apiKey}
+          className="flex items-center justify-center gap-2 px-3 py-2 bg-plm-accent hover:bg-plm-accent/90 text-white rounded text-sm font-medium transition-colors disabled:opacity-50"
+        >
+          {saving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+          Save & Test
         </button>
       </div>
 
