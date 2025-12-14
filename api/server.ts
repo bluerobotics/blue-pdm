@@ -3571,13 +3571,14 @@ export async function buildServer(): Promise<FastifyInstance> {
     const suppliers = Array.isArray(odooSuppliers.suppliers) ? odooSuppliers.suppliers : []
     
     if (suppliers.length === 0) {
+      const queryUsed = odooSuppliers.debug?.supplier_ids_type || 'unknown'
       return { 
         success: true, 
         created: 0, 
         updated: 0, 
         skipped: 0, 
         errors: 0,
-        message: 'No suppliers found in Odoo with supplier_rank > 0',
+        message: `No suppliers found in Odoo (tried: ${queryUsed})`,
         debug: odooSuppliers.debug
       }
     }

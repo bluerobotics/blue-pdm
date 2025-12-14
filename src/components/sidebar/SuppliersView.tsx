@@ -104,7 +104,9 @@ export function SuppliersView() {
       // Log debug info to console for troubleshooting
       console.log('[Odoo Sync] Response:', response.status, data)
       if (data.debug) {
-        console.log('[Odoo Sync] Debug info:', data.debug)
+        console.log('[Odoo Sync] Debug:', JSON.stringify(data.debug, null, 2))
+      } else {
+        console.log('[Odoo Sync] No debug info in response')
       }
 
       if (response.ok) {
