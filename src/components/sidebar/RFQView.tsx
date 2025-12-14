@@ -21,7 +21,10 @@ import {
   Cog,
   Printer,
   ChevronUp,
-  Pencil
+  Pencil,
+  FolderOpen,
+  Archive,
+  ExternalLink
 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { usePDMStore } from '@/stores/pdmStore'
@@ -546,10 +549,10 @@ function RFQDetailView({
     }
   }
 
-  // Generate release files
+  // Generate release files - stores in dedicated RFQ folder (not vault)
   const handleGenerateReleaseFiles = async () => {
-    if (!window.electronAPI?.solidworks) {
-      addToast('error', 'SolidWorks service not available')
+    if (!window.electronAPI?.rfq) {
+      addToast('error', 'RFQ export service not available')
       return
     }
 
@@ -572,22 +575,31 @@ function RFQDetailView({
         if (!item.file_id || !item.file) continue
 
         // Build absolute path from vault path and relative file path
-        const filePath = buildFullPath(vaultPath, item.file.file_path)
+        const sourceFilePath = buildFullPath(vaultPath, item.file.file_path)
         const ext = item.file.extension?.toLowerCase()
 
         // Generate STEP for parts/assemblies
-        if (['.sldprt', '.sldasm'].includes(ext)) {
+        if (['.sldprt', '.sldasm'].includes(ext) && !item.step_file_generated) {
           try {
-            const result = await window.electronAPI.solidworks.exportStep(filePath, { exportAllConfigs: false })
+            const result = await window.electronAPI.rfq.exportReleaseFile({
+              rfqId: rfq.id,
+              rfqNumber: rfq.rfq_number,
+              sourceFilePath,
+              exportType: 'step',
+              partNumber: item.part_number || item.file.part_number,
+              revision: item.file.revision
+            })
             if (result?.success) {
               await db.from('rfq_items')
                 .update({
                   step_file_generated: true,
-                  step_file_path: result.data?.exportedFiles?.[0]
+                  step_file_path: result.outputPath,
+                  step_file_size: result.fileSize
                 })
                 .eq('id', item.id)
               successCount++
             } else {
+              console.error(`STEP export failed for ${item.part_number}:`, result?.error)
               failCount++
             }
           } catch (err) {
@@ -597,19 +609,27 @@ function RFQDetailView({
         }
 
         // Generate PDF for drawings
-        if (ext === '.slddrw') {
+        if (ext === '.slddrw' && !item.pdf_file_generated) {
           try {
-            const result = await window.electronAPI.solidworks.exportPdf(filePath)
+            const result = await window.electronAPI.rfq.exportReleaseFile({
+              rfqId: rfq.id,
+              rfqNumber: rfq.rfq_number,
+              sourceFilePath,
+              exportType: 'pdf',
+              partNumber: item.part_number || item.file.part_number,
+              revision: item.file.revision
+            })
             if (result?.success) {
               await db.from('rfq_items')
                 .update({
                   pdf_file_generated: true,
-                  pdf_file_path: result.data?.outputFile,
-                  pdf_file_size: result.data?.fileSize
+                  pdf_file_path: result.outputPath,
+                  pdf_file_size: result.fileSize
                 })
                 .eq('id', item.id)
               successCount++
             } else {
+              console.error(`PDF export failed for ${item.part_number}:`, result?.error)
               failCount++
             }
           } catch (err) {
@@ -653,6 +673,125 @@ function RFQDetailView({
     } finally {
       setGenerating(false)
     }
+  }
+
+  // Generate ZIP package with all release files and RFQ PDF
+  const handleGenerateZip = async () => {
+    if (!window.electronAPI?.rfq) {
+      addToast('error', 'RFQ export service not available')
+      return
+    }
+
+    // Check if there are any generated files
+    const generatedFiles = items.filter(i => i.step_file_path || i.pdf_file_path)
+    if (generatedFiles.length === 0) {
+      addToast('warning', 'No release files generated yet. Generate STEP/PDF files first.')
+      return
+    }
+
+    setGenerating(true)
+    try {
+      // Collect all generated file paths
+      const files: Array<{ path: string; name: string }> = []
+      
+      for (const item of items) {
+        if (item.step_file_path) {
+          const baseName = item.part_number || item.file?.part_number || 'Unknown'
+          const revSuffix = item.file?.revision ? `_REV${item.file.revision}` : ''
+          files.push({
+            path: item.step_file_path,
+            name: `${baseName}${revSuffix}.step`
+          })
+        }
+        if (item.pdf_file_path) {
+          const baseName = item.part_number || item.file?.part_number || 'Unknown'
+          const revSuffix = item.file?.revision ? `_REV${item.file.revision}` : ''
+          files.push({
+            path: item.pdf_file_path,
+            name: `${baseName}${revSuffix}.pdf`
+          })
+        }
+      }
+
+      // Generate the RFQ PDF first
+      let rfqPdfPath: string | undefined
+      try {
+        const { data: org } = await db.from('organizations')
+          .select('name, logo_url')
+          .eq('id', rfq.org_id)
+          .single()
+        
+        const branding: OrgBranding = {
+          companyName: org?.name || 'Unknown Company',
+          logoUrl: org?.logo_url || undefined
+        }
+
+        const { data: addresses } = await db.from('organization_addresses')
+          .select('*')
+          .eq('org_id', rfq.org_id)
+
+        const billingAddr = addresses?.find((a: { id: string }) => a.id === rfq.billing_address_id)
+        const shippingAddr = addresses?.find((a: { id: string }) => a.id === rfq.shipping_address_id)
+
+        const pdfBlob = await generateRFQPdf(rfq, items, suppliers, branding, billingAddr, shippingAddr)
+        
+        // Save PDF to RFQ folder
+        const dirResult = await window.electronAPI.rfq.getOutputDir(rfq.id, rfq.rfq_number)
+        if (dirResult?.success && dirResult.path) {
+          // Use platform-appropriate separator
+          const sep = dirResult.path.includes('\\') ? '\\' : '/'
+          const pdfPath = `${dirResult.path}${sep}${rfq.rfq_number}_RFQ.pdf`
+          // Convert blob to base64
+          const buffer = await pdfBlob.arrayBuffer()
+          const base64 = btoa(
+            new Uint8Array(buffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
+          )
+          await window.electronAPI.writeFile(pdfPath, base64)
+          rfqPdfPath = pdfPath
+        }
+      } catch (pdfErr) {
+        console.warn('Could not generate RFQ PDF for ZIP:', pdfErr)
+      }
+
+      // Create the ZIP
+      const result = await window.electronAPI.rfq.createZip({
+        rfqId: rfq.id,
+        rfqNumber: rfq.rfq_number,
+        files,
+        rfqPdfPath
+      })
+
+      if (result?.success) {
+        addToast('success', 'Release package ZIP created successfully')
+        // Open the folder containing the ZIP
+        await window.electronAPI.rfq.openFolder(rfq.id, rfq.rfq_number)
+      } else {
+        addToast('error', result?.error || 'Failed to create ZIP package')
+      }
+    } catch (err) {
+      console.error('ZIP generation failed:', err)
+      addToast('error', 'Failed to create ZIP package')
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  // Open RFQ release folder
+  const handleOpenReleaseFolder = async () => {
+    if (!window.electronAPI?.rfq) {
+      addToast('error', 'RFQ export service not available')
+      return
+    }
+    await window.electronAPI.rfq.openFolder(rfq.id, rfq.rfq_number)
+  }
+
+  // Show specific file in explorer
+  const handleShowFileInExplorer = async (filePath: string) => {
+    if (!window.electronAPI?.openInExplorer) {
+      addToast('error', 'File explorer not available')
+      return
+    }
+    await window.electronAPI.openInExplorer(filePath)
   }
 
   // Handle drag over for file drops
@@ -924,19 +1063,29 @@ function RFQDetailView({
                             </div>
                           )}
 
-                          {/* File status indicators */}
+                          {/* File status indicators with folder icons */}
                           <div className="flex items-center gap-2 ml-auto">
-                            {item.step_file_generated && (
-                              <span className="flex items-center gap-1 text-[10px] text-plm-success">
+                            {item.step_file_generated && item.step_file_path && (
+                              <button
+                                onClick={() => handleShowFileInExplorer(item.step_file_path!)}
+                                className="flex items-center gap-1 text-[10px] text-plm-success hover:text-plm-success/80 transition-colors"
+                                title="Show STEP file in folder"
+                              >
                                 <Layers size={10} />
                                 STEP
-                              </span>
+                                <FolderOpen size={10} className="opacity-60" />
+                              </button>
                             )}
-                            {item.pdf_file_generated && (
-                              <span className="flex items-center gap-1 text-[10px] text-plm-success">
+                            {item.pdf_file_generated && item.pdf_file_path && (
+                              <button
+                                onClick={() => handleShowFileInExplorer(item.pdf_file_path!)}
+                                className="flex items-center gap-1 text-[10px] text-plm-success hover:text-plm-success/80 transition-colors"
+                                title="Show PDF file in folder"
+                              >
                                 <FileText size={10} />
                                 PDF
-                              </span>
+                                <FolderOpen size={10} className="opacity-60" />
+                              </button>
                             )}
                             {!item.step_file_generated && !item.pdf_file_generated && item.file && (
                               <span className="flex items-center gap-1 text-[10px] text-plm-warning">
@@ -1001,25 +1150,61 @@ function RFQDetailView({
               </div>
             )}
 
-            {/* Generate button */}
-            {items.length > 0 && items.some(i => !i.step_file_generated && !i.pdf_file_generated && i.file) && (
-              <button
-                onClick={handleGenerateReleaseFiles}
-                disabled={generating}
-                className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-plm-accent hover:bg-plm-accent/90 text-white rounded text-sm font-medium transition-colors disabled:opacity-50"
-              >
-                {generating ? (
-                  <>
-                    <Loader2 size={16} className="animate-spin" />
-                    Generating Release Files...
-                  </>
-                ) : (
-                  <>
-                    <Cog size={16} />
-                    Generate STEP & PDF Files
-                  </>
+            {/* Release file actions */}
+            {items.length > 0 && (
+              <div className="space-y-2">
+                {/* Generate button - show if any item needs export */}
+                {items.some(i => {
+                  if (!i.file) return false
+                  const ext = i.file.extension?.toLowerCase()
+                  const needsStep = ['.sldprt', '.sldasm'].includes(ext) && !i.step_file_generated
+                  const needsPdf = ext === '.slddrw' && !i.pdf_file_generated
+                  return needsStep || needsPdf
+                }) && (
+                  <button
+                    onClick={handleGenerateReleaseFiles}
+                    disabled={generating}
+                    className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-plm-accent hover:bg-plm-accent/90 text-white rounded text-sm font-medium transition-colors disabled:opacity-50"
+                  >
+                    {generating ? (
+                      <>
+                        <Loader2 size={16} className="animate-spin" />
+                        Generating Release Files...
+                      </>
+                    ) : (
+                      <>
+                        <Cog size={16} />
+                        Generate STEP & PDF Files
+                      </>
+                    )}
+                  </button>
                 )}
-              </button>
+
+                {/* ZIP and folder buttons - show if any files are generated */}
+                {items.some(i => i.step_file_generated || i.pdf_file_generated) && (
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleGenerateZip}
+                      disabled={generating}
+                      className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-plm-bg-light hover:bg-plm-highlight border border-plm-border rounded text-sm font-medium transition-colors disabled:opacity-50"
+                    >
+                      {generating ? (
+                        <Loader2 size={14} className="animate-spin" />
+                      ) : (
+                        <Archive size={14} />
+                      )}
+                      Create ZIP Package
+                    </button>
+                    <button
+                      onClick={handleOpenReleaseFolder}
+                      className="flex items-center justify-center gap-1 px-3 py-2 bg-plm-bg-light hover:bg-plm-highlight border border-plm-border rounded text-sm transition-colors"
+                      title="Open release folder"
+                    >
+                      <FolderOpen size={14} />
+                    </button>
+                  </div>
+                )}
+              </div>
             )}
           </div>
         )}

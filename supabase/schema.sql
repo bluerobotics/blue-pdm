@@ -358,6 +358,51 @@ CREATE INDEX idx_file_versions_file_id ON file_versions(file_id);
 CREATE INDEX idx_file_versions_content_hash ON file_versions(content_hash);
 
 -- ===========================================
+-- RELEASE FILES (Exported STEP, PDF, etc.)
+-- ===========================================
+-- Stores release files linked to file versions
+-- Generated during RFQ creation or manual export
+
+CREATE TYPE release_file_type AS ENUM ('step', 'pdf', 'dxf', 'iges', 'stl', 'dwg', 'dxf_flat');
+
+CREATE TABLE release_files (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  
+  -- Link to the source file version
+  file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  file_version_id UUID REFERENCES file_versions(id) ON DELETE SET NULL,
+  version INTEGER NOT NULL,           -- Denormalized for quick lookup
+  revision TEXT,                      -- Revision at time of generation
+  
+  -- File type and naming
+  file_type release_file_type NOT NULL,
+  file_name TEXT NOT NULL,            -- Generated file name
+  
+  -- Storage info
+  local_path TEXT,                    -- Local file path (app data, not vault)
+  storage_path TEXT,                  -- Cloud storage path if uploaded
+  storage_hash TEXT,                  -- SHA-256 for deduplication
+  file_size BIGINT DEFAULT 0,
+  
+  -- Generation context
+  generated_by UUID REFERENCES users(id),
+  generated_at TIMESTAMPTZ DEFAULT NOW(),
+  rfq_id UUID,                        -- Link to RFQ that triggered generation
+  rfq_item_id UUID,
+  
+  -- Organization context
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_release_files_file_id ON release_files(file_id);
+CREATE INDEX idx_release_files_file_version ON release_files(file_version_id);
+CREATE INDEX idx_release_files_org ON release_files(org_id);
+CREATE INDEX idx_release_files_file_version_type ON release_files(file_id, version, file_type);
+
+-- ===========================================
 -- FILE REFERENCES (Assembly relationships / BOM)
 -- ===========================================
 
@@ -409,6 +454,7 @@ ALTER TABLE vaults ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vault_access ENABLE ROW LEVEL SECURITY;
 ALTER TABLE files ENABLE ROW LEVEL SECURITY;
 ALTER TABLE file_versions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE release_files ENABLE ROW LEVEL SECURITY;
 ALTER TABLE file_references ENABLE ROW LEVEL SECURITY;
 ALTER TABLE activity ENABLE ROW LEVEL SECURITY;
 
@@ -526,6 +572,15 @@ CREATE POLICY "Authenticated users can insert file versions"
   ON file_versions FOR INSERT
   TO authenticated
   WITH CHECK (true);
+
+-- Release files: users can view org release files, engineers can manage
+CREATE POLICY "Users can view org release files"
+  ON release_files FOR SELECT
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+CREATE POLICY "Engineers can manage release files"
+  ON release_files FOR ALL
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role IN ('admin', 'engineer')));
 
 -- File references: same as files
 CREATE POLICY "Users can view file references"

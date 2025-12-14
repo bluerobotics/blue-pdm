@@ -242,6 +242,28 @@ declare global {
           Promise<{ success: boolean; data?: { sourceFile: string; outputFolder: string; totalFiles: number; copiedFiles: number; files: string[] }; error?: string }>
       }
       
+      // RFQ Release Files API
+      rfq: {
+        getOutputDir: (rfqId: string, rfqNumber?: string) => 
+          Promise<{ success: boolean; path?: string; error?: string }>
+        exportReleaseFile: (options: {
+          rfqId: string
+          rfqNumber?: string
+          sourceFilePath: string
+          exportType: 'step' | 'pdf' | 'dxf' | 'iges'
+          partNumber?: string
+          revision?: string
+        }) => Promise<{ success: boolean; outputPath?: string; fileName?: string; fileSize?: number; error?: string }>
+        createZip: (options: {
+          rfqId: string
+          rfqNumber: string
+          files: Array<{ path: string; name: string }>
+          rfqPdfPath?: string
+        }) => Promise<{ success: boolean; zipPath?: string; fileSize?: number; error?: string }>
+        openFolder: (rfqId: string, rfqNumber?: string) => 
+          Promise<{ success: boolean; error?: string }>
+      }
+      
       // Embedded eDrawings preview
       isEDrawingsNativeAvailable: () => Promise<boolean>
       createEDrawingsPreview: () => Promise<{ success: boolean; error?: string }>

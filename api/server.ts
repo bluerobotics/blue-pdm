@@ -498,10 +498,10 @@ function parseXmlRpcResponse(xml: string): unknown {
     throw new Error(`Odoo fault: ${faultMatch[1]}`)
   }
   
-  // Extract the content between <param><value> and </value></param>
-  // Use a more robust approach - find the param section first
-  const paramMatch = xml.match(/<params>\s*<param>\s*<value>([\s\S]+)<\/value>\s*<\/param>\s*<\/params>/)
-  if (!paramMatch) {
+  // Find the param value content
+  // First, extract just the param section
+  const paramSection = xml.match(/<params>\s*<param>([\s\S]+)<\/param>\s*<\/params>/)
+  if (!paramSection) {
     // Check if it's a simple response
     const simpleMatch = xml.match(/<value>[\s\S]*?<(int|boolean|string)>([^<]*)</)
     if (simpleMatch) {
@@ -512,23 +512,29 @@ function parseXmlRpcResponse(xml: string): unknown {
     throw new Error('Invalid XML-RPC response')
   }
   
-  // Get the inner content - need to handle nested value tags properly
-  // The content is between the first <value> after <param> and the last </value> before </param>
-  let innerContent = paramMatch[1]
+  // Now find the outer <value>...</value> in the param section
+  // We need to match the first <value> with its corresponding </value>
+  const paramContent = paramSection[1].trim()
   
-  // Remove trailing content after the matching </value> (greedy match may include too much)
-  // Count <value> and </value> tags to find the right closing tag
-  let depth = 1
-  let endIndex = 0
-  let i = 0
-  while (i < innerContent.length && depth > 0) {
-    if (innerContent.substring(i).startsWith('<value>')) {
+  // Find first <value>
+  const valueStart = paramContent.indexOf('<value>')
+  if (valueStart === -1) {
+    throw new Error('No value tag in param')
+  }
+  
+  // Find matching </value> by counting depth
+  let depth = 0
+  let i = valueStart
+  let valueEnd = -1
+  while (i < paramContent.length) {
+    if (paramContent.substring(i, i + 7) === '<value>') {
       depth++
       i += 7
-    } else if (innerContent.substring(i).startsWith('</value>')) {
+    } else if (paramContent.substring(i, i + 8) === '</value>') {
       depth--
       if (depth === 0) {
-        endIndex = i
+        valueEnd = i
+        break
       }
       i += 8
     } else {
@@ -536,9 +542,12 @@ function parseXmlRpcResponse(xml: string): unknown {
     }
   }
   
-  if (endIndex > 0) {
-    innerContent = innerContent.substring(0, endIndex)
+  if (valueEnd === -1) {
+    throw new Error('No matching </value> tag')
   }
+  
+  // Extract content between <value> and </value>
+  const innerContent = paramContent.substring(valueStart + 7, valueEnd)
   
   return parseXmlValue(innerContent)
 }
