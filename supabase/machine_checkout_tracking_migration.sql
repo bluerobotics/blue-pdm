@@ -17,3 +17,4 @@ COMMENT ON COLUMN files.checked_out_by_machine_id IS 'Machine ID that checked ou
 COMMENT ON COLUMN files.checked_out_by_machine_name IS 'Machine name for display purposes';
 
 
+

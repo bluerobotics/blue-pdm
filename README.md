@@ -4,10 +4,10 @@ Open source Product Lifecycle Management for everyone who builds. Built with Ele
 
 ![BluePLM Screenshot](assets/screenshot.png)
 
-[![Version](https://img.shields.io/github/v/release/bluerobotics/blue-plm)](https://github.com/bluerobotics/blue-plm/releases)
-[![Build](https://img.shields.io/github/actions/workflow/status/bluerobotics/blue-plm/release.yml)](https://github.com/bluerobotics/blue-plm/actions)
-[![Downloads](https://img.shields.io/github/downloads/bluerobotics/blue-plm/total)](https://github.com/bluerobotics/blue-plm/releases)
-[![License](https://img.shields.io/github/license/bluerobotics/blue-plm)](LICENSE)
+[![Version](https://img.shields.io/github/v/release/bluerobotics/bluePLM)](https://github.com/bluerobotics/bluePLM/releases)
+[![Build](https://img.shields.io/github/actions/workflow/status/bluerobotics/bluePLM/release.yml)](https://github.com/bluerobotics/bluePLM/actions)
+[![Downloads](https://img.shields.io/github/downloads/bluerobotics/bluePLM/total)](https://github.com/bluerobotics/bluePLM/releases)
+[![License](https://img.shields.io/github/license/bluerobotics/bluePLM)](LICENSE)
 
 ## Features
 
@@ -162,7 +162,7 @@ Open source Product Lifecycle Management for everyone who builds. Built with Ele
 ## Quick Start
 
 ### For Users
-1. **Download** from the [releases page](https://github.com/bluerobotics/blue-plm/releases)
+1. **Download** from the [releases page](https://github.com/bluerobotics/bluePLM/releases)
 2. **Install** and launch BluePLM
 3. **Enter** your organization's Supabase URL and anon key (from your admin)
 4. **Sign in with Google**
@@ -222,7 +222,7 @@ Native SolidWorks integration with toolbar buttons and task pane.
 - Check-in dialog with version notes
 
 **Installation:**
-1. Download `BluePLM.SolidWorks.dll` from [releases](https://github.com/bluerobotics/blue-plm/releases)
+1. Download `BluePLM.SolidWorks.dll` from [releases](https://github.com/bluerobotics/bluePLM/releases)
 2. Run as admin: `RegAsm.exe /codebase BluePLM.SolidWorks.dll`
 3. Restart SolidWorks and enable from Tools → Add-ins
 
@@ -231,8 +231,8 @@ See [SolidWorks Add-in README](solidworks-addin/README.md) for details.
 ## Building from Source
 
 ```bash
-git clone https://github.com/bluerobotics/blue-plm.git
-cd blue-plm
+git clone https://github.com/bluerobotics/bluePLM.git
+cd bluePLM
 npm install
 npm run dev      # Development with hot reload
 npm run build    # Production build

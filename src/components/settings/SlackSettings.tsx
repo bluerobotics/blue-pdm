@@ -329,7 +329,7 @@ export function SlackSettings() {
         },
         body: JSON.stringify({ 
           channel: defaultChannel,
-          message: testMessage || '🔧 Test message from BluePDM!'
+          message: testMessage || '🔧 Test message from BluePLM!'
         })
       })
 
@@ -438,7 +438,7 @@ export function SlackSettings() {
             <div className="text-sm">
               <div className="font-medium text-plm-warning">API Server Offline</div>
               <p className="text-plm-fg-muted mt-1">
-                Slack integration requires the BluePDM API server.{' '}
+                Slack integration requires the BluePLM API server.{' '}
                 <span className="text-plm-fg">Run <code className="px-1.5 py-0.5 bg-plm-sidebar rounded">npm run api</code> locally</span>
                 {' '}or configure an external API URL in Settings → REST API.
               </p>
@@ -680,7 +680,7 @@ export function SlackSettings() {
                       type="text"
                       value={testMessage}
                       onChange={(e) => setTestMessage(e.target.value)}
-                      placeholder="🔧 Test message from BluePDM!"
+                      placeholder="🔧 Test message from BluePLM!"
                       className="flex-1 px-3 py-2 text-base bg-plm-sidebar border border-plm-border rounded-lg focus:outline-none focus:border-plm-accent"
                     />
                     <button

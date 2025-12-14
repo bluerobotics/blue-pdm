@@ -24,7 +24,7 @@ Native SolidWorks integration for BluePLM - check in/out files, view status, and
 
 ### Option 1: Pre-built Installer (Recommended)
 
-1. Download the latest installer from [Releases](https://github.com/bluerobotics/blue-plm/releases)
+1. Download the latest installer from [Releases](https://github.com/bluerobotics/bluePLM/releases)
 2. Run `BluePLM.SolidWorks.Installer.exe`
 3. Restart SolidWorks
 
@@ -105,7 +105,7 @@ When checking in, BluePLM automatically reads these SolidWorks custom properties
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/bluerobotics/blue-plm.git
+   git clone https://github.com/bluerobotics/bluePLM.git
    cd blue-plm/solidworks-addin
    ```
 
@@ -199,5 +199,5 @@ MIT License - see [LICENSE](../LICENSE) for details.
 
 ---
 
-[Blue Robotics](https://bluerobotics.com) | [BluePLM](https://github.com/bluerobotics/blue-plm)
+[Blue Robotics](https://bluerobotics.com) | [BluePLM](https://github.com/bluerobotics/bluePLM)
 

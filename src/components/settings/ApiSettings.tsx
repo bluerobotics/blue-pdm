@@ -349,7 +349,7 @@ export function ApiSettings() {
                   <span className="text-plm-fg-muted">•</span>
                   <a href="https://render.com/deploy" target="_blank" rel="noopener noreferrer" className="text-plm-accent hover:underline">Render</a>
                   <span className="text-plm-fg-muted">•</span>
-                  <a href="https://github.com/bluerobotics/blue-plm/blob/main/api/README.md#deployment" target="_blank" rel="noopener noreferrer" className="text-plm-accent hover:underline">Guide</a>
+                  <a href="https://github.com/bluerobotics/bluePLM/blob/main/api/README.md#deployment" target="_blank" rel="noopener noreferrer" className="text-plm-accent hover:underline">Guide</a>
                 </div>
               </div>
             )}

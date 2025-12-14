@@ -490,7 +490,7 @@ export function OrganizationSettings() {
 BluePLM is a Product Lifecycle Management tool for everyone who builds.
 
 To get started:
-1. Download BluePLM from: https://github.com/bluerobotics/blue-plm/releases
+1. Download BluePLM from: https://github.com/bluerobotics/bluePLM/releases
 2. Install and open the app
 3. When prompted, enter this organization code:
 

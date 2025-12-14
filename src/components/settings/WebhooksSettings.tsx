@@ -512,7 +512,7 @@ export function WebhooksSettings() {
               type="url"
               value={formData.url}
               onChange={e => setFormData(prev => ({ ...prev, url: e.target.value }))}
-              placeholder="https://example.com/webhooks/bluepdm"
+              placeholder="https://example.com/webhooks/blueplm"
               className="w-full bg-plm-bg-secondary border border-plm-border rounded-lg px-3 py-2 text-base font-mono focus:border-plm-accent focus:outline-none"
             />
           </div>

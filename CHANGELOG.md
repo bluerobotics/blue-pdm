@@ -2,6 +2,14 @@
 
 All notable changes to BluePLM will be documented in this file.
 
+## [2.2.1] - 2025-12-14
+
+### Fixed
+- GitHub repository links throughout the app now point to correct `bluerobotics/bluePLM` URL
+- README badges now display correctly
+
+---
+
 ## [2.2.0] - 2025-12-14
 
 ### Added

@@ -45,13 +45,13 @@ export function AboutSettings() {
       {/* Links */}
       <div className="space-y-2">
         <a
-          href="https://github.com/bluerobotics/blueplm"
+          href="https://github.com/bluerobotics/bluePLM"
           target="_blank"
           rel="noopener noreferrer"
           className="flex items-center gap-3 p-4 bg-plm-bg rounded-lg border border-plm-border hover:border-plm-fg-muted transition-colors"
           onClick={(e) => {
             e.preventDefault()
-            window.electronAPI?.openFile('https://github.com/bluerobotics/blueplm')
+            window.electronAPI?.openFile('https://github.com/bluerobotics/bluePLM')
           }}
         >
           <Github size={24} className="text-plm-fg-muted" />
@@ -63,13 +63,13 @@ export function AboutSettings() {
         </a>
 
         <a
-          href="https://github.com/bluerobotics/blueplm/issues"
+          href="https://github.com/bluerobotics/bluePLM/issues"
           target="_blank"
           rel="noopener noreferrer"
           className="flex items-center gap-3 p-4 bg-plm-bg rounded-lg border border-plm-border hover:border-plm-fg-muted transition-colors"
           onClick={(e) => {
             e.preventDefault()
-            window.electronAPI?.openFile('https://github.com/bluerobotics/blueplm/issues')
+            window.electronAPI?.openFile('https://github.com/bluerobotics/bluePLM/issues')
           }}
         >
           <Info size={24} className="text-plm-fg-muted" />

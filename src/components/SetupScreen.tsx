@@ -261,7 +261,7 @@ export function SetupScreen({ onConfigured }: SetupScreenProps) {
           {/* Help Link */}
           <div className="mt-8 text-center">
             <a 
-              href="https://github.com/BlueRobotics/blue-plm#setup" 
+              href="https://github.com/bluerobotics/bluePLM#setup" 
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1 text-sm text-plm-fg-muted hover:text-plm-accent transition-colors"
