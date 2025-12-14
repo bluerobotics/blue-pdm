@@ -553,42 +553,36 @@ function parseXmlRpcResponse(xml: string): unknown {
 }
 
 function parseXmlValue(valueXml: string): unknown {
-  // Integer
-  const intMatch = valueXml.match(/<int>(-?\d+)<\/int>/)
-  if (intMatch) return parseInt(intMatch[1], 10)
+  // Check for COMPLEX types first (they contain other elements)
   
-  const i4Match = valueXml.match(/<i4>(-?\d+)<\/i4>/)
-  if (i4Match) return parseInt(i4Match[1], 10)
-  
-  // Boolean
-  const boolMatch = valueXml.match(/<boolean>(\d)<\/boolean>/)
-  if (boolMatch) return boolMatch[1] === '1'
-  
-  // String
-  const strMatch = valueXml.match(/<string>([^<]*)<\/string>/)
-  if (strMatch) return strMatch[1]
-  
-  // Empty string (no type tag, just value tags)
-  if (valueXml.match(/^[\s\n]*$/)) return ''
-  
-  // Double
-  const doubleMatch = valueXml.match(/<double>([^<]+)<\/double>/)
-  if (doubleMatch) return parseFloat(doubleMatch[1])
-  
-  // Array
-  const arrayMatch = valueXml.match(/<array>\s*<data>([\s\S]*?)<\/data>\s*<\/array>/)
+  // Array - must check BEFORE int/string since arrays contain those
+  const arrayMatch = valueXml.match(/^\s*<array>\s*<data>([\s\S]*)<\/data>\s*<\/array>\s*$/)
   if (arrayMatch) {
     const items: unknown[] = []
-    const valueRegex = /<value>([\s\S]*?)<\/value>/g
-    let match
-    while ((match = valueRegex.exec(arrayMatch[1])) !== null) {
-      items.push(parseXmlValue(match[1]))
+    // Match each <value>...</value> at the top level of the data
+    const dataContent = arrayMatch[1]
+    let depth = 0
+    let currentStart = -1
+    for (let i = 0; i < dataContent.length; i++) {
+      if (dataContent.substring(i, i + 7) === '<value>') {
+        if (depth === 0) currentStart = i + 7
+        depth++
+        i += 6
+      } else if (dataContent.substring(i, i + 8) === '</value>') {
+        depth--
+        if (depth === 0 && currentStart !== -1) {
+          const valueContent = dataContent.substring(currentStart, i)
+          items.push(parseXmlValue(valueContent))
+          currentStart = -1
+        }
+        i += 7
+      }
     }
     return items
   }
   
-  // Struct
-  const structMatch = valueXml.match(/<struct>([\s\S]*?)<\/struct>/)
+  // Struct - must check BEFORE int/string since structs contain those  
+  const structMatch = valueXml.match(/^\s*<struct>([\s\S]*)<\/struct>\s*$/)
   if (structMatch) {
     const obj: Record<string, unknown> = {}
     const memberRegex = /<member>\s*<name>([^<]+)<\/name>\s*<value>([\s\S]*?)<\/value>\s*<\/member>/g
@@ -599,7 +593,31 @@ function parseXmlValue(valueXml: string): unknown {
     return obj
   }
   
-  // Default to raw string
+  // Now check SIMPLE types (these don't contain nested elements)
+  
+  // Integer
+  const intMatch = valueXml.match(/^\s*<int>(-?\d+)<\/int>\s*$/)
+  if (intMatch) return parseInt(intMatch[1], 10)
+  
+  const i4Match = valueXml.match(/^\s*<i4>(-?\d+)<\/i4>\s*$/)
+  if (i4Match) return parseInt(i4Match[1], 10)
+  
+  // Boolean
+  const boolMatch = valueXml.match(/^\s*<boolean>(\d)<\/boolean>\s*$/)
+  if (boolMatch) return boolMatch[1] === '1'
+  
+  // String
+  const strMatch = valueXml.match(/^\s*<string>([^<]*)<\/string>\s*$/)
+  if (strMatch) return strMatch[1]
+  
+  // Double
+  const doubleMatch = valueXml.match(/^\s*<double>([^<]+)<\/double>\s*$/)
+  if (doubleMatch) return parseFloat(doubleMatch[1])
+  
+  // Empty content
+  if (valueXml.match(/^\s*$/)) return ''
+  
+  // Default - return trimmed string
   return valueXml.trim()
 }
 

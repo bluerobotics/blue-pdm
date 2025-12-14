@@ -270,7 +270,7 @@ function RFQDetailView({
   onBack: () => void
   onUpdate: (rfq: RFQ) => void
 }) {
-  const { addToast, files, organization, vaultPath } = usePDMStore()
+  const { addToast, files, organization, vaultPath, user } = usePDMStore()
   const [items, setItems] = useState<RFQItem[]>([])
   const [suppliers, setSuppliers] = useState<RFQSupplier[]>([])
   const [loading, setLoading] = useState(true)
@@ -297,7 +297,7 @@ function RFQDetailView({
         const { data: itemsData, error: itemsError } = await db.from('rfq_items')
           .select(`
             *,
-            file:files(id, file_name, file_path, part_number, description, revision, file_type, extension)
+            file:files(id, file_name, file_path, part_number, description, revision, version, file_type, extension)
           `)
           .eq('rfq_id', rfq.id)
           .order('line_number')
@@ -382,7 +382,7 @@ function RFQDetailView({
         })
         .select(`
           *,
-          file:files(id, file_name, file_path, part_number, description, revision, file_type, extension)
+          file:files(id, file_name, file_path, part_number, description, revision, version, file_type, extension)
         `)
         .single()
 
@@ -590,6 +590,7 @@ function RFQDetailView({
               revision: item.file.revision
             })
             if (result?.success) {
+              // Update RFQ item
               await db.from('rfq_items')
                 .update({
                   step_file_generated: true,
@@ -597,6 +598,22 @@ function RFQDetailView({
                   step_file_size: result.fileSize
                 })
                 .eq('id', item.id)
+              
+              // Also save to release_files table for version tracking
+              await db.from('release_files').insert({
+                file_id: item.file_id,
+                version: item.file.version || 1,
+                revision: item.file.revision,
+                file_type: 'step',
+                file_name: result.fileName,
+                local_path: result.outputPath,
+                file_size: result.fileSize,
+                generated_by: user?.id,
+                rfq_id: rfq.id,
+                rfq_item_id: item.id,
+                org_id: rfq.org_id
+              })
+              
               successCount++
             } else {
               console.error(`STEP export failed for ${item.part_number}:`, result?.error)
@@ -620,6 +637,7 @@ function RFQDetailView({
               revision: item.file.revision
             })
             if (result?.success) {
+              // Update RFQ item
               await db.from('rfq_items')
                 .update({
                   pdf_file_generated: true,
@@ -627,6 +645,22 @@ function RFQDetailView({
                   pdf_file_size: result.fileSize
                 })
                 .eq('id', item.id)
+              
+              // Also save to release_files table for version tracking
+              await db.from('release_files').insert({
+                file_id: item.file_id,
+                version: item.file.version || 1,
+                revision: item.file.revision,
+                file_type: 'pdf',
+                file_name: result.fileName,
+                local_path: result.outputPath,
+                file_size: result.fileSize,
+                generated_by: user?.id,
+                rfq_id: rfq.id,
+                rfq_item_id: item.id,
+                org_id: rfq.org_id
+              })
+              
               successCount++
             } else {
               console.error(`PDF export failed for ${item.part_number}:`, result?.error)
@@ -653,7 +687,7 @@ function RFQDetailView({
       const { data: updatedItems } = await db.from('rfq_items')
         .select(`
           *,
-          file:files(id, file_name, file_path, part_number, description, revision, file_type, extension)
+          file:files(id, file_name, file_path, part_number, description, revision, version, file_type, extension)
         `)
         .eq('rfq_id', rfq.id)
         .order('line_number')
