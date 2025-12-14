@@ -6,6 +6,8 @@
 #     -e SUPABASE_URL=https://xxx.supabase.co \
 #     -e SUPABASE_KEY=your-anon-key \
 #     ghcr.io/bluerobotics/blueplm-api:latest
+#
+# Railway Service: bluePLM-api
 
 FROM node:20-alpine
 

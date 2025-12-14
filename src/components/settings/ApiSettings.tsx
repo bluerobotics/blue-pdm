@@ -243,7 +243,7 @@ export function ApiSettings() {
                   if (e.key === 'Enter') handleSaveApiUrl()
                   if (e.key === 'Escape') setEditingApiUrl(false)
                 }}
-                placeholder="bluepdm-api-production.up.railway.app"
+                placeholder="blueplm-api-production.up.railway.app"
                 className="flex-1 bg-plm-bg border border-plm-border rounded-lg px-3 py-2 text-base font-mono focus:border-plm-accent focus:outline-none"
                 autoFocus
               />
