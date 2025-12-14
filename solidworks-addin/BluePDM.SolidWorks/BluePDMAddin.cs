@@ -59,7 +59,7 @@ namespace BluePLM.SolidWorks
                 using var key = Registry.LocalMachine.CreateSubKey(keyPath);
                 key?.SetValue(null, 0); // Load at startup = false (change to 1 for auto-load)
                 key?.SetValue("Title", "BluePLM");
-                key?.SetValue("Description", "Product Data Management for SolidWorks - Check in/out, version control, and collaboration");
+                key?.SetValue("Description", "Product Lifecycle Management for SolidWorks - Check in/out, version control, and collaboration");
             }
             catch (Exception ex)
             {
@@ -157,7 +157,7 @@ namespace BluePLM.SolidWorks
             cmdGroup = _cmdMgr.CreateCommandGroup2(
                 MainCmdGroupId,
                 "BluePLM",
-                "BluePLM - Product Data Management",
+                "BluePLM - Product Lifecycle Management",
                 "BluePLM Commands",
                 -1, // Position
                 true,

@@ -74,6 +74,10 @@ function getNextScheduledBackup(hour: number, minute: number, timezone?: string)
   const now = new Date()
   const tz = timezone || 'UTC'
   
+  // Guard against undefined/null values
+  const safeHour = hour ?? 0
+  const safeMinute = minute ?? 0
+  
   // Get current date/time in the target timezone
   const formatter = new Intl.DateTimeFormat('en-US', {
     timeZone: tz,
@@ -95,11 +99,11 @@ function getNextScheduledBackup(hour: number, minute: number, timezone?: string)
     
     // Create date for scheduled time today in the target timezone
     // We'll approximate by creating a local date and adjusting
-    let nextDate = new Date(currentYear, currentMonth, currentDay, hour, minute, 0, 0)
+    let nextDate = new Date(currentYear, currentMonth, currentDay, safeHour, safeMinute, 0, 0)
     
     // If the scheduled time has passed for today, add a day
     const currentMinutes = currentHour * 60 + currentMinute
-    const scheduledMinutes = hour * 60 + minute
+    const scheduledMinutes = safeHour * 60 + safeMinute
     if (scheduledMinutes <= currentMinutes) {
       nextDate.setDate(nextDate.getDate() + 1)
     }
@@ -108,7 +112,7 @@ function getNextScheduledBackup(hour: number, minute: number, timezone?: string)
   } catch {
     // Fallback to UTC
     const next = new Date(now)
-    next.setUTCHours(hour, minute, 0, 0)
+    next.setUTCHours(safeHour, safeMinute, 0, 0)
     if (next <= now) {
       next.setUTCDate(next.getUTCDate() + 1)
     }
@@ -202,13 +206,13 @@ export function BackupPanel({ isAdmin }: BackupPanelProps) {
         setAccessKey(newStatus.config.access_key_encrypted || '')
         setSecretKey(newStatus.config.secret_key_encrypted || '')
         setResticPassword(newStatus.config.restic_password_encrypted || '')
-        setRetentionDaily(newStatus.config.retention_daily)
-        setRetentionWeekly(newStatus.config.retention_weekly)
-        setRetentionMonthly(newStatus.config.retention_monthly)
-        setRetentionYearly(newStatus.config.retention_yearly)
-        setScheduleEnabled(newStatus.config.schedule_enabled)
-        setScheduleHour(newStatus.config.schedule_hour)
-        setScheduleMinute(newStatus.config.schedule_minute)
+        setRetentionDaily(newStatus.config.retention_daily ?? 14)
+        setRetentionWeekly(newStatus.config.retention_weekly ?? 10)
+        setRetentionMonthly(newStatus.config.retention_monthly ?? 12)
+        setRetentionYearly(newStatus.config.retention_yearly ?? 5)
+        setScheduleEnabled(newStatus.config.schedule_enabled ?? false)
+        setScheduleHour(newStatus.config.schedule_hour ?? 0)
+        setScheduleMinute(newStatus.config.schedule_minute ?? 0)
         setScheduleTimezone(newStatus.config.schedule_timezone || 'UTC')
       }
     } catch (err) {
@@ -687,7 +691,8 @@ export function BackupPanel({ isAdmin }: BackupPanelProps) {
                 <Calendar className="w-4 h-4 text-plm-fg-muted" />
                 <span className="text-xs text-plm-fg-muted">Next Backup</span>
               </div>
-              {status.config?.schedule_enabled && status.config?.designated_machine_id ? (
+              {status.config?.schedule_enabled && status.config?.designated_machine_id && 
+               status.config.schedule_hour != null && status.config.schedule_minute != null ? (
                 <>
                   <div className="text-sm font-medium">
                     {formatTimeUntil(getNextScheduledBackup(
@@ -834,6 +839,15 @@ export function BackupPanel({ isAdmin }: BackupPanelProps) {
                     className="w-full py-2 px-4 rounded text-sm bg-plm-accent text-white hover:bg-plm-accent-hover font-medium"
                   >
                     Set this machine as backup source
+                  </button>
+                ) : !isDesignatedOnline ? (
+                  // Another machine is designated but offline - allow taking over
+                  <button
+                    onClick={handleDesignateThisMachine}
+                    className="w-full py-2 px-4 rounded text-sm bg-amber-600 text-white hover:bg-amber-500 font-medium flex items-center justify-center gap-2"
+                  >
+                    <Monitor className="w-4 h-4" />
+                    Take over as backup source
                   </button>
                 ) : null}
                 

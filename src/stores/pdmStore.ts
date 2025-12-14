@@ -485,7 +485,9 @@ interface PDMState {
   
   // Actions - Processing Folders
   addProcessingFolder: (path: string) => void
+  addProcessingFolders: (paths: string[]) => void  // Batch add (single state update)
   removeProcessingFolder: (path: string) => void
+  removeProcessingFolders: (paths: string[]) => void  // Batch remove (single state update)
   clearProcessingFolders: () => void
   
   // Actions - Operation Queue
@@ -1401,6 +1403,15 @@ export const usePDMStore = create<PDMState>()(
         newSet.add(path)
         return { processingFolders: newSet }
       }),
+      // Batch add - single state update for multiple paths
+      addProcessingFolders: (paths) => {
+        if (paths.length === 0) return
+        set(state => {
+          const newSet = new Set(state.processingFolders)
+          paths.forEach(p => newSet.add(p))
+          return { processingFolders: newSet }
+        })
+      },
       removeProcessingFolder: (path) => {
         set(state => {
           const newSet = new Set(state.processingFolders)
@@ -1408,6 +1419,17 @@ export const usePDMStore = create<PDMState>()(
           return { processingFolders: newSet }
         })
         // Try to process queued operations after a folder is done
+        setTimeout(() => get().processQueue(), 100)
+      },
+      // Batch remove - single state update for multiple paths
+      removeProcessingFolders: (paths) => {
+        if (paths.length === 0) return
+        set(state => {
+          const newSet = new Set(state.processingFolders)
+          paths.forEach(p => newSet.delete(p))
+          return { processingFolders: newSet }
+        })
+        // Try to process queued operations after paths are done
         setTimeout(() => get().processQueue(), 100)
       },
       clearProcessingFolders: () => set({ processingFolders: new Set() }),

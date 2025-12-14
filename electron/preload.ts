@@ -229,7 +229,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Dialogs
   selectFiles: () => ipcRenderer.invoke('dialog:select-files'),
   selectFolder: () => ipcRenderer.invoke('dialog:select-folder'),
-  showSaveDialog: (defaultName: string) => ipcRenderer.invoke('dialog:save-file', defaultName),
+  showSaveDialog: (defaultName: string, filters?: Array<{ name: string; extensions: string[] }>) => 
+    ipcRenderer.invoke('dialog:save-file', defaultName, filters),
   
   // PDF generation
   generatePdfFromHtml: (htmlContent: string, outputPath: string) => 
@@ -303,6 +304,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       rfqNumber: string
       files: Array<{ path: string; name: string }>
       rfqPdfPath?: string
+      outputPath?: string
     }) => ipcRenderer.invoke('rfq:create-zip', options),
     openFolder: (rfqId: string, rfqNumber?: string) => 
       ipcRenderer.invoke('rfq:open-folder', rfqId, rfqNumber),

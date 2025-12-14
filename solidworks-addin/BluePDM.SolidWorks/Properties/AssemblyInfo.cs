@@ -2,7 +2,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 
 [assembly: AssemblyTitle("BluePLM SolidWorks Add-in")]
-[assembly: AssemblyDescription("Product Data Management integration for SolidWorks")]
+[assembly: AssemblyDescription("Product Lifecycle Management integration for SolidWorks")]
 [assembly: AssemblyConfiguration("")]
 [assembly: AssemblyCompany("Blue Robotics")]
 [assembly: AssemblyProduct("BluePLM")]

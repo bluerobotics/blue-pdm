@@ -50,8 +50,8 @@ import crypto from 'crypto'
 import fs from 'fs'
 import path from 'path'
 
-// Load version from package.json
-const packageJsonPath = path.join(__dirname, '..', 'package.json')
+// Load version from API's own package.json
+const packageJsonPath = path.join(__dirname, 'package.json')
 const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'))
 const API_VERSION = packageJson.version || '0.0.0'
 
@@ -1023,7 +1023,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     openapi: {
       info: {
         title: 'BluePLM REST API',
-        description: 'Product Data Management API for engineering teams',
+        description: 'Product Lifecycle Management API for everyone who builds',
         version: API_VERSION
       },
       servers: [

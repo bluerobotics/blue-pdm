@@ -176,7 +176,7 @@ declare global {
       // Dialogs
       selectFiles: () => Promise<FileSelectResult>
       selectFolder: () => Promise<FolderSelectResult>
-      showSaveDialog: (defaultName: string) => Promise<SaveDialogResult>
+      showSaveDialog: (defaultName: string, filters?: Array<{ name: string; extensions: string[] }>) => Promise<SaveDialogResult>
       
       // PDF generation
       generatePdfFromHtml: (htmlContent: string, outputPath: string) => Promise<{ success: boolean; path?: string; size?: number; error?: string }>
@@ -260,6 +260,7 @@ declare global {
           rfqNumber: string
           files: Array<{ path: string; name: string }>
           rfqPdfPath?: string
+          outputPath?: string
         }) => Promise<{ success: boolean; zipPath?: string; fileSize?: number; error?: string }>
         openFolder: (rfqId: string, rfqNumber?: string) => 
           Promise<{ success: boolean; error?: string }>

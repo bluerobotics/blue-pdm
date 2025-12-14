@@ -78,7 +78,7 @@ const en: TranslationDict = {
   // Welcome/Auth Screen
   welcome: {
     title: 'BluePLM',
-    tagline: 'Open source Product Data Management for engineering teams',
+    tagline: 'Open source Product Lifecycle Management for everyone who builds',
     selectAccountType: 'Select your account type',
     teamMember: 'Team Member',
     teamMemberDesc: 'Engineers, admins, and viewers',
@@ -829,6 +829,12 @@ const de: TranslationDict = {
     ignorePlaceholder: 'z.B. *.tmp, .git/*, thumbs.db',
     connectVaultForPatterns: 'Verbinden Sie sich mit einem Tresor, um Ignoriermuster zu verwalten.',
     noIgnorePatterns: 'Keine Ignoriermuster konfiguriert',
+    
+    syncSettings: 'Synchronisierungseinstellungen',
+    autoDownloadCloudFiles: 'Cloud-Dateien automatisch herunterladen',
+    autoDownloadCloudFilesDesc: 'Dateien automatisch herunterladen, die auf dem Server, aber nicht lokal existieren',
+    autoDownloadUpdates: 'Datei-Updates automatisch herunterladen',
+    autoDownloadUpdatesDesc: 'Automatisch herunterladen, wenn der Server neuere Versionen hat',
   },
   
   sidebar: {
@@ -1121,6 +1127,12 @@ const es: TranslationDict = {
     ignorePlaceholder: 'ej: *.tmp, .git/*, thumbs.db',
     connectVaultForPatterns: 'Conéctate a una bóveda para gestionar patrones a ignorar.',
     noIgnorePatterns: 'Sin patrones de exclusión configurados',
+    
+    syncSettings: 'Configuración de sincronización',
+    autoDownloadCloudFiles: 'Descargar archivos de la nube automáticamente',
+    autoDownloadCloudFilesDesc: 'Descargar automáticamente archivos que existen en el servidor pero no localmente',
+    autoDownloadUpdates: 'Descargar actualizaciones automáticamente',
+    autoDownloadUpdatesDesc: 'Descargar automáticamente cuando el servidor tiene versiones más nuevas',
   },
   
   sidebar: {
@@ -1413,6 +1425,12 @@ const zhCN: TranslationDict = {
     ignorePlaceholder: '例如：*.tmp, .git/*, thumbs.db',
     connectVaultForPatterns: '连接到保险库以管理忽略模式。',
     noIgnorePatterns: '未配置忽略模式',
+    
+    syncSettings: '同步设置',
+    autoDownloadCloudFiles: '自动下载云端文件',
+    autoDownloadCloudFilesDesc: '自动下载服务器上存在但本地不存在的文件',
+    autoDownloadUpdates: '自动下载文件更新',
+    autoDownloadUpdatesDesc: '当服务器有新版本时自动下载',
   },
   
   sidebar: {
@@ -1705,6 +1723,12 @@ const zhTW: TranslationDict = {
     ignorePlaceholder: '例如：*.tmp, .git/*, thumbs.db',
     connectVaultForPatterns: '連線到保險庫以管理忽略模式。',
     noIgnorePatterns: '未設定忽略模式',
+    
+    syncSettings: '同步設定',
+    autoDownloadCloudFiles: '自動下載雲端檔案',
+    autoDownloadCloudFilesDesc: '自動下載伺服器上存在但本機不存在的檔案',
+    autoDownloadUpdates: '自動下載檔案更新',
+    autoDownloadUpdatesDesc: '當伺服器有較新版本時自動下載',
   },
   
   sidebar: {
@@ -1997,6 +2021,12 @@ const pt: TranslationDict = {
     ignorePlaceholder: 'ex: *.tmp, .git/*, thumbs.db',
     connectVaultForPatterns: 'Ligue-se a um cofre para gerir padrões a ignorar.',
     noIgnorePatterns: 'Nenhum padrão de exclusão configurado',
+    
+    syncSettings: 'Configurações de Sincronização',
+    autoDownloadCloudFiles: 'Descarregar ficheiros da nuvem automaticamente',
+    autoDownloadCloudFilesDesc: 'Descarregar automaticamente ficheiros que existem no servidor mas não localmente',
+    autoDownloadUpdates: 'Descarregar atualizações automaticamente',
+    autoDownloadUpdatesDesc: 'Descarregar automaticamente quando o servidor tem versões mais recentes',
   },
   
   sidebar: {

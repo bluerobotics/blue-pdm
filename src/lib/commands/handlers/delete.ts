@@ -102,11 +102,11 @@ export const deleteLocalCommand: Command<DeleteLocalParams> = {
       }
     }
     
-    // Track paths being processed
+    // Track paths being processed - batch add
     const foldersBeingProcessed = files.filter(f => f.isDirectory).map(f => f.relativePath)
     const filesBeingProcessed = files.filter(f => !f.isDirectory).map(f => f.relativePath)
     const allPathsBeingProcessed = [...foldersBeingProcessed, ...filesBeingProcessed]
-    allPathsBeingProcessed.forEach(p => ctx.addProcessingFolder(p))
+    ctx.addProcessingFolders(allPathsBeingProcessed)
     
     // Yield to event loop so React can render spinners before starting operation
     await new Promise(resolve => setTimeout(resolve, 0))
@@ -208,8 +208,8 @@ export const deleteLocalCommand: Command<DeleteLocalParams> = {
       }
     }
     
-    // Clean up
-    allPathsBeingProcessed.forEach(p => ctx.removeProcessingFolder(p))
+    // Clean up - batch remove
+    ctx.removeProcessingFolders(allPathsBeingProcessed)
     ctx.removeToast(toastId)
     
     const duration = Date.now() - startTime
@@ -332,7 +332,8 @@ export const deleteServerCommand: Command<DeleteServerParams> = {
     // If only local folders with no server files, just delete locally
     if (uniqueFiles.length === 0 && hasLocalFolders) {
       const foldersToDelete = files.filter(f => f.isDirectory && f.diffStatus !== 'cloud')
-      foldersToDelete.forEach(f => ctx.addProcessingFolder(f.relativePath))
+      const folderPaths = foldersToDelete.map(f => f.relativePath)
+      ctx.addProcessingFolders(folderPaths)
       
       // Yield to event loop so React can render spinners before starting operation
       await new Promise(resolve => setTimeout(resolve, 0))
@@ -347,7 +348,7 @@ export const deleteServerCommand: Command<DeleteServerParams> = {
         }
       }
       
-      foldersToDelete.forEach(f => ctx.removeProcessingFolder(f.relativePath))
+      ctx.removeProcessingFolders(folderPaths)
       
       if (deleted > 0) {
         ctx.addToast('success', `Removed ${deleted} local folder${deleted !== 1 ? 's' : ''} (not synced to server)`)
@@ -363,11 +364,11 @@ export const deleteServerCommand: Command<DeleteServerParams> = {
       }
     }
     
-    // Track paths being processed
+    // Track paths being processed - batch add
     const foldersSelected = files.filter(f => f.isDirectory).map(f => f.relativePath)
     const pathsBeingProcessed = uniqueFiles.map(f => f.relativePath)
     const allPathsBeingProcessed = [...new Set([...pathsBeingProcessed, ...foldersSelected])]
-    allPathsBeingProcessed.forEach(p => ctx.addProcessingFolder(p))
+    ctx.addProcessingFolders(allPathsBeingProcessed)
     
     // Yield to event loop so React can render spinners before starting operation
     await new Promise(resolve => setTimeout(resolve, 0))
@@ -419,8 +420,8 @@ export const deleteServerCommand: Command<DeleteServerParams> = {
     
     ctx.updateProgressToast(toastId, 2, 100)
     
-    // Clean up
-    allPathsBeingProcessed.forEach(p => ctx.removeProcessingFolder(p))
+    // Clean up - batch remove
+    ctx.removeProcessingFolders(allPathsBeingProcessed)
     ctx.removeToast(toastId)
     
     // Refresh file list

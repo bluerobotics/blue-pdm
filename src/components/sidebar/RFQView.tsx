@@ -311,6 +311,12 @@ function RFQDetailView({
   const [expandedItemId, setExpandedItemId] = useState<string | null>(null)
   const [generatingPdf, setGeneratingPdf] = useState(false)
   
+  // Supplier management state
+  const [availableSuppliers, setAvailableSuppliers] = useState<Array<{ id: string; name: string; code: string | null }>>([])
+  const [showAddSupplier, setShowAddSupplier] = useState(false)
+  const [loadingSuppliers, setLoadingSuppliers] = useState(false)
+  const [supplierSearch, setSupplierSearch] = useState('')
+  
   // Configuration state for SolidWorks files
   const [itemConfigurations, setItemConfigurations] = useState<Record<string, string[]>>({})
   const [loadingConfigs, setLoadingConfigs] = useState<string | null>(null)
@@ -525,6 +531,99 @@ function RFQDetailView({
     } catch (err) {
       console.error('Failed to update configuration:', err)
       addToast('error', 'Failed to update configuration')
+    }
+  }
+
+  // Load available suppliers (not already assigned to this RFQ)
+  const loadAvailableSuppliers = async () => {
+    if (!organization) return
+    
+    setLoadingSuppliers(true)
+    try {
+      // Get all suppliers for this org
+      const { data: allSuppliers, error } = await db.from('suppliers')
+        .select('id, name, code')
+        .eq('org_id', organization.id)
+        .eq('is_active', true)
+        .order('name')
+
+      if (error) throw error
+      
+      // Filter out already assigned suppliers
+      const assignedIds = suppliers.map(s => s.supplier_id)
+      const available = (allSuppliers || []).filter(
+        (s: { id: string }) => !assignedIds.includes(s.id)
+      )
+      
+      setAvailableSuppliers(available)
+    } catch (err) {
+      console.error('Failed to load suppliers:', err)
+    } finally {
+      setLoadingSuppliers(false)
+    }
+  }
+
+  // Add supplier to RFQ
+  const handleAddSupplier = async (supplierId: string) => {
+    try {
+      const { data, error } = await db.from('rfq_suppliers')
+        .insert({
+          rfq_id: rfq.id,
+          supplier_id: supplierId
+        })
+        .select(`
+          *,
+          supplier:suppliers(id, name, code, contact_email, contact_name)
+        `)
+        .single()
+
+      if (error) throw error
+      
+      setSuppliers([...suppliers, data as RFQSupplier])
+      setShowAddSupplier(false)
+      setSupplierSearch('')
+      
+      // Remove from available list
+      setAvailableSuppliers(availableSuppliers.filter(s => s.id !== supplierId))
+      
+      addToast('success', 'Supplier added to RFQ')
+      
+      // Update RFQ status if files are generated and this is the first supplier
+      if (rfq.release_files_generated && suppliers.length === 0) {
+        await db.from('rfqs').update({ status: 'ready' }).eq('id', rfq.id)
+        onUpdate({ ...rfq, status: 'ready' })
+      }
+    } catch (err) {
+      console.error('Failed to add supplier:', err)
+      addToast('error', 'Failed to add supplier')
+    }
+  }
+
+  // Remove supplier from RFQ
+  const handleRemoveSupplier = async (rfqSupplierId: string, supplierId: string) => {
+    try {
+      const { error } = await db.from('rfq_suppliers')
+        .delete()
+        .eq('id', rfqSupplierId)
+
+      if (error) throw error
+      
+      setSuppliers(suppliers.filter(s => s.id !== rfqSupplierId))
+      
+      // Add back to available list
+      const removedSupplier = suppliers.find(s => s.id === rfqSupplierId)?.supplier
+      if (removedSupplier) {
+        setAvailableSuppliers([...availableSuppliers, {
+          id: removedSupplier.id,
+          name: removedSupplier.name,
+          code: removedSupplier.code
+        }].sort((a, b) => a.name.localeCompare(b.name)))
+      }
+      
+      addToast('success', 'Supplier removed from RFQ')
+    } catch (err) {
+      console.error('Failed to remove supplier:', err)
+      addToast('error', 'Failed to remove supplier')
     }
   }
 
@@ -802,16 +901,9 @@ function RFQDetailView({
       return
     }
 
-    // Check if there are any generated files
-    const generatedFiles = items.filter(i => i.step_file_path || i.pdf_file_path)
-    if (generatedFiles.length === 0) {
-      addToast('warning', 'No release files generated yet. Generate STEP/PDF files first.')
-      return
-    }
-
     setGenerating(true)
     try {
-      // Collect all generated file paths
+      // Collect all generated file paths (STEP/PDF exports from parts)
       const files: Array<{ path: string; name: string }> = []
       
       for (const item of items) {
@@ -833,58 +925,97 @@ function RFQDetailView({
         }
       }
 
-      // Generate the RFQ PDF first
+      // Generate the RFQ document PDF
       let rfqPdfPath: string | undefined
       try {
-        const { data: org } = await db.from('organizations')
-          .select('name, logo_url')
+        // Get the RFQ output directory first
+        const dirResult = await window.electronAPI.rfq.getOutputDir(rfq.id, rfq.rfq_number)
+        if (!dirResult?.success || !dirResult.path) {
+          throw new Error('Could not get RFQ output directory')
+        }
+        
+        // Use platform-appropriate separator
+        const sep = dirResult.path.includes('\\') ? '\\' : '/'
+        const pdfPath = `${dirResult.path}${sep}${rfq.rfq_number}_RFQ.pdf`
+        
+        // Get org branding info
+        const { data: orgData } = await db.from('organizations')
+          .select('name, logo_url, logo_storage_path, address_line1, address_line2, city, state, postal_code, country, phone, website, contact_email, rfq_settings')
           .eq('id', rfq.org_id)
           .single()
-        
-        const branding: OrgBranding = {
-          companyName: org?.name || 'Unknown Company',
-          logoUrl: org?.logo_url || undefined
+
+        // Get fresh signed URL for logo if storage path exists
+        let logoUrl = (orgData as Record<string, unknown>)?.logo_url as string | null
+        const logoStoragePath = (orgData as Record<string, unknown>)?.logo_storage_path as string | null
+        if (logoStoragePath) {
+          const { data: signedData } = await supabase.storage
+            .from('vault')
+            .createSignedUrl(logoStoragePath, 60 * 60)
+          if (signedData?.signedUrl) {
+            logoUrl = signedData.signedUrl
+          }
         }
 
-        const { data: addresses } = await db.from('organization_addresses')
-          .select('*')
-          .eq('org_id', rfq.org_id)
+        const orgBranding: OrgBranding = {
+          name: (orgData as Record<string, unknown>)?.name as string || 'Unknown Company',
+          logo_url: logoUrl,
+          address_line1: (orgData as Record<string, unknown>)?.address_line1 as string | null,
+          address_line2: (orgData as Record<string, unknown>)?.address_line2 as string | null,
+          city: (orgData as Record<string, unknown>)?.city as string | null,
+          state: (orgData as Record<string, unknown>)?.state as string | null,
+          postal_code: (orgData as Record<string, unknown>)?.postal_code as string | null,
+          country: (orgData as Record<string, unknown>)?.country as string | null,
+          phone: (orgData as Record<string, unknown>)?.phone as string | null,
+          website: (orgData as Record<string, unknown>)?.website as string | null,
+          contact_email: (orgData as Record<string, unknown>)?.contact_email as string | null,
+          rfq_settings: (orgData as Record<string, unknown>)?.rfq_settings as OrgBranding['rfq_settings']
+        }
 
-        const billingAddr = addresses?.find((a: { id: string }) => a.id === rfq.billing_address_id)
-        const shippingAddr = addresses?.find((a: { id: string }) => a.id === rfq.shipping_address_id)
-
-        const pdfBlob = await generateRFQPdf(rfq, items, suppliers, branding, billingAddr, shippingAddr)
+        // Generate PDF directly to the output path (no dialog)
+        const pdfResult = await generateRFQPdf({ rfq, items, org: orgBranding, outputPath: pdfPath })
         
-        // Save PDF to RFQ folder
-        const dirResult = await window.electronAPI.rfq.getOutputDir(rfq.id, rfq.rfq_number)
-        if (dirResult?.success && dirResult.path) {
-          // Use platform-appropriate separator
-          const sep = dirResult.path.includes('\\') ? '\\' : '/'
-          const pdfPath = `${dirResult.path}${sep}${rfq.rfq_number}_RFQ.pdf`
-          // Convert blob to base64
-          const buffer = await pdfBlob.arrayBuffer()
-          const base64 = btoa(
-            new Uint8Array(buffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
-          )
-          await window.electronAPI.writeFile(pdfPath, base64)
-          rfqPdfPath = pdfPath
+        if (pdfResult.success && pdfResult.path) {
+          rfqPdfPath = pdfResult.path
+        } else {
+          console.warn('Failed to generate RFQ PDF:', pdfResult.error)
         }
       } catch (pdfErr) {
         console.warn('Could not generate RFQ PDF for ZIP:', pdfErr)
+        addToast('warning', 'Could not generate RFQ PDF document')
       }
 
-      // Create the ZIP
+      // Check if we have anything to zip
+      if (files.length === 0 && !rfqPdfPath) {
+        addToast('warning', 'No files to include in ZIP package')
+        setGenerating(false)
+        return
+      }
+
+      // Prompt user to choose save location
+      const saveResult = await window.electronAPI.showSaveDialog(
+        `${rfq.rfq_number}_ReleasePackage.zip`,
+        [
+          { name: 'ZIP Archives', extensions: ['zip'] },
+          { name: 'All Files', extensions: ['*'] }
+        ]
+      )
+      
+      if (saveResult.canceled || !saveResult.path) {
+        setGenerating(false)
+        return
+      }
+
+      // Create the ZIP at the user-selected location
       const result = await window.electronAPI.rfq.createZip({
         rfqId: rfq.id,
         rfqNumber: rfq.rfq_number,
         files,
-        rfqPdfPath
+        rfqPdfPath,
+        outputPath: saveResult.path
       })
 
       if (result?.success) {
-        addToast('success', 'Release package ZIP created successfully')
-        // Open the folder containing the ZIP
-        await window.electronAPI.rfq.openFolder(rfq.id, rfq.rfq_number)
+        addToast('success', `Release package saved to ${saveResult.path}`)
       } else {
         addToast('error', result?.error || 'Failed to create ZIP package')
       }
@@ -894,15 +1025,6 @@ function RFQDetailView({
     } finally {
       setGenerating(false)
     }
-  }
-
-  // Open RFQ release folder
-  const handleOpenReleaseFolder = async () => {
-    if (!window.electronAPI?.rfq) {
-      addToast('error', 'RFQ export service not available')
-      return
-    }
-    await window.electronAPI.rfq.openFolder(rfq.id, rfq.rfq_number)
   }
 
   // Show specific file in explorer
@@ -1337,25 +1459,114 @@ function RFQDetailView({
         )}
 
         {activeTab === 'suppliers' && (
-          <div className="p-3">
+          <div className="p-3 space-y-3">
+            {/* Add supplier button/picker */}
+            <div>
+              {showAddSupplier ? (
+                <div className="border border-plm-border rounded p-2 bg-plm-bg space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-plm-fg-muted">Select supplier to add:</span>
+                    <button
+                      onClick={() => {
+                        setShowAddSupplier(false)
+                        setSupplierSearch('')
+                      }}
+                      className="p-1 text-plm-fg-muted hover:text-plm-fg"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                  {loadingSuppliers ? (
+                    <div className="flex items-center justify-center py-4">
+                      <Loader2 size={16} className="animate-spin text-plm-fg-muted" />
+                    </div>
+                  ) : availableSuppliers.length === 0 ? (
+                    <p className="text-xs text-plm-fg-muted text-center py-2">
+                      No more suppliers available
+                    </p>
+                  ) : (
+                    <>
+                      {/* Search input */}
+                      <div className="relative">
+                        <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-plm-fg-muted" />
+                        <input
+                          type="text"
+                          value={supplierSearch}
+                          onChange={(e) => setSupplierSearch(e.target.value)}
+                          placeholder="Search suppliers..."
+                          className="w-full pl-7 pr-2 py-1.5 bg-plm-input border border-plm-border rounded text-xs text-plm-fg placeholder:text-plm-fg-muted/50 focus:outline-none focus:border-plm-accent"
+                          autoFocus
+                        />
+                      </div>
+                      <div className="max-h-40 overflow-y-auto space-y-1">
+                        {availableSuppliers
+                          .filter(s => {
+                            if (!supplierSearch.trim()) return true
+                            const search = supplierSearch.toLowerCase()
+                            return s.name.toLowerCase().includes(search) || 
+                                   (s.code?.toLowerCase().includes(search) ?? false)
+                          })
+                          .map(supplier => (
+                            <button
+                              key={supplier.id}
+                              onClick={() => handleAddSupplier(supplier.id)}
+                              className="w-full flex items-center justify-between px-2 py-1.5 hover:bg-plm-highlight rounded text-left transition-colors"
+                            >
+                              <div>
+                                <div className="text-xs text-plm-fg">{supplier.name}</div>
+                                {supplier.code && (
+                                  <div className="text-[10px] text-plm-fg-muted">{supplier.code}</div>
+                                )}
+                              </div>
+                              <Plus size={14} className="text-plm-fg-muted" />
+                            </button>
+                          ))}
+                        {availableSuppliers.filter(s => {
+                          if (!supplierSearch.trim()) return true
+                          const search = supplierSearch.toLowerCase()
+                          return s.name.toLowerCase().includes(search) || 
+                                 (s.code?.toLowerCase().includes(search) ?? false)
+                        }).length === 0 && (
+                          <p className="text-xs text-plm-fg-muted text-center py-2">
+                            No suppliers match "{supplierSearch}"
+                          </p>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
+              ) : (
+                <button
+                  onClick={() => {
+                    setShowAddSupplier(true)
+                    loadAvailableSuppliers()
+                  }}
+                  className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-plm-accent hover:bg-plm-accent/90 text-white rounded text-sm font-medium transition-colors"
+                >
+                  <Plus size={16} />
+                  Add Supplier
+                </button>
+              )}
+            </div>
+
+            {/* Assigned suppliers list */}
             {suppliers.length === 0 ? (
-              <div className="text-center py-8 text-plm-fg-muted">
-                <Building2 size={32} className="mx-auto mb-2 opacity-50" />
-                <p className="text-sm">No suppliers assigned</p>
-                <p className="text-xs">Add suppliers to send this RFQ</p>
+              <div className="text-center py-6 text-plm-fg-muted">
+                <Building2 size={28} className="mx-auto mb-2 opacity-50" />
+                <p className="text-sm">No suppliers assigned yet</p>
                 {rfq.release_files_generated && (
-                  <div className="mt-3 mx-4 p-2 bg-plm-warning/10 border border-plm-warning/30 rounded text-plm-warning text-xs">
+                  <div className="mt-3 p-2 bg-plm-warning/10 border border-plm-warning/30 rounded text-plm-warning text-xs">
                     <AlertCircle size={12} className="inline mr-1" />
-                    Files generated. Add suppliers to mark RFQ as ready.
+                    Add suppliers to mark RFQ as ready
                   </div>
                 )}
               </div>
             ) : (
               <div className="space-y-2">
                 {suppliers.map((rs) => (
-                  <div key={rs.id} className="border border-plm-border rounded p-2 bg-plm-bg/50">
+                  <div key={rs.id} className="border border-plm-border rounded p-2 bg-plm-bg/50 hover:bg-plm-highlight/30 transition-colors">
                     <div className="flex items-center justify-between">
-                      <div>
+                      <div className="flex-1 min-w-0">
                         <div className="text-xs font-medium text-plm-fg">
                           {rs.supplier?.name}
                         </div>
@@ -1363,20 +1574,32 @@ function RFQDetailView({
                           <div className="text-[10px] text-plm-fg-muted">{rs.supplier.code}</div>
                         )}
                       </div>
-                      {rs.quoted_at ? (
-                        <div className="text-right">
-                          <div className="text-xs text-plm-success font-medium">
-                            {formatCurrency(rs.total_quoted_amount, rs.currency)}
+                      <div className="flex items-center gap-2">
+                        {rs.quoted_at ? (
+                          <div className="text-right">
+                            <div className="text-xs text-plm-success font-medium">
+                              {formatCurrency(rs.total_quoted_amount, rs.currency)}
+                            </div>
+                            <div className="text-[10px] text-plm-fg-muted">
+                              {rs.lead_time_days} days
+                            </div>
                           </div>
-                          <div className="text-[10px] text-plm-fg-muted">
-                            {rs.lead_time_days} days
-                          </div>
-                        </div>
-                      ) : rs.sent_at ? (
-                        <span className="text-[10px] text-plm-warning">Awaiting quote</span>
-                      ) : (
-                        <span className="text-[10px] text-plm-fg-muted">Not sent</span>
-                      )}
+                        ) : rs.sent_at ? (
+                          <span className="text-[10px] text-plm-warning">Awaiting quote</span>
+                        ) : (
+                          <span className="text-[10px] text-plm-fg-muted">Not sent</span>
+                        )}
+                        {/* Remove button - only if not yet sent */}
+                        {!rs.sent_at && (
+                          <button
+                            onClick={() => handleRemoveSupplier(rs.id, rs.supplier_id)}
+                            className="p-1 text-plm-fg-muted hover:text-plm-error transition-colors"
+                            title="Remove supplier"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -1563,7 +1786,7 @@ function RFQDetailView({
             <button 
               onClick={handleGeneratePdf}
               disabled={generatingPdf}
-              className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-plm-highlight hover:bg-plm-highlight/80 text-plm-fg rounded text-sm font-medium transition-colors disabled:opacity-50"
+              className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-plm-highlight hover:bg-plm-border text-plm-fg rounded text-sm font-medium transition-colors disabled:opacity-50"
               title="Generate RFQ PDF document"
             >
               {generatingPdf ? (
@@ -1574,36 +1797,25 @@ function RFQDetailView({
               RFQ PDF
             </button>
             
-            {/* ZIP Package - show if any release files exist */}
-            {items.some(i => i.step_file_generated || i.pdf_file_generated) && (
-              <>
-                <button
-                  onClick={handleGenerateZip}
-                  disabled={generating}
-                  className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-plm-highlight hover:bg-plm-highlight/80 text-plm-fg rounded text-sm font-medium transition-colors disabled:opacity-50"
-                  title="Create ZIP with all release files and RFQ PDF"
-                >
-                  {generating ? (
-                    <Loader2 size={14} className="animate-spin" />
-                  ) : (
-                    <Archive size={14} />
-                  )}
-                  ZIP Package
-                </button>
-                <button
-                  onClick={handleOpenReleaseFolder}
-                  className="flex items-center justify-center px-2.5 py-2 bg-plm-highlight hover:bg-plm-highlight/80 text-plm-fg rounded transition-colors"
-                  title="Open release folder"
-                >
-                  <FolderOpen size={14} />
-                </button>
-              </>
-            )}
+            {/* ZIP Package - always available, includes RFQ PDF + any release files */}
+            <button
+              onClick={handleGenerateZip}
+              disabled={generating}
+              className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-plm-highlight hover:bg-plm-border text-plm-fg rounded text-sm font-medium transition-colors disabled:opacity-50"
+              title="Create ZIP with RFQ PDF and release files"
+            >
+              {generating ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <Archive size={14} />
+              )}
+              ZIP Package
+            </button>
           </div>
 
           {/* Send to suppliers (only when ready) */}
           {rfq.status === 'ready' && (
-            <button className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-plm-success hover:bg-plm-success/90 text-white rounded text-sm font-medium transition-colors">
+            <button className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-plm-success hover:bg-plm-success/80 text-white rounded text-sm font-medium transition-colors">
               <Send size={16} />
               Send to Suppliers
             </button>

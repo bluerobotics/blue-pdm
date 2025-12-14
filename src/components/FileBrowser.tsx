@@ -117,6 +117,11 @@ interface FileIconCardProps {
   allFiles: LocalFile[]
   processingPaths: Set<string>  // Paths currently being processed
   currentMachineId: string | null  // Current machine ID for multi-device checkout detection
+  lowercaseExtensions: boolean  // Passed from parent to avoid store subscription
+  userId: string | undefined  // Current user ID for checkout detection
+  userFullName: string | undefined  // Current user full name
+  userEmail: string | undefined  // Current user email
+  userAvatarUrl: string | undefined  // Current user avatar URL
   onClick: (e: React.MouseEvent) => void
   onDoubleClick: () => void
   onContextMenu: (e: React.MouseEvent) => void
@@ -128,13 +133,12 @@ interface FileIconCardProps {
 }
 
 // Memoized to prevent re-renders when other files change
-const FileIconCard = memo(function FileIconCard({ file, iconSize, isSelected, allFiles, processingPaths, currentMachineId, onClick, onDoubleClick, onContextMenu, onDownload, onCheckout, onCheckin, onUpload, onStateChange }: FileIconCardProps) {
+const FileIconCard = memo(function FileIconCard({ file, iconSize, isSelected, allFiles, processingPaths, currentMachineId, lowercaseExtensions, userId, userFullName, userEmail, userAvatarUrl, onClick, onDoubleClick, onContextMenu, onDownload, onCheckout, onCheckin, onUpload, onStateChange }: FileIconCardProps) {
   const [thumbnail, setThumbnail] = useState<string | null>(null)
   const [thumbnailError, setThumbnailError] = useState(false)
   const [loadingThumbnail, setLoadingThumbnail] = useState(false)
   const [showStateDropdown, setShowStateDropdown] = useState(false)
   const stateDropdownRef = useRef<HTMLDivElement>(null)
-  const { lowercaseExtensions, user } = usePDMStore()
   
   // Check if this file is being processed (download, checkout, checkin)
   const isProcessing = (() => {
@@ -263,7 +267,7 @@ const FileIconCard = memo(function FileIconCard({ file, iconSize, isSelected, al
       for (const f of folderFiles) {
         const checkoutUserId = f.pdmData!.checked_out_by!
         if (!usersMap.has(checkoutUserId)) {
-          const isMe = checkoutUserId === user?.id
+          const isMe = checkoutUserId === userId
           const checkoutMachineId = f.pdmData?.checked_out_by_machine_id
           const checkoutMachineName = f.pdmData?.checked_out_by_machine_name
           const isDifferentMachine = isMe && checkoutMachineId && currentMachineId && checkoutMachineId !== currentMachineId
@@ -271,8 +275,8 @@ const FileIconCard = memo(function FileIconCard({ file, iconSize, isSelected, al
           if (isMe) {
             usersMap.set(checkoutUserId, {
               id: checkoutUserId,
-              name: user?.full_name || user?.email || 'You',
-              avatar_url: user?.avatar_url || undefined,
+              name: userFullName || userEmail || 'You',
+              avatar_url: userAvatarUrl,
               isMe: true,
               isDifferentMachine: isDifferentMachine || false,
               machineName: checkoutMachineName ?? undefined
@@ -293,7 +297,7 @@ const FileIconCard = memo(function FileIconCard({ file, iconSize, isSelected, al
       return Array.from(usersMap.values())
     } else if (file.pdmData?.checked_out_by) {
       // Single file checkout
-      const isMe = file.pdmData.checked_out_by === user?.id
+      const isMe = file.pdmData.checked_out_by === userId
       const checkoutMachineId = file.pdmData.checked_out_by_machine_id
       const checkoutMachineName = file.pdmData.checked_out_by_machine_name
       const isDifferentMachine = isMe && checkoutMachineId && currentMachineId && checkoutMachineId !== currentMachineId
@@ -301,8 +305,8 @@ const FileIconCard = memo(function FileIconCard({ file, iconSize, isSelected, al
       if (isMe) {
         return [{
           id: file.pdmData.checked_out_by,
-          name: user?.full_name || user?.email || 'You',
-          avatar_url: user?.avatar_url || undefined,
+          name: userFullName || userEmail || 'You',
+          avatar_url: userAvatarUrl,
           isMe: true,
           isDifferentMachine: isDifferentMachine || false,
           machineName: checkoutMachineName ?? undefined
@@ -341,8 +345,8 @@ const FileIconCard = memo(function FileIconCard({ file, iconSize, isSelected, al
     })
     
     // Check checkout status (same logic as getFolderCheckoutStatus)
-    const checkedOutByMe = folderFiles.some(f => f.pdmData?.checked_out_by === user?.id)
-    const checkedOutByOthers = folderFiles.some(f => f.pdmData?.checked_out_by && f.pdmData.checked_out_by !== user?.id)
+    const checkedOutByMe = folderFiles.some(f => f.pdmData?.checked_out_by === userId)
+    const checkedOutByOthers = folderFiles.some(f => f.pdmData?.checked_out_by && f.pdmData.checked_out_by !== userId)
     
     // Red for folders with files checked out by others
     if (checkedOutByOthers) return 'text-plm-error'
@@ -599,8 +603,8 @@ const FileIconCard = memo(function FileIconCard({ file, iconSize, isSelected, al
                   return filePath.startsWith(folderPrefix)
                 })
                 
-                const checkedOutByMe = folderFiles.filter(f => f.pdmData?.checked_out_by === user?.id).length
-                const checkedOutByOthers = folderFiles.filter(f => f.pdmData?.checked_out_by && f.pdmData.checked_out_by !== user?.id).length
+                const checkedOutByMe = folderFiles.filter(f => f.pdmData?.checked_out_by === userId).length
+                const checkedOutByOthers = folderFiles.filter(f => f.pdmData?.checked_out_by && f.pdmData.checked_out_by !== userId).length
                 const syncedNotCheckedOut = folderFiles.filter(f => f.pdmData && !f.pdmData.checked_out_by && f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new').length
                 const localOnly = folderFiles.filter(f => !f.pdmData && f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new').length
                 
@@ -638,7 +642,7 @@ const FileIconCard = memo(function FileIconCard({ file, iconSize, isSelected, al
                   )}
                   
                   {/* FILE: Checked out by me - green up arrow to check in */}
-                  {!file.isDirectory && file.pdmData?.checked_out_by === user?.id && onCheckin && (
+                  {!file.isDirectory && file.pdmData?.checked_out_by === userId && onCheckin && (
                     <button
                       className="p-0.5 rounded hover:bg-plm-success/20 text-plm-success transition-colors cursor-pointer"
                       title="Click to check in"
@@ -660,7 +664,7 @@ const FileIconCard = memo(function FileIconCard({ file, iconSize, isSelected, al
                   )}
                   
                   {/* FILE: Checked out by others - red down arrow (not clickable) */}
-                  {!file.isDirectory && file.pdmData?.checked_out_by && file.pdmData.checked_out_by !== user?.id && (
+                  {!file.isDirectory && file.pdmData?.checked_out_by && file.pdmData.checked_out_by !== userId && (
                     <div
                       className="p-0.5 text-plm-error cursor-not-allowed"
                       title="Checked out by someone else"
@@ -824,6 +828,8 @@ const FileIconCard = memo(function FileIconCard({ file, iconSize, isSelected, al
   if (prevProps.iconSize !== nextProps.iconSize) return false
   if (prevProps.isSelected !== nextProps.isSelected) return false
   if (prevProps.currentMachineId !== nextProps.currentMachineId) return false
+  if (prevProps.lowercaseExtensions !== nextProps.lowercaseExtensions) return false
+  if (prevProps.userId !== nextProps.userId) return false
   // Don't compare allFiles or processingPaths - too expensive
   // Instead, check if this specific file is affected
   const prevProcessing = prevProps.processingPaths.has(prevProps.file.relativePath)
@@ -1003,7 +1009,9 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
     lowercaseExtensions,
     processingFolders,
     addProcessingFolder,
+    addProcessingFolders,
     removeProcessingFolder,
+    removeProcessingFolders,
     setDetailsPanelTab,
     detailsPanelVisible,
     toggleDetailsPanel,
@@ -1309,31 +1317,152 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
     })
   }, [files, currentPath, isSearching, searchQuery, searchType, sortColumn, sortDirection])
 
+  // Pre-compute folder metrics in a single pass for O(n) instead of O(n²) complexity
+  // This avoids repeated iterations in renderCellContent for each folder
+  const folderMetrics = useMemo(() => {
+    const metrics = new Map<string, {
+      cloudFilesCount: number
+      cloudNewFilesCount: number
+      localOnlyFilesCount: number
+      hasCheckoutableFiles: boolean
+      hasMyCheckedOutFiles: boolean
+      hasOthersCheckedOutFiles: boolean
+      hasUnsyncedFiles: boolean
+      checkoutUsers: Array<{ id: string; name: string; avatar_url?: string; isMe: boolean }>
+      isSynced: boolean
+    }>()
+    
+    // Get all non-directory files
+    const allNonDirFiles = files.filter(f => !f.isDirectory)
+    
+    // Group files by their folder paths
+    for (const file of allNonDirFiles) {
+      // Get all parent folder paths for this file
+      const parts = file.relativePath.split('/')
+      let currentPath = ''
+      
+      for (let i = 0; i < parts.length - 1; i++) {
+        currentPath = currentPath ? `${currentPath}/${parts[i]}` : parts[i]
+        
+        if (!metrics.has(currentPath)) {
+          metrics.set(currentPath, {
+            cloudFilesCount: 0,
+            cloudNewFilesCount: 0,
+            localOnlyFilesCount: 0,
+            hasCheckoutableFiles: false,
+            hasMyCheckedOutFiles: false,
+            hasOthersCheckedOutFiles: false,
+            hasUnsyncedFiles: false,
+            checkoutUsers: [],
+            isSynced: true
+          })
+        }
+        
+        const m = metrics.get(currentPath)!
+        
+        // Cloud files
+        if (file.diffStatus === 'cloud' || file.diffStatus === 'cloud_new') {
+          m.cloudFilesCount++
+          if (file.diffStatus === 'cloud_new') m.cloudNewFilesCount++
+        }
+        
+        // Local-only (unsynced) files
+        if ((!file.pdmData || file.diffStatus === 'added' || file.diffStatus === 'deleted_remote') && 
+            file.diffStatus !== 'cloud' && file.diffStatus !== 'cloud_new' && file.diffStatus !== 'ignored') {
+          m.localOnlyFilesCount++
+          m.hasUnsyncedFiles = true
+        }
+        
+        // Checkoutable files (synced, not checked out, not cloud-only)
+        if (file.pdmData && !file.pdmData.checked_out_by && 
+            file.diffStatus !== 'cloud' && file.diffStatus !== 'cloud_new') {
+          m.hasCheckoutableFiles = true
+        }
+        
+        // Checked out by me
+        if (file.pdmData?.checked_out_by === user?.id) {
+          m.hasMyCheckedOutFiles = true
+        }
+        
+        // Checked out by others
+        if (file.pdmData?.checked_out_by && file.pdmData.checked_out_by !== user?.id) {
+          m.hasOthersCheckedOutFiles = true
+        }
+        
+        // Synced status (all files must have pdmData and not be 'added')
+        if (!file.pdmData || file.diffStatus === 'added') {
+          m.isSynced = false
+        }
+      }
+    }
+    
+    // Build checkout users for each folder (second pass to dedupe)
+    for (const file of allNonDirFiles) {
+      if (!file.pdmData?.checked_out_by) continue
+      
+      const parts = file.relativePath.split('/')
+      let currentPath = ''
+      
+      for (let i = 0; i < parts.length - 1; i++) {
+        currentPath = currentPath ? `${currentPath}/${parts[i]}` : parts[i]
+        const m = metrics.get(currentPath)
+        if (!m) continue
+        
+        const checkoutUserId = file.pdmData.checked_out_by
+        // Check if user already in list
+        if (!m.checkoutUsers.some(u => u.id === checkoutUserId)) {
+          const isMe = checkoutUserId === user?.id
+          if (isMe) {
+            m.checkoutUsers.push({
+              id: checkoutUserId,
+              name: user?.full_name || user?.email || 'You',
+              avatar_url: user?.avatar_url ?? undefined,
+              isMe: true
+            })
+          } else {
+            const checkedOutUser = (file.pdmData as any).checked_out_user
+            m.checkoutUsers.push({
+              id: checkoutUserId,
+              name: checkedOutUser?.full_name || checkedOutUser?.email?.split('@')[0] || 'Someone',
+              avatar_url: checkedOutUser?.avatar_url,
+              isMe: false
+            })
+          }
+        }
+      }
+    }
+    
+    // Sort checkout users (me first)
+    for (const [, m] of metrics) {
+      m.checkoutUsers.sort((a, b) => {
+        if (a.isMe && !b.isMe) return -1
+        if (!a.isMe && b.isMe) return 1
+        return 0
+      })
+    }
+    
+    return metrics
+  }, [files, user?.id, user?.full_name, user?.email, user?.avatar_url])
+
   // Check if all files in a folder are synced (truly synced, not just content-matched)
+  // Uses pre-computed folderMetrics for O(1) lookup
   const isFolderSynced = useCallback((folderPath: string): boolean => {
-    const folderFiles = files.filter(f => 
-      !f.isDirectory && 
-      f.relativePath.startsWith(folderPath + '/')
-    )
-    if (folderFiles.length === 0) return false // Empty folder = not synced
-    // Only consider synced if ALL files have pdmData AND none are marked as 'added'
-    return folderFiles.every(f => !!f.pdmData && f.diffStatus !== 'added')
-  }, [files])
+    const fm = folderMetrics.get(folderPath)
+    if (!fm) return false // Empty folder or not found = not synced
+    return fm.isSynced
+  }, [folderMetrics])
 
   // Get folder checkout status: 'mine' | 'others' | 'both' | null
+  // Uses pre-computed folderMetrics for O(1) lookup
   const getFolderCheckoutStatus = useCallback((folderPath: string): 'mine' | 'others' | 'both' | null => {
-    const folderFiles = files.filter(f => 
-      !f.isDirectory && 
-      f.relativePath.startsWith(folderPath + '/')
-    )
-    const checkedOutByMe = folderFiles.some(f => f.pdmData?.checked_out_by === user?.id)
-    const checkedOutByOthers = folderFiles.some(f => f.pdmData?.checked_out_by && f.pdmData.checked_out_by !== user?.id)
+    const fm = folderMetrics.get(folderPath)
+    if (!fm) return null
     
-    if (checkedOutByMe && checkedOutByOthers) return 'both'
-    if (checkedOutByMe) return 'mine'
-    if (checkedOutByOthers) return 'others'
+    if (fm.hasMyCheckedOutFiles && fm.hasOthersCheckedOutFiles) return 'both'
+    if (fm.hasMyCheckedOutFiles) return 'mine'
+    if (fm.hasOthersCheckedOutFiles) return 'others'
     return null
-  }, [files, user?.id])
+  }, [folderMetrics])
 
   // Check if a file/folder is affected by any processing operation
   const isBeingProcessed = useCallback((relativePath: string) => {
@@ -3323,76 +3452,20 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
         }
         const displayFilename = formatFilename(file.name, file.extension)
         
-        // Check if folder has checkoutable files (synced, not checked out)
-        const hasCheckoutableFiles = file.isDirectory && files.some(f => 
-          !f.isDirectory && f.pdmData && !f.pdmData.checked_out_by && f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new' && f.relativePath.startsWith(file.relativePath + '/')
-        )
-        
-        // Check if folder has files checked out by me
-        const hasMyCheckedOutFiles = file.isDirectory && files.some(f => 
-          !f.isDirectory && f.pdmData?.checked_out_by === user?.id && f.relativePath.startsWith(file.relativePath + '/')
-        )
-        
-        // Check if folder has unsynced files (for first check in)
-        const hasUnsyncedFiles = file.isDirectory && files.some(f => 
-          !f.isDirectory && (!f.pdmData || f.diffStatus === 'added' || f.diffStatus === 'deleted_remote') && f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new' && f.diffStatus !== 'ignored' && f.relativePath.startsWith(file.relativePath + '/')
-        )
-        
-        // Get local-only (unsynced) files count for folders
-        const localOnlyFilesCount = file.isDirectory ? files.filter(f => 
-          !f.isDirectory && (!f.pdmData || f.diffStatus === 'added' || f.diffStatus === 'deleted_remote') && f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new' && f.diffStatus !== 'ignored' && f.relativePath.startsWith(file.relativePath + '/')
-        ).length : 0
-        
-        // Get cloud files count for folders (files others have added that you haven't downloaded)
-        // Includes both 'cloud' and 'cloud_new' status files
-        const cloudFilesCount = file.isDirectory ? files.filter(f => 
-          !f.isDirectory && (f.diffStatus === 'cloud' || f.diffStatus === 'cloud_new') && f.relativePath.startsWith(file.relativePath + '/')
-        ).length : 0
-        
-        // Get NEW cloud files count (green positive indicator)
-        const cloudNewFilesCount = file.isDirectory ? files.filter(f => 
-          !f.isDirectory && f.diffStatus === 'cloud_new' && f.relativePath.startsWith(file.relativePath + '/')
-        ).length : 0
+        // Use pre-computed folder metrics (O(1) lookup instead of O(n) iterations)
+        const fm = file.isDirectory ? folderMetrics.get(file.relativePath) : null
+        const hasCheckoutableFiles = fm?.hasCheckoutableFiles || false
+        const hasMyCheckedOutFiles = fm?.hasMyCheckedOutFiles || false
+        const hasUnsyncedFiles = fm?.hasUnsyncedFiles || false
+        const localOnlyFilesCount = fm?.localOnlyFilesCount || 0
+        const cloudFilesCount = fm?.cloudFilesCount || 0
+        const cloudNewFilesCount = fm?.cloudNewFilesCount || 0
         
         // Get checkout users for avatars (for both files and folders)
         const getCheckoutAvatars = () => {
           if (file.isDirectory) {
-            // Get unique users with checkouts in this folder
-            const folderFiles = files.filter(f => 
-              !f.isDirectory && 
-              f.pdmData?.checked_out_by &&
-              f.relativePath.startsWith(file.relativePath + '/')
-            )
-            
-            const usersMap = new Map<string, { id: string; name: string; avatar_url?: string; isMe: boolean }>()
-            for (const f of folderFiles) {
-              const checkoutUserId = f.pdmData!.checked_out_by!
-              if (!usersMap.has(checkoutUserId)) {
-                const isMe = checkoutUserId === user?.id
-                if (isMe) {
-                  usersMap.set(checkoutUserId, {
-                    id: checkoutUserId,
-                    name: user?.full_name || user?.email || 'You',
-                    avatar_url: user?.avatar_url || undefined,
-                    isMe: true
-                  })
-                } else {
-                  const checkedOutUser = (f.pdmData as any).checked_out_user
-                  usersMap.set(checkoutUserId, {
-                    id: checkoutUserId,
-                    name: checkedOutUser?.full_name || checkedOutUser?.email?.split('@')[0] || 'Someone',
-                    avatar_url: checkedOutUser?.avatar_url,
-                    isMe: false
-                  })
-                }
-              }
-            }
-            
-            return Array.from(usersMap.values()).sort((a, b) => {
-              if (a.isMe && !b.isMe) return -1
-              if (!a.isMe && b.isMe) return 1
-              return 0
-            })
+            // Use pre-computed checkout users from folderMetrics
+            return fm?.checkoutUsers || []
           } else if (file.pdmData?.checked_out_by) {
             // Single file checkout
             const isMe = file.pdmData.checked_out_by === user?.id
@@ -4013,7 +4086,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
           const columnDef = customMetadataColumns.find(c => c.name === customColumnName)
           
           if (columnDef?.data_type === 'boolean') {
-            return customValue === 'true' || customValue === true ? (
+            return customValue === 'true' || customValue === 'Yes' || customValue === '1' ? (
               <span className="text-plm-success">Yes</span>
             ) : (
               <span className="text-plm-fg-muted">No</span>
@@ -4371,6 +4444,11 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                 allFiles={files}
                 processingPaths={processingFolders}
                 currentMachineId={currentMachineId}
+                lowercaseExtensions={lowercaseExtensions !== false}
+                userId={user?.id}
+                userFullName={user?.full_name ?? undefined}
+                userEmail={user?.email}
+                userAvatarUrl={user?.avatar_url ?? undefined}
                 onClick={(e) => handleRowClick(e, file, index)}
                 onDoubleClick={() => handleRowDoubleClick(file)}
                 onContextMenu={(e) => handleContextMenu(e, file)}
@@ -4784,8 +4862,8 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                         return
                       }
                       
-                      // Only mark folders that actually have cloud files
-                      foldersWithCloudFiles.forEach(p => addProcessingFolder(p))
+                      // Only mark folders that actually have cloud files - batch add
+                      addProcessingFolders(foldersWithCloudFiles)
                       
                       // Yield to event loop so React can render spinners before starting download
                       await new Promise(resolve => setTimeout(resolve, 0))
@@ -4929,9 +5007,9 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                         }
                       }
                       
-                      // Remove progress toast and clear processing folders
+                      // Remove progress toast and clear processing folders - batch remove
                       removeToast(toastId)
-                      foldersWithCloudFiles.forEach(p => removeProcessingFolder(p))
+                      removeProcessingFolders(foldersWithCloudFiles)
                       
                       const totalTime = ((Date.now() - startTime) / 1000).toFixed(1)
                       const avgSpeed = formatSpeed(downloadedBytes / parseFloat(totalTime))
@@ -5647,8 +5725,8 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                               onConfirm: async () => {
                                 const total = storedCloudFiles.length
                                 
-                                // Add spinners to all files/folders being deleted
-                                uniquePaths.forEach(p => addProcessingFolder(p))
+                                // Add spinners to all files/folders being deleted - batch add
+                                addProcessingFolders(uniquePaths)
                                 
                                 startSync(total, 'upload') // Use upload type for server operations
                                 
@@ -5684,8 +5762,8 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                                   updateSyncProgress(deleted + failed, percent, '')
                                 }
                                 
-                                // Remove spinners
-                                uniquePaths.forEach(p => removeProcessingFolder(p))
+                                // Remove spinners - batch remove
+                                removeProcessingFolders(uniquePaths)
                                 endSync()
                                 
                                 if (deleted > 0) {
@@ -6197,9 +6275,9 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                       setDeleteEverywhere(false)
                       clearSelection()
                       
-                      // Track files/folders being deleted for spinner display
+                      // Track files/folders being deleted for spinner display - batch add
                       const pathsBeingDeleted = itemsToDelete.map(f => f.relativePath)
-                      pathsBeingDeleted.forEach(p => addProcessingFolder(p))
+                      addProcessingFolders(pathsBeingDeleted)
                       
                       const totalOps = itemsToDelete.filter(f => f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new').length + (isDeleteEverywhere ? syncedFiles.length : 0)
                       const toastId = `delete-${Date.now()}`
@@ -6299,8 +6377,8 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                           }
                         }
                       } finally {
-                        // Clean up spinners
-                        pathsBeingDeleted.forEach(p => removeProcessingFolder(p))
+                        // Clean up spinners - batch remove
+                        removeProcessingFolders(pathsBeingDeleted)
                         onRefresh()
                       }
                     }}

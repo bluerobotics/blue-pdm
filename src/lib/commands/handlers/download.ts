@@ -101,8 +101,9 @@ export const downloadCommand: Command<DownloadParams> = {
     
     // Track only the cloud-only files being downloaded (not entire folders)
     // This prevents spinners showing on ALL files when downloading from a parent folder
+    // Use batch add to avoid N state updates
     const cloudFilePaths = cloudFiles.map(f => f.relativePath)
-    cloudFilePaths.forEach(p => ctx.addProcessingFolder(p))
+    ctx.addProcessingFolders(cloudFilePaths)
     
     // Yield to event loop so React can render spinners before starting download
     await new Promise(resolve => setTimeout(resolve, 0))
@@ -169,8 +170,8 @@ export const downloadCommand: Command<DownloadParams> = {
       }
     }
     
-    // Clean up - remove the cloud file paths we added
-    cloudFilePaths.forEach(p => ctx.removeProcessingFolder(p))
+    // Clean up - use batch remove to avoid N state updates
+    ctx.removeProcessingFolders(cloudFilePaths)
     const { duration } = progress.finish()
     ctx.onRefresh?.(true)
     

@@ -47,6 +47,7 @@ interface RFQPdfOptions {
   rfq: RFQ
   items: RFQItem[]
   org: OrgBranding
+  outputPath?: string  // If provided, saves directly to this path without showing dialog
 }
 
 // Helper to format an address
@@ -535,23 +536,35 @@ export async function generateRFQPdf(options: RFQPdfOptions): Promise<{ success:
   // Check if we're in Electron
   const api = window.electronAPI
   if (api) {
-    // Use Electron's save dialog - default to PDF
-    const defaultName = `${options.rfq.rfq_number}.pdf`
-    console.log('[RFQ PDF] Showing save dialog with default name:', defaultName)
+    let outputPath: string
     
-    const saveResult = await api.showSaveDialog(defaultName)
-    console.log('[RFQ PDF] Save dialog result:', saveResult)
-    
-    if (!saveResult.success || !saveResult.path) {
-      // User cancelled
-      console.log('[RFQ PDF] User cancelled save dialog')
-      return { success: false, error: 'Cancelled' }
-    }
-    
-    // Ensure .pdf extension
-    let outputPath = saveResult.path
-    if (!outputPath.toLowerCase().endsWith('.pdf')) {
-      outputPath += '.pdf'
+    // If outputPath is provided, save directly without dialog
+    if (options.outputPath) {
+      outputPath = options.outputPath
+      // Ensure .pdf extension
+      if (!outputPath.toLowerCase().endsWith('.pdf')) {
+        outputPath += '.pdf'
+      }
+      console.log('[RFQ PDF] Saving directly to:', outputPath)
+    } else {
+      // Use Electron's save dialog - default to PDF
+      const defaultName = `${options.rfq.rfq_number}.pdf`
+      console.log('[RFQ PDF] Showing save dialog with default name:', defaultName)
+      
+      const saveResult = await api.showSaveDialog(defaultName)
+      console.log('[RFQ PDF] Save dialog result:', saveResult)
+      
+      if (!saveResult.success || !saveResult.path) {
+        // User cancelled
+        console.log('[RFQ PDF] User cancelled save dialog')
+        return { success: false, error: 'Cancelled' }
+      }
+      
+      // Ensure .pdf extension
+      outputPath = saveResult.path
+      if (!outputPath.toLowerCase().endsWith('.pdf')) {
+        outputPath += '.pdf'
+      }
     }
     
     console.log('[RFQ PDF] Generating PDF to:', outputPath)
@@ -564,10 +577,12 @@ export async function generateRFQPdf(options: RFQPdfOptions): Promise<{ success:
       throw new Error(pdfResult.error || 'Failed to generate PDF')
     }
     
-    // Open the saved PDF in the default viewer
-    console.log('[RFQ PDF] Opening PDF file...')
-    const openResult = await api.openFile(outputPath)
-    console.log('[RFQ PDF] Open file result:', openResult)
+    // Only open the PDF if it was saved via dialog (user interaction)
+    if (!options.outputPath) {
+      console.log('[RFQ PDF] Opening PDF file...')
+      const openResult = await api.openFile(outputPath)
+      console.log('[RFQ PDF] Open file result:', openResult)
+    }
     
     return { success: true, path: outputPath }
   } else {

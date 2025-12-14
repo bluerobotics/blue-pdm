@@ -163,7 +163,9 @@ export function buildCommandContext(onRefresh?: (silent?: boolean) => void): Com
     updateFilesInStore: store.updateFilesInStore,
     removeFilesFromStore: store.removeFilesFromStore,
     addProcessingFolder: store.addProcessingFolder,
+    addProcessingFolders: store.addProcessingFolders,
     removeProcessingFolder: store.removeProcessingFolder,
+    removeProcessingFolders: store.removeProcessingFolders,
     
     // Refresh
     onRefresh
@@ -279,6 +281,8 @@ export class ProgressTracker {
   private total: number
   private completed: number = 0
   private startTime: number
+  private lastUpdateTime: number = 0
+  private lastUpdatePercent: number = 0
   
   constructor(
     ctx: CommandContext,
@@ -301,12 +305,28 @@ export class ProgressTracker {
   
   /**
    * Update progress (call after each item completes)
+   * Throttled to avoid excessive store updates - only updates if:
+   * - 100ms has passed since last update, OR
+   * - Progress has changed by at least 5%, OR
+   * - This is the last item
    */
   update(): void {
     this.completed++
     
     // Calculate percent
     const percent = Math.round((this.completed / this.total) * 100)
+    const now = Date.now()
+    const timeSinceLastUpdate = now - this.lastUpdateTime
+    const percentChange = percent - this.lastUpdatePercent
+    const isComplete = this.completed >= this.total
+    
+    // Throttle updates: only update if enough time passed, significant progress, or complete
+    if (timeSinceLastUpdate < 100 && percentChange < 5 && !isComplete) {
+      return
+    }
+    
+    this.lastUpdateTime = now
+    this.lastUpdatePercent = percent
     
     // Build label - simple file count format
     const label = `${this.completed}/${this.total}`

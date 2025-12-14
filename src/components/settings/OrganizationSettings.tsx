@@ -487,7 +487,7 @@ export function OrganizationSettings() {
     const code = generateOrgCode(config)
     return `You've been invited to join ${organization.name} on BluePLM!
 
-BluePLM is a Product Data Management tool for engineering teams.
+BluePLM is a Product Lifecycle Management tool for everyone who builds.
 
 To get started:
 1. Download BluePLM from: https://github.com/bluerobotics/blue-plm/releases

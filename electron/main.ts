@@ -2515,11 +2515,11 @@ ipcMain.handle('dialog:select-folder', async () => {
 })
 
 // Save file dialog
-ipcMain.handle('dialog:save-file', async (_, defaultName: string) => {
+ipcMain.handle('dialog:save-file', async (_, defaultName: string, filters?: Array<{ name: string; extensions: string[] }>) => {
   const result = await dialog.showSaveDialog(mainWindow!, {
     title: 'Save File',
     defaultPath: defaultName,
-    filters: [
+    filters: filters || [
       { name: 'PDF Documents', extensions: ['pdf'] },
       { name: 'All Files', extensions: ['*'] }
     ]
@@ -3031,18 +3031,28 @@ ipcMain.handle('rfq:create-zip', async (_, options: {
   rfqNumber: string
   files: Array<{ path: string; name: string }>
   rfqPdfPath?: string
+  outputPath?: string
 }) => {
   try {
-    const { rfqId, rfqNumber, files, rfqPdfPath } = options
+    const { rfqId, rfqNumber, files, rfqPdfPath, outputPath } = options
     
-    // Create RFQ output directory
-    const baseDir = path.join(app.getPath('userData'), 'rfq-releases')
-    const rfqDir = path.join(baseDir, rfqNumber || rfqId)
+    // Use custom output path or default to app data directory
+    let zipPath: string
+    let rfqDir: string
+    
+    if (outputPath) {
+      zipPath = outputPath
+      rfqDir = path.dirname(outputPath)
+    } else {
+      // Create RFQ output directory in app data
+      const baseDir = path.join(app.getPath('userData'), 'rfq-releases')
+      rfqDir = path.join(baseDir, rfqNumber || rfqId)
+      zipPath = path.join(rfqDir, `${rfqNumber}_ReleasePackage.zip`)
+    }
+    
     if (!fs.existsSync(rfqDir)) {
       fs.mkdirSync(rfqDir, { recursive: true })
     }
-    
-    const zipPath = path.join(rfqDir, `${rfqNumber}_ReleasePackage.zip`)
     
     // Use PowerShell on Windows, zip on other platforms
     if (process.platform === 'win32') {

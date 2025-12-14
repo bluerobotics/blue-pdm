@@ -37,7 +37,7 @@ export function AboutSettings() {
       {/* Description */}
       <div className="p-4 bg-plm-bg rounded-lg border border-plm-border">
         <p className="text-base text-plm-fg leading-relaxed">
-          BluePLM is a modern Product Data Management system designed for engineering teams.
+          BluePLM is a modern Product Lifecycle Management system designed for everyone who builds.
           Manage CAD files, track revisions, and collaborate with your team seamlessly.
         </p>
       </div>

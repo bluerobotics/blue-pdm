@@ -1,7 +1,7 @@
 {
   "name": "blue-plm",
   "version": "2.1.25",
-  "description": "Product Lifecycle Management for engineering teams",
+  "description": "Product Lifecycle Management for everyone who builds",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
