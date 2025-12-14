@@ -670,23 +670,23 @@ async function fetchOdooSuppliers(
       debug.supplier_ids_type = `supplier_rank:error:${e}`
     }
     
-    // Strategy 2: If no results, try 'supplier' boolean (older Odoo)
+    // Strategy 2: Partners with vendor payment terms (indicates vendor setup)
     if (!isValidIdArray(supplierIds)) {
       try {
         supplierIds = await odooXmlRpc(normalizedUrl, 'object', 'execute_kw', [
           database, uid, apiKey,
           'res.partner', 'search',
-          [[['supplier', '=', true]]],
+          [[['property_supplier_payment_term_id', '!=', false]]],
           { limit: 5000 }
         ])
-        queryUsed = 'supplier_boolean'
-        debug.supplier_ids_type += ` → supplier_boolean:${typeof supplierIds}${Array.isArray(supplierIds) ? `[${supplierIds.length}]` : ''}`
+        queryUsed = 'payment_terms'
+        debug.supplier_ids_type += ` → payment_terms:${typeof supplierIds}${Array.isArray(supplierIds) ? `[${supplierIds.length}]` : ''}`
       } catch {
-        debug.supplier_ids_type += ' → supplier_boolean:field_not_found'
+        debug.supplier_ids_type += ' → payment_terms:field_error'
       }
     }
     
-    // Strategy 3: If still no results, get all companies (broad search)
+    // Strategy 3: All companies (broad - will include customers too)
     if (!isValidIdArray(supplierIds)) {
       try {
         supplierIds = await odooXmlRpc(normalizedUrl, 'object', 'execute_kw', [
@@ -699,6 +699,22 @@ async function fetchOdooSuppliers(
         debug.supplier_ids_type += ` → is_company:${typeof supplierIds}${Array.isArray(supplierIds) ? `[${supplierIds.length}]` : ''}`
       } catch (e) {
         debug.supplier_ids_type += ` → is_company:error:${e}`
+      }
+    }
+    
+    // Strategy 4: Last resort - ALL active partners
+    if (!isValidIdArray(supplierIds)) {
+      try {
+        supplierIds = await odooXmlRpc(normalizedUrl, 'object', 'execute_kw', [
+          database, uid, apiKey,
+          'res.partner', 'search',
+          [[['active', '=', true]]],
+          { limit: 1000 }  // Smaller limit for broad query
+        ])
+        queryUsed = 'all_partners'
+        debug.supplier_ids_type += ` → all_partners:${typeof supplierIds}${Array.isArray(supplierIds) ? `[${supplierIds.length}]` : ''}`
+      } catch (e) {
+        debug.supplier_ids_type += ` → all_partners:error:${e}`
       }
     }
     
