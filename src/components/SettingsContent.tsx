@@ -71,6 +71,15 @@ export function SettingsContent({ activeTab }: SettingsContentProps) {
     }
   }
 
+  // Logs view needs full width for the log viewer
+  if (activeTab === 'logs') {
+    return (
+      <div className="flex-1 overflow-hidden bg-plm-bg p-4">
+        {renderContent()}
+      </div>
+    )
+  }
+
   return (
     <div className="flex-1 overflow-y-auto bg-plm-bg">
       <div className="max-w-4xl mx-auto p-6">

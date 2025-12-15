@@ -183,6 +183,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   deleteLogFile: (filePath: string) => ipcRenderer.invoke('logs:delete-file', filePath),
   cleanupOldLogs: () => ipcRenderer.invoke('logs:cleanup-old'),
   
+  // Crash reports
+  listCrashFiles: () => ipcRenderer.invoke('logs:list-crashes'),
+  readCrashFile: (filePath: string) => ipcRenderer.invoke('logs:read-crash', filePath),
+  openCrashesDir: () => ipcRenderer.invoke('logs:open-crashes-dir'),
+  getCrashesDir: () => ipcRenderer.invoke('logs:get-crashes-dir'),
+  
   // Get file path from dropped File object (for drag & drop)
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
 
@@ -483,6 +489,12 @@ declare global {
       openLogsDir: () => Promise<{ success: boolean; error?: string }>
       deleteLogFile: (filePath: string) => Promise<{ success: boolean; error?: string }>
       cleanupOldLogs: () => Promise<{ success: boolean; deleted: number; error?: string }>
+      
+      // Crash reports
+      listCrashFiles: () => Promise<{ success: boolean; files?: Array<{ name: string; path: string; size: number; modifiedTime: string }>; error?: string }>
+      readCrashFile: (filePath: string) => Promise<{ success: boolean; content?: string; error?: string }>
+      openCrashesDir: () => Promise<{ success: boolean; error?: string }>
+      getCrashesDir: () => Promise<string | null>
       
       // Window controls
       minimize: () => void

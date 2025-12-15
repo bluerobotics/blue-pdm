@@ -1517,6 +1517,123 @@ ipcMain.handle('logs:get-dir', () => {
   return path.join(app.getPath('userData'), 'logs')
 })
 
+// Get crash dumps directory
+ipcMain.handle('logs:get-crashes-dir', () => {
+  try {
+    return app.getPath('crashDumps')
+  } catch {
+    return null
+  }
+})
+
+// List crash dump files
+ipcMain.handle('logs:list-crashes', async () => {
+  try {
+    let crashesDir: string
+    try {
+      crashesDir = app.getPath('crashDumps')
+    } catch {
+      return { success: true, files: [] }
+    }
+    
+    if (!fs.existsSync(crashesDir)) {
+      return { success: true, files: [] }
+    }
+    
+    // Recursively find all .dmp files
+    const findDmpFiles = (dir: string): Array<{ name: string; path: string; size: number; modifiedTime: string }> => {
+      const results: Array<{ name: string; path: string; size: number; modifiedTime: string }> = []
+      
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true })
+        for (const entry of entries) {
+          const fullPath = path.join(dir, entry.name)
+          if (entry.isDirectory()) {
+            results.push(...findDmpFiles(fullPath))
+          } else if (entry.name.endsWith('.dmp') || entry.name.endsWith('.txt')) {
+            const stats = fs.statSync(fullPath)
+            results.push({
+              name: entry.name,
+              path: fullPath,
+              size: stats.size,
+              modifiedTime: stats.mtime.toISOString()
+            })
+          }
+        }
+      } catch {
+        // Ignore errors reading subdirectories
+      }
+      
+      return results
+    }
+    
+    const files = findDmpFiles(crashesDir)
+      .sort((a, b) => new Date(b.modifiedTime).getTime() - new Date(a.modifiedTime).getTime())
+    
+    return { success: true, files }
+  } catch (err) {
+    logError('Failed to list crash files', { error: String(err) })
+    return { success: false, error: String(err) }
+  }
+})
+
+// Read crash dump metadata (for .txt files that contain crash info)
+ipcMain.handle('logs:read-crash', async (_, filePath: string) => {
+  try {
+    let crashesDir: string
+    try {
+      crashesDir = app.getPath('crashDumps')
+    } catch {
+      return { success: false, error: 'Crash dumps not available' }
+    }
+    
+    const normalizedPath = path.normalize(filePath)
+    if (!normalizedPath.startsWith(crashesDir)) {
+      return { success: false, error: 'Access denied: file is not in crashes directory' }
+    }
+    
+    if (!fs.existsSync(filePath)) {
+      return { success: false, error: 'File not found' }
+    }
+    
+    // Only read .txt files (crash metadata), not .dmp files (binary)
+    if (filePath.endsWith('.txt')) {
+      const content = fs.readFileSync(filePath, 'utf-8')
+      return { success: true, content }
+    } else {
+      // For .dmp files, return basic info
+      const stats = fs.statSync(filePath)
+      return { 
+        success: true, 
+        content: `Binary crash dump file\nSize: ${(stats.size / 1024).toFixed(1)} KB\nCreated: ${stats.mtime.toISOString()}\n\nThis file can be analyzed with debugging tools.`
+      }
+    }
+  } catch (err) {
+    return { success: false, error: String(err) }
+  }
+})
+
+// Open crashes directory
+ipcMain.handle('logs:open-crashes-dir', async () => {
+  try {
+    let crashesDir: string
+    try {
+      crashesDir = app.getPath('crashDumps')
+    } catch {
+      return { success: false, error: 'Crash dumps not available' }
+    }
+    
+    if (!fs.existsSync(crashesDir)) {
+      fs.mkdirSync(crashesDir, { recursive: true })
+    }
+    
+    shell.openPath(crashesDir)
+    return { success: true }
+  } catch (err) {
+    return { success: false, error: String(err) }
+  }
+})
+
 ipcMain.handle('logs:list-files', async () => {
   try {
     const logsDir = path.join(app.getPath('userData'), 'logs')
