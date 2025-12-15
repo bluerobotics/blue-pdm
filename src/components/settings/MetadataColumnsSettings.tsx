@@ -15,6 +15,10 @@ import { usePDMStore } from '../../stores/pdmStore'
 import { supabase } from '../../lib/supabase'
 import type { FileMetadataColumn, MetadataColumnType } from '../../types/database'
 
+// Cast supabase client to bypass known v2 type inference issues
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const db = supabase as any
+
 const TYPE_LABELS: Record<MetadataColumnType, string> = {
   text: 'Text',
   number: 'Number',
@@ -164,7 +168,7 @@ export function MetadataColumnsSettings() {
     try {
       if (editingColumn.id) {
         // Update existing column
-        const { error } = await supabase
+        const { error } = await db
           .from('file_metadata_columns')
           .update({
             name: editingColumn.name.toLowerCase(),
@@ -189,7 +193,7 @@ export function MetadataColumnsSettings() {
           ? Math.max(...columns.map(c => c.sort_order)) 
           : -1
         
-        const { error } = await supabase
+        const { error } = await db
           .from('file_metadata_columns')
           .insert({
             org_id: organization.id,
@@ -251,7 +255,7 @@ export function MetadataColumnsSettings() {
 
   const handleToggleVisibility = async (column: FileMetadataColumn) => {
     try {
-      const { error } = await supabase
+      const { error } = await db
         .from('file_metadata_columns')
         .update({ visible: !column.visible, updated_at: new Date().toISOString() })
         .eq('id', column.id)
@@ -278,11 +282,11 @@ export function MetadataColumnsSettings() {
     try {
       // Swap sort orders
       await Promise.all([
-        supabase
+        db
           .from('file_metadata_columns')
           .update({ sort_order: otherColumn.sort_order })
           .eq('id', column.id),
-        supabase
+        db
           .from('file_metadata_columns')
           .update({ sort_order: column.sort_order })
           .eq('id', otherColumn.id)

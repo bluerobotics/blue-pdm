@@ -1,4 +1,5 @@
 import { usePDMStore } from '../stores/pdmStore'
+import type { SettingsTab } from '../types/settings'
 // PDM Views
 import { ExplorerView } from './sidebar/ExplorerView'
 import { PendingView } from './sidebar/PendingView'
@@ -20,8 +21,6 @@ import { SupplierPortalView } from './sidebar/SupplierPortalView'
 import { GoogleDriveView } from './sidebar/GoogleDriveView'
 // System Views
 import { SettingsNavigation } from './sidebar/SettingsNavigation'
-
-type SettingsTab = 'profile' | 'preferences' | 'vault' | 'organization' | 'company-profile' | 'rfq' | 'metadata-columns' | 'backup' | 'solidworks' | 'google-drive' | 'odoo' | 'slack' | 'webhooks' | 'api' | 'logs' | 'about'
 
 interface SidebarProps {
   onOpenVault: () => void

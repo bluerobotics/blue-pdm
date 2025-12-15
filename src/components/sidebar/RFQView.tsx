@@ -23,8 +23,7 @@ import {
   ChevronUp,
   Pencil,
   FolderOpen,
-  Archive,
-  ExternalLink
+  Archive
 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { usePDMStore } from '@/stores/pdmStore'
@@ -326,7 +325,8 @@ function RFQDetailView({
   const [shippingAddresses, setShippingAddresses] = useState<OrgAddress[]>([])
   const [selectedBillingId, setSelectedBillingId] = useState<string | null>(rfq.billing_address_id || null)
   const [selectedShippingId, setSelectedShippingId] = useState<string | null>(rfq.shipping_address_id || null)
-  const [savingAddresses, setSavingAddresses] = useState(false)
+  // savingAddresses for future use when saving address changes
+  const [, setSavingAddresses] = useState(false)
 
   // Load RFQ details
   useEffect(() => {
@@ -600,7 +600,7 @@ function RFQDetailView({
   }
 
   // Remove supplier from RFQ
-  const handleRemoveSupplier = async (rfqSupplierId: string, supplierId: string) => {
+  const handleRemoveSupplier = async (rfqSupplierId: string, _supplierId: string) => {
     try {
       const { error } = await db.from('rfq_suppliers')
         .delete()
@@ -760,8 +760,8 @@ function RFQDetailView({
               rfqNumber: rfq.rfq_number,
               sourceFilePath,
               exportType: 'step',
-              partNumber: item.part_number || item.file.part_number,
-              revision: item.file.revision,
+              partNumber: item.part_number || item.file?.part_number || undefined,
+              revision: item.file?.revision,
               configuration: item.sw_configuration || undefined
             })
             if (result?.success) {
@@ -777,8 +777,8 @@ function RFQDetailView({
               // Also save to release_files table for version tracking
               await db.from('release_files').insert({
                 file_id: item.file_id,
-                version: item.file.version || 1,
-                revision: item.file.revision,
+                version: item.file?.version || 1,
+                revision: item.file?.revision || item.revision,
                 file_type: 'step',
                 file_name: result.fileName,
                 local_path: result.outputPath,
@@ -808,8 +808,8 @@ function RFQDetailView({
               rfqNumber: rfq.rfq_number,
               sourceFilePath,
               exportType: 'pdf',
-              partNumber: item.part_number || item.file.part_number,
-              revision: item.file.revision
+              partNumber: item.part_number || item.file?.part_number || undefined,
+              revision: item.file?.revision
             })
             if (result?.success) {
               // Update RFQ item
@@ -824,8 +824,8 @@ function RFQDetailView({
               // Also save to release_files table for version tracking
               await db.from('release_files').insert({
                 file_id: item.file_id,
-                version: item.file.version || 1,
-                revision: item.file.revision,
+                version: item.file?.version || 1,
+                revision: item.file?.revision || item.revision,
                 file_type: 'pdf',
                 file_name: result.fileName,
                 local_path: result.outputPath,

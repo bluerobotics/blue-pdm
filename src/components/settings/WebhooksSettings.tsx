@@ -14,17 +14,19 @@ import {
   ChevronRight,
   Zap,
   Clock,
-  AlertCircle,
   CheckCircle2,
   XCircle,
   RotateCcw,
-  ExternalLink,
   Shield,
   Send
 } from 'lucide-react'
 import { usePDMStore } from '../../stores/pdmStore'
 import { supabase } from '../../lib/supabase'
 import type { Webhook, WebhookDelivery, WebhookEvent, WebhookTriggerFilter } from '../../types/database'
+
+// Cast supabase client to bypass known v2 type inference issues
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const db = supabase as any
 
 // All available webhook events
 const WEBHOOK_EVENTS: { value: WebhookEvent; label: string; category: string }[] = [
@@ -215,7 +217,7 @@ export function WebhooksSettings() {
     try {
       if (editingId) {
         // Update existing
-        const { error } = await supabase
+        const { error } = await db
           .from('webhooks')
           .update({
             name: formData.name.trim(),
@@ -234,7 +236,7 @@ export function WebhooksSettings() {
         addToast('success', 'Webhook updated')
       } else {
         // Create new
-        const { error } = await supabase
+        const { error } = await db
           .from('webhooks')
           .insert({
             org_id: organization.id,
@@ -304,7 +306,7 @@ export function WebhooksSettings() {
   
   const handleToggleActive = async (webhook: Webhook) => {
     try {
-      const { error } = await supabase
+      const { error } = await db
         .from('webhooks')
         .update({ is_active: !webhook.is_active })
         .eq('id', webhook.id)
@@ -398,7 +400,7 @@ export function WebhooksSettings() {
     }))
   }
   
-  const toggleCategory = (category: string, events: typeof WEBHOOK_EVENTS) => {
+  const toggleCategory = (_category: string, events: typeof WEBHOOK_EVENTS) => {
     const categoryEvents = events.map(e => e.value)
     const allSelected = categoryEvents.every(e => formData.events.includes(e))
     

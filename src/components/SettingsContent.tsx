@@ -16,8 +16,7 @@ import {
   AboutSettings,
   SupabaseSettings
 } from './settings'
-
-type SettingsTab = 'profile' | 'preferences' | 'organization' | 'company-profile' | 'rfq' | 'metadata-columns' | 'backup' | 'solidworks' | 'google-drive' | 'odoo' | 'slack' | 'webhooks' | 'api' | 'supabase' | 'logs' | 'about'
+import type { SettingsTab } from '../types/settings'
 
 interface SettingsContentProps {
   activeTab: SettingsTab

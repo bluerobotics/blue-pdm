@@ -3,6 +3,10 @@ import { Image, ExternalLink, FolderOpen, Info, Key, Download, Play, Square, Loa
 import { usePDMStore } from '../../stores/pdmStore'
 import { supabase } from '../../lib/supabase'
 
+// Cast supabase client to bypass known v2 type inference issues
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const db = supabase as any
+
 // Hook to manage SolidWorks service connection (minimal version for settings)
 function useSolidWorksServiceStatus() {
   const [status, setStatus] = useState<{ running: boolean; version?: string; directAccessEnabled?: boolean; error?: string }>({ running: false })
@@ -257,8 +261,8 @@ export function SolidWorksSettings() {
               <button
                 onClick={async () => {
                   const result = await window.electronAPI?.selectFolder()
-                  if (result?.success && result.path) {
-                    setSolidworksPath(result.path)
+                  if (result?.success && result.folderPath) {
+                    setSolidworksPath(result.folderPath)
                   }
                 }}
                 className="px-3 py-2 bg-plm-bg-secondary border border-plm-border rounded-lg text-sm text-plm-fg hover:border-plm-accent transition-colors flex-shrink-0"
@@ -294,7 +298,7 @@ export function SolidWorksSettings() {
                     const newKey = e.target.value || null
                     if (!organization) return
                     try {
-                      const { error } = await supabase
+                      const { error } = await db
                         .from('organizations')
                         .update({ 
                           settings: { 

@@ -26,6 +26,10 @@ import {
 import { usePDMStore } from '../../stores/pdmStore'
 import { supabase, getCurrentConfig, isSupabaseConfigured } from '../../lib/supabase'
 
+// Cast supabase client to bypass known v2 type inference issues
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const db = supabase as any
+
 interface SupabaseStats {
   totalFiles: number
   totalVaults: number
@@ -201,36 +205,31 @@ export function SupabaseSettings() {
       const now = new Date()
       let startDate: Date | null = new Date()
       let bucketCount: number
-      let bucketType: 'hour' | 'day' | 'week' | 'month'
       
       switch (timeRange) {
         case '24h':
           startDate.setHours(startDate.getHours() - 23)
           startDate.setMinutes(0, 0, 0)
           bucketCount = 24
-          bucketType = 'hour'
           break
         case '7d':
           startDate.setDate(startDate.getDate() - 6)
           startDate.setHours(0, 0, 0, 0)
           bucketCount = 7
-          bucketType = 'day'
           break
         case '30d':
           startDate.setDate(startDate.getDate() - 29)
           startDate.setHours(0, 0, 0, 0)
           bucketCount = 30
-          bucketType = 'day'
           break
         case 'all':
           startDate = null // No filter
           bucketCount = 12
-          bucketType = 'month'
           break
       }
       
       // Build activity query
-      let activityQuery = supabase
+      let activityQuery = db
         .from('activity')
         .select('action, user_id, created_at')
         .eq('org_id', organization.id)
@@ -247,7 +246,7 @@ export function SupabaseSettings() {
       }
       
       // Build versions query
-      let versionsQuery = supabase
+      let versionsQuery = db
         .from('file_versions')
         .select('file_size, created_at, version')
       
@@ -400,7 +399,8 @@ export function SupabaseSettings() {
       
       // Estimate bytes out
       const avgFileSize = versions && versions.length > 0 
-        ? versions.reduce((sum, v) => sum + (v.file_size || 0), 0) / versions.length 
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ? versions.reduce((sum: number, v: any) => sum + (v.file_size || 0), 0) / versions.length 
         : 0
       const totalCheckouts = buckets.reduce((sum, d) => sum + d.checkouts, 0)
       const estimatedBytesOut = totalCheckouts * avgFileSize

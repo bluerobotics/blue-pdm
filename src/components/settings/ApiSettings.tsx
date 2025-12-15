@@ -18,6 +18,10 @@ import {
 import { usePDMStore } from '../../stores/pdmStore'
 import { supabase } from '../../lib/supabase'
 
+// Cast supabase client to bypass known v2 type inference issues
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const db = supabase as any
+
 interface ApiCallRecord {
   id: string
   timestamp: Date
@@ -160,7 +164,7 @@ export function ApiSettings() {
           // Build new settings, preserving ALL existing properties from database
           const newSettings = { ...organization.settings, api_url: url }
           
-          const { error } = await supabase
+          const { error } = await db
             .from('organizations')
             .update({ settings: newSettings })
             .eq('id', organization.id)

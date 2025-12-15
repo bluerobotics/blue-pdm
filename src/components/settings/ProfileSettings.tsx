@@ -1,9 +1,13 @@
 import { useState, useEffect } from 'react'
-import { Mail, Loader2, FileText, ShoppingCart, GitBranch } from 'lucide-react'
+import { Mail, Loader2, ShoppingCart, GitBranch } from 'lucide-react'
 import { usePDMStore } from '../../stores/pdmStore'
 import { getSupabaseClient } from '../../lib/supabase'
 import { getInitials } from '../../types/pdm'
 import { ContributionHistory } from './ContributionHistory'
+
+// Get supabase client with any type cast for queries with type inference issues
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const getDb = () => getSupabaseClient() as any
 
 interface ECORecord {
   id: string
@@ -38,7 +42,7 @@ export function ProfileSettings() {
     const loadECOs = async () => {
       setIsLoadingECOs(true)
       try {
-        const client = getSupabaseClient()
+        const client = getDb()
         
         // Get ECOs where user is creator or involved (via eco_files)
         const { data: createdECOs, error: createdError } = await client

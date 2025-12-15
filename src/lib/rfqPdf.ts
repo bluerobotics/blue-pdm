@@ -11,7 +11,7 @@ export interface AddressInfo {
   city: string
   state?: string | null
   postal_code?: string | null
-  country?: string
+  country?: string | null
   phone?: string | null
 }
 

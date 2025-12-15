@@ -427,7 +427,7 @@ export function IntegrationsView() {
   const { organization } = usePDMStore()
   const [showOdooConfig, setShowOdooConfig] = useState(false)
   const [odooSettings, setOdooSettings] = useState<OdooSettings | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [, setLoading] = useState(true)
 
   const apiUrl = getApiUrl(organization)
 

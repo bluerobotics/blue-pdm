@@ -1,8 +1,7 @@
 import { useState, useEffect } from 'react'
 import { usePDMStore } from '../../stores/pdmStore'
 import { supabase, isSupabaseConfigured } from '../../lib/supabase'
-
-type SettingsTab = 'profile' | 'preferences' | 'organization' | 'metadata-columns' | 'company-profile' | 'rfq' | 'backup' | 'solidworks' | 'google-drive' | 'odoo' | 'slack' | 'webhooks' | 'api' | 'supabase' | 'logs' | 'about'
+import type { SettingsTab } from '../../types/settings'
 
 type IntegrationStatus = 'online' | 'offline' | 'not-configured' | 'coming-soon'
 

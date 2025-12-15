@@ -360,7 +360,7 @@ export function WelcomeScreen({ onOpenRecentVault }: WelcomeScreenProps) {
       } else {
         // Sign in
         uiLog('info', 'Starting email sign-in', { accountType })
-        const { data, error } = await signInWithEmail(authEmail, authPassword)
+        const { error } = await signInWithEmail(authEmail, authPassword)
         
         if (error) {
           setAuthError(error.message)

@@ -18,9 +18,14 @@ import {
   ShoppingCart,
   Loader2
 } from 'lucide-react'
+
 import { usePDMStore } from '../../stores/pdmStore'
 import { getSupabaseClient } from '../../lib/supabase'
 import { getInitials } from '../../types/pdm'
+
+// Get supabase client with any type cast for queries with type inference issues
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const getDb = () => getSupabaseClient() as any
 
 interface UserProfileModalProps {
   userId: string
@@ -177,7 +182,7 @@ export function UserProfileModal({ userId, onClose }: UserProfileModalProps) {
     
     const loadUserData = async () => {
       setIsLoading(true)
-      const client = getSupabaseClient()
+      const client = getDb()
       const oneYearAgo = new Date()
       oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1)
       
@@ -208,7 +213,8 @@ export function UserProfileModal({ userId, onClose }: UserProfileModalProps) {
           const dataMap = new Map<string, DayData>()
           let total = 0
           
-          const fileActivities: ActivityRecord[] = activities.map(a => ({
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const fileActivities: ActivityRecord[] = activities.map((a: any) => ({
             id: a.id,
             action: a.action,
             created_at: a.created_at,

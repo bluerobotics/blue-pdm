@@ -43,7 +43,8 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
     switchVault,
     setActiveView
   } = usePDMStore()
-  const [appVersion, setAppVersion] = useState('')
+  // appVersion may be used in future UI updates
+  const [, setAppVersion] = useState('')
   const [isSigningIn, setIsSigningIn] = useState(false)
   const [showUserMenu, setShowUserMenu] = useState(false)
   const [showVaultDropdown, setShowVaultDropdown] = useState(false)

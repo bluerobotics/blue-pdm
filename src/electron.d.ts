@@ -194,7 +194,7 @@ declare global {
         // Service management
         startService: (dmLicenseKey?: string) => Promise<{ success: boolean; data?: { message: string; version?: string; swInstalled?: boolean; fastModeEnabled?: boolean }; error?: string }>
         stopService: () => Promise<{ success: boolean }>
-        getServiceStatus: () => Promise<{ success: boolean; data?: { running: boolean; version?: string } }>
+        getServiceStatus: () => Promise<{ success: boolean; data?: { running: boolean; version?: string }; error?: string }>
         
         // Metadata operations
         getBom: (filePath: string, options?: { includeChildren?: boolean; configuration?: string }) => 

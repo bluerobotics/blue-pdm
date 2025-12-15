@@ -15,6 +15,10 @@ import {
 import { usePDMStore } from '../../stores/pdmStore'
 import { getSupabaseClient } from '../../lib/supabase'
 
+// Get supabase client with any type cast for queries with type inference issues
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const getDb = () => getSupabaseClient() as any
+
 interface DayData {
   date: string
   count: number
@@ -162,7 +166,7 @@ export function ContributionHistory() {
       setIsLoading(true)
       
       try {
-        const client = getSupabaseClient()
+        const client = getDb()
         const oneYearAgo = new Date()
         oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1)
         
@@ -216,7 +220,8 @@ export function ContributionHistory() {
         const dataMap = new Map<string, DayData>()
         
         // Process file activities
-        const fileActivities: ActivityRecord[] = (activities || []).map(a => ({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const fileActivities: ActivityRecord[] = (activities || []).map((a: any) => ({
           id: a.id,
           action: a.action,
           created_at: a.created_at,
@@ -233,7 +238,8 @@ export function ContributionHistory() {
         })
         
         // Process reviews as reviewer (approvals/rejections)
-        const reviewActivities: ActivityRecord[] = (reviewsAsReviewer || []).map(r => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const reviewActivities: ActivityRecord[] = (reviewsAsReviewer || []).map((r: any) => {
           const review = r.reviews as { id: string; title?: string; created_at: string }
           return {
             id: r.id,
@@ -253,7 +259,8 @@ export function ContributionHistory() {
         })
         
         // Process reviews requested
-        const requestedActivities: ActivityRecord[] = (reviewsRequested || []).map(r => ({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const requestedActivities: ActivityRecord[] = (reviewsRequested || []).map((r: any) => ({
           id: r.id,
           action: 'review_requested',
           created_at: r.created_at,

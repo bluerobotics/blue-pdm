@@ -7,13 +7,10 @@ import {
   Puzzle, 
   Hash, 
   Bell, 
-  MessageSquare,
   RefreshCw, 
   AlertCircle, 
   Plug, 
   ExternalLink,
-  Plus,
-  X,
   Trash2,
   TestTube2,
   Send

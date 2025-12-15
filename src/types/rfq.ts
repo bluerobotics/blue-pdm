@@ -125,6 +125,7 @@ export interface RFQItem {
     part_number: string | null
     description: string | null
     revision: string
+    version: number
     file_type: string
     extension: string
   }
