@@ -191,18 +191,50 @@
 
 /* 🎄 Christmas Theme UI Enhancements 🎅 */
 
-/* Sidebar header bar - Christmas green */
-[data-theme="christmas"] .sidebar-header {
-  background: linear-gradient(180deg, #1a4d2e 0%, #15422a 100%);
+/* Activity bar icons - Christmas red glow */
+[data-theme="christmas"] .activity-bar button.active,
+[data-theme="christmas"] .activity-bar button:hover {
+  color: #c41e3a;
+}
+
+[data-theme="christmas"] .activity-bar button.active::before {
+  background: #c41e3a;
+}
+
+/* Activity bar selected item text and icon */
+[data-theme="christmas"] .activity-bar button.active svg,
+[data-theme="christmas"] .activity-bar button:hover svg {
+  color: #c41e3a;
+}
+
+/* Top logo/brand accent - Christmas red */
+[data-theme="christmas"] .text-plm-accent {
+  color: #c41e3a !important;
+}
+
+/* Sidebar tree item selected - red highlight */
+[data-theme="christmas"] .tree-item.selected svg,
+[data-theme="christmas"] .sidebar-item.selected svg {
+  color: #c41e3a;
+}
+
+[data-theme="christmas"] .tree-item.selected span,
+[data-theme="christmas"] .sidebar-item.selected span {
   color: #f0f6fc;
 }
 
-/* Breadcrumb/Toolbar bar - Christmas green */
-[data-theme="christmas"] .bg-plm-bg-light {
-  background: linear-gradient(180deg, #1a4d2e 0%, #15422a 100%) !important;
+/* Sidebar header bar - Christmas RED */
+[data-theme="christmas"] .sidebar-header {
+  background: linear-gradient(180deg, #8b1428 0%, #6b1020 100%);
+  color: #f0f6fc;
 }
 
-/* Column headers - Christmas green background */
+/* Breadcrumb/Toolbar bar - Christmas RED */
+[data-theme="christmas"] .bg-plm-bg-light {
+  background: linear-gradient(180deg, #8b1428 0%, #6b1020 100%) !important;
+}
+
+/* Column headers - Christmas GREEN background */
 [data-theme="christmas"] .file-table th {
   background: linear-gradient(180deg, #1a4d2e 0%, #143d24 100%);
   color: #f0f6fc;
@@ -213,10 +245,10 @@
   background: linear-gradient(180deg, #1f5c36 0%, #1a4d2e 100%);
 }
 
-/* Active tab with green */
+/* Active tab with red */
 [data-theme="christmas"] .tab.active {
-  border-bottom-color: #2ea043;
-  color: #3fb950;
+  border-bottom-color: #c41e3a;
+  color: #f87171;
 }
 
 /* Primary buttons stay red (Christmas red) */
@@ -228,38 +260,43 @@
   background: linear-gradient(135deg, #d42a46 0%, #c41e3a 100%);
 }
 
-/* Selection highlights with green tint */
+/* Selection highlights with red tint */
 [data-theme="christmas"] .file-table tr.selected,
-[data-theme="christmas"] .tree-item.selected {
-  background: rgba(46, 160, 67, 0.2);
+[data-theme="christmas"] .tree-item.selected,
+[data-theme="christmas"] .sidebar-item.selected,
+[data-theme="christmas"] [class*="selected"] {
+  background: rgba(196, 30, 58, 0.3) !important;
 }
 
-/* Hover with subtle green */
+/* Hover with subtle red */
 [data-theme="christmas"] .file-table tr:hover:not(.selected),
-[data-theme="christmas"] .tree-item:hover:not(.selected) {
-  background: rgba(46, 160, 67, 0.1);
+[data-theme="christmas"] .tree-item:hover:not(.selected),
+[data-theme="christmas"] .sidebar-item:hover:not(.selected),
+[data-theme="christmas"] .activity-bar button:hover,
+[data-theme="christmas"] .bg-plm-activitybar button:hover {
+  background: rgba(196, 30, 58, 0.2);
 }
 
 /* Context menu hover */
 [data-theme="christmas"] .context-menu-item:hover {
-  background: rgba(46, 160, 67, 0.25);
+  background: rgba(196, 30, 58, 0.3);
 }
 
-/* Input focus ring green */
+/* Input focus ring red */
 [data-theme="christmas"] input:focus,
 [data-theme="christmas"] textarea:focus,
 [data-theme="christmas"] select:focus {
-  border-color: #2ea043;
+  border-color: #c41e3a;
 }
 
-/* Sidebar header area with subtle green */
+/* Sidebar header area with subtle red warmth */
 [data-theme="christmas"] .bg-plm-sidebar {
-  background: linear-gradient(180deg, #0d1117 0%, #0f1419 100%);
+  background: linear-gradient(180deg, #0d1117 0%, #110d0f 100%);
 }
 
-/* Panel headers with green accent */
+/* Panel headers with red accent */
 [data-theme="christmas"] .panel-header {
-  background: rgba(46, 160, 67, 0.1);
+  background: rgba(196, 30, 58, 0.15);
 }
 
 /* Success/released badges extra festive */
@@ -395,6 +432,144 @@
 [data-theme="halloween"] .state-badge.released {
   background: rgba(80, 250, 123, 0.25);
   color: #50fa7b;
+}
+
+/* 🌤️ Weather Theme - Dynamic Local Weather */
+/* Base weather theme - defaults to "clear day" style */
+/* Colors are dynamically overridden by WeatherEffects component */
+[data-theme="weather"] {
+  --plm-bg: #1c1916;
+  --plm-bg-light: #252019;
+  --plm-bg-lighter: #2e281f;
+  --plm-bg-secondary: #252019;
+  --plm-sidebar: #1c1916;
+  --plm-activitybar: #161310;
+  --plm-panel: #1c1916;
+  --plm-input: #2e281f;
+  --plm-border: #3d3425;
+  --plm-border-light: #4a4030;
+  --plm-fg: #fef3c7;
+  --plm-fg-dim: #d4c7a5;
+  --plm-fg-muted: #8b8060;
+  --plm-accent: #f59e0b;
+  --plm-accent-hover: #d97706;
+  --plm-accent-dim: #b45309;
+  --plm-selection: rgba(245, 158, 11, 0.3);
+  --plm-highlight: rgba(245, 158, 11, 0.15);
+  /* Status colors */
+  --plm-success: #4ade80;
+  --plm-warning: #fbbf24;
+  --plm-error: #f87171;
+  --plm-info: #f59e0b;
+  /* File state colors */
+  --plm-wip: #fbbf24;
+  --plm-released: #4ade80;
+  --plm-in-review: #f59e0b;
+  --plm-obsolete: #6b7280;
+  --plm-locked: #f87171;
+  /* Titlebar height */
+  --titlebar-height: 30px;
+  /* Smooth color transitions for weather changes */
+  transition: 
+    --plm-bg 0.8s ease-out,
+    --plm-bg-light 0.8s ease-out,
+    --plm-accent 0.8s ease-out,
+    --plm-fg 0.8s ease-out;
+}
+
+/* Weather theme scrollbar - adapts to accent color */
+[data-theme="weather"] ::-webkit-scrollbar-thumb {
+  background: var(--plm-accent);
+  opacity: 0.4;
+}
+
+[data-theme="weather"] ::-webkit-scrollbar-thumb:hover {
+  opacity: 0.6;
+}
+
+/* Weather theme smooth transitions for all elements */
+[data-theme="weather"] * {
+  transition: 
+    background-color 0.5s ease-out,
+    border-color 0.5s ease-out,
+    color 0.3s ease-out;
+}
+
+/* Weather-specific UI enhancements */
+
+/* Rainy weather - subtle blue accent on headers */
+[data-weather="rain"] .file-table th,
+[data-weather="heavy-rain"] .file-table th,
+[data-weather="drizzle"] .file-table th {
+  background: linear-gradient(180deg, var(--plm-bg-light) 0%, rgba(6, 182, 212, 0.1) 100%);
+}
+
+/* Snowy weather - frosty glass effect */
+[data-weather="snow"] .file-table th,
+[data-weather="heavy-snow"] .file-table th {
+  background: linear-gradient(180deg, var(--plm-bg-light) 0%, rgba(125, 211, 252, 0.1) 100%);
+}
+
+/* Thunderstorm - electric purple accent */
+[data-weather="thunderstorm"] .file-table th {
+  background: linear-gradient(180deg, var(--plm-bg-light) 0%, rgba(168, 85, 247, 0.1) 100%);
+}
+
+/* Sunny day - warm golden accent */
+[data-weather="clear"][data-weather-day="true"] .file-table th {
+  background: linear-gradient(180deg, var(--plm-bg-light) 0%, rgba(245, 158, 11, 0.08) 100%);
+}
+
+/* Clear night - soft violet accent */
+[data-weather="clear"][data-weather-day="false"] .file-table th {
+  background: linear-gradient(180deg, var(--plm-bg-light) 0%, rgba(139, 92, 246, 0.08) 100%);
+}
+
+/* Cloudy - subtle grey tint */
+[data-weather="cloudy"] .file-table th,
+[data-weather="overcast"] .file-table th {
+  background: linear-gradient(180deg, var(--plm-bg-light) 0%, rgba(100, 116, 139, 0.08) 100%);
+}
+
+/* Fog - misty ethereal effect */
+[data-weather="fog"] .file-table th {
+  background: linear-gradient(180deg, var(--plm-bg-light) 0%, rgba(120, 168, 196, 0.08) 100%);
+}
+
+/* Weather-based hover effects */
+[data-theme="weather"] .tree-item:hover {
+  background: var(--plm-highlight);
+}
+
+[data-theme="weather"] .file-table tr:hover:not(.selected) {
+  background: var(--plm-highlight);
+}
+
+/* Weather selection colors */
+[data-theme="weather"] .file-table tr.selected,
+[data-theme="weather"] .tree-item.selected {
+  background: var(--plm-selection);
+}
+
+/* Weather context menu */
+[data-theme="weather"] .context-menu-item:hover {
+  background: var(--plm-selection);
+}
+
+/* Weather input focus */
+[data-theme="weather"] input:focus,
+[data-theme="weather"] textarea:focus,
+[data-theme="weather"] select:focus {
+  border-color: var(--plm-accent);
+}
+
+/* Weather primary buttons */
+[data-theme="weather"] .btn-primary {
+  background: var(--plm-accent);
+}
+
+[data-theme="weather"] .btn-primary:hover:not(:disabled) {
+  background: var(--plm-accent-hover);
 }
 
 *, *::before, *::after {

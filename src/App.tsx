@@ -20,6 +20,7 @@ import { OrphanedCheckoutsContainer } from './components/OrphanedCheckoutDialog'
 import { GoogleDrivePanel } from './components/GoogleDrivePanel'
 import { ChristmasEffects } from './components/ChristmasEffects'
 import { HalloweenEffects } from './components/HalloweenEffects'
+import { WeatherEffects } from './components/WeatherEffects'
 import { VaultNotFoundDialog } from './components/VaultNotFoundDialog'
 import { executeTerminalCommand } from './lib/commands/parser'
 import { executeCommand } from './lib/commands'
@@ -40,6 +41,7 @@ const titleBarOverlayColors: Record<string, { color: string; symbolColor: string
   'light': { color: '#f0f0f0', symbolColor: '#333333' },
   'christmas': { color: '#1a0a0a', symbolColor: '#ff6b6b' },
   'halloween': { color: '#080808', symbolColor: '#ff6b2b' },
+  'weather': { color: '#1c1916', symbolColor: '#fef3c7' }, // Default sunny, WeatherEffects will override
 }
 
 // Check if we should auto-apply a seasonal theme
@@ -113,6 +115,9 @@ function useTheme() {
       // Signed in with system theme: check system preference
       const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
       effectiveTheme = prefersDark ? 'dark' : 'light'
+    } else if (theme === 'weather') {
+      // Weather theme - set data-theme but let WeatherEffects handle colors
+      effectiveTheme = 'weather'
     } else {
       effectiveTheme = theme
     }
@@ -121,6 +126,7 @@ function useTheme() {
     document.documentElement.setAttribute('data-theme', effectiveTheme)
     
     // Update titlebar overlay colors (Windows only)
+    // For weather theme, WeatherEffects will override this dynamically
     const overlayColors = titleBarOverlayColors[effectiveTheme] || titleBarOverlayColors['dark']
     window.electronAPI?.setTitleBarOverlay?.(overlayColors)
     
@@ -1732,6 +1738,9 @@ function App() {
       
       {/* 🎃 Halloween Effects - bats, ghosts, pumpkins when theme is active */}
       <HalloweenEffects />
+      
+      {/* 🌤️ Weather Effects - dynamic theme based on local weather */}
+      <WeatherEffects />
       
       <MenuBar
         onOpenVault={handleOpenVault}

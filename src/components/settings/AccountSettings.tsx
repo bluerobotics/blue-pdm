@@ -19,7 +19,8 @@ import {
   Globe,
   ChevronDown,
   Snowflake,
-  Ghost
+  Ghost,
+  CloudSun
 } from 'lucide-react'
 import { usePDMStore, ThemeMode, Language } from '../../stores/pdmStore'
 import { signOut, getSupabaseClient, endRemoteSession } from '../../lib/supabase'
@@ -83,6 +84,7 @@ export function AccountSettings() {
     { value: 'dark', label: t('preferences.themeDark'), icon: <Moon size={18} />, description: t('preferences.themeDarkDesc') },
     { value: 'deep-blue', label: t('preferences.themeDeepBlue'), icon: <Waves size={18} />, description: t('preferences.themeDeepBlueDesc') },
     { value: 'light', label: t('preferences.themeLight'), icon: <Sun size={18} />, description: t('preferences.themeLightDesc') },
+    { value: 'weather', label: t('preferences.themeWeather'), icon: <CloudSun size={18} />, description: t('preferences.themeWeatherDesc') },
     { value: 'christmas', label: t('preferences.themeChristmas'), icon: <Snowflake size={18} />, description: t('preferences.themeChristmasDesc') },
     { value: 'halloween', label: t('preferences.themeHalloween'), icon: <Ghost size={18} />, description: t('preferences.themeHalloweenDesc') },
     { value: 'system', label: t('preferences.themeSystem'), icon: <Monitor size={18} />, description: t('preferences.themeSystemDesc') },
