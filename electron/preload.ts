@@ -182,6 +182,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openLogsDir: () => ipcRenderer.invoke('logs:open-dir'),
   deleteLogFile: (filePath: string) => ipcRenderer.invoke('logs:delete-file', filePath),
   cleanupOldLogs: () => ipcRenderer.invoke('logs:cleanup-old'),
+  getLogRetentionSettings: () => ipcRenderer.invoke('logs:get-retention-settings'),
+  setLogRetentionSettings: (settings: { maxFiles?: number; maxAgeDays?: number; maxSizeMb?: number; maxTotalSizeMb?: number }) => 
+    ipcRenderer.invoke('logs:set-retention-settings', settings),
+  getLogStorageInfo: () => ipcRenderer.invoke('logs:get-storage-info'),
   
   // Crash reports
   listCrashFiles: () => ipcRenderer.invoke('logs:list-crashes'),
@@ -489,6 +493,9 @@ declare global {
       openLogsDir: () => Promise<{ success: boolean; error?: string }>
       deleteLogFile: (filePath: string) => Promise<{ success: boolean; error?: string }>
       cleanupOldLogs: () => Promise<{ success: boolean; deleted: number; error?: string }>
+      getLogRetentionSettings: () => Promise<{ success: boolean; settings?: { maxFiles: number; maxAgeDays: number; maxSizeMb: number; maxTotalSizeMb: number }; defaults?: { maxFiles: number; maxAgeDays: number; maxSizeMb: number; maxTotalSizeMb: number }; error?: string }>
+      setLogRetentionSettings: (settings: { maxFiles?: number; maxAgeDays?: number; maxSizeMb?: number; maxTotalSizeMb?: number }) => Promise<{ success: boolean; settings?: { maxFiles: number; maxAgeDays: number; maxSizeMb: number; maxTotalSizeMb: number }; error?: string }>
+      getLogStorageInfo: () => Promise<{ success: boolean; totalSize?: number; fileCount?: number; logsDir?: string; error?: string }>
       
       // Crash reports
       listCrashFiles: () => Promise<{ success: boolean; files?: Array<{ name: string; path: string; size: number; modifiedTime: string }>; error?: string }>

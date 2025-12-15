@@ -28,7 +28,10 @@ import {
   ArrowDownToLine,
   Pin,
   PinOff,
-  Skull
+  Skull,
+  Settings,
+  HardDrive,
+  RotateCcw
 } from 'lucide-react'
 import { usePDMStore } from '../stores/pdmStore'
 
@@ -74,6 +77,19 @@ interface HistogramBucket {
 
 type TimePeriod = '30s' | '1m' | '2m' | '5m' | '10m' | '30m' | '1h' | '6h' | '24h' | '7d' | 'all'
 type LogLevel = 'info' | 'warn' | 'error' | 'debug'
+
+interface LogRetentionSettings {
+  maxFiles: number
+  maxAgeDays: number
+  maxSizeMb: number
+  maxTotalSizeMb: number
+}
+
+interface LogStorageInfo {
+  totalSize: number
+  fileCount: number
+  logsDir?: string
+}
 
 interface LogViewerProps {
   onClose: () => void
@@ -534,7 +550,7 @@ function LogViewerContent({ onClose }: LogViewerContentProps) {
   const [searchQuery, setSearchQuery] = useState('')
   const [levelFilter, setLevelFilter] = useState<Set<LogLevel>>(new Set(['info', 'warn', 'error', 'debug']))
   const [timePeriod, setTimePeriod] = useState<TimePeriod>('5m')
-  const [showFilters, setShowFilters] = useState(true)
+  const [showFilters] = useState(true)
   const [newestFirst, setNewestFirst] = useState(true)
   const [autoScroll, setAutoScroll] = useState(true)
   
@@ -544,6 +560,20 @@ function LogViewerContent({ onClose }: LogViewerContentProps) {
   const [copied, setCopied] = useState(false)
   const [showFileList, setShowFileList] = useState(true)
   const [periodDropdownOpen, setPeriodDropdownOpen] = useState(false)
+  
+  // Retention settings state
+  const [showRetentionSettings, setShowRetentionSettings] = useState(false)
+  const [retentionSettings, setRetentionSettings] = useState<LogRetentionSettings | null>(null)
+  const [defaultSettings, setDefaultSettings] = useState<LogRetentionSettings | null>(null)
+  const [storageInfo, setStorageInfo] = useState<LogStorageInfo | null>(null)
+  const [savingSettings, setSavingSettings] = useState(false)
+  const [cleaningUp, setCleaningUp] = useState(false)
+  const [editMaxFiles, setEditMaxFiles] = useState<string>('')
+  const [editMaxAgeDays, setEditMaxAgeDays] = useState<string>('')
+  const [editMaxTotalSizeMb, setEditMaxTotalSizeMb] = useState<string>('')
+  const [unlimitedFiles, setUnlimitedFiles] = useState(false)
+  const [unlimitedAge, setUnlimitedAge] = useState(false)
+  const [unlimitedTotalSize, setUnlimitedTotalSize] = useState(false)
   
   const contentRef = useRef<HTMLDivElement>(null)
   const refreshIntervalRef = useRef<number | null>(null)
@@ -615,6 +645,106 @@ function LogViewerContent({ onClose }: LogViewerContentProps) {
       setIsLoading(false)
     }
   }
+  
+  const loadRetentionSettings = async () => {
+    if (!window.electronAPI?.getLogRetentionSettings) return
+    
+    try {
+      const [settingsResult, storageResult] = await Promise.all([
+        window.electronAPI.getLogRetentionSettings(),
+        window.electronAPI.getLogStorageInfo?.() || { success: false }
+      ])
+      
+      if (settingsResult.success && settingsResult.settings) {
+        setRetentionSettings(settingsResult.settings)
+        setEditMaxFiles(settingsResult.settings.maxFiles.toString())
+        setEditMaxAgeDays(settingsResult.settings.maxAgeDays.toString())
+        setEditMaxTotalSizeMb(settingsResult.settings.maxTotalSizeMb.toString())
+        setUnlimitedFiles(settingsResult.settings.maxFiles === 0)
+        setUnlimitedAge(settingsResult.settings.maxAgeDays === 0)
+        setUnlimitedTotalSize(settingsResult.settings.maxTotalSizeMb === 0)
+      }
+      if (settingsResult.defaults) {
+        setDefaultSettings(settingsResult.defaults)
+      }
+      if (storageResult.success) {
+        setStorageInfo({
+          totalSize: storageResult.totalSize || 0,
+          fileCount: storageResult.fileCount || 0,
+          logsDir: storageResult.logsDir
+        })
+      }
+    } catch (err) {
+      console.error('Failed to load retention settings:', err)
+    }
+  }
+  
+  const saveRetentionSettings = async () => {
+    if (!window.electronAPI?.setLogRetentionSettings) return
+    
+    setSavingSettings(true)
+    try {
+      const newSettings = {
+        maxFiles: unlimitedFiles ? 0 : Math.max(0, parseInt(editMaxFiles) || 0),
+        maxAgeDays: unlimitedAge ? 0 : Math.max(0, parseInt(editMaxAgeDays) || 0),
+        maxSizeMb: retentionSettings?.maxSizeMb || 10,
+        maxTotalSizeMb: unlimitedTotalSize ? 0 : Math.max(0, parseInt(editMaxTotalSizeMb) || 0)
+      }
+      
+      const result = await window.electronAPI.setLogRetentionSettings(newSettings)
+      if (result.success && result.settings) {
+        setRetentionSettings(result.settings)
+        addToast('success', 'Retention settings saved')
+        // Refresh file list and storage info after settings change
+        loadLogFiles()
+        loadRetentionSettings()
+      } else {
+        addToast('error', result.error || 'Failed to save settings')
+      }
+    } catch (err) {
+      addToast('error', 'Failed to save retention settings')
+    } finally {
+      setSavingSettings(false)
+    }
+  }
+  
+  const resetToDefaults = () => {
+    if (defaultSettings) {
+      setEditMaxFiles(defaultSettings.maxFiles.toString())
+      setEditMaxAgeDays(defaultSettings.maxAgeDays.toString())
+      setEditMaxTotalSizeMb(defaultSettings.maxTotalSizeMb.toString())
+      setUnlimitedFiles(defaultSettings.maxFiles === 0)
+      setUnlimitedAge(defaultSettings.maxAgeDays === 0)
+      setUnlimitedTotalSize(defaultSettings.maxTotalSizeMb === 0)
+    }
+  }
+  
+  const runManualCleanup = async () => {
+    if (!window.electronAPI?.cleanupOldLogs) return
+    
+    setCleaningUp(true)
+    try {
+      const result = await window.electronAPI.cleanupOldLogs()
+      if (result.success) {
+        addToast('success', `Cleaned up ${result.deleted} log file${result.deleted !== 1 ? 's' : ''}`)
+        loadLogFiles()
+        loadRetentionSettings()
+      } else {
+        addToast('error', result.error || 'Cleanup failed')
+      }
+    } catch (err) {
+      addToast('error', 'Failed to run cleanup')
+    } finally {
+      setCleaningUp(false)
+    }
+  }
+  
+  // Load retention settings when panel opens
+  useEffect(() => {
+    if (showRetentionSettings) {
+      loadRetentionSettings()
+    }
+  }, [showRetentionSettings])
   
   const loadCrashContent = async (file: CrashFile) => {
     if (!window.electronAPI?.readCrashFile) return
@@ -844,6 +974,17 @@ function LogViewerContent({ onClose }: LogViewerContentProps) {
         </div>
         
         <button
+          onClick={() => setShowRetentionSettings(!showRetentionSettings)}
+          className={`p-2 rounded-lg transition-colors ${
+            showRetentionSettings 
+              ? 'bg-plm-accent/20 text-plm-accent' 
+              : 'hover:bg-plm-highlight text-plm-fg-muted'
+          }`}
+          title="Retention settings"
+        >
+          <Settings size={16} />
+        </button>
+        <button
           onClick={() => window.electronAPI?.openLogsDir()}
           className="p-2 hover:bg-plm-highlight rounded-lg transition-colors"
           title="Open logs folder"
@@ -866,6 +1007,192 @@ function LogViewerContent({ onClose }: LogViewerContentProps) {
           </button>
         )}
       </div>
+      
+      {/* Retention Settings Panel */}
+      {showRetentionSettings && (
+        <div className="border-b border-plm-border bg-plm-bg-light px-4 py-3">
+          <div className="flex items-start gap-6">
+            {/* Storage Info */}
+            <div className="flex-shrink-0">
+              <div className="flex items-center gap-2 mb-2">
+                <HardDrive size={14} className="text-plm-fg-muted" />
+                <span className="text-xs font-medium text-plm-fg-muted uppercase tracking-wider">Storage</span>
+              </div>
+              {storageInfo ? (
+                <div className="text-sm">
+                  <div className="text-plm-fg font-medium">
+                    {formatFileSize(storageInfo.totalSize)}
+                  </div>
+                  <div className="text-xs text-plm-fg-muted">
+                    {storageInfo.fileCount} log file{storageInfo.fileCount !== 1 ? 's' : ''}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-xs text-plm-fg-muted">Loading...</div>
+              )}
+            </div>
+            
+            {/* Max Files Setting */}
+            <div className="flex-shrink-0">
+              <label className="flex items-center gap-2 mb-2">
+                <span className="text-xs font-medium text-plm-fg-muted uppercase tracking-wider">Max Files</span>
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min="0"
+                  value={unlimitedFiles ? '' : editMaxFiles}
+                  onChange={(e) => {
+                    setEditMaxFiles(e.target.value)
+                    setUnlimitedFiles(false)
+                  }}
+                  disabled={unlimitedFiles}
+                  placeholder="∞"
+                  className={`w-20 px-2 py-1.5 text-sm bg-plm-input border border-plm-border rounded focus:outline-none focus:border-plm-accent ${
+                    unlimitedFiles ? 'opacity-50' : ''
+                  }`}
+                />
+                <label className="flex items-center gap-1.5 text-xs text-plm-fg-muted cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={unlimitedFiles}
+                    onChange={(e) => {
+                      setUnlimitedFiles(e.target.checked)
+                      if (e.target.checked) {
+                        setEditMaxFiles('0')
+                      } else if (defaultSettings) {
+                        setEditMaxFiles(defaultSettings.maxFiles.toString())
+                      }
+                    }}
+                    className="w-3.5 h-3.5 rounded border-plm-border text-plm-accent focus:ring-plm-accent"
+                  />
+                  <span>Unlimited</span>
+                </label>
+              </div>
+            </div>
+            
+            {/* Max Age Setting */}
+            <div className="flex-shrink-0">
+              <label className="flex items-center gap-2 mb-2">
+                <span className="text-xs font-medium text-plm-fg-muted uppercase tracking-wider">Max Age (Days)</span>
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min="0"
+                  value={unlimitedAge ? '' : editMaxAgeDays}
+                  onChange={(e) => {
+                    setEditMaxAgeDays(e.target.value)
+                    setUnlimitedAge(false)
+                  }}
+                  disabled={unlimitedAge}
+                  placeholder="∞"
+                  className={`w-20 px-2 py-1.5 text-sm bg-plm-input border border-plm-border rounded focus:outline-none focus:border-plm-accent ${
+                    unlimitedAge ? 'opacity-50' : ''
+                  }`}
+                />
+                <label className="flex items-center gap-1.5 text-xs text-plm-fg-muted cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={unlimitedAge}
+                    onChange={(e) => {
+                      setUnlimitedAge(e.target.checked)
+                      if (e.target.checked) {
+                        setEditMaxAgeDays('0')
+                      } else if (defaultSettings) {
+                        setEditMaxAgeDays(defaultSettings.maxAgeDays.toString())
+                      }
+                    }}
+                    className="w-3.5 h-3.5 rounded border-plm-border text-plm-accent focus:ring-plm-accent"
+                  />
+                  <span>Unlimited</span>
+                </label>
+              </div>
+            </div>
+            
+            {/* Max Total Size Setting */}
+            <div className="flex-shrink-0">
+              <label className="flex items-center gap-2 mb-2">
+                <span className="text-xs font-medium text-plm-fg-muted uppercase tracking-wider">Max Total Size (MB)</span>
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min="0"
+                  value={unlimitedTotalSize ? '' : editMaxTotalSizeMb}
+                  onChange={(e) => {
+                    setEditMaxTotalSizeMb(e.target.value)
+                    setUnlimitedTotalSize(false)
+                  }}
+                  disabled={unlimitedTotalSize}
+                  placeholder="∞"
+                  className={`w-20 px-2 py-1.5 text-sm bg-plm-input border border-plm-border rounded focus:outline-none focus:border-plm-accent ${
+                    unlimitedTotalSize ? 'opacity-50' : ''
+                  }`}
+                />
+                <label className="flex items-center gap-1.5 text-xs text-plm-fg-muted cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={unlimitedTotalSize}
+                    onChange={(e) => {
+                      setUnlimitedTotalSize(e.target.checked)
+                      if (e.target.checked) {
+                        setEditMaxTotalSizeMb('0')
+                      } else if (defaultSettings) {
+                        setEditMaxTotalSizeMb(defaultSettings.maxTotalSizeMb.toString())
+                      }
+                    }}
+                    className="w-3.5 h-3.5 rounded border-plm-border text-plm-accent focus:ring-plm-accent"
+                  />
+                  <span>Unlimited</span>
+                </label>
+              </div>
+            </div>
+            
+            {/* Actions */}
+            <div className="flex-1 flex items-end justify-end gap-2">
+              <button
+                onClick={resetToDefaults}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-plm-fg-muted hover:text-plm-fg border border-plm-border rounded hover:bg-plm-highlight transition-colors"
+                title="Reset to defaults"
+              >
+                <RotateCcw size={12} />
+                <span>Defaults</span>
+              </button>
+              <button
+                onClick={runManualCleanup}
+                disabled={cleaningUp}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-plm-fg-muted hover:text-plm-fg border border-plm-border rounded hover:bg-plm-highlight transition-colors disabled:opacity-50"
+                title="Run cleanup now based on current settings"
+              >
+                {cleaningUp ? (
+                  <Loader2 size={12} className="animate-spin" />
+                ) : (
+                  <Trash2 size={12} />
+                )}
+                <span>Cleanup Now</span>
+              </button>
+              <button
+                onClick={saveRetentionSettings}
+                disabled={savingSettings}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-plm-bg bg-plm-accent rounded hover:bg-plm-accent/90 transition-colors disabled:opacity-50"
+              >
+                {savingSettings ? (
+                  <Loader2 size={12} className="animate-spin" />
+                ) : (
+                  <Check size={12} />
+                )}
+                <span>Save</span>
+              </button>
+            </div>
+          </div>
+          
+          {/* Info text */}
+          <div className="mt-2 text-[10px] text-plm-fg-dim">
+            Set to 0 or check &quot;Unlimited&quot; to disable that limit. Changes apply immediately on save.
+          </div>
+        </div>
+      )}
         
         {/* Main content */}
         <div className="flex-1 flex overflow-hidden">

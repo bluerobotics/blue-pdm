@@ -15,9 +15,71 @@ const __dirname = path.dirname(__filename)
 // ============================================
 // File-based Logging System
 // ============================================
-const LOG_MAX_FILES = 100 // Keep max 100 log files (10MB each = 1GB max total)
-const LOG_MAX_SIZE = 10 * 1024 * 1024 // 10MB max per log file
-const LOG_MAX_AGE_DAYS = 7 // Auto-delete logs older than 7 days
+
+// Log retention settings interface
+interface LogRetentionSettings {
+  maxFiles: number           // Max number of log files to keep (0 = unlimited)
+  maxAgeDays: number         // Max age in days (0 = unlimited)
+  maxSizeMb: number          // Max size per log file in MB
+  maxTotalSizeMb: number     // Max total size of all log files in MB (0 = unlimited)
+}
+
+// Default settings (used if no settings file exists)
+const DEFAULT_LOG_RETENTION: LogRetentionSettings = {
+  maxFiles: 100,            // Keep max 100 log files
+  maxAgeDays: 7,            // Auto-delete logs older than 7 days  
+  maxSizeMb: 10,            // 10MB max per log file
+  maxTotalSizeMb: 500       // 500MB max total (half a GB)
+}
+
+// Current settings (loaded on startup)
+let logRetentionSettings: LogRetentionSettings = { ...DEFAULT_LOG_RETENTION }
+
+// Settings file path
+let logSettingsFilePath: string | null = null
+
+function getLogSettingsPath(): string {
+  if (!logSettingsFilePath) {
+    logSettingsFilePath = path.join(app.getPath('userData'), 'log-settings.json')
+  }
+  return logSettingsFilePath
+}
+
+function loadLogRetentionSettings(): LogRetentionSettings {
+  try {
+    const settingsPath = getLogSettingsPath()
+    if (fs.existsSync(settingsPath)) {
+      const data = fs.readFileSync(settingsPath, 'utf8')
+      const loaded = JSON.parse(data) as Partial<LogRetentionSettings>
+      // Merge with defaults to ensure all fields exist
+      logRetentionSettings = {
+        maxFiles: loaded.maxFiles ?? DEFAULT_LOG_RETENTION.maxFiles,
+        maxAgeDays: loaded.maxAgeDays ?? DEFAULT_LOG_RETENTION.maxAgeDays,
+        maxSizeMb: loaded.maxSizeMb ?? DEFAULT_LOG_RETENTION.maxSizeMb,
+        maxTotalSizeMb: loaded.maxTotalSizeMb ?? DEFAULT_LOG_RETENTION.maxTotalSizeMb
+      }
+    }
+  } catch (err) {
+    console.error('Failed to load log retention settings:', err)
+    logRetentionSettings = { ...DEFAULT_LOG_RETENTION }
+  }
+  return logRetentionSettings
+}
+
+function saveLogRetentionSettings(settings: LogRetentionSettings): boolean {
+  try {
+    const settingsPath = getLogSettingsPath()
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8')
+    logRetentionSettings = settings
+    return true
+  } catch (err) {
+    console.error('Failed to save log retention settings:', err)
+    return false
+  }
+}
+
+// Computed values from settings
+const LOG_MAX_SIZE = () => logRetentionSettings.maxSizeMb * 1024 * 1024
 
 interface LogEntry {
   timestamp: string
@@ -46,6 +108,9 @@ function formatDateForFilename(date: Date): string {
 
 function initializeLogging() {
   try {
+    // Load log retention settings
+    loadLogRetentionSettings()
+    
     const logsDir = path.join(app.getPath('userData'), 'logs')
     if (!fs.existsSync(logsDir)) {
       fs.mkdirSync(logsDir, { recursive: true })
@@ -73,51 +138,84 @@ function initializeLogging() {
 
 function cleanupOldLogFiles(logsDir: string) {
   try {
+    const { maxFiles, maxAgeDays, maxTotalSizeMb } = logRetentionSettings
     const now = Date.now()
-    const maxAgeMs = LOG_MAX_AGE_DAYS * 24 * 60 * 60 * 1000 // Convert days to milliseconds
+    const maxAgeMs = maxAgeDays > 0 ? maxAgeDays * 24 * 60 * 60 * 1000 : 0 // Convert days to milliseconds
+    const maxTotalSizeBytes = maxTotalSizeMb > 0 ? maxTotalSizeMb * 1024 * 1024 : 0
     
-    // Get all log files sorted by modified time (newest first)
+    // Get all log files sorted by modified time (newest first) with sizes
     const logFiles = fs.readdirSync(logsDir)
       .filter(f => f.startsWith('blueplm-') && f.endsWith('.log'))
-      .map(filename => ({
-        name: filename,
-        path: path.join(logsDir, filename),
-        mtime: fs.statSync(path.join(logsDir, filename)).mtime.getTime()
-      }))
+      .map(filename => {
+        const filePath = path.join(logsDir, filename)
+        const stats = fs.statSync(filePath)
+        return {
+          name: filename,
+          path: filePath,
+          mtime: stats.mtime.getTime(),
+          size: stats.size
+        }
+      })
       .sort((a, b) => b.mtime - a.mtime)
     
-    // First, delete files older than LOG_MAX_AGE_DAYS
-    for (const file of logFiles) {
-      const age = now - file.mtime
-      if (age > maxAgeMs) {
-        try {
-          fs.unlinkSync(file.path)
-          console.log(`Deleted old log file (>${LOG_MAX_AGE_DAYS} days): ${file.name}`)
-        } catch (err) {
-          console.error(`Failed to delete old log file ${file.name}:`, err)
+    // First, delete files older than maxAgeDays (if age limit is set)
+    if (maxAgeDays > 0) {
+      for (const file of logFiles) {
+        const age = now - file.mtime
+        if (age > maxAgeMs) {
+          try {
+            fs.unlinkSync(file.path)
+            console.log(`Deleted old log file (>${maxAgeDays} days): ${file.name}`)
+          } catch (err) {
+            console.error(`Failed to delete old log file ${file.name}:`, err)
+          }
         }
       }
     }
     
-    // Re-read remaining files after age-based cleanup
-    const remainingFiles = fs.readdirSync(logsDir)
+    // Re-read remaining files after age-based cleanup (with sizes)
+    let remainingFiles = fs.readdirSync(logsDir)
       .filter(f => f.startsWith('blueplm-') && f.endsWith('.log'))
-      .map(filename => ({
-        name: filename,
-        path: path.join(logsDir, filename),
-        mtime: fs.statSync(path.join(logsDir, filename)).mtime.getTime()
-      }))
+      .map(filename => {
+        const filePath = path.join(logsDir, filename)
+        const stats = fs.statSync(filePath)
+        return {
+          name: filename,
+          path: filePath,
+          mtime: stats.mtime.getTime(),
+          size: stats.size
+        }
+      })
       .sort((a, b) => b.mtime - a.mtime)
     
-    // Delete files beyond the limit (keeping newest LOG_MAX_FILES - 1 to make room for new one)
-    if (remainingFiles.length >= LOG_MAX_FILES) {
-      const filesToDelete = remainingFiles.slice(LOG_MAX_FILES - 1)
+    // Delete files beyond the file count limit (if file limit is set)
+    if (maxFiles > 0 && remainingFiles.length >= maxFiles) {
+      const filesToDelete = remainingFiles.slice(maxFiles - 1)
       for (const file of filesToDelete) {
         try {
           fs.unlinkSync(file.path)
-          console.log(`Deleted old log file (over limit): ${file.name}`)
+          console.log(`Deleted old log file (over limit of ${maxFiles}): ${file.name}`)
         } catch (err) {
           console.error(`Failed to delete old log file ${file.name}:`, err)
+        }
+      }
+      // Update remaining files list
+      remainingFiles = remainingFiles.slice(0, maxFiles - 1)
+    }
+    
+    // Delete oldest files until we're under the total size limit (if size limit is set)
+    if (maxTotalSizeBytes > 0) {
+      let totalSize = remainingFiles.reduce((sum, f) => sum + f.size, 0)
+      
+      // Delete from oldest to newest until under limit (skip the newest file which is current session)
+      while (totalSize > maxTotalSizeBytes && remainingFiles.length > 1) {
+        const oldestFile = remainingFiles.pop()!
+        try {
+          fs.unlinkSync(oldestFile.path)
+          totalSize -= oldestFile.size
+          console.log(`Deleted old log file (over total size limit of ${maxTotalSizeMb}MB): ${oldestFile.name}`)
+        } catch (err) {
+          console.error(`Failed to delete old log file ${oldestFile.name}:`, err)
         }
       }
     }
@@ -186,7 +284,7 @@ function writeLog(level: LogEntry['level'], message: string, data?: unknown) {
     const lineBytes = Buffer.byteLength(logLine, 'utf8')
     
     // Check if we need to rotate before writing
-    if (currentLogSize + lineBytes > LOG_MAX_SIZE) {
+    if (currentLogSize + lineBytes > LOG_MAX_SIZE()) {
       rotateLogFile()
     }
     
@@ -1725,7 +1823,7 @@ ipcMain.handle('logs:delete-file', async (_, filePath: string) => {
   }
 })
 
-// Clean up old logs manually (deletes logs older than 7 days)
+// Clean up old logs manually based on current retention settings
 ipcMain.handle('logs:cleanup-old', async () => {
   try {
     const logsDir = path.join(app.getPath('userData'), 'logs')
@@ -1733,29 +1831,93 @@ ipcMain.handle('logs:cleanup-old', async () => {
       return { success: true, deleted: 0 }
     }
     
+    const { maxFiles, maxAgeDays, maxTotalSizeMb } = logRetentionSettings
     const now = Date.now()
-    const maxAgeMs = LOG_MAX_AGE_DAYS * 24 * 60 * 60 * 1000
+    const maxAgeMs = maxAgeDays > 0 ? maxAgeDays * 24 * 60 * 60 * 1000 : 0
+    const maxTotalSizeBytes = maxTotalSizeMb > 0 ? maxTotalSizeMb * 1024 * 1024 : 0
     let deletedCount = 0
     
     const logFiles = fs.readdirSync(logsDir)
       .filter(f => f.startsWith('blueplm-') && f.endsWith('.log'))
-      .map(filename => ({
-        name: filename,
-        path: path.join(logsDir, filename),
-        mtime: fs.statSync(path.join(logsDir, filename)).mtime.getTime()
-      }))
-    
-    for (const file of logFiles) {
-      const age = now - file.mtime
-      // Don't delete current session log
-      if (age > maxAgeMs && path.normalize(file.path) !== logFilePath) {
-        try {
-          fs.unlinkSync(file.path)
-          deletedCount++
-          log(`Deleted old log file: ${file.name}`)
-        } catch (err) {
-          logError(`Failed to delete log file ${file.name}`, { error: String(err) })
+      .map(filename => {
+        const filePath = path.join(logsDir, filename)
+        const stats = fs.statSync(filePath)
+        return {
+          name: filename,
+          path: filePath,
+          mtime: stats.mtime.getTime(),
+          size: stats.size
         }
+      })
+      .sort((a, b) => b.mtime - a.mtime) // Sort newest first
+    
+    // Delete files older than maxAgeDays (if age limit is set)
+    if (maxAgeDays > 0) {
+      for (const file of logFiles) {
+        const age = now - file.mtime
+        // Don't delete current session log
+        if (age > maxAgeMs && path.normalize(file.path) !== logFilePath) {
+          try {
+            fs.unlinkSync(file.path)
+            deletedCount++
+            log(`Deleted old log file (>${maxAgeDays} days): ${file.name}`)
+          } catch (err) {
+            logError(`Failed to delete log file ${file.name}`, { error: String(err) })
+          }
+        }
+      }
+    }
+    
+    // Re-read remaining files with sizes
+    let remainingFiles = fs.readdirSync(logsDir)
+      .filter(f => f.startsWith('blueplm-') && f.endsWith('.log'))
+      .map(filename => {
+        const filePath = path.join(logsDir, filename)
+        const stats = fs.statSync(filePath)
+        return {
+          name: filename,
+          path: filePath,
+          mtime: stats.mtime.getTime(),
+          size: stats.size
+        }
+      })
+      .sort((a, b) => b.mtime - a.mtime)
+    
+    // Apply file count limit (if file limit is set)
+    if (maxFiles > 0 && remainingFiles.length > maxFiles) {
+      const filesToDelete = remainingFiles.slice(maxFiles)
+      for (const file of filesToDelete) {
+        if (path.normalize(file.path) !== logFilePath) {
+          try {
+            fs.unlinkSync(file.path)
+            deletedCount++
+            log(`Deleted old log file (over limit of ${maxFiles}): ${file.name}`)
+          } catch (err) {
+            logError(`Failed to delete log file ${file.name}`, { error: String(err) })
+          }
+        }
+      }
+      remainingFiles = remainingFiles.slice(0, maxFiles)
+    }
+    
+    // Apply total size limit (if size limit is set)
+    if (maxTotalSizeBytes > 0) {
+      let totalSize = remainingFiles.reduce((sum, f) => sum + f.size, 0)
+      
+      // Delete from oldest to newest until under limit (skip current session)
+      while (totalSize > maxTotalSizeBytes && remainingFiles.length > 1) {
+        const oldestFile = remainingFiles[remainingFiles.length - 1]
+        if (path.normalize(oldestFile.path) !== logFilePath) {
+          try {
+            fs.unlinkSync(oldestFile.path)
+            totalSize -= oldestFile.size
+            deletedCount++
+            log(`Deleted old log file (over total size limit of ${maxTotalSizeMb}MB): ${oldestFile.name}`)
+          } catch (err) {
+            logError(`Failed to delete log file ${oldestFile.name}`, { error: String(err) })
+          }
+        }
+        remainingFiles.pop()
       }
     }
     
@@ -1764,6 +1926,78 @@ ipcMain.handle('logs:cleanup-old', async () => {
   } catch (err) {
     logError('Failed to cleanup old logs', { error: String(err) })
     return { success: false, error: String(err), deleted: 0 }
+  }
+})
+
+// Get log retention settings
+ipcMain.handle('logs:get-retention-settings', () => {
+  return {
+    success: true,
+    settings: logRetentionSettings,
+    defaults: DEFAULT_LOG_RETENTION
+  }
+})
+
+// Set log retention settings
+ipcMain.handle('logs:set-retention-settings', async (_, settings: Partial<LogRetentionSettings>) => {
+  try {
+    // Validate settings
+    const newSettings: LogRetentionSettings = {
+      maxFiles: Math.max(0, Math.floor(settings.maxFiles ?? logRetentionSettings.maxFiles)),
+      maxAgeDays: Math.max(0, Math.floor(settings.maxAgeDays ?? logRetentionSettings.maxAgeDays)),
+      maxSizeMb: Math.max(1, Math.floor(settings.maxSizeMb ?? logRetentionSettings.maxSizeMb)),
+      maxTotalSizeMb: Math.max(0, Math.floor(settings.maxTotalSizeMb ?? logRetentionSettings.maxTotalSizeMb))
+    }
+    
+    const saved = saveLogRetentionSettings(newSettings)
+    if (saved) {
+      log('Log retention settings updated', newSettings)
+      
+      // Apply cleanup with new settings immediately
+      const logsDir = path.join(app.getPath('userData'), 'logs')
+      if (fs.existsSync(logsDir)) {
+        cleanupOldLogFiles(logsDir)
+      }
+      
+      return { success: true, settings: logRetentionSettings }
+    } else {
+      return { success: false, error: 'Failed to save settings' }
+    }
+  } catch (err) {
+    logError('Failed to set log retention settings', { error: String(err) })
+    return { success: false, error: String(err) }
+  }
+})
+
+// Get total log storage size
+ipcMain.handle('logs:get-storage-info', async () => {
+  try {
+    const logsDir = path.join(app.getPath('userData'), 'logs')
+    if (!fs.existsSync(logsDir)) {
+      return { success: true, totalSize: 0, fileCount: 0 }
+    }
+    
+    const logFiles = fs.readdirSync(logsDir)
+      .filter(f => f.startsWith('blueplm-') && f.endsWith('.log'))
+    
+    let totalSize = 0
+    for (const filename of logFiles) {
+      try {
+        const stats = fs.statSync(path.join(logsDir, filename))
+        totalSize += stats.size
+      } catch {
+        // Ignore files we can't stat
+      }
+    }
+    
+    return {
+      success: true,
+      totalSize,
+      fileCount: logFiles.length,
+      logsDir
+    }
+  } catch (err) {
+    return { success: false, error: String(err) }
   }
 })
 
