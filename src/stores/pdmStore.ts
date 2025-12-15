@@ -39,7 +39,7 @@ export type SidebarView =
 export type DetailsPanelTab = 'properties' | 'preview' | 'whereused' | 'contains' | 'history'
 export type PanelPosition = 'bottom' | 'right'
 export type ToastType = 'error' | 'success' | 'info' | 'warning' | 'progress' | 'update'
-export type ThemeMode = 'dark' | 'deep-blue' | 'light' | 'christmas' | 'halloween' | 'system'
+export type ThemeMode = 'dark' | 'deep-blue' | 'light' | 'christmas' | 'halloween' | 'weather' | 'system'
 export type Language = 'en' | 'fr' | 'de' | 'es' | 'it' | 'pt' | 'ja' | 'zh-CN' | 'zh-TW' | 'ko' | 'nl' | 'sv' | 'pl' | 'ru' | 'sindarin'
 export type DiffStatus = 'added' | 'modified' | 'deleted' | 'outdated' | 'cloud' | 'cloud_new' | 'moved' | 'ignored' | 'deleted_remote'
 
@@ -253,11 +253,22 @@ interface PDMState {
   autoApplySeasonalThemes: boolean  // Auto-apply halloween/christmas themes on Oct 1 and Dec 1
   language: Language            // UI language
   christmasSnowOpacity: number  // Christmas theme snow opacity (0-100)
+  christmasSnowDensity: number  // Christmas theme snow density (10-200 flakes)
+  christmasSnowSize: number     // Christmas theme snowflake size multiplier (50-200%)
+  christmasBlusteryness: number  // Christmas theme snow wind intensity (0-100)
+  christmasUseLocalWeather: boolean // Link wind to local weather data
   christmasSleighEnabled: boolean // Christmas theme sleigh animation enabled
   halloweenSparksEnabled: boolean  // Halloween theme bonfire sparks enabled
   halloweenSparksOpacity: number  // Halloween theme bonfire sparks opacity (0-100)
   halloweenSparksSpeed: number    // Halloween theme bonfire sparks speed (10-100)
   halloweenGhostsOpacity: number // Halloween theme ghost opacity (0-100)
+  
+  // Weather theme settings
+  weatherRainOpacity: number     // Weather theme rain opacity (0-100)
+  weatherRainDensity: number     // Weather theme rain density (10-200)
+  weatherSnowOpacity: number     // Weather theme snow opacity (0-100)
+  weatherSnowDensity: number     // Weather theme snow density (10-200)
+  weatherEffectsEnabled: boolean // Enable/disable weather visual effects
   
   // Auto-download settings
   autoDownloadCloudFiles: boolean  // Auto-download files that exist on server but not locally
@@ -367,11 +378,22 @@ interface PDMState {
   setAutoApplySeasonalThemes: (enabled: boolean) => void
   setLanguage: (language: Language) => void
   setChristmasSnowOpacity: (opacity: number) => void
+  setChristmasSnowDensity: (density: number) => void
+  setChristmasSnowSize: (size: number) => void
+  setChristmasBlusteryness: (blusteryness: number) => void
+  setChristmasUseLocalWeather: (useLocalWeather: boolean) => void
   setChristmasSleighEnabled: (enabled: boolean) => void
   setHalloweenSparksEnabled: (enabled: boolean) => void
   setHalloweenSparksOpacity: (opacity: number) => void
   setHalloweenSparksSpeed: (speed: number) => void
   setHalloweenGhostsOpacity: (opacity: number) => void
+  
+  // Actions - Weather theme settings
+  setWeatherRainOpacity: (opacity: number) => void
+  setWeatherRainDensity: (density: number) => void
+  setWeatherSnowOpacity: (opacity: number) => void
+  setWeatherSnowDensity: (density: number) => void
+  setWeatherEffectsEnabled: (enabled: boolean) => void
   
   // Actions - Auto-download settings
   setAutoDownloadCloudFiles: (enabled: boolean) => void
@@ -638,7 +660,11 @@ export const usePDMStore = create<PDMState>()(
       theme: 'dark',  // Default theme
       autoApplySeasonalThemes: true,  // Auto-apply seasonal themes by default
       language: 'en',  // Default language
-      christmasSnowOpacity: 50,  // Default 50%
+      christmasSnowOpacity: 40,  // Default 40%
+      christmasSnowDensity: 100,  // Default 100 snowflakes
+      christmasSnowSize: 55,     // Default 55% size (smaller flakes)
+      christmasBlusteryness: 30,  // Default 30% wind intensity
+      christmasUseLocalWeather: true,  // Default ON - link to local weather
       autoDownloadCloudFiles: false,  // Off by default
       autoDownloadUpdates: false,     // Off by default
       christmasSleighEnabled: true,  // Default ON
@@ -646,6 +672,11 @@ export const usePDMStore = create<PDMState>()(
       halloweenSparksOpacity: 70,  // Default 70%
       halloweenSparksSpeed: 40,    // Default 40% speed
       halloweenGhostsOpacity: 30,  // Default 30%
+      weatherRainOpacity: 60,       // Default 60%
+      weatherRainDensity: 80,       // Default 80 raindrops
+      weatherSnowOpacity: 70,       // Default 70%
+      weatherSnowDensity: 60,       // Default 60 snowflakes
+      weatherEffectsEnabled: true,  // Default enabled
       pinnedFolders: [],
       pinnedSectionExpanded: true,
       processingFolders: new Set(),
@@ -941,11 +972,22 @@ export const usePDMStore = create<PDMState>()(
       setAutoApplySeasonalThemes: (autoApplySeasonalThemes) => set({ autoApplySeasonalThemes }),
       setLanguage: (language) => set({ language }),
       setChristmasSnowOpacity: (christmasSnowOpacity) => set({ christmasSnowOpacity }),
+      setChristmasSnowDensity: (christmasSnowDensity) => set({ christmasSnowDensity }),
+      setChristmasSnowSize: (christmasSnowSize) => set({ christmasSnowSize }),
+      setChristmasBlusteryness: (christmasBlusteryness) => set({ christmasBlusteryness }),
+      setChristmasUseLocalWeather: (christmasUseLocalWeather) => set({ christmasUseLocalWeather }),
       setChristmasSleighEnabled: (christmasSleighEnabled) => set({ christmasSleighEnabled }),
       setHalloweenSparksEnabled: (halloweenSparksEnabled) => set({ halloweenSparksEnabled }),
       setHalloweenSparksOpacity: (halloweenSparksOpacity) => set({ halloweenSparksOpacity }),
       setHalloweenSparksSpeed: (halloweenSparksSpeed) => set({ halloweenSparksSpeed }),
       setHalloweenGhostsOpacity: (halloweenGhostsOpacity) => set({ halloweenGhostsOpacity }),
+      
+      // Weather theme settings actions
+      setWeatherRainOpacity: (weatherRainOpacity) => set({ weatherRainOpacity }),
+      setWeatherRainDensity: (weatherRainDensity) => set({ weatherRainDensity }),
+      setWeatherSnowOpacity: (weatherSnowOpacity) => set({ weatherSnowOpacity }),
+      setWeatherSnowDensity: (weatherSnowDensity) => set({ weatherSnowDensity }),
+      setWeatherEffectsEnabled: (weatherEffectsEnabled) => set({ weatherEffectsEnabled }),
       
       // Actions - Auto-download settings
       setAutoDownloadCloudFiles: (autoDownloadCloudFiles) => set({ autoDownloadCloudFiles }),
@@ -1844,6 +1886,10 @@ export const usePDMStore = create<PDMState>()(
         autoApplySeasonalThemes: state.autoApplySeasonalThemes,
         language: state.language,
         christmasSnowOpacity: state.christmasSnowOpacity,
+        christmasSnowDensity: state.christmasSnowDensity,
+        christmasSnowSize: state.christmasSnowSize,
+        christmasBlusteryness: state.christmasBlusteryness,
+        christmasUseLocalWeather: state.christmasUseLocalWeather,
         christmasSleighEnabled: state.christmasSleighEnabled,
         halloweenSparksEnabled: state.halloweenSparksEnabled,
         halloweenSparksOpacity: state.halloweenSparksOpacity,
