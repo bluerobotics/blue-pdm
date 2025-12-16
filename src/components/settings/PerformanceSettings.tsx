@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Activity, Gauge, Cpu, MemoryStick, Wifi, Box, RefreshCw, Trash2 } from 'lucide-react'
+import { Activity, Gauge, Cpu, MemoryStick, Wifi, Box, RefreshCw, Trash2, ExternalLink } from 'lucide-react'
 import { telemetry, TelemetrySnapshot, TelemetryConfig, getModules, ModuleMemory } from '@/lib/telemetry'
 import { TelemetryDashboard } from '../TelemetryGraph'
 import { ProcessView } from '../ModuleTracker'
@@ -23,31 +23,43 @@ export function PerformanceSettings() {
   useEffect(() => {
     telemetry.loadConfig()
     setConfig(telemetry.getConfig())
+    setModules(getModules())
     
-    // Update modules list periodically
-    const interval = setInterval(() => {
-      setModules(getModules())
-    }, 1000)
-    
-    // Subscribe to telemetry for live stats
+    // Subscribe to telemetry for live stats (only updates when telemetry is enabled)
     const unsubscribe = telemetry.subscribe((snapshot) => {
       setLatestSnapshot(snapshot)
-      setModules(getModules())
+      // Only update modules when processes tab is active to avoid unnecessary work
+      if (activeSection === 'processes') {
+        setModules(getModules())
+      }
     })
     
     return () => {
-      clearInterval(interval)
       unsubscribe()
     }
-  }, [])
+  }, [activeSection])
+  
+  const handlePopOut = () => {
+    window.electronAPI?.openPerformanceWindow?.()
+  }
   
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-lg font-semibold text-plm-fg mb-1">Performance</h2>
-        <p className="text-sm text-plm-fg-muted">
-          Monitor system performance, CPU, memory usage, and track module memory consumption.
-        </p>
+      <div className="flex items-start justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-plm-fg mb-1">Performance</h2>
+          <p className="text-sm text-plm-fg-muted">
+            Monitor system performance, CPU, memory usage, and track module memory consumption.
+          </p>
+        </div>
+        <button
+          onClick={handlePopOut}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-plm-fg-muted hover:text-plm-fg bg-plm-bg-lighter hover:bg-plm-bg-light border border-plm-border rounded-md transition-colors"
+          title="Open in new window"
+        >
+          <ExternalLink size={14} />
+          Pop Out
+        </button>
       </div>
       
       {/* Quick Stats Bar */}

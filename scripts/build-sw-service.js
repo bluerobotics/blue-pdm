@@ -89,3 +89,4 @@ for (const file of files) {
 console.log(`\n✅ Done! Copied ${copied} files to ${OUTPUT_DIR}`)
 console.log('\nThe SolidWorks service will be bundled with the next Electron build.')
 
+

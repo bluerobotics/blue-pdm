@@ -20,7 +20,8 @@ import {
   ChevronDown,
   Snowflake,
   Ghost,
-  CloudSun
+  CloudSun,
+  Crown
 } from 'lucide-react'
 import { usePDMStore, ThemeMode, Language } from '../../stores/pdmStore'
 import { signOut, getSupabaseClient, endRemoteSession } from '../../lib/supabase'
@@ -83,6 +84,7 @@ export function AccountSettings() {
   const themeOptions: { value: ThemeMode; label: string; icon: React.ReactNode; description: string }[] = [
     { value: 'dark', label: t('preferences.themeDark'), icon: <Moon size={18} />, description: t('preferences.themeDarkDesc') },
     { value: 'deep-blue', label: t('preferences.themeDeepBlue'), icon: <Waves size={18} />, description: t('preferences.themeDeepBlueDesc') },
+    { value: 'kenneth', label: t('preferences.themeKenneth'), icon: <Crown size={18} />, description: t('preferences.themeKennethDesc') },
     { value: 'light', label: t('preferences.themeLight'), icon: <Sun size={18} />, description: t('preferences.themeLightDesc') },
     { value: 'weather', label: t('preferences.themeWeather'), icon: <CloudSun size={18} />, description: t('preferences.themeWeatherDesc') },
     { value: 'christmas', label: t('preferences.themeChristmas'), icon: <Snowflake size={18} />, description: t('preferences.themeChristmasDesc') },

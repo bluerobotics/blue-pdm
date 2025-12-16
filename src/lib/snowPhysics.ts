@@ -57,8 +57,13 @@ export function smoothNoise(t: number, octaves: number = 3): number {
  * 2D spatial noise for position-based wind variation
  * Creates a wind field where different screen areas have slightly different wind
  * This makes the snow look more realistic with swirls and eddies
+ * 
+ * NOTE: Uses output parameter to avoid GC pressure in animation loops
  */
-export function spatialNoise(x: number, y: number, t: number): { dx: number, dy: number } {
+// Reusable output object for spatialNoise (avoids allocation in hot path)
+const _spatialNoiseOut = { dx: 0, dy: 0 }
+
+export function spatialNoise(x: number, y: number, t: number, out: { dx: number, dy: number } = _spatialNoiseOut): { dx: number, dy: number } {
   // Multiple overlapping wave patterns create organic spatial variation
   const scale1 = 0.02  // Large swirls
   const scale2 = 0.05  // Medium eddies
@@ -77,10 +82,9 @@ export function spatialNoise(x: number, y: number, t: number): { dx: number, dy:
   const dx3 = Math.sin(x * scale3 + t * timeScale * 5) * Math.sin(y * scale3 * 1.3 + t * timeScale * 4) * 0.25
   const dy3 = Math.cos(x * scale3 * 0.9 + t * timeScale * 4.5) * Math.cos(y * scale3 + t * timeScale * 5.5) * 0.08
   
-  return {
-    dx: dx1 + dx2 + dx3,
-    dy: dy1 + dy2 + dy3
-  }
+  out.dx = dx1 + dx2 + dx3
+  out.dy = dy1 + dy2 + dy3
+  return out
 }
 
 /**
@@ -174,33 +178,50 @@ export function updateWind(
 }
 
 /**
+ * Wind forces output type (reusable to avoid GC pressure)
+ */
+export interface WindForces {
+  baseWindX: number
+  baseWindY: number
+  weatherWindX: number
+  weatherWindY: number
+}
+
+// Reusable output object for calculateWindForces (avoids allocation in hot path)
+const _windForcesOut: WindForces = { baseWindX: 0, baseWindY: 0, weatherWindX: 0, weatherWindY: 0 }
+
+/**
  * Calculate wind forces for a frame
- * @returns Object with x and y wind forces
+ * NOTE: Uses output parameter to avoid GC pressure in animation loops
  */
 export function calculateWindForces(
   wind: WindState,
   time: number,
   effectiveBluster: number,
-  useWeather: boolean
-): { baseWindX: number, baseWindY: number, weatherWindX: number, weatherWindY: number } {
+  useWeather: boolean,
+  out: WindForces = _windForcesOut
+): WindForces {
   const gustForceX = Math.cos(wind.gustDirection) * wind.gustStrength * effectiveBluster
   const gustForceY = Math.sin(wind.gustDirection) * wind.gustStrength * effectiveBluster * 0.3
   
-  let weatherWindX = 0
-  let weatherWindY = 0
+  out.weatherWindX = 0
+  out.weatherWindY = 0
   
   if (useWeather && wind.weatherWind > 0) {
     // Weather wind direction slowly oscillates
     const weatherDir = smoothNoise(time * 0.00005, 2) * Math.PI * 0.5
-    weatherWindX = Math.cos(weatherDir) * wind.weatherWind * 1.2
-    weatherWindY = Math.sin(weatherDir) * wind.weatherWind * 0.25
+    out.weatherWindX = Math.cos(weatherDir) * wind.weatherWind * 1.2
+    out.weatherWindY = Math.sin(weatherDir) * wind.weatherWind * 0.25
   }
   
-  const baseWindX = (wind.baseWind + wind.turbulence + gustForceX) * effectiveBluster + weatherWindX
-  const baseWindY = gustForceY * effectiveBluster + weatherWindY
+  out.baseWindX = (wind.baseWind + wind.turbulence + gustForceX) * effectiveBluster + out.weatherWindX
+  out.baseWindY = gustForceY * effectiveBluster + out.weatherWindY
   
-  return { baseWindX, baseWindY, weatherWindX, weatherWindY }
+  return out
 }
+
+// Reusable object for updateSnowflake spatial calculations
+const _updateSpatialOut = { dx: 0, dy: 0 }
 
 /**
  * Update a single snowflake's physics
@@ -222,13 +243,13 @@ export function updateSnowflake(
   // Wind force - smaller/lighter flakes are more affected
   const windInfluence = 1 - (flake.mass * 0.5)
   
-  // Get spatial wind variation based on flake position
-  const spatial = spatialNoise(flake.x, flake.y, time)
+  // Get spatial wind variation based on flake position (reuses output object)
+  spatialNoise(flake.x, flake.y, time, _updateSpatialOut)
   const spatialStrength = effectiveBluster * 0.6
   
   // Combine global wind with spatial variation
-  const totalWindX = baseWindX + spatial.dx * spatialStrength
-  const totalWindY = baseWindY + spatial.dy * spatialStrength
+  const totalWindX = baseWindX + _updateSpatialOut.dx * spatialStrength
+  const totalWindY = baseWindY + _updateSpatialOut.dy * spatialStrength
   
   // Target velocity based on wind
   const targetVx = totalWindX * windInfluence * 3

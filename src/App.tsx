@@ -23,9 +23,16 @@ import { ChristmasEffects } from './components/ChristmasEffects'
 import { HalloweenEffects } from './components/HalloweenEffects'
 import { WeatherEffects } from './components/WeatherEffects'
 import { VaultNotFoundDialog } from './components/VaultNotFoundDialog'
+import { PerformanceWindow } from './components/PerformanceWindow'
 import { executeTerminalCommand } from './lib/commands/parser'
 import { executeCommand } from './lib/commands'
 import { logKeyboard, logUserAction } from './lib/userActionLogger'
+
+// Check if we're in performance mode (pop-out window)
+function isPerformanceMode(): boolean {
+  const params = new URLSearchParams(window.location.search)
+  return params.get('mode') === 'performance'
+}
 
 // Build full path using the correct separator for the platform
 function buildFullPath(vaultPath: string, relativePath: string): string {
@@ -158,6 +165,12 @@ function useLanguage() {
 }
 
 function App() {
+  // Check for performance mode (pop-out window) early
+  // Render standalone performance window if in that mode
+  if (isPerformanceMode()) {
+    return <PerformanceWindow />
+  }
+  
   // Apply theme and language
   useTheme()
   useLanguage()

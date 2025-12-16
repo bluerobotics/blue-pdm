@@ -339,7 +339,7 @@ class TelemetryService {
 export const telemetry = new TelemetryService()
 
 // React hook for module memory tracking
-export function useModuleTracker(moduleName: string): void {
+export function useModuleTracker(_moduleName: string): void {
   // This will be imported and used in components
   // Implementation in the component file to avoid circular deps
 }

@@ -115,6 +115,7 @@ declare global {
       resetWindowSize: () => Promise<{ success: boolean; size?: { width: number; height: number }; error?: string }>
       getPathForFile: (file: File) => string
       reloadApp: () => Promise<{ success: boolean; error?: string }>
+      openPerformanceWindow: () => Promise<{ success: boolean; error?: string }>
       
       // System stats
       getSystemStats: () => Promise<SystemStats | null>

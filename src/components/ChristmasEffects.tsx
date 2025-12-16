@@ -6,6 +6,7 @@ import {
   type Snowflake,
   type WindState,
   type GustState,
+  type WindForces,
   createSnowflake,
   createWindState,
   createGustState,
@@ -61,6 +62,7 @@ export function ChristmasEffects() {
   // Wind state - using refs to avoid re-renders on every frame
   const windRef = useRef<WindState>(createWindState())
   const gustRef = useRef<GustState>(createGustState())
+  const windForcesRef = useRef<WindForces>({ baseWindX: 0, baseWindY: 0, weatherWindX: 0, weatherWindY: 0 })
   const timeRef = useRef(0)
   
   // Use refs for slider values to avoid re-renders during animation
@@ -240,10 +242,11 @@ export function ChristmasEffects() {
         effectiveBluster = bluster
       }
       
-      // Calculate wind forces using shared physics
-      const { baseWindX, baseWindY } = calculateWindForces(
-        wind, time, effectiveBluster, useWeather && wind.weatherWind > 0
+      // Calculate wind forces using shared physics (reuses output object to avoid GC)
+      calculateWindForces(
+        wind, time, effectiveBluster, useWeather && wind.weatherWind > 0, windForcesRef.current
       )
+      const { baseWindX, baseWindY } = windForcesRef.current
       
       // Handle density changes using shared function
       manageDensity(snowflakesRef.current, targetDensity, nextFlakeIdRef.current)

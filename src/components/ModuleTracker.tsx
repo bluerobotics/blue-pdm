@@ -1,7 +1,8 @@
 import { useEffect, useRef } from 'react'
-import { registerModule, unregisterModule, updateModuleMemory, getModules, ModuleMemory } from '@/lib/telemetry'
+import { registerModule, unregisterModule, getModules, ModuleMemory } from '@/lib/telemetry'
 
 // Hook to track a component/module's memory usage
+// NOTE: Removed expensive DOM queries that were causing frame drops
 export function useModuleTracker(moduleName: string): void {
   const registeredRef = useRef(false)
   
@@ -11,25 +12,11 @@ export function useModuleTracker(moduleName: string): void {
       registeredRef.current = true
     }
     
-    // Periodically estimate memory (rough approximation using performance API)
-    const interval = setInterval(() => {
-      // Try to use performance.measureUserAgentSpecificMemory if available (Chrome)
-      // Otherwise use a rough estimate based on DOM size
-      try {
-        const element = document.querySelector(`[data-module="${moduleName}"]`)
-        if (element) {
-          // Rough estimate: count DOM nodes * average node memory
-          const nodeCount = element.querySelectorAll('*').length
-          const estimatedMemory = nodeCount * 1000 // ~1KB per node (rough)
-          updateModuleMemory(moduleName, estimatedMemory)
-        }
-      } catch {
-        // Ignore errors
-      }
-    }, 2000)
+    // Simple registration without expensive DOM queries
+    // Memory estimation via DOM traversal was causing jank - removed
+    // The telemetry system already tracks app memory at the process level
     
     return () => {
-      clearInterval(interval)
       unregisterModule(moduleName)
       registeredRef.current = false
     }

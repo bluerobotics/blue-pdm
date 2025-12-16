@@ -502,7 +502,7 @@ function LogEntryRow({ entry, isExpanded, onToggle, searchQuery }: LogEntryRowPr
   
   return (
     <div
-      className={`group hover:bg-plm-highlight/30 transition-colors ${
+      className={`group hover:bg-plm-highlight/50 transition-colors border-b border-white/[0.08] ${
         entry.level === 'error' ? 'bg-plm-error/5' : 
         entry.level === 'warn' ? 'bg-plm-warning/5' : ''
       }`}
