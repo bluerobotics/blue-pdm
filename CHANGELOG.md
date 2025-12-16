@@ -2,10 +2,17 @@
 
 All notable changes to BluePLM will be documented in this file.
 
-## [2.4.1] - 2025-12-15
+## [2.5.0] - 2025-12-15
+
+### Added
+- **Role Impersonation Mode**: Admins can test the app as Engineer or Viewer roles without changing actual permissions
+  - Available in Settings → Dev Tools (admin only)
+  - Visual banner shows when impersonation is active
+  - Click banner or use Dev Tools to exit impersonation
+  - Session-only (clears on sign out), server-side permissions unaffected
 
 ### Fixed
-- **API URL disappearing after app update**: Organization settings (api_url, solidworks_dm_license_key, enforce_email_domain) were being overwritten when saving individual fields. Each settings update now fetches current settings from database first before merging.
+- **API URL disappearing after app update**: Organization settings were being overwritten when saving individual fields. Each settings update now fetches current settings from database first before merging.
 
 ---
 

@@ -1,6 +1,6 @@
 {
   "name": "blue-plm",
-  "version": "2.4.1",
+  "version": "2.5.0",
   "description": "Product Lifecycle Management for everyone who builds",
   "main": "dist-electron/main.js",
   "scripts": {
