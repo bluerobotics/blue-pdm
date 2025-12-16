@@ -1042,7 +1042,8 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
     iconSize,
     setIconSize,
     listRowSize,
-    setListRowSize
+    setListRowSize,
+    hideSolidworksTempFiles
   } = usePDMStore()
   
   // Helper function to get translated column label
@@ -1193,8 +1194,13 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
   // This is the main performance optimization for the file browser
   const sortedFiles = useMemo(() => {
     // Get files in current folder (direct children only)
-    // First filter out any invalid/undefined files
-    const validFiles = files.filter(f => f && f.relativePath && f.name)
+    // First filter out any invalid/undefined files and optionally hide SolidWorks temp files
+    const validFiles = files.filter(f => {
+      if (!f || !f.relativePath || !f.name) return false
+      // Hide SolidWorks temp lock files (~$filename.sldxxx) when setting is enabled
+      if (hideSolidworksTempFiles && f.name.startsWith('~$')) return false
+      return true
+    })
     
     // Fuzzy search helper - checks if query matches any part of the text
     const fuzzyMatch = (text: string | undefined | null, query: string): boolean => {
@@ -1332,7 +1338,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
 
       return sortDirection === 'asc' ? comparison : -comparison
     })
-  }, [files, currentPath, isSearching, searchQuery, searchType, sortColumn, sortDirection])
+  }, [files, currentPath, isSearching, searchQuery, searchType, sortColumn, sortDirection, hideSolidworksTempFiles])
 
   // Pre-compute folder metrics in a single pass for O(n) instead of O(n²) complexity
   // This avoids repeated iterations in renderCellContent for each folder
@@ -1349,8 +1355,13 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
       isSynced: boolean
     }>()
     
-    // Get all non-directory files
-    const allNonDirFiles = files.filter(f => !f.isDirectory)
+    // Get all non-directory files (optionally excluding SolidWorks temp files)
+    const allNonDirFiles = files.filter(f => {
+      if (f.isDirectory) return false
+      // Exclude temp files from metrics when hide setting is enabled
+      if (hideSolidworksTempFiles && f.name.startsWith('~$')) return false
+      return true
+    })
     
     // Group files by their folder paths
     for (const file of allNonDirFiles) {
@@ -1459,7 +1470,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
     }
     
     return metrics
-  }, [files, user?.id, user?.full_name, user?.email, user?.avatar_url])
+  }, [files, user?.id, user?.full_name, user?.email, user?.avatar_url, hideSolidworksTempFiles])
 
   // Check if all files in a folder are synced (truly synced, not just content-matched)
   // Uses pre-computed folderMetrics for O(1) lookup

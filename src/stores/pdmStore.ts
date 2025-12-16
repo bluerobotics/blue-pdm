@@ -248,6 +248,8 @@ interface PDMState {
   solidworksPath: string | null  // Custom SolidWorks installation path (null = default)
   solidworksDmLicenseKey: string | null  // Document Manager API license key for fast mode
   autoStartSolidworksService: boolean  // Auto-start SolidWorks service on app bootup
+  hideSolidworksTempFiles: boolean  // Hide ~$ temp files from file browser UI
+  ignoreSolidworksTempFiles: boolean  // Ignore ~$ temp files from sync/check-in operations
   
   // API Server settings
   apiServerUrl: string | null  // External API server URL for ERP integrations
@@ -382,6 +384,8 @@ interface PDMState {
   setSolidworksPath: (path: string | null) => void
   setSolidworksDmLicenseKey: (key: string | null) => void
   setAutoStartSolidworksService: (enabled: boolean) => void
+  setHideSolidworksTempFiles: (enabled: boolean) => void
+  setIgnoreSolidworksTempFiles: (enabled: boolean) => void
   
   // Actions - API Server settings
   setApiServerUrl: (url: string | null) => void
@@ -673,6 +677,8 @@ export const usePDMStore = create<PDMState>()(
       solidworksPath: null,  // null = use default installation path
       solidworksDmLicenseKey: null,  // null = fast mode disabled
       autoStartSolidworksService: false,  // Don't auto-start by default
+      hideSolidworksTempFiles: true,  // Hide ~$ temp files by default
+      ignoreSolidworksTempFiles: true,  // Ignore ~$ temp files by default
       apiServerUrl: null,  // null = no API server configured
       lowercaseExtensions: true,
       viewMode: 'list',
@@ -994,6 +1000,8 @@ export const usePDMStore = create<PDMState>()(
       setSolidworksPath: (solidworksPath) => set({ solidworksPath }),
       setSolidworksDmLicenseKey: (solidworksDmLicenseKey) => set({ solidworksDmLicenseKey }),
       setAutoStartSolidworksService: (autoStartSolidworksService) => set({ autoStartSolidworksService }),
+      setHideSolidworksTempFiles: (hideSolidworksTempFiles) => set({ hideSolidworksTempFiles }),
+      setIgnoreSolidworksTempFiles: (ignoreSolidworksTempFiles) => set({ ignoreSolidworksTempFiles }),
       setApiServerUrl: (apiServerUrl) => {
         set({ apiServerUrl })
         // Also sync to the legacy localStorage key for backward compatibility
@@ -1917,6 +1925,8 @@ export const usePDMStore = create<PDMState>()(
         solidworksPath: state.solidworksPath,
         solidworksDmLicenseKey: state.solidworksDmLicenseKey,
         autoStartSolidworksService: state.autoStartSolidworksService,
+        hideSolidworksTempFiles: state.hideSolidworksTempFiles,
+        ignoreSolidworksTempFiles: state.ignoreSolidworksTempFiles,
         apiServerUrl: state.apiServerUrl,
         lowercaseExtensions: state.lowercaseExtensions,
         viewMode: state.viewMode,
@@ -2008,6 +2018,8 @@ export const usePDMStore = create<PDMState>()(
           solidworksPath: (persisted.solidworksPath as string | null) || null,
           solidworksDmLicenseKey: (persisted.solidworksDmLicenseKey as string | null) || null,
           autoStartSolidworksService: (persisted.autoStartSolidworksService as boolean) || false,
+          hideSolidworksTempFiles: persisted.hideSolidworksTempFiles !== undefined ? (persisted.hideSolidworksTempFiles as boolean) : true,
+          ignoreSolidworksTempFiles: persisted.ignoreSolidworksTempFiles !== undefined ? (persisted.ignoreSolidworksTempFiles as boolean) : true,
           // Restore API Server URL from local cache (server value syncs in App.tsx and takes precedence)
           // This ensures the URL is available before org loads; once org loads, server value wins
           apiServerUrl: (() => {

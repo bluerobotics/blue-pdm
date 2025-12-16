@@ -12,6 +12,12 @@ import type { Command, SyncParams, CommandResult } from '../types'
 import { getUnsyncedFilesFromSelection } from '../types'
 import { ProgressTracker } from '../executor'
 import { syncFile } from '../../supabase'
+import { usePDMStore } from '../../../stores/pdmStore'
+
+// Helper to check if file is a SolidWorks temp lock file (~$filename.sldxxx)
+function isSolidworksTempFile(name: string): boolean {
+  return name.startsWith('~$')
+}
 
 // SolidWorks file extensions that support metadata extraction
 const SW_EXTENSIONS = ['.sldprt', '.sldasm', '.slddrw']
@@ -178,7 +184,13 @@ export const syncCommand: Command<SyncParams> = {
     const activeVaultId = ctx.activeVaultId!
     
     // Get unsynced files
-    const filesToSync = getUnsyncedFilesFromSelection(ctx.files, files)
+    let filesToSync = getUnsyncedFilesFromSelection(ctx.files, files)
+    
+    // Filter out SolidWorks temp files (~$) when setting is enabled
+    const { ignoreSolidworksTempFiles } = usePDMStore.getState()
+    if (ignoreSolidworksTempFiles) {
+      filesToSync = filesToSync.filter(f => !isSolidworksTempFile(f.name))
+    }
     
     if (filesToSync.length === 0) {
       return {

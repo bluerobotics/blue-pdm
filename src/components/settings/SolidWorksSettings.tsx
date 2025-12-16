@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Image, ExternalLink, FolderOpen, Info, Key, Download, Play, Square, Loader2, Check } from 'lucide-react'
+import { Image, ExternalLink, FolderOpen, Info, Key, Download, Play, Square, Loader2, Check, EyeOff, FileX } from 'lucide-react'
 import { usePDMStore } from '../../stores/pdmStore'
 import { supabase } from '../../lib/supabase'
 
@@ -96,6 +96,10 @@ export function SolidWorksSettings() {
     setSolidworksPath,
     autoStartSolidworksService,
     setAutoStartSolidworksService,
+    hideSolidworksTempFiles,
+    setHideSolidworksTempFiles,
+    ignoreSolidworksTempFiles,
+    setIgnoreSolidworksTempFiles,
     getEffectiveRole
   } = usePDMStore()
   
@@ -239,6 +243,72 @@ export function SolidWorksSettings() {
               </div>
             </div>
           </button>
+        </div>
+      </div>
+
+      {/* Temp Files (~$) */}
+      <div className="space-y-3">
+        <label className="text-sm text-plm-fg-muted uppercase tracking-wide font-medium">
+          Temporary Lock Files (~$)
+        </label>
+        <div className="p-4 bg-plm-bg rounded-lg border border-plm-border space-y-4">
+          <div className="flex items-start gap-2 text-sm text-plm-fg-muted">
+            <Info size={16} className="mt-0.5 flex-shrink-0" />
+            <span>
+              SolidWorks creates temporary <code className="px-1.5 py-0.5 bg-plm-bg-secondary rounded">~$filename.sldprt</code> lock files when files are open.
+              These indicate a file is being edited and are automatically deleted when closed.
+            </span>
+          </div>
+          
+          {/* Hide toggle */}
+          <div className="flex items-center justify-between pt-2 border-t border-plm-border">
+            <div className="flex items-center gap-3">
+              <EyeOff size={18} className="text-plm-fg-muted" />
+              <div>
+                <div className="text-sm text-plm-fg">Hide from file browser</div>
+                <div className="text-xs text-plm-fg-muted">
+                  Don't show ~$ temp files in the file list
+                </div>
+              </div>
+            </div>
+            <button
+              onClick={() => setHideSolidworksTempFiles(!hideSolidworksTempFiles)}
+              className={`relative w-11 h-6 rounded-full transition-colors ${
+                hideSolidworksTempFiles ? 'bg-plm-accent' : 'bg-plm-bg-secondary'
+              }`}
+            >
+              <div
+                className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
+                  hideSolidworksTempFiles ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+          
+          {/* Ignore toggle */}
+          <div className="flex items-center justify-between pt-2 border-t border-plm-border">
+            <div className="flex items-center gap-3">
+              <FileX size={18} className="text-plm-fg-muted" />
+              <div>
+                <div className="text-sm text-plm-fg">Ignore from sync</div>
+                <div className="text-xs text-plm-fg-muted">
+                  Skip ~$ files during check-in and sync operations
+                </div>
+              </div>
+            </div>
+            <button
+              onClick={() => setIgnoreSolidworksTempFiles(!ignoreSolidworksTempFiles)}
+              className={`relative w-11 h-6 rounded-full transition-colors ${
+                ignoreSolidworksTempFiles ? 'bg-plm-accent' : 'bg-plm-bg-secondary'
+              }`}
+            >
+              <div
+                className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
+                  ignoreSolidworksTempFiles ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
         </div>
       </div>
 
