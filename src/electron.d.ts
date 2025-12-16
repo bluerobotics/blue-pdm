@@ -398,6 +398,8 @@ declare global {
       // Auto Updater
       checkForUpdates: () => Promise<{ success: boolean; updateInfo?: unknown; error?: string }>
       downloadUpdate: () => Promise<{ success: boolean; error?: string }>
+      downloadVersionInstaller: (version: string, downloadUrl: string) => Promise<{ success: boolean; filePath?: string; error?: string }>
+      runInstaller: (filePath: string) => Promise<{ success: boolean; error?: string }>
       installUpdate: () => Promise<{ success: boolean; error?: string }>
       getUpdateStatus: () => Promise<{
         updateAvailable: { version: string; releaseDate?: string; releaseNotes?: string } | null

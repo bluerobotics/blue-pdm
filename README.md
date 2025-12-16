@@ -301,6 +301,6 @@ MIT — see [LICENSE](LICENSE)
 ---
 
 <div align="center">
-  <p>⭐ <strong>Star us on GitHub</strong> if you find Cockpit useful!</p>
+  <p>⭐ <strong>Star us on GitHub</strong> if you find BluePLM useful!</p>
   <p>Made with 💙 by the Blue Robotics team and contributors worldwide</p>
 </div>

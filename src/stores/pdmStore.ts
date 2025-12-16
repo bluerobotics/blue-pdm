@@ -230,10 +230,12 @@ interface PDMState {
   toasts: ToastMessage[]
   
   // Update state
-  updateAvailable: { version: string; releaseDate?: string; releaseNotes?: string } | null
+  updateAvailable: { version: string; releaseDate?: string; releaseNotes?: string; downloadUrl?: string; isManualVersion?: boolean } | null
   updateDownloading: boolean
   updateDownloaded: boolean
   updateProgress: { percent: number; bytesPerSecond: number; transferred: number; total: number } | null
+  showUpdateModal: boolean
+  installerPath: string | null  // Path to downloaded installer for manual version installs
   
   // Recent vaults
   recentVaults: string[]
@@ -246,6 +248,9 @@ interface PDMState {
   solidworksPath: string | null  // Custom SolidWorks installation path (null = default)
   solidworksDmLicenseKey: string | null  // Document Manager API license key for fast mode
   autoStartSolidworksService: boolean  // Auto-start SolidWorks service on app bootup
+  
+  // API Server settings
+  apiServerUrl: string | null  // External API server URL for ERP integrations
   
   // Display settings
   lowercaseExtensions: boolean  // Display file extensions in lowercase
@@ -343,10 +348,12 @@ interface PDMState {
   removeToast: (id: string) => void
   
   // Actions - Update
-  setUpdateAvailable: (info: { version: string; releaseDate?: string; releaseNotes?: string } | null) => void
+  setUpdateAvailable: (info: { version: string; releaseDate?: string; releaseNotes?: string; downloadUrl?: string; isManualVersion?: boolean } | null) => void
   setUpdateDownloading: (downloading: boolean) => void
   setUpdateDownloaded: (downloaded: boolean) => void
   setUpdateProgress: (progress: { percent: number; bytesPerSecond: number; transferred: number; total: number } | null) => void
+  setShowUpdateModal: (show: boolean) => void
+  setInstallerPath: (path: string | null) => void
   showUpdateToast: (version: string) => void
   dismissUpdateToast: () => void
   
@@ -375,6 +382,9 @@ interface PDMState {
   setSolidworksPath: (path: string | null) => void
   setSolidworksDmLicenseKey: (key: string | null) => void
   setAutoStartSolidworksService: (enabled: boolean) => void
+  
+  // Actions - API Server settings
+  setApiServerUrl: (url: string | null) => void
   
   // Actions - Display settings
   setLowercaseExtensions: (enabled: boolean) => void
@@ -654,6 +664,8 @@ export const usePDMStore = create<PDMState>()(
       updateDownloading: false,
       updateDownloaded: false,
       updateProgress: null,
+      showUpdateModal: false,
+      installerPath: null,
       
       recentVaults: [],
       autoConnect: true,
@@ -661,6 +673,7 @@ export const usePDMStore = create<PDMState>()(
       solidworksPath: null,  // null = use default installation path
       solidworksDmLicenseKey: null,  // null = fast mode disabled
       autoStartSolidworksService: false,  // Don't auto-start by default
+      apiServerUrl: null,  // null = no API server configured
       lowercaseExtensions: true,
       viewMode: 'list',
       iconSize: 96,  // Default icon size (medium)
@@ -753,6 +766,8 @@ export const usePDMStore = create<PDMState>()(
       setUpdateDownloading: (downloading) => set({ updateDownloading: downloading }),
       setUpdateDownloaded: (downloaded) => set({ updateDownloaded: downloaded }),
       setUpdateProgress: (progress) => set({ updateProgress: progress }),
+      setShowUpdateModal: (show) => set({ showUpdateModal: show }),
+      setInstallerPath: (path) => set({ installerPath: path }),
       showUpdateToast: (version) => {
         const id = 'update-available'
         // Remove existing update toast if any
@@ -979,6 +994,15 @@ export const usePDMStore = create<PDMState>()(
       setSolidworksPath: (solidworksPath) => set({ solidworksPath }),
       setSolidworksDmLicenseKey: (solidworksDmLicenseKey) => set({ solidworksDmLicenseKey }),
       setAutoStartSolidworksService: (autoStartSolidworksService) => set({ autoStartSolidworksService }),
+      setApiServerUrl: (apiServerUrl) => {
+        set({ apiServerUrl })
+        // Also sync to the legacy localStorage key for backward compatibility
+        if (apiServerUrl) {
+          localStorage.setItem('blueplm_api_url', apiServerUrl)
+        } else {
+          localStorage.removeItem('blueplm_api_url')
+        }
+      },
       setLowercaseExtensions: (lowercaseExtensions) => set({ lowercaseExtensions }),
       setViewMode: (viewMode) => set({ viewMode }),
       setIconSize: (iconSize) => set({ iconSize: Math.max(48, Math.min(256, iconSize)) }),
@@ -1893,6 +1917,7 @@ export const usePDMStore = create<PDMState>()(
         solidworksPath: state.solidworksPath,
         solidworksDmLicenseKey: state.solidworksDmLicenseKey,
         autoStartSolidworksService: state.autoStartSolidworksService,
+        apiServerUrl: state.apiServerUrl,
         lowercaseExtensions: state.lowercaseExtensions,
         viewMode: state.viewMode,
         iconSize: state.iconSize,
@@ -1983,6 +2008,15 @@ export const usePDMStore = create<PDMState>()(
           solidworksPath: (persisted.solidworksPath as string | null) || null,
           solidworksDmLicenseKey: (persisted.solidworksDmLicenseKey as string | null) || null,
           autoStartSolidworksService: (persisted.autoStartSolidworksService as boolean) || false,
+          // Restore API Server URL from local cache (server value syncs in App.tsx and takes precedence)
+          // This ensures the URL is available before org loads; once org loads, server value wins
+          apiServerUrl: (() => {
+            // First check if it's in the persisted Zustand state
+            if (persisted.apiServerUrl) return persisted.apiServerUrl as string
+            // Migrate from old localStorage key if exists (one-time migration)
+            const legacyUrl = typeof window !== 'undefined' ? localStorage.getItem('blueplm_api_url') : null
+            return legacyUrl || null
+          })(),
           // Ensure lowercaseExtensions has a default (true)
           lowercaseExtensions: persisted.lowercaseExtensions !== undefined ? persisted.lowercaseExtensions as boolean : true,
           // Ensure viewMode has a default

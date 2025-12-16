@@ -31,19 +31,18 @@ interface ApiCallRecord {
   duration: number
 }
 
-const API_URL_KEY = 'blueplm_api_url'
 const API_HISTORY_KEY = 'blueplm_api_history'
 
 export function ApiSettings() {
-  const { organization, setOrganization, addToast, getEffectiveRole } = usePDMStore()
+  const { organization, setOrganization, addToast, getEffectiveRole, apiServerUrl, setApiServerUrl } = usePDMStore()
   const isAdmin = getEffectiveRole() === 'admin'
   
   const [apiToken, setApiToken] = useState<string | null>(null)
   const [showToken, setShowToken] = useState(false)
   const [tokenCopied, setTokenCopied] = useState(false)
-  const [apiUrl, setApiUrl] = useState(() => {
-    return organization?.settings?.api_url || localStorage.getItem(API_URL_KEY) || ''
-  })
+  // Use store-backed URL for reliable persistence across app updates
+  const apiUrl = apiServerUrl || ''
+  const setApiUrl = (url: string) => setApiServerUrl(url || null)
   const [editingApiUrl, setEditingApiUrl] = useState(false)
   const [apiUrlInput, setApiUrlInput] = useState('')
   const [apiStatus, setApiStatus] = useState<'unknown' | 'online' | 'offline' | 'checking'>('unknown')
@@ -76,13 +75,12 @@ export function ApiSettings() {
     return () => subscription.unsubscribe()
   }, [])
   
-  // Sync API URL from org settings
+  // Sync API URL from org settings to store (handles persistence)
   useEffect(() => {
-    if (organization?.settings?.api_url) {
-      setApiUrl(organization.settings.api_url)
-      localStorage.setItem(API_URL_KEY, organization.settings.api_url)
+    if (organization?.settings?.api_url && organization.settings.api_url !== apiServerUrl) {
+      setApiServerUrl(organization.settings.api_url)
     }
-  }, [organization?.settings?.api_url])
+  }, [organization?.settings?.api_url, apiServerUrl, setApiServerUrl])
   
   // Check API status on mount (only if we have a URL)
   useEffect(() => {
@@ -156,8 +154,8 @@ export function ApiSettings() {
       // Add https:// (always use https for production)
       url = 'https://' + url
       
+      // Update store (which also syncs to localStorage for backward compatibility)
       setApiUrl(url)
-      localStorage.setItem(API_URL_KEY, url)
       
       // Save org-wide for all members when admin sets external URL
       if (organization && isAdmin) {

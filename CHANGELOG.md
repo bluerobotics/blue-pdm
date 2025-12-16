@@ -2,6 +2,34 @@
 
 All notable changes to BluePLM will be documented in this file.
 
+## [2.7.0] - 2025-12-15
+
+### Added
+- **One-Click Update Modal**: New full-screen modal for app updates
+  - Dark blur backdrop blocks the entire app during update
+  - Shows "LATEST VERSION" with version number prominently
+  - Single "Update Now" button downloads and auto-installs
+  - Progress bar with download speed during download
+  - Auto-restarts after download completes
+
+- **Version History & Rollback**: Roll back or upgrade to any version from Settings → About
+  - Always-visible version list (fixed height, no dropdown)
+  - Visual indicators: green arrow (upgrade), blue checkmark (current), gray arrow (rollback)
+  - Pre-release badges for beta versions
+  - One-click rollback/upgrade through the installer modal
+  - Platform-specific installer auto-detection (Windows .exe, macOS .dmg, Linux .AppImage)
+
+### Changed
+- **About Page Redesign**: Updated Settings → About with cleaner layout
+  - Stacked layers logo replaces the "B" box
+  - Expanded description covering PDM/PLM features (check in/out, revisions, ECOs, workflows)
+  - Version history always visible with subtle separators
+
+### Fixed
+- **API URL not persisting between app versions**: Moved API URL to Zustand persist middleware alongside other settings. Server (organization settings) remains the source of truth and syncs to local on load; local cache ensures URL is available before server responds.
+
+---
+
 ## [2.6.0] - 2025-12-15
 
 ### Added

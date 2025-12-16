@@ -5029,6 +5029,132 @@ ipcMain.handle('updater:get-reminder', () => {
   return reminder
 })
 
+// Download a specific version's installer from GitHub releases
+ipcMain.handle('updater:download-version', async (_, version: string, downloadUrl: string) => {
+  log(`Downloading specific version: ${version} from ${downloadUrl}`)
+  
+  try {
+    const https = await import('https')
+    const http = await import('http')
+    const fs = await import('fs')
+    const nodePath = await import('path')
+    
+    // Create temp directory for download
+    const tempDir = nodePath.join(app.getPath('temp'), 'blueplm-updates')
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true })
+    }
+    
+    // Determine filename from URL
+    const urlParts = new URL(downloadUrl)
+    const fileName = nodePath.basename(urlParts.pathname)
+    const filePath = nodePath.join(tempDir, fileName)
+    
+    // Download the file with redirect handling
+    const downloadWithRedirects = (url: string): Promise<{ success: boolean; filePath?: string; error?: string }> => {
+      return new Promise((resolve) => {
+        const protocol = url.startsWith('https') ? https : http
+        
+        protocol.get(url, (response) => {
+          // Handle redirects (GitHub uses them)
+          if (response.statusCode === 302 || response.statusCode === 301) {
+            const redirectUrl = response.headers.location
+            if (redirectUrl) {
+              log(`Following redirect to: ${redirectUrl}`)
+              downloadWithRedirects(redirectUrl).then(resolve)
+              return
+            }
+          }
+          
+          if (response.statusCode !== 200) {
+            resolve({ success: false, error: `HTTP ${response.statusCode}` })
+            return
+          }
+          
+          const totalBytes = parseInt(response.headers['content-length'] || '0', 10)
+          let downloadedBytes = 0
+          let lastProgressUpdate = Date.now()
+          let lastBytes = 0
+          
+          const file = fs.createWriteStream(filePath)
+          
+          response.on('data', (chunk: Buffer) => {
+            downloadedBytes += chunk.length
+            
+            // Throttle progress updates to every 100ms
+            const now = Date.now()
+            if (now - lastProgressUpdate >= 100) {
+              const elapsed = (now - lastProgressUpdate) / 1000
+              const bytesPerSecond = elapsed > 0 ? (downloadedBytes - lastBytes) / elapsed : 0
+              const percent = totalBytes > 0 ? (downloadedBytes / totalBytes) * 100 : 0
+              
+              // Send progress to renderer
+              if (mainWindow) {
+                mainWindow.webContents.send('update-download-progress', {
+                  percent,
+                  bytesPerSecond,
+                  transferred: downloadedBytes,
+                  total: totalBytes
+                })
+              }
+              
+              lastProgressUpdate = now
+              lastBytes = downloadedBytes
+            }
+          })
+          
+          response.pipe(file)
+          
+          file.on('finish', () => {
+            file.close()
+            log(`Downloaded installer to: ${filePath}`)
+            resolve({ success: true, filePath })
+          })
+          
+          file.on('error', (err) => {
+            fs.unlink(filePath, () => {}) // Delete partial file
+            resolve({ success: false, error: String(err) })
+          })
+        }).on('error', (err) => {
+          resolve({ success: false, error: String(err) })
+        })
+      })
+    }
+    
+    return await downloadWithRedirects(downloadUrl)
+  } catch (err) {
+    logError('Failed to download version installer', { error: String(err) })
+    return { success: false, error: String(err) }
+  }
+})
+
+// Run a downloaded installer
+ipcMain.handle('updater:run-installer', async (_, filePath: string) => {
+  log(`Running installer: ${filePath}`)
+  
+  try {
+    const fs = await import('fs')
+    
+    // Verify file exists
+    if (!fs.existsSync(filePath)) {
+      return { success: false, error: 'Installer file not found' }
+    }
+    
+    // Open the installer with the default application
+    await shell.openPath(filePath)
+    
+    // Quit the app so the installer can update it
+    setTimeout(() => {
+      app.quit()
+    }, 1000)
+    
+    return { success: true }
+  } catch (err) {
+    logError('Failed to run installer', { error: String(err) })
+    return { success: false, error: String(err) }
+  }
+})
+
 // ============================================
 // App Lifecycle
 // ============================================

@@ -25,6 +25,7 @@ import { WeatherEffects } from './components/WeatherEffects'
 import { VaultNotFoundDialog } from './components/VaultNotFoundDialog'
 import { PerformanceWindow } from './components/PerformanceWindow'
 import { ImpersonationBanner } from './components/ImpersonationBanner'
+import { UpdateModal } from './components/UpdateModal'
 import { executeTerminalCommand } from './lib/commands/parser'
 import { executeCommand } from './lib/commands'
 import { logKeyboard, logUserAction } from './lib/userActionLogger'
@@ -223,6 +224,8 @@ function App() {
     setOrganization,
     setIsConnecting,
     addToast,
+    apiServerUrl,
+    setApiServerUrl,
   } = usePDMStore()
   
   // Get current vault ID (from activeVaultId or first connected vault)
@@ -428,18 +431,14 @@ function App() {
     }
   }, [supabaseReady, setUser, setOrganization, setStatusMessage, setVaultConnected, setIsConnecting])
 
-  // Sync API URL from organization settings to localStorage
+  // Sync API URL from organization settings to store (which handles localStorage persistence)
   // This ensures the API URL is restored on app launch, not just when opening Settings → REST API
   useEffect(() => {
-    if (organization?.settings?.api_url) {
-      const API_URL_KEY = 'blueplm_api_url'
-      const currentUrl = localStorage.getItem(API_URL_KEY)
-      if (currentUrl !== organization.settings.api_url) {
-        console.log('[App] Syncing API URL from org settings to localStorage')
-        localStorage.setItem(API_URL_KEY, organization.settings.api_url)
-      }
+    if (organization?.settings?.api_url && organization.settings.api_url !== apiServerUrl) {
+      console.log('[App] Syncing API URL from org settings to store')
+      setApiServerUrl(organization.settings.api_url)
     }
-  }, [organization?.settings?.api_url])
+  }, [organization?.settings?.api_url, apiServerUrl, setApiServerUrl])
 
   // Validate connected vault IDs after organization loads
   // This cleans up stale vaults that no longer exist on the server
@@ -1647,7 +1646,7 @@ function App() {
     if (!window.electronAPI) return
     
     const { 
-      showUpdateToast, 
+      setShowUpdateModal, 
       setUpdateAvailable, 
       setUpdateDownloading, 
       setUpdateDownloaded, 
@@ -1657,12 +1656,12 @@ function App() {
     
     const cleanups: (() => void)[] = []
     
-    // Update available - show toast notification
+    // Update available - show modal
     cleanups.push(
       window.electronAPI.onUpdateAvailable((info) => {
         console.log('[Update] Update available:', info.version)
         setUpdateAvailable(info)
-        showUpdateToast(info.version)
+        setShowUpdateModal(true)
       })
     )
     
@@ -1681,13 +1680,19 @@ function App() {
       })
     )
     
-    // Download completed
+    // Download completed - auto-install
     cleanups.push(
-      window.electronAPI.onUpdateDownloaded((info) => {
+      window.electronAPI.onUpdateDownloaded(async (info) => {
         console.log('[Update] Update downloaded:', info.version)
         setUpdateDownloading(false)
         setUpdateDownloaded(true)
         setUpdateProgress(null)
+        // Auto-install after download completes
+        try {
+          await window.electronAPI.installUpdate()
+        } catch (err) {
+          console.error('[Update] Auto-install error:', err)
+        }
       })
     )
     
@@ -1697,6 +1702,7 @@ function App() {
         console.error('[Update] Error:', error.message)
         setUpdateDownloading(false)
         setUpdateProgress(null)
+        setShowUpdateModal(false)
         addToast('error', `Update error: ${error.message}`)
       })
     )
@@ -1869,6 +1875,9 @@ function App() {
       </div>
 
       <Toast />
+      
+      {/* Update Modal */}
+      <UpdateModal />
       
       {/* Orphaned Checkouts Dialog */}
       <OrphanedCheckoutsContainer onRefresh={loadFiles} />
