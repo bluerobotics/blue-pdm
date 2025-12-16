@@ -121,13 +121,7 @@ function WeatherEffectsInner() {
   // Initial fetch and periodic updates
   useEffect(() => {
     if (!isActive || hasError) {
-      try {
-        if (previousColorsRef.current) {
-          document.documentElement.removeAttribute('data-weather')
-          document.documentElement.removeAttribute('data-weather-day')
-          previousColorsRef.current = null
-        }
-      } catch { /* ignore */ }
+      // Cleanup is now handled by the dedicated cleanup effect
       return
     }
     
@@ -205,17 +199,39 @@ function WeatherEffectsInner() {
     }
   }, [isActive, weather])
   
-  // Clean up when theme changes
+  // Clean up when theme changes - MUST remove ALL inline styles
+  // This is critical because inline styles have higher CSS specificity than stylesheet rules
   useEffect(() => {
     try {
-      if (!isActive && previousColorsRef.current) {
+      if (!isActive) {
         const root = document.documentElement
         if (root) {
           root.removeAttribute('data-weather')
           root.removeAttribute('data-weather-day')
-          Object.keys(previousColorsRef.current).forEach((key) => {
+          
+          // Remove ALL PLM CSS variables that might have been set as inline styles
+          // This ensures complete cleanup even if previousColorsRef is stale
+          const allPlmVars = [
+            '--plm-bg', '--plm-bg-light', '--plm-bg-lighter', '--plm-bg-secondary',
+            '--plm-sidebar', '--plm-activitybar', '--plm-panel', '--plm-input',
+            '--plm-border', '--plm-border-light',
+            '--plm-fg', '--plm-fg-dim', '--plm-fg-muted',
+            '--plm-accent', '--plm-accent-hover', '--plm-accent-dim',
+            '--plm-selection', '--plm-highlight',
+            '--plm-success', '--plm-warning', '--plm-error', '--plm-info',
+            '--plm-wip', '--plm-released', '--plm-in-review', '--plm-obsolete', '--plm-locked'
+          ]
+          
+          allPlmVars.forEach((key) => {
             try { root.style.removeProperty(key) } catch { /* ignore */ }
           })
+          
+          // Also clear any from previousColorsRef in case there were extra custom ones
+          if (previousColorsRef.current) {
+            Object.keys(previousColorsRef.current).forEach((key) => {
+              try { root.style.removeProperty(key) } catch { /* ignore */ }
+            })
+          }
         }
         previousColorsRef.current = null
       }

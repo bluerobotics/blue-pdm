@@ -80,6 +80,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // App info
   getVersion: () => ipcRenderer.invoke('app:get-version'),
   reloadApp: () => ipcRenderer.invoke('app:reload'),
+  openPerformanceWindow: () => ipcRenderer.invoke('app:open-performance-window'),
   
   // System stats
   getSystemStats: () => ipcRenderer.invoke('system:get-stats'),
@@ -475,6 +476,7 @@ declare global {
       setTitleBarOverlay: (options: { color: string; symbolColor: string }) => Promise<{ success: boolean; error?: string }>
       getPathForFile: (file: File) => string
       reloadApp: () => Promise<{ success: boolean; error?: string }>
+      openPerformanceWindow: () => Promise<{ success: boolean; error?: string }>
       
       // System stats
       getSystemStats: () => Promise<SystemStats | null>

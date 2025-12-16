@@ -39,7 +39,7 @@ export type SidebarView =
 export type DetailsPanelTab = 'properties' | 'preview' | 'whereused' | 'contains' | 'history'
 export type PanelPosition = 'bottom' | 'right'
 export type ToastType = 'error' | 'success' | 'info' | 'warning' | 'progress' | 'update'
-export type ThemeMode = 'dark' | 'deep-blue' | 'light' | 'christmas' | 'halloween' | 'weather' | 'system'
+export type ThemeMode = 'dark' | 'deep-blue' | 'light' | 'christmas' | 'halloween' | 'weather' | 'kenneth' | 'system'
 export type Language = 'en' | 'fr' | 'de' | 'es' | 'it' | 'pt' | 'ja' | 'zh-CN' | 'zh-TW' | 'ko' | 'nl' | 'sv' | 'pl' | 'ru' | 'sindarin'
 export type DiffStatus = 'added' | 'modified' | 'deleted' | 'outdated' | 'cloud' | 'cloud_new' | 'moved' | 'ignored' | 'deleted_remote'
 

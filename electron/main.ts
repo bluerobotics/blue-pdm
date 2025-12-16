@@ -1454,6 +1454,58 @@ ipcMain.handle('app:reload', () => {
   return { success: false, error: 'No window' }
 })
 
+// Performance monitor pop-out window
+let performanceWindow: BrowserWindow | null = null
+
+ipcMain.handle('app:open-performance-window', () => {
+  log('[Main] Opening performance monitor window')
+  
+  // If window already exists, focus it
+  if (performanceWindow && !performanceWindow.isDestroyed()) {
+    performanceWindow.focus()
+    return { success: true }
+  }
+  
+  // Create new performance window
+  performanceWindow = new BrowserWindow({
+    width: 800,
+    height: 600,
+    minWidth: 400,
+    minHeight: 300,
+    backgroundColor: '#0a1929',
+    title: 'Performance Monitor - BluePLM',
+    titleBarStyle: 'hidden',
+    titleBarOverlay: {
+      color: '#181818',
+      symbolColor: '#cccccc',
+      height: 36
+    },
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
+    }
+  })
+  
+  // Load the app with performance mode query param
+  const loadPath = isDev 
+    ? 'http://localhost:5173?mode=performance' 
+    : path.join(__dirname, '../dist/index.html')
+  
+  if (isDev) {
+    performanceWindow.loadURL(loadPath)
+  } else {
+    performanceWindow.loadFile(loadPath.replace('?mode=performance', ''), { query: { mode: 'performance' } })
+  }
+  
+  performanceWindow.on('closed', () => {
+    performanceWindow = null
+  })
+  
+  return { success: true }
+})
+
 // Zoom level handlers
 ipcMain.handle('app:get-zoom-factor', () => {
   if (!mainWindow) return 1

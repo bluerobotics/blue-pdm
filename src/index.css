@@ -434,6 +434,172 @@
   color: #50fa7b;
 }
 
+/* 💜 Kenneth Theme - Royal Purple Elegance 👑 */
+[data-theme="kenneth"] {
+  --plm-bg: #120a1c;
+  --plm-bg-light: #1a1028;
+  --plm-bg-lighter: #231435;
+  --plm-bg-secondary: #1a1028;
+  --plm-sidebar: #120a1c;
+  --plm-activitybar: #0d0714;
+  --plm-panel: #120a1c;
+  --plm-input: #1f1330;
+  --plm-border: #2d1f45;
+  --plm-border-light: #3d2a5f;
+  --plm-fg: #e8e0f0;
+  --plm-fg-dim: #c4b8d8;
+  --plm-fg-muted: #7a6b92;
+  --plm-accent: #a855f7; /* Vivid purple */
+  --plm-accent-hover: #9333ea;
+  --plm-accent-dim: #7c3aed;
+  --plm-selection: rgba(168, 85, 247, 0.25);
+  --plm-highlight: rgba(168, 85, 247, 0.12);
+  /* Status colors */
+  --plm-success: #4ade80;
+  --plm-warning: #fbbf24;
+  --plm-error: #f87171;
+  --plm-info: #c084fc; /* Purple-tinted info */
+  /* File state colors */
+  --plm-wip: #fbbf24;
+  --plm-released: #4ade80;
+  --plm-in-review: #c084fc;
+  --plm-obsolete: #6b7280;
+  --plm-locked: #f87171;
+  /* Titlebar height */
+  --titlebar-height: 30px;
+  /* Kenneth special colors */
+  --kenneth-purple: #a855f7;
+  --kenneth-violet: #8b5cf6;
+  --kenneth-lavender: #c4b5fd;
+  --kenneth-deep: #120a1c;
+  --kenneth-gold: #fbbf24;
+}
+
+/* Kenneth theme scrollbar */
+[data-theme="kenneth"] ::-webkit-scrollbar-thumb {
+  background: rgba(168, 85, 247, 0.4);
+}
+
+[data-theme="kenneth"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(168, 85, 247, 0.6);
+}
+
+/* 💜 Kenneth Theme UI Enhancements 👑 */
+
+/* Activity bar icons - Purple glow */
+[data-theme="kenneth"] .activity-bar button.active,
+[data-theme="kenneth"] .activity-bar button:hover {
+  color: #a855f7;
+}
+
+[data-theme="kenneth"] .activity-bar button.active::before {
+  background: #a855f7;
+}
+
+/* Activity bar selected item text and icon */
+[data-theme="kenneth"] .activity-bar button.active svg,
+[data-theme="kenneth"] .activity-bar button:hover svg {
+  color: #a855f7;
+}
+
+/* Top logo/brand accent - Purple */
+[data-theme="kenneth"] .text-plm-accent {
+  color: #a855f7 !important;
+}
+
+/* Sidebar tree item selected - purple highlight */
+[data-theme="kenneth"] .tree-item.selected svg,
+[data-theme="kenneth"] .sidebar-item.selected svg {
+  color: #a855f7;
+}
+
+[data-theme="kenneth"] .tree-item.selected span,
+[data-theme="kenneth"] .sidebar-item.selected span {
+  color: #e8e0f0;
+}
+
+/* Sidebar header bar - Deep purple gradient */
+[data-theme="kenneth"] .sidebar-header {
+  background: linear-gradient(180deg, #2d1f45 0%, #231435 100%);
+  color: #e8e0f0;
+}
+
+/* Breadcrumb/Toolbar bar - Purple gradient */
+[data-theme="kenneth"] .bg-plm-bg-light {
+  background: linear-gradient(180deg, #231435 0%, #1a1028 100%) !important;
+}
+
+/* Column headers - Purple gradient background */
+[data-theme="kenneth"] .file-table th {
+  background: linear-gradient(180deg, #2d1f45 0%, #231435 100%);
+  color: #e8e0f0;
+  border-bottom-color: #a855f7;
+}
+
+[data-theme="kenneth"] .file-table th:hover {
+  background: linear-gradient(180deg, #3d2a5f 0%, #2d1f45 100%);
+}
+
+/* Active tab with purple */
+[data-theme="kenneth"] .tab.active {
+  border-bottom-color: #a855f7;
+  color: #c084fc;
+}
+
+/* Primary buttons - Purple gradient */
+[data-theme="kenneth"] .btn-primary {
+  background: linear-gradient(135deg, #a855f7 0%, #7c3aed 100%);
+}
+
+[data-theme="kenneth"] .btn-primary:hover:not(:disabled) {
+  background: linear-gradient(135deg, #c084fc 0%, #a855f7 100%);
+}
+
+/* Selection highlights with purple tint */
+[data-theme="kenneth"] .file-table tr.selected,
+[data-theme="kenneth"] .tree-item.selected,
+[data-theme="kenneth"] .sidebar-item.selected,
+[data-theme="kenneth"] [class*="selected"] {
+  background: rgba(168, 85, 247, 0.25) !important;
+}
+
+/* Hover with subtle purple */
+[data-theme="kenneth"] .file-table tr:hover:not(.selected),
+[data-theme="kenneth"] .tree-item:hover:not(.selected),
+[data-theme="kenneth"] .sidebar-item:hover:not(.selected),
+[data-theme="kenneth"] .activity-bar button:hover,
+[data-theme="kenneth"] .bg-plm-activitybar button:hover {
+  background: rgba(168, 85, 247, 0.15);
+}
+
+/* Context menu hover */
+[data-theme="kenneth"] .context-menu-item:hover {
+  background: rgba(168, 85, 247, 0.25);
+}
+
+/* Input focus ring purple */
+[data-theme="kenneth"] input:focus,
+[data-theme="kenneth"] textarea:focus,
+[data-theme="kenneth"] select:focus {
+  border-color: #a855f7;
+}
+
+/* Sidebar area with subtle purple warmth */
+[data-theme="kenneth"] .bg-plm-sidebar {
+  background: linear-gradient(180deg, #120a1c 0%, #0f0816 100%);
+}
+
+/* Panel headers with purple accent */
+[data-theme="kenneth"] .panel-header {
+  background: rgba(168, 85, 247, 0.12);
+}
+
+/* Success/released badges */
+[data-theme="kenneth"] .state-badge.released {
+  background: rgba(74, 222, 128, 0.2);
+  color: #4ade80;
+}
+
 /* 🌤️ Weather Theme - Dynamic Local Weather */
 /* Base weather theme - defaults to "clear day" style */
 /* Colors are dynamically overridden by WeatherEffects component */
