@@ -694,3 +694,7 @@ All notable changes to BluePLM will be documented in this file.
 - Checkout/checkin workflow
 - Basic file browser interface
 - VSCode-inspired dark theme UI
+
+---
+
+Made with 💙 by [Blue Robotics](https://bluerobotics.com)

@@ -1,6 +1,6 @@
 # BluePLM
 
-Open source product lifecycle management for everyone who builds. Built with Electron, React, and Supabase.
+Open-source product lifecycle management for everyone who builds. Built with Electron, React, and Supabase.
 
 ![BluePLM Screenshot](assets/screenshot.png)
 
@@ -78,7 +78,6 @@ Open source product lifecycle management for everyone who builds. Built with Ele
   - Thumbnail extraction for parts, assemblies, and drawings (.sldprt, .sldasm, .slddrw)
   - Native add-in with toolbar buttons and task pane
   - Document Manager API for BOM, properties, and configs without launching SolidWorks
-  - SolidWorks Service for headless exports and Pack and Go
   - Auto read-only mode for non-checked-out files
 
 - **Google Drive**
@@ -270,6 +269,7 @@ VITE_SUPABASE_ANON_KEY=your-anon-key
 | Folder History | 🔜 Planned | View version history for entire folders, not just individual files |
 | Undo Check-in | 🔜 Planned | Revert a check-in from history panel (restores previous version, keeps newer locally) |
 | SolidWorks Configurations | 🔜 Planned | Manage SolidWorks configurations as metadata, sync between files |
+| SolidWorks Service | 🔜 Planned | Headless exports, Pack and Go, and auto-metadata extraction without launching SolidWorks |
 
 ## Tech Stack
 
