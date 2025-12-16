@@ -921,11 +921,11 @@ export const usePDMStore = create<PDMState>()(
       },
       
       saveOrgModuleDefaults: async () => {
-        const { organization, moduleConfig, user } = get()
+        const { organization, moduleConfig, getEffectiveRole } = get()
         if (!organization?.id) {
           return { success: false, error: 'No organization connected' }
         }
-        if (user?.role !== 'admin') {
+        if (getEffectiveRole() !== 'admin') {
           return { success: false, error: 'Only admins can save org module defaults' }
         }
         
@@ -1562,11 +1562,11 @@ export const usePDMStore = create<PDMState>()(
       reorderColumns: (columns) => set({ columns }),
       
       saveOrgColumnDefaults: async () => {
-        const { organization, columns, user } = get()
+        const { organization, columns, getEffectiveRole } = get()
         if (!organization?.id) {
           return { success: false, error: 'No organization connected' }
         }
-        if (user?.role !== 'admin') {
+        if (getEffectiveRole() !== 'admin') {
           return { success: false, error: 'Only admins can save org defaults' }
         }
         

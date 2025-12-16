@@ -149,6 +149,7 @@ export function buildCommandContext(onRefresh?: (silent?: boolean) => void): Com
     user: store.user,
     organization: store.organization,
     isOfflineMode: store.isOfflineMode,
+    getEffectiveRole: store.getEffectiveRole,
     vaultPath: store.vaultPath,
     activeVaultId: store.activeVaultId,
     files: store.files,

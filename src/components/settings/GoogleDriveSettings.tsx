@@ -4,7 +4,8 @@ import { usePDMStore } from '../../stores/pdmStore'
 import { supabase } from '../../lib/supabase'
 
 export function GoogleDriveSettings() {
-  const { user, organization, addToast } = usePDMStore()
+  const { user, organization, addToast, getEffectiveRole } = usePDMStore()
+  const isAdmin = getEffectiveRole() === 'admin'
   
   const [clientId, setClientId] = useState('')
   const [clientSecret, setClientSecret] = useState('')
@@ -45,7 +46,7 @@ export function GoogleDriveSettings() {
   }
   
   const saveSettings = async () => {
-    if (!organization?.id || user?.role !== 'admin') return
+    if (!organization?.id || !isAdmin) return
     
     setIsSaving(true)
     try {
@@ -71,7 +72,7 @@ export function GoogleDriveSettings() {
     }
   }
 
-  if (user?.role !== 'admin') {
+  if (!isAdmin) {
     return (
       <div className="text-center py-12">
         <Puzzle size={40} className="mx-auto mb-4 text-plm-fg-muted opacity-50" />

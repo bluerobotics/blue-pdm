@@ -34,6 +34,7 @@ const settingsSections: SettingsSection[] = [
       { id: 'metadata-columns', label: 'File Metadata' },
       { id: 'rfq', label: 'RFQ Settings' },
       { id: 'backup', label: 'Backups' },
+      { id: 'recovery-codes', label: 'Recovery Codes' },
     ]
   },
   {

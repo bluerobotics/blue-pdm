@@ -1421,6 +1421,60 @@ export interface Database {
           updated_by?: string | null
         }
       }
+      // Admin Recovery Codes - Emergency admin access
+      admin_recovery_codes: {
+        Row: {
+          id: string
+          org_id: string
+          code_hash: string
+          description: string | null
+          created_by: string
+          created_at: string
+          expires_at: string
+          is_used: boolean
+          used_by: string | null
+          used_at: string | null
+          used_from_ip: string | null
+          is_revoked: boolean
+          revoked_by: string | null
+          revoked_at: string | null
+          revoke_reason: string | null
+        }
+        Insert: {
+          id?: string
+          org_id: string
+          code_hash: string
+          description?: string | null
+          created_by: string
+          created_at?: string
+          expires_at: string
+          is_used?: boolean
+          used_by?: string | null
+          used_at?: string | null
+          used_from_ip?: string | null
+          is_revoked?: boolean
+          revoked_by?: string | null
+          revoked_at?: string | null
+          revoke_reason?: string | null
+        }
+        Update: {
+          id?: string
+          org_id?: string
+          code_hash?: string
+          description?: string | null
+          created_by?: string
+          created_at?: string
+          expires_at?: string
+          is_used?: boolean
+          used_by?: string | null
+          used_at?: string | null
+          used_from_ip?: string | null
+          is_revoked?: boolean
+          revoked_by?: string | null
+          revoked_at?: string | null
+          revoke_reason?: string | null
+        }
+      }
     }
     Views: Record<string, never>
     Functions: {
@@ -1443,6 +1497,10 @@ export interface Database {
       get_my_pending_reviews: {
         Args: Record<string, never>
         Returns: Array<unknown>
+      }
+      use_admin_recovery_code: {
+        Args: { p_code_hash: string; p_user_ip?: string | null }
+        Returns: { success: boolean; message?: string; error?: string }
       }
       update_backup_heartbeat: {
         Args: { p_org_id: string; p_machine_id: string }

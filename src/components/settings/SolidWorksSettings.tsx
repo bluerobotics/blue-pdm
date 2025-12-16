@@ -96,11 +96,12 @@ export function SolidWorksSettings() {
     solidworksPath,
     setSolidworksPath,
     autoStartSolidworksService,
-    setAutoStartSolidworksService
+    setAutoStartSolidworksService,
+    getEffectiveRole
   } = usePDMStore()
   
   const { status, isStarting, isStopping, startService, stopService, hasError } = useSolidWorksServiceStatus()
-  const isAdmin = user?.role === 'admin'
+  const isAdmin = getEffectiveRole() === 'admin'
 
   return (
     <div className="space-y-6">

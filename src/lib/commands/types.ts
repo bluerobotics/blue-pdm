@@ -25,6 +25,7 @@ export interface CommandContext {
   user: User | null
   organization: Organization | null
   isOfflineMode: boolean
+  getEffectiveRole: () => 'admin' | 'engineer' | 'viewer'
   
   // Vault info
   vaultPath: string | null

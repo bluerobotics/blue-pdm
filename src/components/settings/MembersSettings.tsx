@@ -47,8 +47,11 @@ export function MembersSettings() {
   const { 
     user, 
     organization, 
-    addToast
+    addToast,
+    getEffectiveRole
   } = usePDMStore()
+  
+  const isAdmin = getEffectiveRole() === 'admin'
   
   const [orgUsers, setOrgUsers] = useState<OrgUser[]>([])
   const [orgVaults, setOrgVaults] = useState<Vault[]>([])
@@ -318,7 +321,7 @@ See you on the team!`
           >
             <RefreshCw size={14} className={isLoadingUsers ? 'animate-spin' : ''} />
           </button>
-          {user?.role === 'admin' && (
+          {isAdmin && (
             <button
               onClick={() => setShowInviteDialog(true)}
               className="btn btn-primary btn-sm flex items-center gap-1"
@@ -331,7 +334,7 @@ See you on the team!`
       </div>
 
       {/* Organization Code (Admin only) */}
-      {user?.role === 'admin' && (
+      {isAdmin && (
         <div className="p-4 bg-plm-bg rounded-lg border border-plm-border">
           <div className="flex items-center gap-2 mb-3">
             <Key size={18} className="text-plm-accent" />
@@ -422,7 +425,7 @@ See you on the team!`
           {orgUsers.map(orgUser => {
             const RoleIcon = getRoleIcon(orgUser.role)
             const isCurrentUser = orgUser.id === user?.id
-            const canManage = user?.role === 'admin' && !isCurrentUser
+            const canManage = isAdmin && !isCurrentUser
             
             return (
               <div 
@@ -558,7 +561,7 @@ See you on the team!`
       )}
       
       {/* Role permissions info */}
-      {user?.role === 'admin' && (
+      {isAdmin && (
         <div className="p-3 bg-plm-bg rounded-lg border border-plm-border">
           <p className="text-sm text-plm-fg-muted mb-2 font-medium">Role Permissions:</p>
           <div className="space-y-1 text-sm text-plm-fg-dim">

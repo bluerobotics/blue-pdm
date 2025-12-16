@@ -18,7 +18,8 @@ import {
   LogsSettings,
   DevToolsSettings,
   AboutSettings,
-  SupabaseSettings
+  SupabaseSettings,
+  RecoveryCodeSettings
 } from './settings'
 import type { SettingsTab } from '../types/settings'
 
@@ -61,6 +62,8 @@ export function SettingsContent({ activeTab }: SettingsContentProps) {
         return <ApiSettings />
       case 'supabase':
         return <SupabaseSettings />
+      case 'recovery-codes':
+        return <RecoveryCodeSettings />
       case 'performance':
         return <PerformanceSettings />
       case 'logs':

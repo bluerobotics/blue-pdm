@@ -4785,7 +4785,8 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
         const checkoutableCount = syncedFilesInSelection.filter(f => !f.pdmData?.checked_out_by).length
         const checkinableCount = syncedFilesInSelection.filter(f => f.pdmData?.checked_out_by === user?.id).length
         const checkedOutByOthersCount = syncedFilesInSelection.filter(f => f.pdmData?.checked_out_by && f.pdmData.checked_out_by !== user?.id).length
-        const isAdmin = user?.role === 'admin'
+        const effectiveRole = usePDMStore.getState().getEffectiveRole()
+        const isAdmin = effectiveRole === 'admin'
         
         const countLabel = multiSelect 
           ? `(${fileCount > 0 ? `${fileCount} file${fileCount > 1 ? 's' : ''}` : ''}${fileCount > 0 && folderCount > 0 ? ', ' : ''}${folderCount > 0 ? `${folderCount} folder${folderCount > 1 ? 's' : ''}` : ''})`

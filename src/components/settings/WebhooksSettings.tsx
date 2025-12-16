@@ -90,7 +90,8 @@ const USER_ROLES = [
 ]
 
 export function WebhooksSettings() {
-  const { user, organization, addToast } = usePDMStore()
+  const { user, organization, addToast, getEffectiveRole } = usePDMStore()
+  const isAdmin = getEffectiveRole() === 'admin'
   
   const [webhooks, setWebhooks] = useState<Webhook[]>([])
   const [deliveries, setDeliveries] = useState<WebhookDelivery[]>([])
@@ -413,7 +414,7 @@ export function WebhooksSettings() {
   }
 
   // Non-admin view
-  if (user?.role !== 'admin') {
+  if (!isAdmin) {
     return (
       <div className="text-center py-12">
         <Shield size={40} className="mx-auto mb-4 text-plm-fg-muted opacity-50" />

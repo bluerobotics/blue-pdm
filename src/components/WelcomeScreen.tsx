@@ -72,9 +72,11 @@ export function WelcomeScreen({ onOpenRecentVault }: WelcomeScreenProps) {
     setConnectedVaults,
     addToast,
     vaultsRefreshKey,
-    isConnecting: isAuthConnecting  // Global auth connecting state
+    isConnecting: isAuthConnecting,  // Global auth connecting state
+    getEffectiveRole
   } = usePDMStore()
   const { t } = useTranslation()
+  const isAdmin = getEffectiveRole() === 'admin'
   
   const [isConnectingVault, setIsConnectingVault] = useState(false)  // Local vault connection state
   const [isSigningIn, setIsSigningIn] = useState(false)
@@ -1479,11 +1481,11 @@ export function WelcomeScreen({ onOpenRecentVault }: WelcomeScreenProps) {
             <Database size={32} className="text-plm-fg-muted mx-auto mb-3" />
             <h3 className="font-medium text-plm-fg mb-1">{t('welcome.noVaultsCreated')}</h3>
             <p className="text-sm text-plm-fg-muted mb-4">
-              {user?.role === 'admin' 
+              {isAdmin 
                 ? t('welcome.noVaultsAdminMsg')
                 : t('welcome.noVaultsUserMsg')}
             </p>
-            {user?.role === 'admin' && (
+            {isAdmin && (
               <p className="text-xs text-plm-fg-dim">
                 {t('welcome.advancedOptions')}
               </p>

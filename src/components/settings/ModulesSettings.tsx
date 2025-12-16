@@ -210,7 +210,8 @@ export function ModulesSettings() {
     addDivider,
     resetModulesToDefaults,
     loadOrgModuleDefaults,
-    saveOrgModuleDefaults
+    saveOrgModuleDefaults,
+    getEffectiveRole
   } = usePDMStore()
   
   const [dragIndex, setDragIndex] = useState<number | null>(null)
@@ -219,7 +220,7 @@ export function ModulesSettings() {
   const [isLoading, setIsLoading] = useState(false)
   const [saveResult, setSaveResult] = useState<'success' | 'error' | null>(null)
   
-  const isAdmin = user?.role === 'admin'
+  const isAdmin = getEffectiveRole() === 'admin'
   
   // Build combined list for display
   const combinedList = useMemo(() => {

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
-import { Mail, Loader2, ShoppingCart, GitBranch } from 'lucide-react'
+import { Mail, Loader2, ShoppingCart, GitBranch, Key, Shield, AlertTriangle, Check, RefreshCw } from 'lucide-react'
 import { usePDMStore } from '../../stores/pdmStore'
-import { getSupabaseClient } from '../../lib/supabase'
+import { getSupabaseClient, useAdminRecoveryCode } from '../../lib/supabase'
 import { getInitials } from '../../types/pdm'
 import { ContributionHistory } from './ContributionHistory'
 
@@ -28,12 +28,18 @@ interface RFQRecord {
 }
 
 export function ProfileSettings() {
-  const { user, organization } = usePDMStore()
+  const { user, organization, setUser, addToast } = usePDMStore()
   
   const [isLoadingECOs, setIsLoadingECOs] = useState(true)
   const [isLoadingRFQs, setIsLoadingRFQs] = useState(true)
   const [userECOs, setUserECOs] = useState<ECORecord[]>([])
   const [userRFQs, setUserRFQs] = useState<RFQRecord[]>([])
+  
+  // Emergency recovery state
+  const [showRecoveryInput, setShowRecoveryInput] = useState(false)
+  const [recoveryCode, setRecoveryCode] = useState('')
+  const [isSubmittingRecovery, setIsSubmittingRecovery] = useState(false)
+  const [recoveryResult, setRecoveryResult] = useState<'success' | 'error' | null>(null)
 
   // Load user's ECOs
   useEffect(() => {
@@ -161,6 +167,44 @@ export function ProfileSettings() {
       day: 'numeric',
       year: 'numeric'
     })
+  }
+  
+  // Handle recovery code submission
+  const handleRecoverySubmit = async () => {
+    if (!recoveryCode.trim()) {
+      addToast('error', 'Please enter a recovery code')
+      return
+    }
+    
+    setIsSubmittingRecovery(true)
+    setRecoveryResult(null)
+    
+    try {
+      const result = await useAdminRecoveryCode(recoveryCode.trim())
+      
+      if (result.success) {
+        setRecoveryResult('success')
+        addToast('success', 'You have been granted admin privileges!')
+        
+        // Update the local user state to reflect admin role
+        if (user) {
+          setUser({ ...user, role: 'admin' })
+        }
+        
+        // Reload the page after a short delay to refresh all permissions
+        setTimeout(() => {
+          window.location.reload()
+        }, 1500)
+      } else {
+        setRecoveryResult('error')
+        addToast('error', result.error || 'Invalid or expired recovery code')
+      }
+    } catch (err) {
+      setRecoveryResult('error')
+      addToast('error', 'Failed to validate recovery code')
+    } finally {
+      setIsSubmittingRecovery(false)
+    }
   }
 
   if (!user) {
@@ -307,6 +351,110 @@ export function ProfileSettings() {
           )}
         </div>
       </section>
+
+      {/* Emergency Admin Recovery - Only show if not already admin */}
+      {user.role !== 'admin' && (
+        <section className="mt-12 pt-8 border-t border-plm-border">
+          <div className="flex items-center gap-2 mb-3">
+            <Key size={16} className="text-plm-fg-muted" />
+            <h2 className="text-sm text-plm-fg-muted uppercase tracking-wide font-medium">
+              Emergency Admin Recovery
+            </h2>
+          </div>
+          
+          <div className="bg-plm-bg rounded-lg border border-plm-border p-4">
+            {!showRecoveryInput ? (
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-plm-fg-muted">
+                    Have a recovery code? Use it to regain admin access in emergencies.
+                  </p>
+                </div>
+                <button
+                  onClick={() => setShowRecoveryInput(true)}
+                  className="px-3 py-1.5 text-sm text-plm-fg-muted hover:text-plm-fg border border-plm-border hover:border-plm-fg-muted rounded transition-colors"
+                >
+                  Enter Code
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {/* Warning */}
+                <div className="p-3 bg-plm-warning/10 border border-plm-warning/30 rounded flex items-start gap-2">
+                  <AlertTriangle size={16} className="text-plm-warning flex-shrink-0 mt-0.5" />
+                  <p className="text-xs text-plm-warning">
+                    Recovery codes are single-use and will elevate you to admin immediately. 
+                    Only use if you have a valid code from your organization.
+                  </p>
+                </div>
+                
+                {/* Input */}
+                <div>
+                  <label className="block text-sm text-plm-fg-muted mb-2">
+                    Recovery Code
+                  </label>
+                  <input
+                    type="text"
+                    value={recoveryCode}
+                    onChange={(e) => setRecoveryCode(e.target.value.toUpperCase())}
+                    placeholder="XXXX-XXXX-XXXX-XXXX"
+                    disabled={isSubmittingRecovery || recoveryResult === 'success'}
+                    className="w-full px-3 py-2 bg-plm-bg-secondary border border-plm-border rounded text-plm-fg font-mono text-center tracking-wider placeholder:text-plm-fg-muted focus:outline-none focus:ring-2 focus:ring-plm-accent disabled:opacity-50"
+                    maxLength={19}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !isSubmittingRecovery) {
+                        handleRecoverySubmit()
+                      }
+                    }}
+                  />
+                </div>
+                
+                {/* Result message */}
+                {recoveryResult === 'success' && (
+                  <div className="p-3 bg-plm-success/10 border border-plm-success/30 rounded flex items-center gap-2">
+                    <Check size={16} className="text-plm-success" />
+                    <p className="text-sm text-plm-success">
+                      Success! You are now an admin. Reloading...
+                    </p>
+                  </div>
+                )}
+                
+                {/* Actions */}
+                <div className="flex justify-end gap-3">
+                  <button
+                    onClick={() => {
+                      setShowRecoveryInput(false)
+                      setRecoveryCode('')
+                      setRecoveryResult(null)
+                    }}
+                    disabled={isSubmittingRecovery || recoveryResult === 'success'}
+                    className="px-3 py-1.5 text-sm text-plm-fg-muted hover:text-plm-fg transition-colors disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleRecoverySubmit}
+                    disabled={isSubmittingRecovery || !recoveryCode.trim() || recoveryResult === 'success'}
+                    className="px-4 py-1.5 text-sm bg-plm-accent text-white rounded hover:bg-plm-accent-hover transition-colors disabled:opacity-50 flex items-center gap-2"
+                  >
+                    {isSubmittingRecovery ? (
+                      <>
+                        <RefreshCw size={14} className="animate-spin" />
+                        Validating...
+                      </>
+                    ) : (
+                      <>
+                        <Shield size={14} />
+                        Use Code
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
     </div>
   )
 }

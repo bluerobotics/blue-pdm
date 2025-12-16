@@ -25,7 +25,7 @@ export const forceReleaseCommand: Command<ForceReleaseParams> = {
       return 'Please sign in first'
     }
     
-    if (ctx.user.role !== 'admin') {
+    if (ctx.getEffectiveRole() !== 'admin') {
       return 'Admin privileges required'
     }
     

@@ -35,7 +35,8 @@ const API_URL_KEY = 'blueplm_api_url'
 const API_HISTORY_KEY = 'blueplm_api_history'
 
 export function ApiSettings() {
-  const { user, organization, setOrganization, addToast } = usePDMStore()
+  const { user, organization, setOrganization, addToast, getEffectiveRole } = usePDMStore()
+  const isAdmin = getEffectiveRole() === 'admin'
   
   const [apiToken, setApiToken] = useState<string | null>(null)
   const [showToken, setShowToken] = useState(false)
@@ -159,7 +160,7 @@ export function ApiSettings() {
       localStorage.setItem(API_URL_KEY, url)
       
       // Save org-wide for all members when admin sets external URL
-      if (organization && user?.role === 'admin') {
+      if (organization && isAdmin) {
         try {
           // IMPORTANT: Fetch current settings from database first to avoid overwriting
           // other fields that may have been set by other components
@@ -230,7 +231,7 @@ export function ApiSettings() {
     }
   }
 
-  if (user?.role !== 'admin') {
+  if (!isAdmin) {
     return (
       <div className="text-center py-12">
         <Shield size={40} className="mx-auto text-plm-fg-muted mb-4" />

@@ -95,7 +95,7 @@ type SortBy = 'name' | 'modifiedTime' | 'size'
 type DriveSource = 'my-drive' | 'shared-drives'
 
 export function GoogleDrivePanel() {
-  const { addToast, organization, user, gdriveCurrentFolderId, gdriveCurrentFolderName, gdriveIsSharedDrive, gdriveDriveId, gdriveOpenDocument, setGdriveOpenDocument, incrementGdriveAuthVersion } = usePDMStore()
+  const { addToast, organization, user, gdriveCurrentFolderId, gdriveCurrentFolderName, gdriveIsSharedDrive, gdriveDriveId, gdriveOpenDocument, setGdriveOpenDocument, incrementGdriveAuthVersion, getEffectiveRole } = usePDMStore()
   
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
@@ -847,7 +847,7 @@ export function GoogleDrivePanel() {
   
   // Not configured - show setup message
   if (!orgCredentials && !isAuthenticated) {
-    const isAdmin = user?.role === 'admin'
+    const isAdmin = getEffectiveRole() === 'admin'
     
     return (
       <div className="flex-1 flex flex-col items-center justify-center bg-plm-bg p-8">

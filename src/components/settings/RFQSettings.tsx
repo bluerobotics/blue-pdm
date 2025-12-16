@@ -35,7 +35,8 @@ const DEFAULT_RFQ_SETTINGS: RFQSettingsData = {
 }
 
 export function RFQSettings() {
-  const { organization, user, addToast } = usePDMStore()
+  const { organization, user, addToast, getEffectiveRole } = usePDMStore()
+  const isAdmin = getEffectiveRole() === 'admin'
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [settings, setSettings] = useState<RFQSettingsData>(DEFAULT_RFQ_SETTINGS)
@@ -100,7 +101,7 @@ export function RFQSettings() {
     )
   }
 
-  if (user?.role !== 'admin') {
+  if (!isAdmin) {
     return (
       <div className="text-center py-12 text-plm-fg-muted">
         Only administrators can manage RFQ settings

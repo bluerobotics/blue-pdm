@@ -66,7 +66,8 @@ const emptyAddress: Omit<OrgAddress, 'id' | 'org_id'> = {
 }
 
 export function CompanyProfileSettings() {
-  const { organization, user, addToast } = usePDMStore()
+  const { organization, user, addToast, getEffectiveRole } = usePDMStore()
+  const isAdmin = getEffectiveRole() === 'admin'
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [uploadingLogo, setUploadingLogo] = useState(false)
@@ -654,7 +655,7 @@ export function CompanyProfileSettings() {
     )
   }
 
-  if (user?.role !== 'admin') {
+  if (!isAdmin) {
     return (
       <div className="text-center py-12 text-plm-fg-muted">
         Only administrators can manage company profile

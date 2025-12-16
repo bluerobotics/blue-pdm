@@ -62,7 +62,8 @@ export function MetadataColumnsSettings() {
     setColumnWidth,
     saveOrgColumnDefaults,
     loadOrgColumnDefaults,
-    resetColumnsToDefaults
+    resetColumnsToDefaults,
+    getEffectiveRole
   } = usePDMStore()
   
   const [columns, setColumns] = useState<FileMetadataColumn[]>([])
@@ -322,7 +323,7 @@ export function MetadataColumnsSettings() {
     })
   }
 
-  const isAdmin = user?.role === 'admin'
+  const isAdmin = getEffectiveRole() === 'admin'
 
   return (
     <div className="space-y-6">

@@ -55,8 +55,11 @@ export function VaultsSettings() {
     setVaultPath,
     setVaultConnected,
     addToast,
-    triggerVaultsRefresh
+    triggerVaultsRefresh,
+    getEffectiveRole
   } = usePDMStore()
+  
+  const isAdmin = getEffectiveRole() === 'admin'
   
   const [platform, setPlatform] = useState<string>('win32')
   const [orgVaults, setOrgVaults] = useState<Vault[]>([])
@@ -490,7 +493,7 @@ export function VaultsSettings() {
           >
             <RefreshCw size={14} className={isLoadingVaults ? 'animate-spin' : ''} />
           </button>
-          {user?.role === 'admin' && (
+          {isAdmin && (
             <button
               onClick={() => setIsCreatingVault(true)}
               className="btn btn-primary btn-sm flex items-center gap-1"
@@ -555,7 +558,7 @@ export function VaultsSettings() {
         </div>
       ) : orgVaults.length === 0 ? (
         <div className="text-center py-8 text-plm-fg-muted text-base">
-          {user?.role === 'admin' 
+          {isAdmin 
             ? 'No vaults created yet. Add a vault to get started.'
             : 'No vaults created yet. Ask an organization admin to create one.'}
         </div>
@@ -657,7 +660,7 @@ export function VaultsSettings() {
                   )}
                   
                   {/* Admin actions */}
-                  {user?.role === 'admin' && (
+                  {isAdmin && (
                     <div className="flex items-center gap-1 border-l border-plm-border pl-2">
                       <button
                         onClick={() => {

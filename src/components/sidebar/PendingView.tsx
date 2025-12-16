@@ -404,7 +404,8 @@ export function PendingView({ onRefresh }: PendingViewProps) {
   const allSelected = myCheckedOutFiles.length > 0 && selectedCount === myCheckedOutFiles.length
   const selectedAddedCount = selectedAddedFiles.size
   const allAddedSelected = addedFiles.length > 0 && selectedAddedCount === addedFiles.length
-  const isAdmin = user?.role === 'admin'
+  const effectiveRole = usePDMStore.getState().getEffectiveRole()
+  const isAdmin = effectiveRole === 'admin'
   const selectedOthersCount = selectedOthersFiles.size
   const allOthersSelected = othersCheckedOutFiles.length > 0 && selectedOthersCount === othersCheckedOutFiles.length
   const selectedDeletedRemoteCount = selectedDeletedRemoteFiles.size

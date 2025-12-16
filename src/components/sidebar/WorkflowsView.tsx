@@ -85,7 +85,7 @@ const ICON_MAP: Record<string, React.ComponentType<{ size?: number; className?: 
 const WORKFLOW_SIDEBAR_WIDTH = 600
 
 export function WorkflowsView() {
-  const { organization, user, addToast, sidebarWidth, setSidebarWidth } = usePDMStore()
+  const { organization, user, addToast, sidebarWidth, setSidebarWidth, getEffectiveRole } = usePDMStore()
   const [workflows, setWorkflows] = useState<WorkflowTemplate[]>([])
   const [selectedWorkflow, setSelectedWorkflow] = useState<WorkflowTemplate | null>(null)
   const [states, setStates] = useState<WorkflowState[]>([])
@@ -93,6 +93,9 @@ export function WorkflowsView() {
   const [gates, setGates] = useState<Record<string, WorkflowGate[]>>({})
   const [isLoading, setIsLoading] = useState(true)
   const [isAdmin, setIsAdmin] = useState(false)
+  
+  // Update isAdmin when role changes (including impersonation)
+  const effectiveRole = getEffectiveRole()
   
   // Canvas state
   const [canvasMode, setCanvasMode] = useState<CanvasMode>('select')
@@ -208,10 +211,10 @@ export function WorkflowsView() {
     }
   }, [])
   
-  // Check if user is admin
+  // Check if user is admin (respects role impersonation)
   useEffect(() => {
-    setIsAdmin(user?.role === 'admin')
-  }, [user])
+    setIsAdmin(effectiveRole === 'admin')
+  }, [effectiveRole])
   
   // Handle ESC key to cancel connect mode or creating transition
   useEffect(() => {

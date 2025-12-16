@@ -62,7 +62,7 @@ interface NetworkStats {
 }
 
 export function SupabaseSettings() {
-  const { user, organization } = usePDMStore()
+  const { user, organization, getEffectiveRole } = usePDMStore()
   
   const [status, setStatus] = useState<'unknown' | 'online' | 'offline' | 'checking'>('unknown')
   const [showKey, setShowKey] = useState(false)
@@ -97,7 +97,7 @@ export function SupabaseSettings() {
   
   const config = getCurrentConfig()
   const isConfigured = isSupabaseConfigured()
-  const isAdmin = user?.role === 'admin'
+  const isAdmin = getEffectiveRole() === 'admin'
   
   // Check connection status on mount
   useEffect(() => {

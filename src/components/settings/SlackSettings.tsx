@@ -78,7 +78,8 @@ async function getAuthToken(): Promise<string | null> {
 }
 
 export function SlackSettings() {
-  const { user, organization, addToast } = usePDMStore()
+  const { user, organization, addToast, getEffectiveRole } = usePDMStore()
+  const isAdmin = getEffectiveRole() === 'admin'
   
   const apiUrl = getApiUrl(organization)
   
@@ -395,7 +396,7 @@ export function SlackSettings() {
     setNotifications(prev => prev.map(n => ({ ...n, channel })))
   }
 
-  if (user?.role !== 'admin') {
+  if (!isAdmin) {
     return (
       <div className="text-center py-12">
         <Puzzle size={40} className="mx-auto mb-4 text-plm-fg-muted opacity-50" />

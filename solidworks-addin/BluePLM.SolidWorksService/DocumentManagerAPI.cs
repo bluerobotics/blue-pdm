@@ -2,9 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-#if HAS_DOCUMENT_MANAGER
-using SolidWorks.Interop.swdocumentmgr;
-#endif
+using System.Reflection;
 
 namespace BluePLM.SolidWorksService
 {
@@ -15,43 +13,105 @@ namespace BluePLM.SolidWorksService
     /// Requires a Document Manager API license key (free with SolidWorks subscription).
     /// Get yours at: https://customerportal.solidworks.com/ → API Support
     /// 
-    /// Note: This feature requires SolidWorks to be installed locally.
-    /// When built without SolidWorks (e.g., CI/CD), stub implementations are used.
+    /// Note: This feature dynamically loads the Document Manager DLL at runtime
+    /// from the user's SolidWorks installation. Works on any machine with SolidWorks installed.
     /// </summary>
     public class DocumentManagerAPI : IDisposable
     {
-#if HAS_DOCUMENT_MANAGER
-        private SwDMApplication? _dmApp;
-#endif
+        private object? _dmApp;
+        private Assembly? _dmAssembly;
         private readonly string? _licenseKey;
         private bool _disposed;
         private bool _initialized;
         private string? _initError;
 
+        // Common SolidWorks installation paths to search for the Document Manager DLL
+        private static readonly string[] DllSearchPaths = new[]
+        {
+            @"C:\Program Files\SOLIDWORKS Corp\SOLIDWORKS\api\redist\SolidWorks.Interop.swdocumentmgr.dll",
+            @"C:\Program Files\SolidWorks Corp\SolidWorks\api\redist\SolidWorks.Interop.swdocumentmgr.dll",
+            @"C:\Program Files (x86)\SOLIDWORKS Corp\SOLIDWORKS\api\redist\SolidWorks.Interop.swdocumentmgr.dll",
+            @"C:\Program Files\Common Files\SolidWorks Shared\SolidWorks.Interop.swdocumentmgr.dll",
+        };
+
         public DocumentManagerAPI(string? licenseKey = null)
         {
             _licenseKey = licenseKey;
-#if !HAS_DOCUMENT_MANAGER
-            _initError = "Document Manager API not available. SolidWorks must be installed to use this feature.";
-#endif
         }
 
-#if HAS_DOCUMENT_MANAGER
         public bool IsAvailable => _initialized && _dmApp != null;
-#else
-        public bool IsAvailable => false;
-#endif
         public string? InitializationError => _initError;
+
+        #region Dynamic Assembly Loading
+
+        /// <summary>
+        /// Try to load the Document Manager assembly from the user's SolidWorks installation
+        /// </summary>
+        private bool TryLoadAssembly()
+        {
+            if (_dmAssembly != null) return true;
+
+            foreach (var path in DllSearchPaths)
+            {
+                if (File.Exists(path))
+                {
+                    try
+                    {
+                        _dmAssembly = Assembly.LoadFrom(path);
+                        return true;
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine($"Failed to load Document Manager from {path}: {ex.Message}");
+                    }
+                }
+            }
+
+            // Also check environment variable for custom path
+            var customPath = Environment.GetEnvironmentVariable("SOLIDWORKS_DM_DLL_PATH");
+            if (!string.IsNullOrEmpty(customPath) && File.Exists(customPath))
+            {
+                try
+                {
+                    _dmAssembly = Assembly.LoadFrom(customPath);
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"Failed to load Document Manager from custom path {customPath}: {ex.Message}");
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Get a type from the loaded Document Manager assembly
+        /// </summary>
+        private Type? GetDmType(string typeName)
+        {
+            return _dmAssembly?.GetType($"SolidWorks.Interop.swdocumentmgr.{typeName}");
+        }
+
+        #endregion
 
         #region Initialization
 
         public bool Initialize()
         {
-#if HAS_DOCUMENT_MANAGER
             if (_initialized) return _dmApp != null;
 
             try
             {
+                // First, try to load the Document Manager DLL
+                if (!TryLoadAssembly())
+                {
+                    _initError = "Document Manager DLL not found. Please ensure SolidWorks is installed. " +
+                                 "You can also set SOLIDWORKS_DM_DLL_PATH environment variable to specify the DLL location.";
+                    _initialized = true;
+                    return false;
+                }
+
                 var key = _licenseKey ?? Environment.GetEnvironmentVariable("SOLIDWORKS_DM_LICENSE_KEY");
                 
                 if (string.IsNullOrEmpty(key))
@@ -61,8 +121,53 @@ namespace BluePLM.SolidWorksService
                     return false;
                 }
 
-                var dmClassFactory = new SwDMClassFactory();
-                _dmApp = (SwDMApplication)dmClassFactory.GetApplication(key);
+                // Create SwDMClassFactory using reflection
+                var factoryType = GetDmType("SwDMClassFactory");
+                if (factoryType == null)
+                {
+                    _initError = "Failed to find SwDMClassFactory type in Document Manager assembly.";
+                    _initialized = true;
+                    return false;
+                }
+
+                var factory = Activator.CreateInstance(factoryType);
+                if (factory == null)
+                {
+                    _initError = "Failed to create SwDMClassFactory instance.";
+                    _initialized = true;
+                    return false;
+                }
+
+                // Call GetApplication method
+                var getAppMethod = factoryType.GetMethod("ISwDMClassFactory_QueryInterface") ?? 
+                                   factoryType.GetMethod("GetApplication");
+                
+                // Try to get the application through the interface
+                var iFactoryType = GetDmType("ISwDMClassFactory");
+                if (iFactoryType != null)
+                {
+                    getAppMethod = iFactoryType.GetMethod("GetApplication");
+                }
+
+                if (getAppMethod == null)
+                {
+                    // Try direct invocation via COM
+                    try
+                    {
+                        dynamic dynamicFactory = factory;
+                        _dmApp = dynamicFactory.GetApplication(key);
+                    }
+                    catch (Exception ex)
+                    {
+                        _initError = $"Failed to call GetApplication: {ex.Message}";
+                        _initialized = true;
+                        return false;
+                    }
+                }
+                else
+                {
+                    _dmApp = getAppMethod.Invoke(factory, new object[] { key });
+                }
                 
                 if (_dmApp == null)
                 {
@@ -80,16 +185,10 @@ namespace BluePLM.SolidWorksService
                 _initialized = true;
                 return false;
             }
-#else
-            _initialized = true;
-            _initError = "Document Manager API not available. SolidWorks must be installed to use this feature.";
-            return false;
-#endif
         }
 
         public bool SetLicenseKey(string key)
         {
-#if HAS_DOCUMENT_MANAGER
             if (string.IsNullOrEmpty(key))
             {
                 _initError = "License key cannot be empty";
@@ -102,8 +201,37 @@ namespace BluePLM.SolidWorksService
 
             try
             {
-                var dmClassFactory = new SwDMClassFactory();
-                _dmApp = (SwDMApplication)dmClassFactory.GetApplication(key);
+                if (!TryLoadAssembly())
+                {
+                    _initError = "Document Manager DLL not found. Please ensure SolidWorks is installed.";
+                    return false;
+                }
+
+                var factoryType = GetDmType("SwDMClassFactory");
+                if (factoryType == null)
+                {
+                    _initError = "Failed to find SwDMClassFactory type.";
+                    return false;
+                }
+
+                var factory = Activator.CreateInstance(factoryType);
+                if (factory == null)
+                {
+                    _initError = "Failed to create factory instance.";
+                    return false;
+                }
+
+                try
+                {
+                    dynamic dynamicFactory = factory;
+                    _dmApp = dynamicFactory.GetApplication(key);
+                }
+                catch (Exception ex)
+                {
+                    _initError = $"Invalid license key: {ex.Message}";
+                    _initialized = true;
+                    return false;
+                }
                 
                 if (_dmApp == null)
                 {
@@ -125,45 +253,48 @@ namespace BluePLM.SolidWorksService
                 _initialized = true;
                 return false;
             }
-#else
-            _initError = "Document Manager API not available. SolidWorks must be installed to use this feature.";
-            return false;
-#endif
         }
 
-#if HAS_DOCUMENT_MANAGER
-        private SwDMDocument? OpenDocument(string filePath, out SwDmDocumentOpenError error)
+        private object? OpenDocument(string filePath, out int error)
         {
-            error = SwDmDocumentOpenError.swDmDocumentOpenErrorNone;
+            error = 0; // swDmDocumentOpenErrorNone
             
             if (_dmApp == null)
             {
-                error = SwDmDocumentOpenError.swDmDocumentOpenErrorFail;
+                error = 1; // swDmDocumentOpenErrorFail
                 return null;
             }
 
-            var docType = GetDocumentType(filePath);
-            if (docType == SwDmDocumentType.swDmDocumentUnknown)
+            var docType = GetDocumentTypeValue(filePath);
+            if (docType == 0) // swDmDocumentUnknown
             {
-                error = SwDmDocumentOpenError.swDmDocumentOpenErrorFileNotFound;
+                error = 2; // swDmDocumentOpenErrorFileNotFound
                 return null;
             }
 
-            return (SwDMDocument)_dmApp.GetDocument(filePath, docType, true, out error);
+            try
+            {
+                dynamic app = _dmApp;
+                return app.GetDocument(filePath, docType, true, out error);
+            }
+            catch
+            {
+                error = 1;
+                return null;
+            }
         }
 
-        private SwDmDocumentType GetDocumentType(string filePath)
+        private int GetDocumentTypeValue(string filePath)
         {
             var ext = Path.GetExtension(filePath).ToLowerInvariant();
             return ext switch
             {
-                ".sldprt" => SwDmDocumentType.swDmDocumentPart,
-                ".sldasm" => SwDmDocumentType.swDmDocumentAssembly,
-                ".slddrw" => SwDmDocumentType.swDmDocumentDrawing,
-                _ => SwDmDocumentType.swDmDocumentUnknown
+                ".sldprt" => 1, // swDmDocumentPart
+                ".sldasm" => 2, // swDmDocumentAssembly
+                ".slddrw" => 3, // swDmDocumentDrawing
+                _ => 0 // swDmDocumentUnknown
             };
         }
-#endif
 
         #endregion
 
@@ -171,7 +302,6 @@ namespace BluePLM.SolidWorksService
 
         public CommandResult GetCustomProperties(string? filePath, string? configuration = null)
         {
-#if HAS_DOCUMENT_MANAGER
             if (!Initialize() || _dmApp == null)
                 return new CommandResult { Success = false, Error = _initError ?? "Document Manager not available" };
 
@@ -185,21 +315,22 @@ namespace BluePLM.SolidWorksService
             {
                 var doc = OpenDocument(filePath, out var openError);
                 if (doc == null)
-                    return new CommandResult { Success = false, Error = $"Failed to open file: {openError}" };
+                    return new CommandResult { Success = false, Error = $"Failed to open file: error code {openError}" };
 
-                var fileProps = ReadProperties(doc, null);
-                var configNames = GetConfigurationNames(doc);
+                dynamic dynDoc = doc;
+                var fileProps = ReadProperties(dynDoc, null);
+                var configNames = GetConfigurationNames(dynDoc);
                 var configProps = new Dictionary<string, Dictionary<string, string>>();
                 
                 foreach (var config in configNames)
                 {
                     if (configuration == null || config == configuration)
                     {
-                        configProps[config] = ReadProperties(doc, config);
+                        configProps[config] = ReadProperties(dynDoc, config);
                     }
                 }
 
-                doc.CloseDoc();
+                dynDoc.CloseDoc();
 
                 return new CommandResult
                 {
@@ -217,28 +348,23 @@ namespace BluePLM.SolidWorksService
             {
                 return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
             }
-#else
-            return new CommandResult { Success = false, Error = _initError ?? "Document Manager API not available" };
-#endif
         }
 
-#if HAS_DOCUMENT_MANAGER
-        private Dictionary<string, string> ReadProperties(SwDMDocument doc, string? configuration)
+        private Dictionary<string, string> ReadProperties(dynamic doc, string? configuration)
         {
             var props = new Dictionary<string, string>();
 
             try
             {
-                string[] propNames;
-
                 if (string.IsNullOrEmpty(configuration))
                 {
-                    propNames = (string[])doc.GetCustomPropertyNames();
+                    var propNames = (string[]?)doc.GetCustomPropertyNames();
                     if (propNames != null)
                     {
                         foreach (var name in propNames)
                         {
-                            var value = doc.GetCustomProperty(name, out _);
+                            object propType;
+                            string value = doc.GetCustomProperty(name, out propType);
                             props[name] = value ?? "";
                         }
                     }
@@ -246,15 +372,16 @@ namespace BluePLM.SolidWorksService
                 else
                 {
                     var configMgr = doc.ConfigurationManager;
-                    var config = (SwDMConfiguration)configMgr.GetConfigurationByName(configuration);
+                    var config = configMgr.GetConfigurationByName(configuration);
                     if (config != null)
                     {
-                        propNames = (string[])config.GetCustomPropertyNames();
+                        var propNames = (string[]?)config.GetCustomPropertyNames();
                         if (propNames != null)
                         {
                             foreach (var name in propNames)
                             {
-                                var value = config.GetCustomProperty(name, out _);
+                                object propType;
+                                string value = config.GetCustomProperty(name, out propType);
                                 props[name] = value ?? "";
                             }
                         }
@@ -265,7 +392,6 @@ namespace BluePLM.SolidWorksService
 
             return props;
         }
-#endif
 
         /// <summary>
         /// Set custom properties on a file WITHOUT launching SolidWorks!
@@ -273,7 +399,6 @@ namespace BluePLM.SolidWorksService
         /// </summary>
         public CommandResult SetCustomProperties(string? filePath, Dictionary<string, string>? properties, string? configuration = null)
         {
-#if HAS_DOCUMENT_MANAGER
             if (!Initialize() || _dmApp == null)
                 return new CommandResult { Success = false, Error = _initError ?? "Document Manager not available" };
 
@@ -291,9 +416,11 @@ namespace BluePLM.SolidWorksService
                 // Open document for WRITE access (not read-only)
                 var doc = OpenDocumentForWrite(filePath, out var openError);
                 if (doc == null)
-                    return new CommandResult { Success = false, Error = $"Failed to open file for writing: {openError}" };
+                    return new CommandResult { Success = false, Error = $"Failed to open file for writing: error code {openError}" };
 
+                dynamic dynDoc = doc;
                 int propsSet = 0;
+                const int swDmCustomInfoText = 2;
 
                 if (string.IsNullOrEmpty(configuration))
                 {
@@ -302,20 +429,15 @@ namespace BluePLM.SolidWorksService
                     {
                         try
                         {
-                            // First try to delete the property (in case it exists), then add it
-                            // This is a reliable way to update properties in DM API
-                            try { doc.DeleteCustomProperty(kvp.Key); } catch { }
-                            doc.AddCustomProperty(kvp.Key, SwDmCustomInfoType.swDmCustomInfoText, kvp.Value);
+                            try { dynDoc.DeleteCustomProperty(kvp.Key); } catch { }
+                            dynDoc.AddCustomProperty(kvp.Key, swDmCustomInfoText, kvp.Value);
                             propsSet++;
                         }
                         catch
                         {
-                            // Try SetCustomProperty as fallback (for older API versions)
                             try 
                             { 
-                                // Cast to SwDMDocument9 for SetCustomProperty method
-                                var doc9 = (SwDMDocument9)doc;
-                                doc9.SetCustomProperty(kvp.Key, kvp.Value);
+                                dynDoc.SetCustomProperty(kvp.Key, kvp.Value);
                                 propsSet++; 
                             } 
                             catch { }
@@ -325,11 +447,11 @@ namespace BluePLM.SolidWorksService
                 else
                 {
                     // Set configuration-specific properties
-                    var configMgr = doc.ConfigurationManager;
-                    var config = (SwDMConfiguration)configMgr.GetConfigurationByName(configuration);
+                    var configMgr = dynDoc.ConfigurationManager;
+                    var config = configMgr.GetConfigurationByName(configuration);
                     if (config == null)
                     {
-                        doc.CloseDoc();
+                        dynDoc.CloseDoc();
                         return new CommandResult { Success = false, Error = $"Configuration not found: {configuration}" };
                     }
 
@@ -337,17 +459,15 @@ namespace BluePLM.SolidWorksService
                     {
                         try
                         {
-                            // Delete then add for reliable update
                             try { config.DeleteCustomProperty(kvp.Key); } catch { }
-                            config.AddCustomProperty(kvp.Key, SwDmCustomInfoType.swDmCustomInfoText, kvp.Value);
+                            config.AddCustomProperty(kvp.Key, swDmCustomInfoText, kvp.Value);
                             propsSet++;
                         }
                         catch
                         {
                             try 
                             { 
-                                var config4 = (SwDMConfiguration4)config;
-                                config4.SetCustomProperty(kvp.Key, kvp.Value);
+                                config.SetCustomProperty(kvp.Key, kvp.Value);
                                 propsSet++; 
                             } 
                             catch { }
@@ -356,8 +476,8 @@ namespace BluePLM.SolidWorksService
                 }
 
                 // Save and close
-                doc.Save();
-                doc.CloseDoc();
+                dynDoc.Save();
+                dynDoc.CloseDoc();
 
                 return new CommandResult
                 {
@@ -374,36 +494,40 @@ namespace BluePLM.SolidWorksService
             {
                 return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
             }
-#else
-            return new CommandResult { Success = false, Error = _initError ?? "Document Manager API not available" };
-#endif
         }
 
-#if HAS_DOCUMENT_MANAGER
         /// <summary>
         /// Open document for write access (not read-only)
         /// </summary>
-        private SwDMDocument? OpenDocumentForWrite(string filePath, out SwDmDocumentOpenError error)
+        private object? OpenDocumentForWrite(string filePath, out int error)
         {
-            error = SwDmDocumentOpenError.swDmDocumentOpenErrorNone;
+            error = 0;
 
             if (_dmApp == null)
             {
-                error = SwDmDocumentOpenError.swDmDocumentOpenErrorFail;
+                error = 1;
                 return null;
             }
 
-            var docType = GetDocumentType(filePath);
-            if (docType == SwDmDocumentType.swDmDocumentUnknown)
+            var docType = GetDocumentTypeValue(filePath);
+            if (docType == 0)
             {
-                error = SwDmDocumentOpenError.swDmDocumentOpenErrorFail;
+                error = 1;
                 return null;
             }
 
-            // Open with write access (readOnly = false)
-            return (SwDMDocument)_dmApp.GetDocument(filePath, docType, false, out error);
+            try
+            {
+                dynamic app = _dmApp;
+                // Open with write access (readOnly = false)
+                return app.GetDocument(filePath, docType, false, out error);
+            }
+            catch
+            {
+                error = 1;
+                return null;
+            }
         }
-#endif
 
         #endregion
 
@@ -411,7 +535,6 @@ namespace BluePLM.SolidWorksService
 
         public CommandResult GetConfigurations(string? filePath)
         {
-#if HAS_DOCUMENT_MANAGER
             if (!Initialize() || _dmApp == null)
                 return new CommandResult { Success = false, Error = _initError ?? "Document Manager not available" };
 
@@ -425,16 +548,17 @@ namespace BluePLM.SolidWorksService
             {
                 var doc = OpenDocument(filePath, out var openError);
                 if (doc == null)
-                    return new CommandResult { Success = false, Error = $"Failed to open file: {openError}" };
+                    return new CommandResult { Success = false, Error = $"Failed to open file: error code {openError}" };
 
-                var configNames = GetConfigurationNames(doc);
+                dynamic dynDoc = doc;
+                var configNames = GetConfigurationNames(dynDoc);
                 var configs = new List<object>();
-                var activeConfig = doc.ConfigurationManager.GetActiveConfigurationName();
+                var activeConfig = (string)dynDoc.ConfigurationManager.GetActiveConfigurationName();
 
                 foreach (var name in configNames)
                 {
-                    var config = (SwDMConfiguration)doc.ConfigurationManager.GetConfigurationByName(name);
-                    var props = ReadProperties(doc, name);
+                    var config = dynDoc.ConfigurationManager.GetConfigurationByName(name);
+                    var props = ReadProperties(dynDoc, name);
 
                     configs.Add(new
                     {
@@ -445,7 +569,7 @@ namespace BluePLM.SolidWorksService
                     });
                 }
 
-                doc.CloseDoc();
+                dynDoc.CloseDoc();
 
                 return new CommandResult
                 {
@@ -463,17 +587,13 @@ namespace BluePLM.SolidWorksService
             {
                 return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
             }
-#else
-            return new CommandResult { Success = false, Error = _initError ?? "Document Manager API not available" };
-#endif
         }
 
-#if HAS_DOCUMENT_MANAGER
-        private string[] GetConfigurationNames(SwDMDocument doc)
+        private string[] GetConfigurationNames(dynamic doc)
         {
             try
             {
-                var names = (string[])doc.ConfigurationManager.GetConfigurationNames();
+                var names = (string[]?)doc.ConfigurationManager.GetConfigurationNames();
                 return names ?? Array.Empty<string>();
             }
             catch
@@ -481,7 +601,6 @@ namespace BluePLM.SolidWorksService
                 return Array.Empty<string>();
             }
         }
-#endif
 
         #endregion
 
@@ -489,7 +608,6 @@ namespace BluePLM.SolidWorksService
 
         public CommandResult GetBillOfMaterials(string? filePath, string? configuration = null)
         {
-#if HAS_DOCUMENT_MANAGER
             if (!Initialize() || _dmApp == null)
                 return new CommandResult { Success = false, Error = _initError ?? "Document Manager not available" };
 
@@ -507,69 +625,80 @@ namespace BluePLM.SolidWorksService
             {
                 var doc = OpenDocument(filePath, out var openError);
                 if (doc == null)
-                    return new CommandResult { Success = false, Error = $"Failed to open file: {openError}" };
+                    return new CommandResult { Success = false, Error = $"Failed to open file: error code {openError}" };
 
+                dynamic dynDoc = doc;
                 var bom = new List<BomItem>();
                 var quantities = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
-                var configName = configuration ?? doc.ConfigurationManager.GetActiveConfigurationName();
+                var configName = configuration ?? (string)dynDoc.ConfigurationManager.GetActiveConfigurationName();
                 
-                // Get external references
-                var searchOpt = new SwDMSearchOptionClass();
-                searchOpt.SearchFilters = (int)(SwDmSearchFilters.SwDmSearchForPart | SwDmSearchFilters.SwDmSearchForAssembly);
-                var dependencies = (string[])doc.GetAllExternalReferences(searchOpt);
-
-                if (dependencies != null)
+                // Get external references using reflection
+                var searchOptType = GetDmType("SwDMSearchOptionClass");
+                if (searchOptType != null)
                 {
-                    foreach (var depPath in dependencies)
+                    var searchOpt = Activator.CreateInstance(searchOptType);
+                    if (searchOpt != null)
                     {
-                        if (string.IsNullOrEmpty(depPath)) continue;
+                        dynamic dynSearchOpt = searchOpt;
+                        dynSearchOpt.SearchFilters = 3; // SwDmSearchForPart | SwDmSearchForAssembly
 
-                        if (quantities.ContainsKey(depPath))
-                            quantities[depPath]++;
-                        else
-                            quantities[depPath] = 1;
-                    }
+                        var dependencies = (string[]?)dynDoc.GetAllExternalReferences(searchOpt);
 
-                    var processed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    foreach (var depPath in dependencies)
-                    {
-                        if (string.IsNullOrEmpty(depPath) || processed.Contains(depPath)) continue;
-                        if (!File.Exists(depPath)) continue;
-                        processed.Add(depPath);
-
-                        var depExt = Path.GetExtension(depPath).ToLowerInvariant();
-                        var fileType = depExt == ".sldprt" ? "Part" : depExt == ".sldasm" ? "Assembly" : "Other";
-
-                        var props = new Dictionary<string, string>();
-                        try
+                        if (dependencies != null)
                         {
-                            var compDoc = OpenDocument(depPath, out _);
-                            if (compDoc != null)
+                            foreach (var depPath in dependencies)
                             {
-                                props = ReadProperties(compDoc, null);
-                                compDoc.CloseDoc();
+                                if (string.IsNullOrEmpty(depPath)) continue;
+
+                                if (quantities.ContainsKey(depPath))
+                                    quantities[depPath]++;
+                                else
+                                    quantities[depPath] = 1;
+                            }
+
+                            var processed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                            foreach (var depPath in dependencies)
+                            {
+                                if (string.IsNullOrEmpty(depPath) || processed.Contains(depPath)) continue;
+                                if (!File.Exists(depPath)) continue;
+                                processed.Add(depPath);
+
+                                var depExt = Path.GetExtension(depPath).ToLowerInvariant();
+                                var fileType = depExt == ".sldprt" ? "Part" : depExt == ".sldasm" ? "Assembly" : "Other";
+
+                                var props = new Dictionary<string, string>();
+                                try
+                                {
+                                    var compDoc = OpenDocument(depPath, out _);
+                                    if (compDoc != null)
+                                    {
+                                        dynamic dynCompDoc = compDoc;
+                                        props = ReadProperties(dynCompDoc, null);
+                                        dynCompDoc.CloseDoc();
+                                    }
+                                }
+                                catch { }
+
+                                bom.Add(new BomItem
+                                {
+                                    FileName = Path.GetFileName(depPath),
+                                    FilePath = depPath,
+                                    FileType = fileType,
+                                    Quantity = quantities[depPath],
+                                    Configuration = "",
+                                    PartNumber = GetPartNumber(props),
+                                    Description = GetDictValue(props, "Description") ?? "",
+                                    Material = GetDictValue(props, "Material") ?? "",
+                                    Revision = GetRevision(props),
+                                    Properties = props
+                                });
                             }
                         }
-                        catch { }
-
-                        bom.Add(new BomItem
-                        {
-                            FileName = Path.GetFileName(depPath),
-                            FilePath = depPath,
-                            FileType = fileType,
-                            Quantity = quantities[depPath],
-                            Configuration = "",
-                            PartNumber = GetPartNumber(props),
-                            Description = GetDictValue(props, "Description") ?? "",
-                            Material = GetDictValue(props, "Material") ?? "",
-                            Revision = GetRevision(props),
-                            Properties = props
-                        });
                     }
                 }
 
-                doc.CloseDoc();
+                dynDoc.CloseDoc();
 
                 return new CommandResult
                 {
@@ -588,14 +717,10 @@ namespace BluePLM.SolidWorksService
             {
                 return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
             }
-#else
-            return new CommandResult { Success = false, Error = _initError ?? "Document Manager API not available" };
-#endif
         }
 
         public CommandResult GetExternalReferences(string? filePath)
         {
-#if HAS_DOCUMENT_MANAGER
             if (!Initialize() || _dmApp == null)
                 return new CommandResult { Success = false, Error = _initError ?? "Document Manager not available" };
 
@@ -609,33 +734,44 @@ namespace BluePLM.SolidWorksService
             {
                 var doc = OpenDocument(filePath, out var openError);
                 if (doc == null)
-                    return new CommandResult { Success = false, Error = $"Failed to open file: {openError}" };
+                    return new CommandResult { Success = false, Error = $"Failed to open file: error code {openError}" };
 
+                dynamic dynDoc = doc;
                 var references = new List<object>();
-                var searchOpt = new SwDMSearchOptionClass();
-                searchOpt.SearchFilters = (int)(SwDmSearchFilters.SwDmSearchForPart | SwDmSearchFilters.SwDmSearchForAssembly | SwDmSearchFilters.SwDmSearchForDrawing);
-                var dependencies = (string[])doc.GetAllExternalReferences(searchOpt);
-
-                if (dependencies != null)
+                
+                var searchOptType = GetDmType("SwDMSearchOptionClass");
+                if (searchOptType != null)
                 {
-                    var processed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    foreach (var depPath in dependencies)
+                    var searchOpt = Activator.CreateInstance(searchOptType);
+                    if (searchOpt != null)
                     {
-                        if (string.IsNullOrEmpty(depPath) || processed.Contains(depPath)) continue;
-                        processed.Add(depPath);
+                        dynamic dynSearchOpt = searchOpt;
+                        dynSearchOpt.SearchFilters = 7; // Part | Assembly | Drawing
 
-                        var depExt = Path.GetExtension(depPath).ToLowerInvariant();
-                        references.Add(new
+                        var dependencies = (string[]?)dynDoc.GetAllExternalReferences(searchOpt);
+
+                        if (dependencies != null)
                         {
-                            path = depPath,
-                            fileName = Path.GetFileName(depPath),
-                            exists = File.Exists(depPath),
-                            fileType = depExt == ".sldprt" ? "Part" : depExt == ".sldasm" ? "Assembly" : depExt == ".slddrw" ? "Drawing" : "Other"
-                        });
+                            var processed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                            foreach (var depPath in dependencies)
+                            {
+                                if (string.IsNullOrEmpty(depPath) || processed.Contains(depPath)) continue;
+                                processed.Add(depPath);
+
+                                var depExt = Path.GetExtension(depPath).ToLowerInvariant();
+                                references.Add(new
+                                {
+                                    path = depPath,
+                                    fileName = Path.GetFileName(depPath),
+                                    exists = File.Exists(depPath),
+                                    fileType = depExt == ".sldprt" ? "Part" : depExt == ".sldasm" ? "Assembly" : depExt == ".slddrw" ? "Drawing" : "Other"
+                                });
+                            }
+                        }
                     }
                 }
 
-                doc.CloseDoc();
+                dynDoc.CloseDoc();
 
                 return new CommandResult
                 {
@@ -652,9 +788,6 @@ namespace BluePLM.SolidWorksService
             {
                 return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
             }
-#else
-            return new CommandResult { Success = false, Error = _initError ?? "Document Manager API not available" };
-#endif
         }
 
         #endregion
@@ -664,13 +797,9 @@ namespace BluePLM.SolidWorksService
         /// <summary>
         /// Extract high-resolution preview image from a SolidWorks file.
         /// Returns the image as a base64-encoded PNG string.
-        /// 
-        /// The Document Manager API stores previews as DIB (Device Independent Bitmap) format.
-        /// We convert it to PNG for web display.
         /// </summary>
         public CommandResult GetPreviewImage(string? filePath, string? configuration = null)
         {
-#if HAS_DOCUMENT_MANAGER
             if (!Initialize() || _dmApp == null)
                 return new CommandResult { Success = false, Error = _initError ?? "Document Manager not available" };
 
@@ -684,25 +813,26 @@ namespace BluePLM.SolidWorksService
             {
                 var doc = OpenDocument(filePath, out var openError);
                 if (doc == null)
-                    return new CommandResult { Success = false, Error = $"Failed to open file: {openError}" };
+                    return new CommandResult { Success = false, Error = $"Failed to open file: error code {openError}" };
 
+                dynamic dynDoc = doc;
                 object? previewBitmap = null;
                 
                 // Try to get preview from specific configuration first
                 if (!string.IsNullOrEmpty(configuration))
                 {
-                    var config = (SwDMConfiguration3)doc.ConfigurationManager.GetConfigurationByName(configuration);
-                    if (config != null)
+                    try
                     {
-                        try
+                        var config = dynDoc.ConfigurationManager.GetConfigurationByName(configuration);
+                        if (config != null)
                         {
-                            // GetPreviewBitmap returns a DIB (Device Independent Bitmap)
-                            previewBitmap = config.GetPreviewBitmap(out var errResult);
-                            if (errResult != SwDmPreviewError.swDmPreviewErrorNone)
+                            int errResult;
+                            previewBitmap = config.GetPreviewBitmap(out errResult);
+                            if (errResult != 0) // swDmPreviewErrorNone
                                 previewBitmap = null;
                         }
-                        catch { previewBitmap = null; }
                     }
+                    catch { previewBitmap = null; }
                 }
 
                 // Fall back to document-level preview
@@ -710,29 +840,26 @@ namespace BluePLM.SolidWorksService
                 {
                     try
                     {
-                        // SwDMDocument also has GetPreviewBitmap
-                        var doc3 = (SwDMDocument13)doc;
-                        previewBitmap = doc3.GetPreviewBitmap(out var errResult);
-                        if (errResult != SwDmPreviewError.swDmPreviewErrorNone || previewBitmap == null)
+                        int errResult;
+                        previewBitmap = dynDoc.GetPreviewBitmap(out errResult);
+                        if (errResult != 0 || previewBitmap == null)
                         {
-                            doc.CloseDoc();
+                            dynDoc.CloseDoc();
                             return new CommandResult { Success = false, Error = "No preview available for this file" };
                         }
                     }
                     catch (Exception ex)
                     {
-                        doc.CloseDoc();
+                        dynDoc.CloseDoc();
                         return new CommandResult { Success = false, Error = $"Failed to extract preview: {ex.Message}" };
                     }
                 }
 
-                doc.CloseDoc();
+                dynDoc.CloseDoc();
 
                 // The preview bitmap is a byte array containing DIB data
-                // We need to convert it to a usable image format (PNG)
                 if (previewBitmap is byte[] dibData && dibData.Length > 0)
                 {
-                    // Convert DIB to PNG using GDI+
                     var pngData = ConvertDibToPng(dibData);
                     if (pngData == null || pngData.Length == 0)
                     {
@@ -761,23 +888,15 @@ namespace BluePLM.SolidWorksService
             {
                 return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
             }
-#else
-            return new CommandResult { Success = false, Error = _initError ?? "Document Manager API not available" };
-#endif
         }
 
         /// <summary>
-        /// Convert a DIB (Device Independent Bitmap) byte array to PNG format.
+        /// Convert a DIB (Device Independent Bitmap) byte array to BMP format.
         /// </summary>
         private static byte[]? ConvertDibToPng(byte[] dibData)
         {
             try
             {
-                // DIB format: BITMAPINFOHEADER (40 bytes) + optional color table + pixel data
-                // For simplicity, we'll just return the raw data as-is for now
-                // A proper implementation would use System.Drawing to convert
-                
-                // Try to create a BMP file from the DIB data
                 using (var ms = new MemoryStream())
                 {
                     // BMP file header (14 bytes)
@@ -786,24 +905,22 @@ namespace BluePLM.SolidWorksService
                     ms.Write(BitConverter.GetBytes(fileSize), 0, 4);  // File size
                     ms.Write(new byte[] { 0, 0, 0, 0 }, 0, 4);  // Reserved
                     
-                    // Calculate offset to pixel data (14 + BITMAPINFOHEADER size)
+                    // Calculate offset to pixel data
                     var headerSize = BitConverter.ToInt32(dibData, 0);
                     var pixelOffset = 14 + headerSize;
                     
-                    // Check if there's a color table (for 8-bit images)
+                    // Check for color table
                     var bitCount = BitConverter.ToInt16(dibData, 14);
                     if (bitCount <= 8)
                     {
-                        var colorTableSize = (1 << bitCount) * 4;  // 4 bytes per color
+                        var colorTableSize = (1 << bitCount) * 4;
                         pixelOffset += colorTableSize;
                     }
                     
-                    ms.Write(BitConverter.GetBytes(pixelOffset), 0, 4);  // Offset to pixel data
-                    
-                    // Write DIB data
+                    ms.Write(BitConverter.GetBytes(pixelOffset), 0, 4);
                     ms.Write(dibData, 0, dibData.Length);
                     
-                    return ms.ToArray();  // Returns BMP format (browsers can display this)
+                    return ms.ToArray();
                 }
             }
             catch
@@ -823,12 +940,8 @@ namespace BluePLM.SolidWorksService
             return null;
         }
 
-        /// <summary>
-        /// Get part number from properties, checking common property name variations
-        /// </summary>
         private static string GetPartNumber(Dictionary<string, string> props)
         {
-            // Common part number property names used in SolidWorks
             string[] partNumberKeys = {
                 "PartNumber", "Part Number", "Part No", "Part No.", "PartNo",
                 "ItemNumber", "Item Number", "Item No", "Item No.", "ItemNo",
@@ -842,7 +955,6 @@ namespace BluePLM.SolidWorksService
                     return value;
             }
 
-            // Try case-insensitive search as fallback
             foreach (var kvp in props)
             {
                 var lowerKey = kvp.Key.ToLowerInvariant();
@@ -858,12 +970,8 @@ namespace BluePLM.SolidWorksService
             return "";
         }
 
-        /// <summary>
-        /// Get revision from properties, checking common property name variations
-        /// </summary>
         private static string GetRevision(Dictionary<string, string> props)
         {
-            // Common revision property names used in SolidWorks
             string[] revisionKeys = {
                 "Revision", "Rev", "Rev.", "REV", "RevLevel", "Rev Level",
                 "Revision Level", "RevisionLevel", "ECO", "ECN", "Change Level"
@@ -876,7 +984,6 @@ namespace BluePLM.SolidWorksService
                     return value;
             }
 
-            // Try case-insensitive search as fallback
             foreach (var kvp in props)
             {
                 var lowerKey = kvp.Key.ToLowerInvariant();
@@ -898,9 +1005,8 @@ namespace BluePLM.SolidWorksService
         {
             if (_disposed) return;
             _disposed = true;
-#if HAS_DOCUMENT_MANAGER
             _dmApp = null;
-#endif
+            _dmAssembly = null;
             GC.Collect();
         }
 
