@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Users, Monitor, Laptop } from 'lucide-react'
 import { usePDMStore } from '../stores/pdmStore'
-import { getOrgOnlineUsers, subscribeToOrgOnlineUsers, supabase, OnlineUser } from '../lib/supabase'
+import { getOrgOnlineUsers, subscribeToOrgOnlineUsers, OnlineUser } from '../lib/supabase'
 import { getInitials } from '../types/pdm'
 import { UserProfileModal } from './settings/UserProfileModal'
 

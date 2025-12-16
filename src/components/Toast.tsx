@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { X, AlertCircle, CheckCircle, Info, AlertTriangle, Copy, Check, Loader2, Download, RefreshCw, ArrowDownToLine } from 'lucide-react'
 import { usePDMStore, ToastMessage, ToastType } from '../stores/pdmStore'
 
@@ -217,16 +217,20 @@ function ProgressToastItem({ toast }: { toast: ToastMessage }) {
 function ToastItem({ toast, onClose }: { toast: ToastMessage; onClose: () => void }) {
   const [isExiting, setIsExiting] = useState(false)
   const [copied, setCopied] = useState(false)
+  
+  // Use ref to store onClose so the timer doesn't reset when the function reference changes
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
 
   useEffect(() => {
     if (toast.duration !== 0) {
       const timer = setTimeout(() => {
         setIsExiting(true)
-        setTimeout(onClose, 200) // Wait for exit animation
+        setTimeout(() => onCloseRef.current(), 200) // Wait for exit animation
       }, toast.duration || 5000)
       return () => clearTimeout(timer)
     }
-  }, [toast.duration, onClose])
+  }, [toast.duration, toast.id]) // Use toast.id instead of onClose - each toast has a stable id
 
   const handleClose = () => {
     setIsExiting(true)

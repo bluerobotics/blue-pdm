@@ -324,9 +324,38 @@ interface HistogramProps {
   maxValue: number
   onBucketClick?: (bucket: HistogramBucket) => void
   levelFilter: Set<LogLevel>
+  height: number
+  onHeightChange: (height: number) => void
 }
 
-function Histogram({ buckets, maxValue, onBucketClick, levelFilter }: HistogramProps) {
+function Histogram({ buckets, maxValue, onBucketClick, levelFilter, height, onHeightChange }: HistogramProps) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [isResizing, setIsResizing] = useState(false)
+  
+  // Handle resize drag
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    setIsResizing(true)
+    
+    const startY = e.clientY
+    const startHeight = height
+    
+    const handleMouseMove = (e: MouseEvent) => {
+      const delta = e.clientY - startY
+      const newHeight = Math.max(60, Math.min(300, startHeight + delta))
+      onHeightChange(newHeight)
+    }
+    
+    const handleMouseUp = () => {
+      setIsResizing(false)
+      document.removeEventListener('mousemove', handleMouseMove)
+      document.removeEventListener('mouseup', handleMouseUp)
+    }
+    
+    document.addEventListener('mousemove', handleMouseMove)
+    document.addEventListener('mouseup', handleMouseUp)
+  }, [height, onHeightChange])
+  
   if (buckets.length === 0) {
     return (
       <div className="h-24 flex items-center justify-center text-plm-fg-muted text-sm">
@@ -335,63 +364,112 @@ function Histogram({ buckets, maxValue, onBucketClick, levelFilter }: HistogramP
     )
   }
   
-  const getBarHeight = (value: number) => {
-    if (maxValue === 0) return 0
-    return Math.max(2, (value / maxValue) * 100)
+  const topPadding = 12 // Always leave some whitespace above tallest bar
+  const barAreaHeight = height - topPadding
+  
+  const getSegmentHeight = (value: number) => {
+    if (maxValue === 0 || value === 0) return 0
+    return Math.max(2, Math.round((value / maxValue) * barAreaHeight))
+  }
+  
+  // Level colors - order: error (bottom), warn, info, debug (top)
+  // Using explicit colors to ensure visibility
+  const levelColors = {
+    error: 'bg-red-500',
+    warn: 'bg-amber-500', 
+    info: 'bg-blue-500',
+    debug: 'bg-slate-500'
   }
   
   return (
-    <div className="h-28 flex items-end gap-0.5 px-2">
-      {buckets.map((bucket, index) => {
-        // Calculate visible count based on filter
-        let visibleCount = 0
-        if (levelFilter.has('error')) visibleCount += bucket.error
-        if (levelFilter.has('warn')) visibleCount += bucket.warn
-        if (levelFilter.has('info')) visibleCount += bucket.info
-        if (levelFilter.has('debug')) visibleCount += bucket.debug
-        
-        const height = getBarHeight(visibleCount)
-        const hasErrors = bucket.error > 0 && levelFilter.has('error')
-        const hasWarnings = bucket.warn > 0 && levelFilter.has('warn')
-        
-        return (
-          <div
-            key={index}
-            className="flex-1 flex flex-col items-center group cursor-pointer min-w-[12px]"
-            onClick={() => onBucketClick?.(bucket)}
-          >
-            {/* Tooltip */}
-            <div className="opacity-0 group-hover:opacity-100 absolute -top-12 bg-plm-bg-light border border-plm-border rounded-lg px-2 py-1.5 text-xs shadow-lg z-10 pointer-events-none whitespace-nowrap">
-              <div className="font-medium text-plm-fg">{bucket.label}</div>
-              <div className="flex gap-2 mt-0.5 text-[10px]">
-                {bucket.error > 0 && <span className="text-plm-error">{bucket.error} err</span>}
-                {bucket.warn > 0 && <span className="text-plm-warning">{bucket.warn} warn</span>}
-                {bucket.info > 0 && <span className="text-plm-info">{bucket.info} info</span>}
-                {bucket.debug > 0 && <span className="text-plm-fg-muted">{bucket.debug} dbg</span>}
-              </div>
-            </div>
-            
-            {/* Bar */}
+    <div className="px-2" ref={containerRef}>
+      {/* Bar area with top padding */}
+      <div 
+        className="flex items-end gap-[2px] overflow-hidden"
+        style={{ height: `${height}px`, paddingTop: `${topPadding}px` }}
+      >
+        {buckets.map((bucket, index) => {
+          // Build stacked segments from bottom to top: error -> warn -> info -> debug
+          const segments: { level: LogLevel; count: number; color: string }[] = []
+          
+          if (levelFilter.has('error') && bucket.error > 0) {
+            segments.push({ level: 'error', count: bucket.error, color: levelColors.error })
+          }
+          if (levelFilter.has('warn') && bucket.warn > 0) {
+            segments.push({ level: 'warn', count: bucket.warn, color: levelColors.warn })
+          }
+          if (levelFilter.has('info') && bucket.info > 0) {
+            segments.push({ level: 'info', count: bucket.info, color: levelColors.info })
+          }
+          if (levelFilter.has('debug') && bucket.debug > 0) {
+            segments.push({ level: 'debug', count: bucket.debug, color: levelColors.debug })
+          }
+          
+          const totalVisible = segments.reduce((sum, s) => sum + s.count, 0)
+          
+          return (
             <div
-              className={`w-full rounded-t transition-all duration-150 ${
-                hasErrors
-                  ? 'bg-gradient-to-t from-plm-error/80 to-plm-error/40'
-                  : hasWarnings
-                  ? 'bg-gradient-to-t from-plm-warning/80 to-plm-warning/40'
-                  : 'bg-gradient-to-t from-plm-accent/80 to-plm-accent/40'
-              } group-hover:opacity-80`}
-              style={{ height: `${height}%`, minHeight: visibleCount > 0 ? '4px' : '0' }}
-            />
-            
-            {/* Label (show every few bars) */}
+              key={index}
+              className="flex-1 relative group cursor-pointer overflow-hidden"
+              style={{ height: `${barAreaHeight}px` }}
+              onClick={() => onBucketClick?.(bucket)}
+            >
+              {/* Tooltip */}
+              <div className="opacity-0 group-hover:opacity-100 absolute bottom-full left-1/2 -translate-x-1/2 mb-2 bg-plm-bg-light border border-plm-border rounded-lg px-2 py-1.5 text-xs shadow-lg z-20 pointer-events-none whitespace-nowrap">
+                <div className="font-medium text-plm-fg">{bucket.label}</div>
+                <div className="flex gap-2 mt-0.5 text-[10px]">
+                  {bucket.error > 0 && <span className="text-plm-error">{bucket.error} err</span>}
+                  {bucket.warn > 0 && <span className="text-plm-warning">{bucket.warn} warn</span>}
+                  {bucket.info > 0 && <span className="text-plm-info">{bucket.info} info</span>}
+                  {bucket.debug > 0 && <span className="text-plm-fg-muted">{bucket.debug} dbg</span>}
+                </div>
+              </div>
+              
+              {/* Stacked bar segments - positioned at bottom */}
+              {totalVisible > 0 && (
+                <div 
+                  className="absolute bottom-0 left-0 right-0 flex flex-col-reverse gap-[3px] opacity-80 group-hover:opacity-100 transition-opacity"
+                >
+                  {segments.map((segment) => {
+                    // Calculate height based on count
+                    const segmentHeight = getSegmentHeight(segment.count)
+                    return (
+                      <div
+                        key={segment.level}
+                        className={`${segment.color} w-full flex-shrink-0 transition-all duration-150 rounded-sm`}
+                        style={{ 
+                          height: `${segmentHeight}px`,
+                        }}
+                      />
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+      
+      {/* Labels row */}
+      <div className="flex gap-[2px] mt-1">
+        {buckets.map((bucket, index) => (
+          <div key={index} className="flex-1 text-center">
             {(index === 0 || index === buckets.length - 1 || index % Math.ceil(buckets.length / 6) === 0) && (
-              <div className="text-[9px] text-plm-fg-muted mt-1 truncate max-w-full">
+              <div className="text-[9px] text-plm-fg-muted truncate">
                 {bucket.label.split(' ')[0]}
               </div>
             )}
           </div>
-        )
-      })}
+        ))}
+      </div>
+      
+      {/* Resize handle */}
+      <div 
+        className={`h-2 cursor-ns-resize flex items-center justify-center group mt-1 ${isResizing ? 'bg-plm-accent/20' : ''}`}
+        onMouseDown={handleMouseDown}
+      >
+        <div className={`w-12 h-1 rounded-full transition-colors ${isResizing ? 'bg-plm-accent' : 'bg-plm-border group-hover:bg-plm-fg-muted'}`} />
+      </div>
     </div>
   )
 }
@@ -553,6 +631,7 @@ function LogViewerContent({ onClose }: LogViewerContentProps) {
   const [showFilters] = useState(true)
   const [newestFirst, setNewestFirst] = useState(true)
   const [autoScroll, setAutoScroll] = useState(true)
+  const [histogramHeight, setHistogramHeight] = useState(120) // Default 120px, resizable 60-300px
   
   // UI state
   const [expandedEntries, setExpandedEntries] = useState<Set<string>>(new Set())
@@ -1524,6 +1603,8 @@ function LogViewerContent({ onClose }: LogViewerContentProps) {
                     maxValue={maxHistogramValue}
                     onBucketClick={handleBucketClick}
                     levelFilter={levelFilter}
+                    height={histogramHeight}
+                    onHeightChange={setHistogramHeight}
                   />
                 </div>
               )}
