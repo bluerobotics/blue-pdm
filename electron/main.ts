@@ -3805,6 +3805,37 @@ ipcMain.handle('solidworks:pack-and-go', async (_, filePath: string, outputFolde
 })
 
 // ============================================
+// Open Document Management
+// Control documents open in running SolidWorks
+// Allows checkout/checkin without closing files!
+// ============================================
+
+// Get list of all open documents in SolidWorks
+ipcMain.handle('solidworks:get-open-documents', async () => {
+  return sendSWCommand({ action: 'getOpenDocuments' })
+})
+
+// Check if a specific file is open in SolidWorks
+ipcMain.handle('solidworks:is-document-open', async (_, filePath: string) => {
+  return sendSWCommand({ action: 'isDocumentOpen', filePath })
+})
+
+// Get detailed info about an open document
+ipcMain.handle('solidworks:get-document-info', async (_, filePath: string) => {
+  return sendSWCommand({ action: 'getDocumentInfo', filePath })
+})
+
+// Set read-only state of an open document (for checkout/checkin without closing!)
+ipcMain.handle('solidworks:set-document-readonly', async (_, filePath: string, readOnly: boolean) => {
+  return sendSWCommand({ action: 'setDocumentReadOnly', filePath, readOnly })
+})
+
+// Save an open document (useful before check-in)
+ipcMain.handle('solidworks:save-document', async (_, filePath: string) => {
+  return sendSWCommand({ action: 'saveDocument', filePath })
+})
+
+// ============================================
 // End SolidWorks Service Integration
 // ============================================
 
@@ -4990,8 +5021,11 @@ ipcMain.handle('updater:install', () => {
 })
 
 ipcMain.handle('updater:get-status', () => {
+  // Respect the postpone logic - don't show if user postponed recently
+  const shouldShow = updateAvailable ? shouldShowUpdate(updateAvailable.version) : false
+  
   return {
-    updateAvailable: updateAvailable ? {
+    updateAvailable: (updateAvailable && shouldShow) ? {
       version: updateAvailable.version,
       releaseDate: updateAvailable.releaseDate,
       releaseNotes: updateAvailable.releaseNotes

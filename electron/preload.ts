@@ -304,6 +304,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('solidworks:replace-component', assemblyPath, oldComponent, newComponent),
     packAndGo: (filePath: string, outputFolder: string, options?: { prefix?: string; suffix?: string }) => 
       ipcRenderer.invoke('solidworks:pack-and-go', filePath, outputFolder, options),
+    
+    // Open Document Management (control files open in SolidWorks without closing them!)
+    getOpenDocuments: () => ipcRenderer.invoke('solidworks:get-open-documents'),
+    isDocumentOpen: (filePath: string) => ipcRenderer.invoke('solidworks:is-document-open', filePath),
+    getDocumentInfo: (filePath: string) => ipcRenderer.invoke('solidworks:get-document-info', filePath),
+    setDocumentReadOnly: (filePath: string, readOnly: boolean) => 
+      ipcRenderer.invoke('solidworks:set-document-readonly', filePath, readOnly),
+    saveDocument: (filePath: string) => ipcRenderer.invoke('solidworks:save-document', filePath),
   },
   
   // RFQ Release Files API

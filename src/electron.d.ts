@@ -261,6 +261,32 @@ declare global {
           Promise<{ success: boolean; data?: { assemblyPath: string; oldComponent: string; newComponent: string; replacedCount: number }; error?: string }>
         packAndGo: (filePath: string, outputFolder: string, options?: { prefix?: string; suffix?: string }) => 
           Promise<{ success: boolean; data?: { sourceFile: string; outputFolder: string; totalFiles: number; copiedFiles: number; files: string[] }; error?: string }>
+        
+        // Open Document Management (control files open in SolidWorks without closing them!)
+        getOpenDocuments: () => Promise<{ success: boolean; data?: { 
+          solidWorksRunning: boolean; 
+          documents: Array<{ 
+            filePath: string; fileName: string; fileType: string; 
+            isReadOnly: boolean; isDirty: boolean; activeConfiguration: string 
+          }>; 
+          count: number 
+        }; error?: string }>
+        isDocumentOpen: (filePath: string) => Promise<{ success: boolean; data?: { 
+          filePath: string; isOpen: boolean; solidWorksRunning: boolean; 
+          isReadOnly?: boolean; isDirty?: boolean 
+        }; error?: string }>
+        getDocumentInfo: (filePath: string) => Promise<{ success: boolean; data?: {
+          filePath: string; fileName?: string; solidWorksRunning: boolean; isOpen: boolean;
+          isReadOnly?: boolean; isDirty?: boolean; fileType?: string; activeConfiguration?: string;
+          properties?: Record<string, string>
+        }; error?: string }>
+        setDocumentReadOnly: (filePath: string, readOnly: boolean) => Promise<{ success: boolean; data?: {
+          filePath: string; fileName: string; wasReadOnly: boolean; isNowReadOnly: boolean; 
+          readOnly: boolean; changed: boolean
+        }; error?: string }>
+        saveDocument: (filePath: string) => Promise<{ success: boolean; data?: {
+          filePath: string; fileName: string; saved: boolean; reason?: string; warnings?: number
+        }; error?: string }>
       }
       
       // RFQ Release Files API

@@ -1209,6 +1209,354 @@ namespace BluePLM.SolidWorksService
 
         #endregion
 
+        #region Open Document Management
+
+        /// <summary>
+        /// Get list of currently open documents in SolidWorks
+        /// </summary>
+        public CommandResult GetOpenDocuments()
+        {
+            try
+            {
+                // Only try to connect to running instance, don't start SW
+                ISldWorks? sw = null;
+                try
+                {
+                    sw = (ISldWorks)Marshal.GetActiveObject("SldWorks.Application");
+                }
+                catch
+                {
+                    return new CommandResult
+                    {
+                        Success = true,
+                        Data = new
+                        {
+                            solidWorksRunning = false,
+                            documents = new List<object>()
+                        }
+                    };
+                }
+
+                var documents = new List<object>();
+                var doc = (ModelDoc2)sw.GetFirstDocument();
+
+                while (doc != null)
+                {
+                    var filePath = doc.GetPathName();
+                    if (!string.IsNullOrEmpty(filePath))
+                    {
+                        documents.Add(new
+                        {
+                            filePath,
+                            fileName = Path.GetFileName(filePath),
+                            fileType = GetFileType(filePath),
+                            isReadOnly = doc.IsOpenedReadOnly(),
+                            isDirty = doc.GetSaveFlag(), // true if has unsaved changes
+                            activeConfiguration = doc.ConfigurationManager?.ActiveConfiguration?.Name ?? ""
+                        });
+                    }
+                    doc = (ModelDoc2)doc.GetNext();
+                }
+
+                return new CommandResult
+                {
+                    Success = true,
+                    Data = new
+                    {
+                        solidWorksRunning = true,
+                        documents,
+                        count = documents.Count
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
+            }
+        }
+
+        /// <summary>
+        /// Check if a specific file is open in SolidWorks
+        /// </summary>
+        public CommandResult IsDocumentOpen(string? filePath)
+        {
+            if (string.IsNullOrEmpty(filePath))
+                return new CommandResult { Success = false, Error = "Missing 'filePath'" };
+
+            try
+            {
+                ISldWorks? sw = null;
+                try
+                {
+                    sw = (ISldWorks)Marshal.GetActiveObject("SldWorks.Application");
+                }
+                catch
+                {
+                    return new CommandResult
+                    {
+                        Success = true,
+                        Data = new
+                        {
+                            filePath,
+                            isOpen = false,
+                            solidWorksRunning = false
+                        }
+                    };
+                }
+
+                var doc = (ModelDoc2)sw.GetOpenDocument(filePath);
+                var isOpen = doc != null;
+
+                return new CommandResult
+                {
+                    Success = true,
+                    Data = new
+                    {
+                        filePath,
+                        isOpen,
+                        solidWorksRunning = true,
+                        isReadOnly = isOpen ? doc!.IsOpenedReadOnly() : (bool?)null,
+                        isDirty = isOpen ? doc!.GetSaveFlag() : (bool?)null
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
+            }
+        }
+
+        /// <summary>
+        /// Set read-only state of an open document.
+        /// This allows checking out a file without closing SolidWorks!
+        /// </summary>
+        public CommandResult SetDocumentReadOnly(string? filePath, bool readOnly)
+        {
+            if (string.IsNullOrEmpty(filePath))
+                return new CommandResult { Success = false, Error = "Missing 'filePath'" };
+
+            try
+            {
+                ISldWorks? sw = null;
+                try
+                {
+                    sw = (ISldWorks)Marshal.GetActiveObject("SldWorks.Application");
+                }
+                catch
+                {
+                    return new CommandResult
+                    {
+                        Success = false,
+                        Error = "SolidWorks is not running"
+                    };
+                }
+
+                var doc = (ModelDoc2)sw.GetOpenDocument(filePath);
+                if (doc == null)
+                {
+                    return new CommandResult
+                    {
+                        Success = false,
+                        Error = $"File is not open in SolidWorks: {Path.GetFileName(filePath)}"
+                    };
+                }
+
+                // Check current state
+                var wasReadOnly = doc.IsOpenedReadOnly();
+                
+                // Set the new state
+                doc.SetReadOnlyState(readOnly);
+
+                // Verify the change
+                var isNowReadOnly = doc.IsOpenedReadOnly();
+
+                return new CommandResult
+                {
+                    Success = true,
+                    Data = new
+                    {
+                        filePath,
+                        fileName = Path.GetFileName(filePath),
+                        wasReadOnly,
+                        isNowReadOnly,
+                        readOnly,
+                        changed = wasReadOnly != isNowReadOnly
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
+            }
+        }
+
+        /// <summary>
+        /// Save an open document. Useful before check-in.
+        /// </summary>
+        public CommandResult SaveDocument(string? filePath)
+        {
+            if (string.IsNullOrEmpty(filePath))
+                return new CommandResult { Success = false, Error = "Missing 'filePath'" };
+
+            try
+            {
+                ISldWorks? sw = null;
+                try
+                {
+                    sw = (ISldWorks)Marshal.GetActiveObject("SldWorks.Application");
+                }
+                catch
+                {
+                    return new CommandResult
+                    {
+                        Success = false,
+                        Error = "SolidWorks is not running"
+                    };
+                }
+
+                var doc = (ModelDoc2)sw.GetOpenDocument(filePath);
+                if (doc == null)
+                {
+                    return new CommandResult
+                    {
+                        Success = false,
+                        Error = $"File is not open in SolidWorks: {Path.GetFileName(filePath)}"
+                    };
+                }
+
+                // Check if document has unsaved changes
+                var wasDirty = doc.GetSaveFlag();
+                
+                if (!wasDirty)
+                {
+                    return new CommandResult
+                    {
+                        Success = true,
+                        Data = new
+                        {
+                            filePath,
+                            fileName = Path.GetFileName(filePath),
+                            saved = false,
+                            reason = "No unsaved changes"
+                        }
+                    };
+                }
+
+                // Check if document is read-only
+                if (doc.IsOpenedReadOnly())
+                {
+                    return new CommandResult
+                    {
+                        Success = false,
+                        Error = $"Cannot save: document is read-only. Check out the file first."
+                    };
+                }
+
+                int errors = 0, warnings = 0;
+                doc.Save3(
+                    (int)swSaveAsOptions_e.swSaveAsOptions_Silent,
+                    ref errors,
+                    ref warnings
+                );
+
+                if (errors != 0)
+                {
+                    return new CommandResult
+                    {
+                        Success = false,
+                        Error = $"Save failed with error code: {errors}"
+                    };
+                }
+
+                return new CommandResult
+                {
+                    Success = true,
+                    Data = new
+                    {
+                        filePath,
+                        fileName = Path.GetFileName(filePath),
+                        saved = true,
+                        warnings
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
+            }
+        }
+
+        /// <summary>
+        /// Get detailed info about an open document including dirty state
+        /// </summary>
+        public CommandResult GetDocumentInfo(string? filePath)
+        {
+            if (string.IsNullOrEmpty(filePath))
+                return new CommandResult { Success = false, Error = "Missing 'filePath'" };
+
+            try
+            {
+                ISldWorks? sw = null;
+                try
+                {
+                    sw = (ISldWorks)Marshal.GetActiveObject("SldWorks.Application");
+                }
+                catch
+                {
+                    return new CommandResult
+                    {
+                        Success = true,
+                        Data = new
+                        {
+                            filePath,
+                            solidWorksRunning = false,
+                            isOpen = false
+                        }
+                    };
+                }
+
+                var doc = (ModelDoc2)sw.GetOpenDocument(filePath);
+                if (doc == null)
+                {
+                    return new CommandResult
+                    {
+                        Success = true,
+                        Data = new
+                        {
+                            filePath,
+                            solidWorksRunning = true,
+                            isOpen = false
+                        }
+                    };
+                }
+
+                var props = ReadCustomProperties(doc, null);
+
+                return new CommandResult
+                {
+                    Success = true,
+                    Data = new
+                    {
+                        filePath,
+                        fileName = Path.GetFileName(filePath),
+                        solidWorksRunning = true,
+                        isOpen = true,
+                        isReadOnly = doc.IsOpenedReadOnly(),
+                        isDirty = doc.GetSaveFlag(),
+                        fileType = GetFileType(filePath),
+                        activeConfiguration = doc.ConfigurationManager?.ActiveConfiguration?.Name ?? "",
+                        properties = props
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
+            }
+        }
+
+        #endregion
+
         #region IDisposable
 
         public void Dispose()

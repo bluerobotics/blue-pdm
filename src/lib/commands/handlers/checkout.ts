@@ -250,7 +250,7 @@ export const checkoutCommand: Command<CheckoutParams> = {
         const result = await checkoutFile(file.pdmData!.id, user.id)
         
         if (result.success) {
-          // Make file writable
+          // Make file writable on file system
           const readonlyResult = await window.electronAPI?.setReadonly(file.path, false)
           if (readonlyResult?.success === false) {
             logCheckout('warn', 'Failed to clear read-only flag', {
@@ -258,6 +258,24 @@ export const checkoutCommand: Command<CheckoutParams> = {
               fileName: file.name,
               error: readonlyResult.error
             })
+          }
+          
+          // If SolidWorks file is open, also change document read-only state
+          // This allows checking out files without closing SolidWorks!
+          if (SW_EXTENSIONS.includes(file.extension.toLowerCase())) {
+            try {
+              const docResult = await window.electronAPI?.solidworks?.setDocumentReadOnly?.(file.path, false)
+              if (docResult?.success && docResult.data?.changed) {
+                logCheckout('info', 'Updated SolidWorks document to read-write', {
+                  operationId,
+                  fileName: file.name,
+                  wasReadOnly: docResult.data.wasReadOnly,
+                  isNowReadOnly: docResult.data.isNowReadOnly
+                })
+              }
+            } catch {
+              // SW service not available or file not open - that's fine
+            }
           }
           
           // Auto-extract SolidWorks metadata on checkout

@@ -269,6 +269,34 @@ export const checkinCommand: Command<CheckinParams> = {
           oldName: wasFileRenamed ? file.pdmData?.file_name : undefined
         })
         
+        // If SolidWorks file is open, save it first to ensure we check in the latest changes
+        if (SW_EXTENSIONS.includes(file.extension.toLowerCase())) {
+          try {
+            const docInfo = await window.electronAPI?.solidworks?.getDocumentInfo?.(file.path)
+            if (docInfo?.success && docInfo.data?.isOpen && docInfo.data?.isDirty) {
+              logCheckin('info', 'Saving open SolidWorks document before check-in', {
+                operationId,
+                fileName: file.name
+              })
+              const saveResult = await window.electronAPI?.solidworks?.saveDocument?.(file.path)
+              if (saveResult?.success && saveResult.data?.saved) {
+                logCheckin('info', 'SolidWorks document saved successfully', {
+                  operationId,
+                  fileName: file.name
+                })
+              } else if (!saveResult?.success) {
+                logCheckin('warn', 'Failed to save SolidWorks document', {
+                  operationId,
+                  fileName: file.name,
+                  error: saveResult?.error
+                })
+              }
+            }
+          } catch {
+            // SW service not available - continue with regular checkin
+          }
+        }
+        
         // Read file to get hash
         const readResult = await window.electronAPI?.readFile(file.path)
         
@@ -314,7 +342,7 @@ export const checkinCommand: Command<CheckinParams> = {
           })
           
           if (result.success && result.file) {
-            // Make file read-only
+            // Make file read-only on file system
             const readonlyResult = await window.electronAPI?.setReadonly(file.path, true)
             if (readonlyResult?.success === false) {
               logCheckin('warn', 'Failed to set read-only flag', {
@@ -322,6 +350,24 @@ export const checkinCommand: Command<CheckinParams> = {
                 fileName: file.name,
                 error: readonlyResult.error
               })
+            }
+            
+            // If SolidWorks file is open, also set document to read-only
+            // This allows checking in files without closing SolidWorks!
+            if (SW_EXTENSIONS.includes(file.extension.toLowerCase())) {
+              try {
+                const docResult = await window.electronAPI?.solidworks?.setDocumentReadOnly?.(file.path, true)
+                if (docResult?.success && docResult.data?.changed) {
+                  logCheckin('info', 'Updated SolidWorks document to read-only', {
+                    operationId,
+                    fileName: file.name,
+                    wasReadOnly: docResult.data.wasReadOnly,
+                    isNowReadOnly: docResult.data.isNowReadOnly
+                  })
+                }
+              } catch {
+                // SW service not available or file not open - that's fine
+              }
             }
             
             // Queue update for batch processing
@@ -366,7 +412,18 @@ export const checkinCommand: Command<CheckinParams> = {
           })
           
           if (result.success && result.file) {
+            // Make file read-only on file system
             await window.electronAPI?.setReadonly(file.path, true)
+            
+            // If SolidWorks file is open, also set document to read-only
+            if (SW_EXTENSIONS.includes(file.extension.toLowerCase())) {
+              try {
+                await window.electronAPI?.solidworks?.setDocumentReadOnly?.(file.path, true)
+              } catch {
+                // SW service not available or file not open - that's fine
+              }
+            }
+            
             // Queue update for batch processing
             pendingUpdates.push({
               path: file.path,

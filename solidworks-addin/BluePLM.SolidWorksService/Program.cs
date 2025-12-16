@@ -140,6 +140,18 @@ namespace BluePLM.SolidWorksService
                     "getPreview" => GetPreviewFast(filePath, command["configuration"]?.ToString()),
                     
                     // ========================================
+                    // Open Document Management
+                    // Control documents open in running SolidWorks
+                    // ========================================
+                    
+                    "getOpenDocuments" => _swApi!.GetOpenDocuments(),
+                    "isDocumentOpen" => _swApi!.IsDocumentOpen(filePath),
+                    "getDocumentInfo" => _swApi!.GetDocumentInfo(filePath),
+                    "setDocumentReadOnly" => _swApi!.SetDocumentReadOnly(filePath,
+                        command["readOnly"]?.Value<bool>() ?? true),
+                    "saveDocument" => _swApi!.SaveDocument(filePath),
+                    
+                    // ========================================
                     // SLOW operations (Full SolidWorks API)
                     // Launches SolidWorks when needed
                     // ========================================
@@ -333,6 +345,10 @@ FAST operations (Document Manager API - NO SolidWorks launch!):
   getBom, getProperties, setProperties, getConfigurations, getReferences, getPreview
   Requires a DM license key (free with SW subscription)
 
+Open Document Management (control documents in running SolidWorks):
+  getOpenDocuments, isDocumentOpen, getDocumentInfo, setDocumentReadOnly, saveDocument
+  Allows checkout/checkin without closing files!
+
 SLOW operations (Full SolidWorks API - launches SW):
   getMassProperties, exports, replaceComponent, packAndGo
 
@@ -366,6 +382,13 @@ Commands:
   {""action"": ""getConfigurations"", ""filePath"": ""...""}
   {""action"": ""getReferences"", ""filePath"": ""...""}
   {""action"": ""getPreview"", ""filePath"": ""..."", ""configuration"": ""Default""}
+  
+  -- Open Document Management (checkout/checkin without closing SW!) --
+  {""action"": ""getOpenDocuments""}
+  {""action"": ""isDocumentOpen"", ""filePath"": ""...""}
+  {""action"": ""getDocumentInfo"", ""filePath"": ""...""}
+  {""action"": ""setDocumentReadOnly"", ""filePath"": ""..."", ""readOnly"": false}
+  {""action"": ""saveDocument"", ""filePath"": ""...""}
   
   -- SLOW (launches SolidWorks) --
   {""action"": ""getMassProperties"", ""filePath"": ""...""}
