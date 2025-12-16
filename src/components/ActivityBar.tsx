@@ -20,6 +20,7 @@ import {
 } from 'lucide-react'
 import { createContext, useContext, useEffect, useState, useMemo, useRef, useCallback } from 'react'
 import { usePDMStore, SidebarView } from '../stores/pdmStore'
+import { registerModule, unregisterModule } from '@/lib/telemetry'
 import { getUnreadNotificationCount, getPendingReviewsForUser } from '../lib/supabase'
 import { useTranslation } from '../lib/i18n'
 import { logNavigation, logSettings } from '../lib/userActionLogger'
@@ -241,6 +242,12 @@ export function ActivityBar() {
     activityBarMode,
     moduleConfig
   } = usePDMStore()
+  
+  // Register module for telemetry tracking
+  useEffect(() => {
+    registerModule('ActivityBar')
+    return () => unregisterModule('ActivityBar')
+  }, [])
   const { t } = useTranslation()
   
   const [isHovering, setIsHovering] = useState(false)

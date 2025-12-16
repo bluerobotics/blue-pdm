@@ -491,11 +491,17 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
 
   // Check if a file/folder is affected by any processing operation
   const isBeingProcessed = (relativePath: string) => {
+    // Normalize path to use forward slashes for consistent comparison
+    const normalizedPath = relativePath.replace(/\\/g, '/')
+    
     // Check if this exact path is being processed
     if (processingFolders.has(relativePath)) return true
+    if (processingFolders.has(normalizedPath)) return true
+    
     // Check if any parent folder is being processed
     for (const processingPath of processingFolders) {
-      if (relativePath.startsWith(processingPath + '/')) return true
+      const normalizedProcessingPath = processingPath.replace(/\\/g, '/')
+      if (normalizedPath.startsWith(normalizedProcessingPath + '/')) return true
     }
     return false
   }
@@ -511,7 +517,8 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     e.stopPropagation()
     if (isDownloadingAll) return
     
-    const cloudFiles = files.filter(f => !f.isDirectory && f.diffStatus === 'cloud')
+    // Include both 'cloud' and 'cloud_new' to match what the download command processes
+    const cloudFiles = files.filter(f => !f.isDirectory && (f.diffStatus === 'cloud' || f.diffStatus === 'cloud_new'))
     if (cloudFiles.length === 0) {
       addToast('info', 'No cloud files to download')
       return
@@ -1657,7 +1664,11 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     const isExpanded = vault.isExpanded
     
     // Calculate vault stats (only meaningful for active vault)
-    const cloudFilesCount = isActive ? files.filter(f => !f.isDirectory && f.diffStatus === 'cloud').length : 0
+    // Include both 'cloud' and 'cloud_new' to match what the download command processes
+    const cloudFiles = isActive ? files.filter(f => !f.isDirectory && (f.diffStatus === 'cloud' || f.diffStatus === 'cloud_new')) : []
+    const cloudFilesCount = cloudFiles.length
+    // Check if any cloud files are currently being downloaded (for spinner)
+    const isAnyCloudFileProcessing = isActive && cloudFiles.some(f => processingFolders.has(f.relativePath))
     const localOnlyFilesCount = isActive ? files.filter(f => !f.isDirectory && (!f.pdmData || f.diffStatus === 'added')).length : 0
     const checkedOutByMeCount = isActive ? files.filter(f => !f.isDirectory && f.pdmData?.checked_out_by === user?.id).length : 0
     const checkedOutByOthersCount = isActive ? files.filter(f => !f.isDirectory && f.pdmData?.checked_out_by && f.pdmData.checked_out_by !== user?.id).length : 0
@@ -1830,9 +1841,13 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
               {cloudFilesCount > 0 && (
                 <div 
                   className="flex items-center gap-0.5 text-[10px] text-plm-info bg-plm-bg/50 px-1.5 py-0.5 rounded"
-                  title={`${cloudFilesCount} cloud files available to download`}
+                  title={isAnyCloudFileProcessing ? `Downloading ${cloudFilesCount} cloud files...` : `${cloudFilesCount} cloud files available to download`}
                 >
-                  <Cloud size={10} />
+                  {isAnyCloudFileProcessing ? (
+                    <Loader2 size={10} className="animate-spin" />
+                  ) : (
+                    <Cloud size={10} />
+                  )}
                   <span>{cloudFilesCount}</span>
                 </div>
               )}
@@ -1841,15 +1856,15 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
               {cloudFilesCount > 0 && (
                 <button
                   className={`p-1 rounded transition-colors ${
-                    isDownloadingAll 
+                    (isDownloadingAll || isAnyCloudFileProcessing)
                       ? 'text-plm-info cursor-not-allowed' 
                       : 'hover:bg-plm-bg/50 text-plm-fg-muted/50 hover:text-plm-info'
                   }`}
-                  title={isDownloadingAll ? 'Downloading...' : `Download ${cloudFilesCount} cloud files`}
+                  title={(isDownloadingAll || isAnyCloudFileProcessing) ? 'Downloading...' : `Download ${cloudFilesCount} cloud files`}
                   onClick={handleDownloadAllCloudFiles}
-                  disabled={isDownloadingAll}
+                  disabled={isDownloadingAll || isAnyCloudFileProcessing}
                 >
-                  {isDownloadingAll ? (
+                  {(isDownloadingAll || isAnyCloudFileProcessing) ? (
                     <Loader2 size={14} className="animate-spin" />
                   ) : (
                     <ArrowDown size={14} />

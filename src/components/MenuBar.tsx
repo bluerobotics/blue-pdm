@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { registerModule, unregisterModule } from '@/lib/telemetry'
 import { LogOut, ChevronDown, Building2, Search, File, Folder, LayoutGrid, Database, ZoomIn, Minus, Plus, RotateCcw, Monitor, Laptop, Loader2, User, SlidersHorizontal, WifiOff } from 'lucide-react'
 import { usePDMStore } from '../stores/pdmStore'
 import { signInWithGoogle, signOut, isSupabaseConfigured, linkUserToOrganization, getActiveSessions, endRemoteSession, UserSession, supabase } from '../lib/supabase'
@@ -47,6 +48,12 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
     isOfflineMode,
     setOfflineMode
   } = usePDMStore()
+  
+  // Register module for telemetry tracking
+  useEffect(() => {
+    registerModule('MenuBar')
+    return () => unregisterModule('MenuBar')
+  }, [])
   // appVersion may be used in future UI updates
   const [, setAppVersion] = useState('')
   const [isSigningIn, setIsSigningIn] = useState(false)

@@ -1551,6 +1551,12 @@ ipcMain.handle('system:get-stats', async () => {
     const totalDiskSize = fsSize.reduce((sum, disk) => sum + disk.size, 0)
     const totalDiskUsed = fsSize.reduce((sum, disk) => sum + disk.used, 0)
     
+    // Get app memory usage (all Electron processes)
+    const appMemory = process.memoryUsage()
+    const heapUsed = appMemory.heapUsed
+    const heapTotal = appMemory.heapTotal
+    const rss = appMemory.rss // Resident Set Size - total memory allocated
+    
     return {
       cpu: {
         usage: Math.round(cpu.currentLoad),
@@ -1569,6 +1575,11 @@ ipcMain.handle('system:get-stats', async () => {
         used: totalDiskUsed,
         total: totalDiskSize,
         percent: totalDiskSize > 0 ? Math.round((totalDiskUsed / totalDiskSize) * 100) : 0
+      },
+      app: {
+        heapUsed,
+        heapTotal,
+        rss
       }
     }
   } catch (err) {

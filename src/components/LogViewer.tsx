@@ -502,7 +502,7 @@ function LogEntryRow({ entry, isExpanded, onToggle, searchQuery }: LogEntryRowPr
   
   return (
     <div
-      className={`group border-b border-plm-border/20 hover:bg-plm-highlight/30 transition-colors ${
+      className={`group hover:bg-plm-highlight/30 transition-colors ${
         entry.level === 'error' ? 'bg-plm-error/5' : 
         entry.level === 'warn' ? 'bg-plm-warning/5' : ''
       }`}
@@ -1656,7 +1656,7 @@ function LogViewerContent({ onClose }: LogViewerContentProps) {
                   </button>
                 </div>
               ) : (
-                <div className="divide-y divide-plm-border/10">
+                <div>
                   {filteredEntries.map(entry => (
                     <LogEntryRow
                       key={entry.id}

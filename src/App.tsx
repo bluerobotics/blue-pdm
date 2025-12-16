@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { registerModule, unregisterModule } from '@/lib/telemetry'
 import { usePDMStore } from './stores/pdmStore'
 import { SettingsContent } from './components/SettingsContent'
 import type { SettingsTab } from './types/settings'
@@ -160,6 +161,12 @@ function App() {
   // Apply theme and language
   useTheme()
   useLanguage()
+  
+  // Register App module for telemetry tracking
+  useEffect(() => {
+    registerModule('App')
+    return () => unregisterModule('App')
+  }, [])
   
   // Log app startup
   useEffect(() => {

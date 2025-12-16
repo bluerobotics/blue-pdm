@@ -14,6 +14,7 @@ import {
   SlackSettings,
   WebhooksSettings,
   ApiSettings,
+  PerformanceSettings,
   LogsSettings,
   DevToolsSettings,
   AboutSettings,
@@ -60,6 +61,8 @@ export function SettingsContent({ activeTab }: SettingsContentProps) {
         return <ApiSettings />
       case 'supabase':
         return <SupabaseSettings />
+      case 'performance':
+        return <PerformanceSettings />
       case 'logs':
         return <LogsSettings />
       case 'dev-tools':

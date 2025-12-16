@@ -17,6 +17,7 @@ export type SettingsTab =
   | 'webhooks' 
   | 'api' 
   | 'supabase' 
+  | 'performance'
   | 'logs' 
   | 'dev-tools'
   | 'about'

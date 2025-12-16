@@ -286,6 +286,7 @@ export function VaultsSettings() {
     
     try {
       // Delete all files from the vault in the database
+      addToast('info', 'Clearing database records...')
       const { error: filesError } = await supabase
         .from('files')
         .delete()
@@ -297,33 +298,45 @@ export function VaultsSettings() {
         return
       }
       
-      // Delete file history for this vault
-      const { error: historyError } = await supabase
-        .from('file_history')
-        .delete()
-        .eq('vault_id', clearingVault.id)
-      
-      if (historyError) {
-        console.error('Failed to delete file history:', historyError)
-        // Continue anyway - main files are deleted
-      }
-      
       // Clear local files if vault is connected
       const connectedVault = connectedVaults.find(v => v.id === clearingVault.id)
       if (connectedVault?.localPath) {
         const api = window.electronAPI
         if (api) {
           try {
-            // Clear working directory contents but keep the folder
+            addToast('info', 'Clearing local files...')
+            // Stop file watcher first to release file handles
             await api.clearWorkingDir()
+            await new Promise(resolve => setTimeout(resolve, 200))
+            
+            // List all items in the local folder
+            const listResult = await api.listDirFiles(connectedVault.localPath)
+            if (listResult.success && listResult.files && listResult.files.length > 0) {
+              const totalItems = listResult.files.length
+              let deletedCount = 0
+              // Delete each item (files and folders)
+              for (const file of listResult.files) {
+                try {
+                  await api.deleteItem(file.path)
+                  deletedCount++
+                } catch (err) {
+                  console.error('Failed to delete local item:', file.path, err)
+                }
+              }
+              addToast('success', `Deleted ${deletedCount} of ${totalItems} local items`)
+            } else {
+              addToast('info', 'No local files to delete')
+            }
           } catch (err) {
             console.error('Failed to clear local files:', err)
+            addToast('warning', 'Could not clear some local files')
           }
         }
       }
       
       // Delete files from storage bucket
       try {
+        addToast('info', 'Clearing cloud storage...')
         const { data: storageFiles } = await supabase.storage
           .from('vault')
           .list(`${organization.id}/${clearingVault.id}`)
@@ -331,20 +344,25 @@ export function VaultsSettings() {
         if (storageFiles && storageFiles.length > 0) {
           const filePaths = storageFiles.map(f => `${organization.id}/${clearingVault.id}/${f.name}`)
           await supabase.storage.from('vault').remove(filePaths)
+          addToast('success', `Deleted ${storageFiles.length} files from cloud storage`)
+        } else {
+          addToast('info', 'No cloud storage files to delete')
         }
       } catch (err) {
         console.error('Failed to clear storage files:', err)
-        // Continue anyway - database records are deleted
+        addToast('warning', 'Could not clear cloud storage files')
       }
       
       // Clear local state if this is the active vault
       if (clearingVault.id === activeVaultId) {
         setFiles([])
         setServerFiles([])
-        setFilesLoaded(false)
+        // Set filesLoaded to true since the empty state is valid and loaded
+        // (setting to false would cause infinite loading spinner)
+        setFilesLoaded(true)
       }
       
-      addToast('success', `Vault "${clearingVault.name}" contents cleared`)
+      addToast('success', `Vault "${clearingVault.name}" cleared successfully`)
       setClearingVault(null)
       setClearConfirmText('')
       setClearConfirmText2('')

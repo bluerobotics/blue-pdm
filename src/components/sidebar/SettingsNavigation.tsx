@@ -51,6 +51,7 @@ const settingsSections: SettingsSection[] = [
   {
     category: 'System',
     items: [
+      { id: 'performance', label: 'Performance' },
       { id: 'logs', label: 'Logs' },
       { id: 'dev-tools', label: 'Dev Tools' },
       { id: 'about', label: 'About' },
@@ -219,41 +220,9 @@ export function SettingsNavigation({ activeTab, onTabChange }: SettingsNavigatio
       newStatuses['odoo'] = 'offline'
     }
     
-    // Slack - check if connected (only if API is online)
-    if (newStatuses['api'] === 'online') {
-      try {
-        const { data: { session } } = await supabase.auth.getSession()
-        const token = session?.access_token
-        
-        if (token) {
-          const slackResponse = await fetch(`${apiUrl}/integrations/slack`, {
-            headers: {
-              'Authorization': `Bearer ${token}`
-            },
-            signal: AbortSignal.timeout(3000)
-          })
-          if (slackResponse.ok) {
-            const slackData = await slackResponse.json()
-            if (slackData.is_connected) {
-              newStatuses['slack'] = 'online'
-            } else if (slackData.configured) {
-              newStatuses['slack'] = 'offline'
-            } else {
-              newStatuses['slack'] = 'not-configured'
-            }
-          } else {
-            newStatuses['slack'] = 'not-configured'
-          }
-        } else {
-          newStatuses['slack'] = 'not-configured'
-        }
-      } catch (err) {
-        console.warn('[SettingsNav] Failed to check Slack status:', err)
-        newStatuses['slack'] = 'not-configured'
-      }
-    } else {
-      newStatuses['slack'] = 'not-configured'
-    }
+    // Slack - not yet implemented in API, skip status check
+    // TODO: Re-enable when /integrations/slack endpoint is added to API
+    newStatuses['slack'] = 'not-configured'
     
     // Webhooks - coming soon
     newStatuses['webhooks'] = 'coming-soon'

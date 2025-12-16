@@ -20,6 +20,11 @@ interface SystemStats {
     total: number
     percent: number
   }
+  app?: {
+    heapUsed: number
+    heapTotal: number
+    rss: number // Resident Set Size - total memory allocated by app
+  }
 }
 
 interface PathResult {

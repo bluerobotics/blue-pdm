@@ -1,15 +1,65 @@
-import { useState, useEffect, useRef } from 'react'
-import { Cpu, MemoryStick, HardDrive, ArrowDown, ArrowUp, Activity, ChevronLeft, ChevronRight } from 'lucide-react'
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { Cpu, MemoryStick, HardDrive, ArrowDown, ArrowUp, Activity, Gauge, Box } from 'lucide-react'
 
 interface SystemStats {
   cpu: { usage: number; cores: number[] }
   memory: { used: number; total: number; percent: number }
   network: { rxSpeed: number; txSpeed: number }
   disk: { used: number; total: number; percent: number }
+  app?: { heapUsed: number; heapTotal: number; rss: number }
 }
 
 interface SystemStatsProps {
   condensed?: boolean
+}
+
+// FPS Counter hook - measures actual render frame rate at high speed
+function useFps(enabled: boolean) {
+  const [fps, setFps] = useState(0)
+  const frameCount = useRef(0)
+  const lastTime = useRef(performance.now())
+  const rafId = useRef<number>(0)
+  
+  const measureFps = useCallback(() => {
+    frameCount.current++
+    const now = performance.now()
+    const delta = now - lastTime.current
+    
+    // Update FPS every 100ms for faster updates
+    if (delta >= 100) {
+      setFps(Math.round((frameCount.current / delta) * 1000))
+      frameCount.current = 0
+      lastTime.current = now
+    }
+    
+    rafId.current = requestAnimationFrame(measureFps)
+  }, [])
+  
+  useEffect(() => {
+    if (!enabled) {
+      setFps(0)
+      return
+    }
+    
+    frameCount.current = 0
+    lastTime.current = performance.now()
+    rafId.current = requestAnimationFrame(measureFps)
+    
+    return () => {
+      if (rafId.current) {
+        cancelAnimationFrame(rafId.current)
+      }
+    }
+  }, [enabled, measureFps])
+  
+  return fps
+}
+
+// Get FPS color based on value
+function getFpsColor(fps: number): string {
+  if (fps >= 55) return 'text-emerald-400'
+  if (fps >= 30) return 'text-amber-400'
+  return 'text-rose-400'
 }
 
 // Format bytes to human readable
@@ -63,13 +113,28 @@ export function SystemStats({ condensed = false }: SystemStatsProps) {
     const saved = localStorage.getItem('systemStats.collapsed')
     return saved !== 'false' // Default to true (collapsed)
   })
+  const [showFps, setShowFps] = useState(() => {
+    // Load from localStorage, default to hidden
+    return localStorage.getItem('systemStats.showFps') === 'true'
+  })
   const containerRef = useRef<HTMLDivElement>(null)
+  
+  // FPS counter
+  const fps = useFps(showFps)
   
   // Persist collapsed state
   const toggleCollapsed = () => {
     const newState = !isCollapsed
     setIsCollapsed(newState)
     localStorage.setItem('systemStats.collapsed', String(newState))
+  }
+  
+  // Toggle FPS display
+  const toggleFps = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    const newState = !showFps
+    setShowFps(newState)
+    localStorage.setItem('systemStats.showFps', String(newState))
   }
 
   useEffect(() => {
@@ -98,14 +163,25 @@ export function SystemStats({ condensed = false }: SystemStatsProps) {
     return (
       <div
         ref={containerRef}
-        className="relative flex items-center flex-shrink-0"
+        className="relative flex items-center gap-1 flex-shrink-0"
         onMouseEnter={() => setShowTooltip(true)}
         onMouseLeave={() => setShowTooltip(false)}
       >
+        {/* FPS Counter (condensed) */}
+        {showFps && (
+          <button
+            onClick={toggleFps}
+            className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono tabular-nums hover:bg-plm-bg-lighter transition-colors ${getFpsColor(fps)}`}
+            title="Click to hide FPS"
+          >
+            {fps}
+          </button>
+        )}
+        
         <button
-          onClick={toggleCollapsed}
+          onClick={showFps ? toggleCollapsed : toggleFps}
           className="flex items-center justify-center w-6 h-6 rounded hover:bg-plm-bg-lighter transition-colors"
-          title="System status"
+          title={showFps ? "System status" : "Click to show FPS"}
         >
           <div className={`w-2 h-2 rounded-full ${getDotColor(maxUsage)}`} />
         </button>
@@ -200,6 +276,33 @@ export function SystemStats({ condensed = false }: SystemStatsProps) {
                   </span>
                 </div>
               </div>
+
+              {/* BluePLM App Memory */}
+              {stats.app && (
+                <div>
+                  <div className="flex items-center justify-between text-plm-fg mb-1.5">
+                    <span className="flex items-center gap-1.5">
+                      <Box size={12} className="text-plm-accent" />
+                      BluePLM
+                    </span>
+                    <span className="font-medium tabular-nums">{formatBytes(stats.app.rss)}</span>
+                  </div>
+                  <div className="space-y-1 text-plm-fg-muted text-[10px]">
+                    <div className="flex justify-between">
+                      <span>Heap Used</span>
+                      <span className="tabular-nums">{formatBytes(stats.app.heapUsed)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Heap Total</span>
+                      <span className="tabular-nums">{formatBytes(stats.app.heapTotal)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Total Memory</span>
+                      <span className="tabular-nums">{formatBytes(stats.app.rss)}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -216,11 +319,23 @@ export function SystemStats({ condensed = false }: SystemStatsProps) {
         onMouseEnter={() => setShowTooltip(true)}
         onMouseLeave={() => setShowTooltip(false)}
       >
-        {/* Expand button */}
+        {/* FPS Counter Toggle */}
+        <button
+          onClick={toggleFps}
+          className={`flex items-center gap-1 px-1.5 py-1 rounded hover:bg-plm-bg-lighter transition-colors ${
+            showFps ? getFpsColor(fps) : 'text-plm-fg-muted hover:text-plm-fg'
+          }`}
+          title={showFps ? `${fps} FPS - Click to hide` : 'Show FPS counter'}
+        >
+          <Gauge size={12} />
+          {showFps && <span className="text-[10px] font-mono tabular-nums min-w-[20px]">{fps}</span>}
+        </button>
+        
+        {/* Stats dots - click to expand */}
         <button
           onClick={toggleCollapsed}
-          className="flex items-center gap-1.5 px-1.5 py-1 rounded hover:bg-plm-bg-lighter transition-colors group"
-          title="Expand system stats"
+          className="flex items-center gap-1.5 px-1.5 py-1 rounded hover:bg-plm-bg-lighter transition-colors group cursor-pointer"
+          title="Click to expand system stats"
         >
           <Activity size={12} className="text-plm-fg-muted group-hover:text-plm-fg" />
           {/* 4 dots representing CPU, Memory, Disk, Network */}
@@ -232,7 +347,6 @@ export function SystemStats({ condensed = false }: SystemStatsProps) {
               stats.network.rxSpeed >= 1024 || stats.network.txSpeed >= 1024 ? 'bg-sky-500' : 'bg-plm-fg-muted/30'
             }`} title="Network" />
           </div>
-          <ChevronRight size={10} className="text-plm-fg-muted group-hover:text-plm-fg" />
         </button>
 
         {/* Tooltip with detailed info (same as expanded) */}
@@ -325,6 +439,33 @@ export function SystemStats({ condensed = false }: SystemStatsProps) {
                   </span>
                 </div>
               </div>
+
+              {/* BluePLM App Memory */}
+              {stats.app && (
+                <div>
+                  <div className="flex items-center justify-between text-plm-fg mb-1.5">
+                    <span className="flex items-center gap-1.5">
+                      <Box size={12} className="text-plm-accent" />
+                      BluePLM
+                    </span>
+                    <span className="font-medium tabular-nums">{formatBytes(stats.app.rss)}</span>
+                  </div>
+                  <div className="space-y-1 text-plm-fg-muted text-[10px]">
+                    <div className="flex justify-between">
+                      <span>Heap Used</span>
+                      <span className="tabular-nums">{formatBytes(stats.app.heapUsed)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Heap Total</span>
+                      <span className="tabular-nums">{formatBytes(stats.app.heapTotal)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Total Memory</span>
+                      <span className="tabular-nums">{formatBytes(stats.app.rss)}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -340,36 +481,46 @@ export function SystemStats({ condensed = false }: SystemStatsProps) {
       onMouseEnter={() => setShowTooltip(true)}
       onMouseLeave={() => setShowTooltip(false)}
     >
-      {/* Collapse button */}
+      {/* FPS Counter Toggle */}
       <button
-        onClick={toggleCollapsed}
-        className="p-0.5 rounded hover:bg-plm-bg-lighter transition-colors group"
-        title="Collapse system stats"
+        onClick={toggleFps}
+        className={`flex items-center gap-1 px-1 py-0.5 rounded hover:bg-plm-bg-lighter transition-colors ${
+          showFps ? getFpsColor(fps) : 'text-plm-fg-muted hover:text-plm-fg'
+        }`}
+        title={showFps ? `${fps} FPS - Click to hide` : 'Show FPS counter'}
       >
-        <ChevronLeft size={12} className="text-plm-fg-muted group-hover:text-plm-fg" />
+        <Gauge size={12} />
+        {showFps && <span className="text-[10px] font-mono tabular-nums min-w-[20px]">{fps}</span>}
       </button>
 
-      {/* CPU - minimal view (icon + percentage) */}
-      <div className="flex items-center gap-1" title="CPU">
-        <Cpu size={12} className="text-plm-fg-muted" />
-        <span className="text-[10px] text-plm-fg-dim w-5 tabular-nums">{stats.cpu.usage}%</span>
-      </div>
-
-      {/* Memory - minimal view (icon + percentage) */}
-      <div className="flex items-center gap-1" title="Memory">
-        <MemoryStick size={12} className="text-plm-fg-muted" />
-        <span className="text-[10px] text-plm-fg-dim w-5 tabular-nums">{stats.memory.percent}%</span>
-      </div>
-
-      {/* Network - minimal view (only show if > 1 KB/s) */}
-      {(stats.network.rxSpeed >= 1024 || stats.network.txSpeed >= 1024) && (
-        <div className="flex items-center gap-0.5 text-[10px] text-plm-fg-dim" title="Network">
-          <ArrowDown size={10} className="text-emerald-500" />
-          <span className="w-12 tabular-nums">{formatSpeed(stats.network.rxSpeed)}</span>
-          <ArrowUp size={10} className="text-amber-500" />
-          <span className="w-12 tabular-nums">{formatSpeed(stats.network.txSpeed)}</span>
+      {/* Stats - click to collapse */}
+      <button
+        onClick={toggleCollapsed}
+        className="flex items-center gap-2 px-1 py-0.5 rounded hover:bg-plm-bg-lighter transition-colors cursor-pointer"
+        title="Click to collapse system stats"
+      >
+        {/* CPU - minimal view (icon + percentage) */}
+        <div className="flex items-center gap-1" title="CPU">
+          <Cpu size={12} className="text-plm-fg-muted" />
+          <span className="text-[10px] text-plm-fg-dim w-5 tabular-nums">{stats.cpu.usage}%</span>
         </div>
-      )}
+
+        {/* Memory - minimal view (icon + percentage) */}
+        <div className="flex items-center gap-1" title="Memory">
+          <MemoryStick size={12} className="text-plm-fg-muted" />
+          <span className="text-[10px] text-plm-fg-dim w-5 tabular-nums">{stats.memory.percent}%</span>
+        </div>
+
+        {/* Network - minimal view (only show if > 1 KB/s) */}
+        {(stats.network.rxSpeed >= 1024 || stats.network.txSpeed >= 1024) && (
+          <div className="flex items-center gap-0.5 text-[10px] text-plm-fg-dim" title="Network">
+            <ArrowDown size={10} className="text-emerald-500" />
+            <span className="w-12 tabular-nums">{formatSpeed(stats.network.rxSpeed)}</span>
+            <ArrowUp size={10} className="text-amber-500" />
+            <span className="w-12 tabular-nums">{formatSpeed(stats.network.txSpeed)}</span>
+          </div>
+        )}
+      </button>
 
       {/* Tooltip with detailed info */}
       {showTooltip && (
@@ -461,6 +612,33 @@ export function SystemStats({ condensed = false }: SystemStatsProps) {
                 </span>
               </div>
             </div>
+
+            {/* BluePLM App Memory */}
+            {stats.app && (
+              <div>
+                <div className="flex items-center justify-between text-plm-fg mb-1.5">
+                  <span className="flex items-center gap-1.5">
+                    <Box size={12} className="text-plm-accent" />
+                    BluePLM
+                  </span>
+                  <span className="font-medium tabular-nums">{formatBytes(stats.app.rss)}</span>
+                </div>
+                <div className="space-y-1 text-plm-fg-muted text-[10px]">
+                  <div className="flex justify-between">
+                    <span>Heap Used</span>
+                    <span className="tabular-nums">{formatBytes(stats.app.heapUsed)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Heap Total</span>
+                    <span className="tabular-nums">{formatBytes(stats.app.heapTotal)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Total Memory</span>
+                    <span className="tabular-nums">{formatBytes(stats.app.rss)}</span>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

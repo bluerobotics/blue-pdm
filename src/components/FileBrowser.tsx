@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo, memo } from 'react'
+import { registerModule, unregisterModule } from '@/lib/telemetry'
 import { 
   ChevronUp, 
   ChevronDown,
@@ -144,10 +145,16 @@ const FileIconCard = memo(function FileIconCard({ file, iconSize, isSelected, al
   
   // Check if this file is being processed (download, checkout, checkin)
   const isProcessing = (() => {
+    // Normalize path to use forward slashes for consistent comparison
+    const normalizedPath = file.relativePath.replace(/\\/g, '/')
+    
     if (processingPaths.has(file.relativePath)) return true
+    if (processingPaths.has(normalizedPath)) return true
+    
     // Check if any parent folder is being processed
     for (const processingPath of processingPaths) {
-      if (file.relativePath.startsWith(processingPath + '/')) return true
+      const normalizedProcessingPath = processingPath.replace(/\\/g, '/')
+      if (normalizedPath.startsWith(normalizedProcessingPath + '/')) return true
     }
     return false
   })()
@@ -833,9 +840,11 @@ const FileIconCard = memo(function FileIconCard({ file, iconSize, isSelected, al
   if (prevProps.lowercaseExtensions !== nextProps.lowercaseExtensions) return false
   if (prevProps.userId !== nextProps.userId) return false
   // Don't compare allFiles or processingPaths - too expensive
-  // Instead, check if this specific file is affected
-  const prevProcessing = prevProps.processingPaths.has(prevProps.file.relativePath)
-  const nextProcessing = nextProps.processingPaths.has(nextProps.file.relativePath)
+  // Instead, check if this specific file is affected (normalize paths for consistent comparison)
+  const prevPath = prevProps.file.relativePath.replace(/\\/g, '/')
+  const nextPath = nextProps.file.relativePath.replace(/\\/g, '/')
+  const prevProcessing = prevProps.processingPaths.has(prevProps.file.relativePath) || prevProps.processingPaths.has(prevPath)
+  const nextProcessing = nextProps.processingPaths.has(nextProps.file.relativePath) || nextProps.processingPaths.has(nextPath)
   if (prevProcessing !== nextProcessing) return false
   // For callbacks, assume they're stable (wrapped with useCallback in parent)
   return true
@@ -967,6 +976,12 @@ const ListRowIcon = memo(function ListRowIcon({ file, size, isProcessing, folder
 
 export function FileBrowser({ onRefresh }: FileBrowserProps) {
   const { t } = useTranslation()
+  
+  // Register module for telemetry tracking
+  useEffect(() => {
+    registerModule('FileBrowser')
+    return () => unregisterModule('FileBrowser')
+  }, [])
   const {
     files,
     selectedFiles,
@@ -1468,11 +1483,17 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
 
   // Check if a file/folder is affected by any processing operation
   const isBeingProcessed = useCallback((relativePath: string) => {
+    // Normalize path to use forward slashes for consistent comparison
+    const normalizedPath = relativePath.replace(/\\/g, '/')
+    
     // Check if this exact path is being processed
     if (processingFolders.has(relativePath)) return true
+    if (processingFolders.has(normalizedPath)) return true
+    
     // Check if any parent folder is being processed
     for (const processingPath of processingFolders) {
-      if (relativePath.startsWith(processingPath + '/')) return true
+      const normalizedProcessingPath = processingPath.replace(/\\/g, '/')
+      if (normalizedPath.startsWith(normalizedProcessingPath + '/')) return true
     }
     return false
   }, [processingFolders])
