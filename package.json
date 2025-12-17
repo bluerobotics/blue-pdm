@@ -116,7 +116,7 @@
         }
       ],
       "category": "public.app-category.developer-tools",
-      "icon": "assets/icon.icns",
+      "icon": "assets/icon.png",
       "extraResources": [
         {
           "from": "resources/bin/darwin-${arch}",

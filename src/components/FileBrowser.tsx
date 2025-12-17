@@ -890,8 +890,21 @@ const FileIconCard = memo(function FileIconCard({ file, iconSize, isSelected, is
   // Instead, check if this specific file is affected (normalize paths for consistent comparison)
   const prevPath = prevProps.file.relativePath.replace(/\\/g, '/')
   const nextPath = nextProps.file.relativePath.replace(/\\/g, '/')
-  const prevProcessing = prevProps.processingPaths.has(prevProps.file.relativePath) || prevProps.processingPaths.has(prevPath)
-  const nextProcessing = nextProps.processingPaths.has(nextProps.file.relativePath) || nextProps.processingPaths.has(nextPath)
+  
+  // Helper to check if file is being processed (matches isProcessing logic in component)
+  const checkProcessing = (paths: Set<string>, filePath: string, normalizedPath: string) => {
+    if (paths.has(filePath)) return true
+    if (paths.has(normalizedPath)) return true
+    // Also check if any parent folder is being processed
+    for (const processingPath of paths) {
+      const normalizedProcessingPath = processingPath.replace(/\\/g, '/')
+      if (normalizedPath.startsWith(normalizedProcessingPath + '/')) return true
+    }
+    return false
+  }
+  
+  const prevProcessing = checkProcessing(prevProps.processingPaths, prevProps.file.relativePath, prevPath)
+  const nextProcessing = checkProcessing(nextProps.processingPaths, nextProps.file.relativePath, nextPath)
   if (prevProcessing !== nextProcessing) return false
   // For callbacks, assume they're stable (wrapped with useCallback in parent)
   return true

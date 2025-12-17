@@ -1817,7 +1817,8 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     const cloudFiles = isActive ? files.filter(f => !f.isDirectory && (f.diffStatus === 'cloud' || f.diffStatus === 'cloud_new')) : []
     const cloudFilesCount = cloudFiles.length
     // Check if any cloud files are currently being downloaded (for spinner)
-    const isAnyCloudFileProcessing = isActive && cloudFiles.some(f => processingFolders.has(f.relativePath))
+    // Use isBeingProcessed for consistency with individual file checks (handles path normalization)
+    const isAnyCloudFileProcessing = isActive && cloudFiles.some(f => isBeingProcessed(f.relativePath))
     const outdatedFilesCount = isActive ? files.filter(f => !f.isDirectory && f.diffStatus === 'outdated').length : 0
     const localOnlyFilesCount = isActive ? files.filter(f => !f.isDirectory && (!f.pdmData || f.diffStatus === 'added')).length : 0
     // Synced files that can be checked out (have pdmData, not checked out, not cloud-only)

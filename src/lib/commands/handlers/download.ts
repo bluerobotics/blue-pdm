@@ -252,7 +252,8 @@ export const downloadCommand: Command<DownloadParams> = {
     ctx.addProcessingFolders(allPathsToTrack)
     
     // Yield to event loop so React can render spinners before starting download
-    await new Promise(resolve => setTimeout(resolve, 0))
+    // Use 16ms (roughly one frame) to ensure React has time to process state update and re-render
+    await new Promise(resolve => setTimeout(resolve, 16))
     
     const total = cloudFiles.length
     
