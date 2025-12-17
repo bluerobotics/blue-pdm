@@ -447,7 +447,7 @@ const CheckinButtonCore: React.FC<CheckinButtonProps> = ({
                 />
               ) : (
                 <div className={`w-5 h-5 flex items-center justify-center text-[9px] font-medium ${
-                  u.isMe ? 'bg-plm-accent/30 text-plm-accent' : 'bg-plm-bg-light text-plm-fg-muted'
+                  u.isMe ? 'bg-plm-accent/30 text-plm-accent' : 'bg-plm-accent/30 text-plm-accent'
                 }`}>
                   {getInitials(u.name)}
                 </div>

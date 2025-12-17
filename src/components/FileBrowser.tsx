@@ -519,7 +519,7 @@ const FileIconCard = memo(function FileIconCard({ file, iconSize, isSelected, is
                         />
                       ) : null}
                       <div 
-                        className={`rounded-full ${u.isMe ? (u.isDifferentMachine ? 'bg-plm-warning/30 text-plm-warning' : 'bg-plm-accent/30 text-plm-accent') : 'bg-plm-fg-muted/30 text-plm-fg'} flex items-center justify-center font-medium ${u.avatar_url ? 'hidden' : ''}`}
+                        className={`rounded-full ${u.isMe ? (u.isDifferentMachine ? 'bg-plm-warning/30 text-plm-warning' : 'bg-plm-accent/30 text-plm-accent') : 'bg-plm-accent/30 text-plm-accent'} flex items-center justify-center font-medium ${u.avatar_url ? 'hidden' : ''}`}
                         style={{ width: avatarSize, height: avatarSize, fontSize: avatarFontSize }}
                       >
                         {getInitials(u.name)}
@@ -3975,7 +3975,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                           />
                         ) : null}
                         <div 
-                          className={`w-5 h-5 rounded-full bg-plm-fg-muted/30 text-plm-fg flex items-center justify-center text-[9px] font-medium ${u.avatar_url ? 'hidden' : ''}`}
+                          className={`w-5 h-5 rounded-full bg-plm-accent/30 text-plm-accent flex items-center justify-center text-[9px] font-medium ${u.avatar_url ? 'hidden' : ''}`}
                         >
                           {getInitials(u.name)}
                         </div>

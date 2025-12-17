@@ -368,7 +368,7 @@ export function CheckoutAvatars({
             className={`w-full h-full flex items-center justify-center font-medium ${
               u.isMe 
                 ? (u.isDifferentMachine ? 'bg-plm-warning/30 text-plm-warning' : 'bg-plm-accent/30 text-plm-accent') 
-                : 'bg-plm-fg-muted/30 text-plm-fg'
+                : 'bg-plm-accent/30 text-plm-accent'
             } ${u.avatar_url ? 'hidden' : ''}`}
             style={{ fontSize }}
           >
@@ -480,7 +480,7 @@ export function StatusIcon({ file, userId, size = 12 }: StatusIconProps) {
           />
         ) : null}
         <div 
-          className={`w-full h-full rounded-full bg-plm-fg-muted/30 text-plm-fg flex items-center justify-center font-medium absolute inset-0 ${avatarUrl ? 'hidden' : ''}`}
+          className={`w-full h-full rounded-full bg-plm-accent/30 text-plm-accent flex items-center justify-center font-medium absolute inset-0 ${avatarUrl ? 'hidden' : ''}`}
           style={{ fontSize }}
         >
           {getInitials(displayName)}
