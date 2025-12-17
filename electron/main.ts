@@ -1660,9 +1660,16 @@ ipcMain.handle('system:get-stats', async () => {
     
     lastNetworkStats = { rx: totalRx, tx: totalTx, time: now }
     
-    // Sum up disk usage across all mounted drives
-    const totalDiskSize = fsSize.reduce((sum, disk) => sum + disk.size, 0)
-    const totalDiskUsed = fsSize.reduce((sum, disk) => sum + disk.used, 0)
+    // Get the primary/system drive (C: on Windows, / on Unix)
+    // Filter to only show the main drive, not all mounted drives summed together
+    const primaryDrive = fsSize.find(disk => 
+      process.platform === 'win32' 
+        ? disk.mount.toLowerCase() === 'c:' 
+        : disk.mount === '/'
+    ) || fsSize[0] // Fallback to first drive if primary not found
+    
+    const totalDiskSize = primaryDrive?.size || 0
+    const totalDiskUsed = primaryDrive?.used || 0
     
     // Get app memory usage (all Electron processes)
     const appMemory = process.memoryUsage()

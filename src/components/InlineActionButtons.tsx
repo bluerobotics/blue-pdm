@@ -296,30 +296,26 @@ export const FolderDownloadButton: React.FC<FolderDownloadButtonProps> = ({
     ? `Download ${cloudCount} cloud file${cloudCount > 1 ? 's' : ''}`
     : 'Create folder locally'
 
+  if (isProcessing) {
+    return (
+      <span className="px-1.5 py-0.5 rounded-md bg-white/10 text-plm-info">
+        <Loader2 size={12} className="animate-spin" />
+      </span>
+    )
+  }
+
   return (
     <button
-      className={`group/folderdownload flex items-center gap-0 px-1.5 py-0.5 rounded-md transition-all duration-200 ${
-        isProcessing
-          ? 'bg-white/10 text-plm-info cursor-not-allowed'
-          : 'bg-white/10 text-plm-info hover:bg-sky-400/30 hover:gap-1'
-      }`}
+      className="group/folderdownload flex items-center gap-0 px-1.5 py-0.5 rounded-md transition-all duration-200 bg-white/10 text-plm-info hover:bg-sky-400/30 hover:gap-1"
       onClick={onClick}
       title={title || defaultTitle}
-      disabled={disabled || isProcessing}
+      disabled={disabled}
     >
-      {isProcessing ? (
-        <Loader2 size={12} className="animate-spin" />
-      ) : (
-        <Cloud size={12} className="text-plm-info group-hover/folderdownload:text-sky-400 transition-colors duration-200" />
-      )}
+      <Cloud size={12} className="text-plm-info group-hover/folderdownload:text-sky-400 transition-colors duration-200" />
       {cloudCount > 0 && (
-        <span className={`text-[10px] font-medium text-sky-400 max-w-0 overflow-hidden transition-all duration-200 ${isProcessing ? '' : 'group-hover/folderdownload:max-w-[2rem]'}`}>{cloudCount}</span>
+        <span className="text-[10px] font-medium text-sky-400 max-w-0 overflow-hidden transition-all duration-200 group-hover/folderdownload:max-w-[2rem]">{cloudCount}</span>
       )}
-      {isProcessing ? (
-        <Loader2 size={12} className="animate-spin" />
-      ) : (
-        <ArrowDown size={12} className="text-sky-400 max-w-0 overflow-hidden group-hover/folderdownload:max-w-[1rem] transition-all duration-200" />
-      )}
+      <ArrowDown size={12} className="text-sky-400 max-w-0 overflow-hidden group-hover/folderdownload:max-w-[1rem] transition-all duration-200" />
     </button>
   )
 }

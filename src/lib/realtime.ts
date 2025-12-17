@@ -183,6 +183,10 @@ export function subscribeToOrganization(
         
         if (changedKeys.length > 0) {
           console.log('[Realtime] Organization settings changed:', changedKeys)
+          // Log specific api_url changes for debugging sync issues
+          if (changedKeys.includes('api_url')) {
+            console.log('[Realtime] API URL in payload - old:', oldSettings.api_url, '→ new:', newSettings.api_url)
+          }
         } else {
           console.log('[Realtime] Organization updated (non-settings change)')
         }

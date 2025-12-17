@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Image, ExternalLink, FolderOpen, Info, Key, Download, Play, Square, Loader2, Check, EyeOff, Eye, FileX, X } from 'lucide-react'
+import { Image, ExternalLink, FolderOpen, Info, Key, Play, Square, Loader2, Check, EyeOff, Eye, FileX, X } from 'lucide-react'
 import { usePDMStore } from '../../stores/pdmStore'
 import { supabase } from '../../lib/supabase'
 
@@ -711,22 +711,6 @@ export function SolidWorksSettings() {
         </div>
       </div>
 
-      {/* eDrawings download link */}
-      <div className="pt-2">
-        <a
-          href="https://www.solidworks.com/support/free-downloads"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-2 text-base text-plm-accent hover:underline"
-          onClick={(e) => {
-            e.preventDefault()
-            window.electronAPI?.openFile('https://www.solidworks.com/support/free-downloads')
-          }}
-        >
-          <Download size={18} />
-          Download eDrawings Viewer (Free)
-        </a>
-      </div>
     </div>
   )
 }

@@ -81,14 +81,19 @@ export function ApiSettings() {
   }, [])
   
   // Sync API URL from org settings to store (handles persistence)
+  // Org value takes precedence - this handles both setting and clearing the URL
   useEffect(() => {
+    const orgApiUrl = organization?.settings?.api_url || null
+    const currentApiUrl = apiServerUrl || null
+    
     console.log('[API] Checking org settings for API URL...', {
-      orgApiUrl: organization?.settings?.api_url || 'none',
-      storeApiUrl: apiServerUrl || 'none'
+      orgApiUrl: orgApiUrl || 'none',
+      storeApiUrl: currentApiUrl || 'none'
     })
-    if (organization?.settings?.api_url && organization.settings.api_url !== apiServerUrl) {
-      console.log('[API] Syncing API URL from org settings:', organization.settings.api_url)
-      setApiServerUrl(organization.settings.api_url)
+    
+    if (orgApiUrl !== currentApiUrl) {
+      console.log('[API] Syncing API URL from org settings:', orgApiUrl || '(cleared)')
+      setApiServerUrl(orgApiUrl)
     }
   }, [organization?.settings?.api_url, apiServerUrl, setApiServerUrl])
   
