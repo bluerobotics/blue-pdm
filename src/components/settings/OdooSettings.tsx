@@ -312,7 +312,8 @@ export function OdooSettings() {
           database,
           username,
           api_key: apiKey,
-          color: configColor
+          color: configColor,
+          skip_test: !andConnect  // Skip connection test when just saving
         })
       })
 
@@ -631,7 +632,7 @@ export function OdooSettings() {
                       <div 
                         key={config.id} 
                         className={`flex items-center gap-3 px-3 py-2.5 hover:bg-plm-highlight/50 ${
-                          activeConfig?.id === config.id ? 'bg-plm-accent/10' : ''
+                          config.is_active ? 'bg-plm-accent/10' : ''
                         }`}
                       >
                         {/* Color indicator */}
@@ -646,7 +647,7 @@ export function OdooSettings() {
                             <span className="text-sm font-medium text-plm-fg truncate">
                               {config.name}
                             </span>
-                            {activeConfig?.id === config.id && (
+                            {config.is_active && (
                               <span className="px-1.5 py-0.5 text-[10px] uppercase font-semibold bg-plm-success/20 text-plm-success rounded">
                                 Active
                               </span>
@@ -667,7 +668,7 @@ export function OdooSettings() {
                         <div className="flex items-center gap-1 flex-shrink-0">
                           {isAdmin && (
                             <>
-                              {activeConfig?.id === config.id ? (
+                              {config.is_active ? (
                                 <button
                                   onClick={handleDisconnect}
                                   className="p-1.5 text-plm-fg-muted hover:text-plm-error hover:bg-plm-error/10 rounded transition-colors"
