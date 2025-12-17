@@ -834,7 +834,13 @@ export const usePDMStore = create<PDMState>()(
       },
       
       // Actions - Onboarding
-      completeOnboarding: () => set({ onboardingComplete: true }),
+      completeOnboarding: () => set({ 
+        onboardingComplete: true,
+        // Auto-enable these settings on first app startup for better out-of-box experience
+        autoDownloadCloudFiles: true,
+        autoDownloadUpdates: true,
+        autoStartSolidworksService: true,
+      }),
       setLogSharingEnabled: (logSharingEnabled) => set({ logSharingEnabled }),
       
       // Actions - Module Configuration

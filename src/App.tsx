@@ -5,7 +5,7 @@ import { SettingsContent } from './components/SettingsContent'
 import type { SettingsTab } from './types/settings'
 import { supabase, getCurrentSession, isSupabaseConfigured, getFilesLightweight, getCheckedOutUsers, linkUserToOrganization, getUserProfile, setCurrentAccessToken, registerDeviceSession, startSessionHeartbeat, stopSessionHeartbeat, signOut } from './lib/supabase'
 import { subscribeToFiles, subscribeToActivity, subscribeToOrganization, unsubscribeAll } from './lib/realtime'
-// Backup services removed - now handled directly via restic
+import { getBackupStatus, isThisDesignatedMachine, updateHeartbeat } from './lib/backup'
 import { MenuBar } from './components/MenuBar'
 import { ActivityBar } from './components/ActivityBar'
 import { Sidebar } from './components/Sidebar'
@@ -349,6 +349,12 @@ function App() {
             window.electronAPI?.log?.('info', `[Auth] Organization settings keys: ${Object.keys((org as any).settings || {}).join(', ')}`)
             window.electronAPI?.log?.('info', `[Auth] DM License key in settings: ${(org as any).settings?.solidworks_dm_license_key ? 'PRESENT (' + (org as any).settings.solidworks_dm_license_key.length + ' chars)' : 'NOT PRESENT'}`)
             setOrganization(org as any)
+            
+            // Update user's org_id in store if it wasn't set (triggers session re-registration with correct org_id)
+            if (!userData.org_id) {
+              console.log('[Auth] Updating user org_id in store:', (org as any).id)
+              setUser({ ...userData, org_id: (org as any).id })
+            }
           } else if (error) {
             console.log('[Auth] No organization found:', error)
           }
@@ -412,6 +418,14 @@ function App() {
               window.electronAPI?.log?.('info', `[Auth] Organization settings keys: ${Object.keys((org as any).settings || {}).join(', ')}`)
               window.electronAPI?.log?.('info', `[Auth] DM License key in settings: ${(org as any).settings?.solidworks_dm_license_key ? 'PRESENT (' + (org as any).settings.solidworks_dm_license_key.length + ' chars)' : 'NOT PRESENT'}`)
               setOrganization(org as any)
+              
+              // Update user's org_id in store if it wasn't set (triggers session re-registration with correct org_id)
+              // This fixes the "no other users showing online" bug where sessions were registered with org_id=null
+              const currentUser = usePDMStore.getState().user
+              if (currentUser && !currentUser.org_id) {
+                console.log('[Auth] Updating user org_id in store:', (org as any).id)
+                setUser({ ...currentUser, org_id: (org as any).id })
+              }
             } else {
               console.log('[Auth] No organization found:', orgError)
               setIsConnecting(false)
@@ -440,10 +454,15 @@ function App() {
 
   // Sync API URL from organization settings to store (which handles localStorage persistence)
   // This ensures the API URL is restored on app launch, not just when opening Settings → REST API
+  // Also syncs when admin clears the URL (org value takes precedence over local cache)
   useEffect(() => {
-    if (organization?.settings?.api_url && organization.settings.api_url !== apiServerUrl) {
-      console.log('[App] Syncing API URL from org settings to store')
-      setApiServerUrl(organization.settings.api_url)
+    // Normalize both values to compare - treat undefined, null, and empty string as null
+    const orgApiUrl = organization?.settings?.api_url || null
+    const currentApiUrl = apiServerUrl || null
+    
+    if (orgApiUrl !== currentApiUrl) {
+      console.log('[App] Syncing API URL from org settings to store:', orgApiUrl || '(cleared)')
+      setApiServerUrl(orgApiUrl)
     }
   }, [organization?.settings?.api_url, apiServerUrl, setApiServerUrl])
 
@@ -1898,7 +1917,13 @@ function App() {
       
       const allChangedIntegrations = [...changedSettingsKeys, ...changedOrgFields]
       
+      // Log api_url changes specifically for debugging sync issues
+      if (changedSettingsKeys.includes('api_url')) {
+        console.log('[Realtime] API URL changed from', oldSettings.api_url || '(empty)', 'to', newSettings.api_url || '(empty)')
+      }
+      
       // Update the organization in the store
+      // This triggers the sync useEffect in App.tsx to update apiServerUrl
       setOrganization(newOrg)
       
       // Show toast if integration settings changed
@@ -1964,6 +1989,46 @@ function App() {
       stopSessionHeartbeat()
     }
   }, [user?.id, user?.org_id])
+
+  // Backup machine heartbeat - keeps designated_machine_last_seen updated
+  // This runs at App level so it doesn't require BackupPanel to be open
+  useEffect(() => {
+    if (!organization?.id) return
+    
+    let heartbeatInterval: ReturnType<typeof setInterval> | null = null
+    let isDesignated = false
+    
+    const checkAndStartHeartbeat = async () => {
+      try {
+        // Get backup config to check if this is the designated machine
+        const status = await getBackupStatus(organization.id)
+        if (!status.config?.designated_machine_id) return
+        
+        isDesignated = await isThisDesignatedMachine(status.config)
+        if (!isDesignated) return
+        
+        console.log('[Backup] This is the designated machine, starting heartbeat')
+        
+        // Send immediate heartbeat
+        await updateHeartbeat(organization.id)
+        
+        // Send heartbeat every minute
+        heartbeatInterval = setInterval(() => {
+          updateHeartbeat(organization.id)
+        }, 60 * 1000)
+      } catch (err) {
+        console.error('[Backup] Failed to start heartbeat:', err)
+      }
+    }
+    
+    checkAndStartHeartbeat()
+    
+    return () => {
+      if (heartbeatInterval) {
+        clearInterval(heartbeatInterval)
+      }
+    }
+  }, [organization?.id])
 
   // Auto-start SolidWorks service if enabled and SolidWorks is installed
   useEffect(() => {
