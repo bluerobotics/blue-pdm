@@ -2,6 +2,18 @@
 
 All notable changes to BluePLM will be documented in this file.
 
+## [2.9.2] - 2025-12-17
+
+### Added
+- **Periodic update checks**: App now checks for updates periodically and when window regains focus, ensuring users are notified of new versions promptly
+
+### Fixed
+- **Vault files loading spinners**: Ensure loading spinners show on vault files during download
+- **Toast notification styling**: Remove transparent/blurred backgrounds from toast notifications for better readability
+- **Odoo integration visibility**: Allow all org members to view Odoo integration status (not just admins)
+
+---
+
 ## [2.9.1] - 2025-12-17
 
 ### Fixed
