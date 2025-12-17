@@ -40,7 +40,7 @@ interface SavedConfig {
 const API_URL_KEY = 'blueplm_api_url'
 const DEFAULT_API_URL = 'http://127.0.0.1:3001'
 
-// Preset colors for saved configurations
+// Preset colors for saved connections
 const CONFIG_COLORS = [
   { name: 'Green', value: '#22c55e' },
   { name: 'Blue', value: '#3b82f6' },
@@ -80,7 +80,7 @@ export function OdooSettings() {
   const [apiKey, setApiKey] = useState('')
   const [showApiKey, setShowApiKey] = useState(false)
   
-  // Saved configurations
+  // Saved connections
   const [savedConfigs, setSavedConfigs] = useState<SavedConfig[]>([])
   const [showSaveDialog, setShowSaveDialog] = useState(false)
   const [configName, setConfigName] = useState('')
@@ -173,7 +173,7 @@ export function OdooSettings() {
         setSavedConfigs(data.configs || [])
       }
     } catch (err) {
-      console.error('Failed to load saved configs:', err)
+      console.error('Failed to load saved connections:', err)
     } finally {
       setIsLoadingConfigs(false)
     }
@@ -263,7 +263,7 @@ export function OdooSettings() {
         if (response.status === 401) {
           addToast('error', `Auth failed: ${data.message || 'Check API server Supabase config'}`)
         } else {
-          addToast('error', data.message || data.error || 'Failed to save configuration')
+          addToast('error', data.message || data.error || 'Failed to save connection')
         }
       }
     } catch (err) {
@@ -276,7 +276,7 @@ export function OdooSettings() {
   
   const handleSaveConfig = async (andConnect: boolean = true) => {
     if (!configName.trim()) {
-      addToast('warning', 'Please enter a configuration name')
+      addToast('warning', 'Please enter a connection name')
       return
     }
     if (!url || !database || !username || !apiKey) {
@@ -338,13 +338,13 @@ export function OdooSettings() {
                   : `"${configName}" saved but connection failed: ${activateData.message}`)
               loadSettings()
             } else {
-              addToast('warning', `Configuration saved but activation failed: ${activateData.message}`)
+              addToast('warning', `Connection saved but activation failed: ${activateData.message}`)
             }
           } catch {
-            addToast('warning', 'Configuration saved but failed to activate')
+            addToast('warning', 'Connection saved but failed to activate')
           }
         } else {
-          addToast('success', data.message || `Configuration "${configName}" saved!`)
+          addToast('success', data.message || `Connection "${configName}" saved!`)
         }
         
         setShowSaveDialog(false)
@@ -354,7 +354,7 @@ export function OdooSettings() {
         setEditingConfig(null)
         loadSavedConfigs()
       } else {
-        addToast('error', data.message || 'Failed to save configuration')
+        addToast('error', data.message || 'Failed to save connection')
       }
     } catch (err) {
       addToast('error', `Error: ${err}`)
@@ -384,7 +384,7 @@ export function OdooSettings() {
         setApiKey(data.api_key || '')
         addToast('info', `Loaded "${config.name}" - click Save & Test to activate`)
       } else {
-        addToast('error', 'Failed to load configuration')
+        addToast('error', 'Failed to load connection')
       }
     } catch (err) {
       addToast('error', `Error: ${err}`)
@@ -413,7 +413,7 @@ export function OdooSettings() {
         loadSettings()
         loadSavedConfigs()
       } else {
-        addToast('error', data.message || 'Failed to activate configuration')
+        addToast('error', data.message || 'Failed to activate connection')
       }
     } catch (err) {
       addToast('error', `Error: ${err}`)
@@ -423,7 +423,7 @@ export function OdooSettings() {
   }
   
   const handleDeleteConfig = async (config: SavedConfig) => {
-    if (!confirm(`Delete configuration "${config.name}"?`)) return
+    if (!confirm(`Delete connection "${config.name}"?`)) return
 
     const token = await getAuthToken()
     if (!token) {
@@ -441,7 +441,7 @@ export function OdooSettings() {
         addToast('info', `Deleted "${config.name}"`)
         loadSavedConfigs()
       } else {
-        addToast('error', 'Failed to delete configuration')
+        addToast('error', 'Failed to delete connection')
       }
     } catch (err) {
       addToast('error', `Error: ${err}`)
@@ -576,7 +576,7 @@ export function OdooSettings() {
           </div>
         )}
         
-        {/* Saved Configurations Section - Always visible when API is online */}
+        {/* Odoo Connections Section - Always visible when API is online */}
         {apiServerOnline !== false && (
           <>
             <div className="border border-plm-border rounded-lg overflow-hidden">
@@ -584,7 +584,7 @@ export function OdooSettings() {
               <div className="flex items-center justify-between px-3 py-2.5 bg-plm-sidebar border-b border-plm-border">
                 <div className="flex items-center gap-2">
                   <FolderOpen size={16} className="text-plm-fg-muted" />
-                  <span className="text-sm font-medium text-plm-fg">Saved Configurations</span>
+                  <span className="text-sm font-medium text-plm-fg">Odoo Connections</span>
                   {savedConfigs.length > 0 && (
                     <span className="px-1.5 py-0.5 text-xs bg-plm-accent/20 text-plm-accent rounded">
                       {savedConfigs.length}
@@ -609,12 +609,12 @@ export function OdooSettings() {
                     className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-plm-accent bg-plm-accent/10 hover:bg-plm-accent/20 rounded transition-colors"
                   >
                     <Plus size={14} />
-                    New Config
+                    New Connection
                   </button>
                 )}
               </div>
               
-              {/* Config list - always visible */}
+              {/* Connection list - always visible */}
               <div className="bg-plm-bg">
                 {isLoadingConfigs ? (
                   <div className="flex items-center justify-center py-6">
@@ -623,8 +623,8 @@ export function OdooSettings() {
                 ) : savedConfigs.length === 0 ? (
                   <div className="text-center py-6">
                     <FolderOpen size={32} className="mx-auto mb-2 text-plm-fg-muted opacity-40" />
-                    <p className="text-sm text-plm-fg-muted">No saved configurations yet</p>
-                    <p className="text-xs text-plm-fg-muted mt-1">Click "New Config" to create one</p>
+                    <p className="text-sm text-plm-fg-muted">No saved connections yet</p>
+                    <p className="text-xs text-plm-fg-muted mt-1">Click "New Connection" to create one</p>
                   </div>
                 ) : (
                   <div className="divide-y divide-plm-border max-h-48 overflow-y-auto">
@@ -641,7 +641,7 @@ export function OdooSettings() {
                           style={{ backgroundColor: config.color || '#6b7280' }}
                         />
                         
-                        {/* Config info */}
+                        {/* Connection info */}
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2">
                             <span className="text-sm font-medium text-plm-fg truncate">
@@ -672,7 +672,7 @@ export function OdooSettings() {
                                 <button
                                   onClick={handleDisconnect}
                                   className="p-1.5 text-plm-fg-muted hover:text-plm-error hover:bg-plm-error/10 rounded transition-colors"
-                                  title="Disconnect this configuration"
+                                  title="Disconnect this connection"
                                 >
                                   <Plug size={14} />
                                 </button>
@@ -681,7 +681,7 @@ export function OdooSettings() {
                                   onClick={() => handleActivateConfig(config)}
                                   disabled={activatingConfigId === config.id}
                                   className="p-1.5 text-plm-fg-muted hover:text-plm-accent hover:bg-plm-accent/10 rounded transition-colors disabled:opacity-50"
-                                  title="Activate this configuration"
+                                  title="Activate this connection"
                                 >
                                   {activatingConfigId === config.id ? (
                                     <Loader2 size={14} className="animate-spin" />
@@ -700,14 +700,14 @@ export function OdooSettings() {
                               <button
                                 onClick={() => handleEditConfig(config)}
                                 className="p-1.5 text-plm-fg-muted hover:text-plm-fg hover:bg-plm-highlight rounded transition-colors"
-                                title="Edit configuration"
+                                title="Edit connection"
                               >
                                 <Edit2 size={14} />
                               </button>
                               <button
                                 onClick={() => handleDeleteConfig(config)}
                                 className="p-1.5 text-plm-fg-muted hover:text-plm-error hover:bg-plm-error/10 rounded transition-colors"
-                                title="Delete configuration"
+                                title="Delete connection"
                               >
                                 <Trash2 size={14} />
                               </button>
@@ -892,13 +892,13 @@ export function OdooSettings() {
             </div>
       </div>
       
-      {/* Save Configuration Dialog - Full form (admin only) */}
+      {/* Save Connection Dialog - Full form (admin only) */}
       {showSaveDialog && isAdmin && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <div className="bg-plm-bg border border-plm-border rounded-lg shadow-xl w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between px-4 py-3 border-b border-plm-border sticky top-0 bg-plm-bg">
               <h3 className="text-base font-medium text-plm-fg">
-                {editingConfig ? 'Edit Configuration' : 'New Odoo Configuration'}
+                {editingConfig ? 'Edit Connection' : 'New Odoo Connection'}
               </h3>
               <button
                 onClick={() => {
@@ -915,7 +915,7 @@ export function OdooSettings() {
               {/* Name & Color row */}
               <div className="flex gap-3">
                 <div className="flex-1 space-y-2">
-                  <label className="text-sm text-plm-fg-muted">Configuration Name *</label>
+                  <label className="text-sm text-plm-fg-muted">Connection Name *</label>
                   <input
                     type="text"
                     value={configName}
