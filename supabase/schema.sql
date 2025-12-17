@@ -2883,13 +2883,23 @@ CREATE INDEX idx_sync_log_started_at ON integration_sync_log(started_at DESC);
 ALTER TABLE organization_integrations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE integration_sync_log ENABLE ROW LEVEL SECURITY;
 
--- Only admins can view/manage integrations
-CREATE POLICY "Admins can view org integrations"
+-- All org members can view integration status (connection info, sync status)
+-- Credentials are protected at the application layer - not returned in SELECT
+CREATE POLICY "Org members can view integrations"
   ON organization_integrations FOR SELECT
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+-- Only admins can modify integrations (separate policies for each operation)
+CREATE POLICY "Admins can insert org integrations"
+  ON organization_integrations FOR INSERT
+  WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'));
+
+CREATE POLICY "Admins can update org integrations"
+  ON organization_integrations FOR UPDATE
   USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'));
 
-CREATE POLICY "Admins can manage org integrations"
-  ON organization_integrations FOR ALL
+CREATE POLICY "Admins can delete org integrations"
+  ON organization_integrations FOR DELETE
   USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'));
 
 -- Admins and engineers can view sync logs
@@ -2945,13 +2955,104 @@ CREATE INDEX idx_odoo_saved_configs_active ON odoo_saved_configs(is_active) WHER
 
 ALTER TABLE odoo_saved_configs ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "Admins can view odoo saved configs"
+-- All org members can view saved Odoo configs (names, URLs, status)
+-- API keys (api_key_encrypted) are protected at the application layer
+CREATE POLICY "Org members can view odoo configs"
   ON odoo_saved_configs FOR SELECT
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+-- Only admins can modify Odoo configs (separate policies for each operation)
+CREATE POLICY "Admins can insert odoo configs"
+  ON odoo_saved_configs FOR INSERT
+  WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'));
+
+CREATE POLICY "Admins can update odoo configs"
+  ON odoo_saved_configs FOR UPDATE
   USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'));
 
-CREATE POLICY "Admins can manage odoo saved configs"
-  ON odoo_saved_configs FOR ALL
+CREATE POLICY "Admins can delete odoo configs"
+  ON odoo_saved_configs FOR DELETE
   USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'));
+
+-- Helper function to get integration status (no credentials exposed)
+CREATE OR REPLACE FUNCTION get_org_integration_status(p_org_id UUID, p_integration_type TEXT)
+RETURNS TABLE (
+  id UUID,
+  integration_type TEXT,
+  is_active BOOLEAN,
+  is_connected BOOLEAN,
+  last_connected_at TIMESTAMPTZ,
+  auto_sync BOOLEAN,
+  last_sync_at TIMESTAMPTZ,
+  last_sync_status TEXT,
+  last_sync_count INT
+) AS $$
+BEGIN
+  -- Only return data if user belongs to this org
+  IF p_org_id NOT IN (SELECT org_id FROM users WHERE users.id = auth.uid()) THEN
+    RETURN;
+  END IF;
+  
+  RETURN QUERY
+  SELECT 
+    oi.id,
+    oi.integration_type,
+    oi.is_active,
+    oi.is_connected,
+    oi.last_connected_at,
+    oi.auto_sync,
+    oi.last_sync_at,
+    oi.last_sync_status,
+    oi.last_sync_count
+  FROM organization_integrations oi
+  WHERE oi.org_id = p_org_id
+    AND oi.integration_type = p_integration_type
+    AND oi.is_active = true;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION get_org_integration_status(UUID, TEXT) TO authenticated;
+
+-- Helper function to get Odoo configs (no API keys exposed)
+CREATE OR REPLACE FUNCTION get_org_odoo_configs(p_org_id UUID)
+RETURNS TABLE (
+  id UUID,
+  name TEXT,
+  description TEXT,
+  url TEXT,
+  database TEXT,
+  color TEXT,
+  is_active BOOLEAN,
+  last_tested_at TIMESTAMPTZ,
+  last_test_success BOOLEAN,
+  created_at TIMESTAMPTZ
+) AS $$
+BEGIN
+  -- Only return data if user belongs to this org
+  IF p_org_id NOT IN (SELECT org_id FROM users WHERE users.id = auth.uid()) THEN
+    RETURN;
+  END IF;
+  
+  RETURN QUERY
+  SELECT 
+    osc.id,
+    osc.name,
+    osc.description,
+    osc.url,
+    osc.database,
+    osc.color,
+    osc.is_active,
+    osc.last_tested_at,
+    osc.last_test_success,
+    osc.created_at
+  FROM odoo_saved_configs osc
+  WHERE osc.org_id = p_org_id
+    AND osc.is_active = true
+  ORDER BY osc.name;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION get_org_odoo_configs(UUID) TO authenticated;
 
 -- ===========================================
 -- FILE METADATA COLUMNS (Custom metadata fields per org)

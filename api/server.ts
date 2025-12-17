@@ -3957,9 +3957,8 @@ export async function buildServer(): Promise<FastifyInstance> {
     if (!request.user) {
       return reply.code(401).send({ error: 'Unauthorized', message: 'Authentication required' })
     }
-    if (request.user.role !== 'admin') {
-      return reply.code(403).send({ error: 'Forbidden', message: 'Only admins can view saved configurations' })
-    }
+    // All org members can view the list of saved configs (without API keys)
+    // This allows non-admins to see that Odoo is configured
     
     const { data, error } = await request.supabase!
       .from('odoo_saved_configs')
@@ -3973,7 +3972,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     return { configs: data || [] }
   })
 
-  // Get a single saved configuration (with API key for loading)
+  // Get a single saved configuration (with API key for loading - admin only)
   fastify.get('/integrations/odoo/configs/:id', {
     schema: {
       description: 'Get a saved Odoo configuration (includes API key)',
