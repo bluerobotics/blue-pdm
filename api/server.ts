@@ -4035,7 +4035,8 @@ export async function buildServer(): Promise<FastifyInstance> {
           database: { type: 'string', description: 'Odoo database name' },
           username: { type: 'string', description: 'Odoo username (email)' },
           api_key: { type: 'string', description: 'Odoo API key' },
-          color: { type: 'string', description: 'Color hex code for UI badge' }
+          color: { type: 'string', description: 'Color hex code for UI badge' },
+          skip_test: { type: 'boolean', default: false, description: 'Save without testing connection' }
         }
       }
     },
@@ -4048,7 +4049,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       return reply.code(403).send({ error: 'Forbidden', message: 'Only admins can save configurations' })
     }
     
-    const { name, description, url, database, username, api_key, color } = request.body as {
+    const { name, description, url, database, username, api_key, color, skip_test } = request.body as {
       name: string
       description?: string
       url: string
@@ -4056,12 +4057,16 @@ export async function buildServer(): Promise<FastifyInstance> {
       username: string
       api_key: string
       color?: string
+      skip_test?: boolean
     }
     
     const normalizedUrl = normalizeOdooUrl(url)
     
-    // Test connection
-    const testResult = await testOdooConnection(normalizedUrl, database, username, api_key)
+    // Test connection (unless skip_test is true)
+    let testResult: { success: boolean; error?: string } = { success: false }
+    if (!skip_test) {
+      testResult = await testOdooConnection(normalizedUrl, database, username, api_key)
+    }
     
     const { data, error } = await request.supabase!
       .from('odoo_saved_configs')
@@ -4074,9 +4079,9 @@ export async function buildServer(): Promise<FastifyInstance> {
         username,
         api_key_encrypted: api_key, // In production, encrypt this
         color,
-        last_tested_at: new Date().toISOString(),
-        last_test_success: testResult.success,
-        last_test_error: testResult.error,
+        last_tested_at: !skip_test ? new Date().toISOString() : null,
+        last_test_success: !skip_test ? testResult.success : null,
+        last_test_error: !skip_test ? testResult.error : null,
         created_by: request.user.id,
         updated_by: request.user.id
       })
@@ -4088,6 +4093,14 @@ export async function buildServer(): Promise<FastifyInstance> {
         return reply.code(409).send({ error: 'Conflict', message: `A configuration named "${name}" already exists` })
       }
       throw error
+    }
+    
+    if (skip_test) {
+      return {
+        success: true,
+        config: data,
+        message: `Configuration "${name}" saved (connection not tested)`
+      }
     }
     
     return {
