@@ -58,8 +58,16 @@ function IntegrationCard({ icon, name, description, connected, onClick }: Integr
       onClick={onClick}
       className="w-full flex items-start gap-3 p-3 bg-plm-highlight rounded hover:bg-plm-highlight/80 transition-colors text-left"
     >
-      <div className="w-10 h-10 rounded-lg bg-plm-bg flex items-center justify-center flex-shrink-0">
+      <div className="relative w-10 h-10 rounded-lg bg-plm-bg flex items-center justify-center flex-shrink-0">
         {icon}
+        {/* Connection status dot */}
+        {connected !== undefined && (
+          <div 
+            className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-plm-highlight ${
+              connected ? 'bg-plm-success' : 'bg-plm-fg-muted'
+            }`}
+          />
+        )}
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
