@@ -5405,8 +5405,11 @@ ipcMain.handle('updater:check', async () => {
       return { success: false, error: 'Updates disabled in development' }
     }
     isUserInitiatedCheck = true  // Mark as user-initiated so errors are shown
-    const result = await autoUpdater.checkForUpdates()
-    return { success: true, updateInfo: result?.updateInfo }
+    await autoUpdater.checkForUpdates()
+    // After checkForUpdates resolves, the update-available or update-not-available 
+    // event will have fired, setting updateAvailable accordingly.
+    // Only return updateInfo if there's actually a newer version available.
+    return { success: true, updateInfo: updateAvailable }
   } catch (err) {
     logError('Failed to check for updates', { error: String(err) })
     isUserInitiatedCheck = false
