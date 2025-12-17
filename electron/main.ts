@@ -5272,6 +5272,45 @@ let updateAvailable: UpdateInfo | null = null
 let updateDownloaded = false
 let downloadProgress: ProgressInfo | null = null
 
+// Update check timing - prevent spam checks
+let lastUpdateCheck = 0
+const UPDATE_CHECK_COOLDOWN = 30 * 1000  // 30 seconds minimum between checks
+const UPDATE_CHECK_INTERVAL = 2 * 60 * 1000  // Check every 2 minutes for responsive updates
+let updateCheckTimer: ReturnType<typeof setInterval> | null = null
+
+/**
+ * Perform an automatic update check with rate limiting
+ * @param reason - reason for the check (for logging)
+ */
+async function performAutoUpdateCheck(reason: string): Promise<void> {
+  if (isDev) return
+  
+  const now = Date.now()
+  const timeSinceLastCheck = now - lastUpdateCheck
+  
+  // Don't check too frequently
+  if (timeSinceLastCheck < UPDATE_CHECK_COOLDOWN) {
+    log(`[Update] Skipping check (${reason}) - checked ${Math.round(timeSinceLastCheck / 1000)}s ago`)
+    return
+  }
+  
+  // Don't check if we already know there's an update available
+  if (updateAvailable && !updateDownloaded) {
+    log(`[Update] Skipping check (${reason}) - update already available: v${updateAvailable.version}`)
+    return
+  }
+  
+  lastUpdateCheck = now
+  log(`[Update] Checking for updates (${reason})...`)
+  
+  try {
+    await autoUpdater.checkForUpdates()
+  } catch (err) {
+    // Silent fail for automatic checks - errors only shown for user-initiated
+    log(`[Update] Auto check failed: ${String(err)}`)
+  }
+}
+
 // Update reminder state persistence
 interface UpdateReminder {
   version: string
@@ -5642,18 +5681,32 @@ app.whenReady().then(() => {
   
   // Check for updates after a short delay (let the app fully load first)
   if (!isDev) {
+    // Initial check after 5 seconds
     setTimeout(() => {
-      log('Auto-checking for updates...')
-      autoUpdater.checkForUpdates().catch(err => {
-        logError('Auto update check failed', { error: String(err) })
-      })
-    }, 5000) // 5 second delay
+      performAutoUpdateCheck('startup')
+    }, 5000)
+    
+    // Periodic check every 5 minutes
+    updateCheckTimer = setInterval(() => {
+      performAutoUpdateCheck('periodic')
+    }, UPDATE_CHECK_INTERVAL)
+    
+    // Check when window gains focus (user coming back to the app)
+    mainWindow?.on('focus', () => {
+      performAutoUpdateCheck('window-focus')
+    })
   }
 }).catch(err => {
   logError('Error during app ready', { error: String(err) })
 })
 
 app.on('window-all-closed', () => {
+  // Clean up update check timer
+  if (updateCheckTimer) {
+    clearInterval(updateCheckTimer)
+    updateCheckTimer = null
+  }
+  
   if (process.platform !== 'darwin') {
     app.quit()
   }
