@@ -450,6 +450,7 @@ export function IntegrationsView() {
   const { organization } = usePDMStore()
   const [showOdooConfig, setShowOdooConfig] = useState(false)
   const [odooSettings, setOdooSettings] = useState<OdooSettings | null>(null)
+  const [odooConnected, setOdooConnected] = useState(false)
   const [, setLoading] = useState(true)
 
   const apiUrl = getApiUrl(organization)
@@ -463,6 +464,7 @@ export function IntegrationsView() {
         return
       }
 
+      // Fetch main settings
       const response = await fetch(`${apiUrl}/integrations/odoo`, {
         headers: {
           'Authorization': `Bearer ${token}`
@@ -472,6 +474,25 @@ export function IntegrationsView() {
       if (response.ok) {
         const data = await response.json()
         setOdooSettings(data)
+        
+        // Check if main settings show connected
+        if (data.is_connected) {
+          setOdooConnected(true)
+        } else {
+          // Also check saved configs for any active connection
+          try {
+            const configsResponse = await fetch(`${apiUrl}/integrations/odoo/configs`, {
+              headers: { 'Authorization': `Bearer ${token}` }
+            })
+            if (configsResponse.ok) {
+              const configsData = await configsResponse.json()
+              const hasActiveConfig = configsData.configs?.some((c: { is_active: boolean }) => c.is_active)
+              setOdooConnected(hasActiveConfig || false)
+            }
+          } catch {
+            // Ignore config fetch errors
+          }
+        }
       } else {
         console.warn('[IntegrationsView] Failed to load Odoo settings:', response.status)
       }
@@ -504,7 +525,7 @@ export function IntegrationsView() {
           icon={<ShoppingCart size={20} className="text-[#714B67]" />}
           name="Odoo"
           description="Sync suppliers, products, and BOMs from your Odoo ERP"
-          connected={odooSettings?.is_connected}
+          connected={odooConnected}
           onClick={() => setShowOdooConfig(true)}
         />
         <IntegrationCard
@@ -527,7 +548,7 @@ export function IntegrationsView() {
         <p className="text-xs text-plm-fg-muted max-w-[200px]">
           Connect external services for automations, notifications, and data sync.
         </p>
-        {!odooSettings?.is_connected && (
+        {!odooConnected && (
           <div className="mt-6 px-3 py-1.5 bg-plm-info/20 text-plm-info text-[10px] font-medium rounded">
             Click Odoo above to set up your first integration
           </div>
