@@ -129,8 +129,8 @@ function ActivityItem({ icon, view, title, badge, hasChildren, children, depth =
         {/* Small chevron for collapsed mode (not hover mode) */}
         {showCollapsedChevron && (
           <ChevronRight 
-            size={10} 
-            className="absolute right-1 text-plm-fg-dim"
+            size={12} 
+            className="absolute -right-0.5 text-plm-fg-dim"
           />
         )}
         {isExpanded && (

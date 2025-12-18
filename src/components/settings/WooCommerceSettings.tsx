@@ -12,7 +12,13 @@ import {
   ExternalLink,
   Package,
   ArrowLeftRight,
-  Settings2
+  Settings2,
+  FolderOpen,
+  Trash2,
+  Plus,
+  X,
+  Edit2,
+  Save
 } from 'lucide-react'
 import { usePDMStore } from '../../stores/pdmStore'
 import { supabase } from '../../lib/supabase'
@@ -20,13 +26,30 @@ import { supabase } from '../../lib/supabase'
 interface WooCommerceSettingsData {
   configured: boolean
   is_connected: boolean
-  store_url?: string
-  store_name?: string
+  settings?: {
+    store_url: string
+    store_name: string
+    config_id?: string
+    config_name?: string
+  }
   wc_version?: string
   last_sync_at: string | null
   last_sync_status: string | null
   products_synced: number | null
   auto_sync: boolean
+}
+
+interface SavedConfig {
+  id: string
+  name: string
+  description: string | null
+  store_url: string
+  store_name: string | null
+  color: string | null
+  is_active: boolean
+  last_tested_at: string | null
+  last_test_success: boolean | null
+  created_at: string
 }
 
 interface SyncSettings {
@@ -38,6 +61,18 @@ interface SyncSettings {
 
 const API_URL_KEY = 'blueplm_api_url'
 const DEFAULT_API_URL = 'http://127.0.0.1:3001'
+
+// Preset colors for saved connections
+const CONFIG_COLORS = [
+  { name: 'Purple', value: '#96588a' },
+  { name: 'Blue', value: '#3b82f6' },
+  { name: 'Green', value: '#22c55e' },
+  { name: 'Orange', value: '#f97316' },
+  { name: 'Pink', value: '#ec4899' },
+  { name: 'Cyan', value: '#06b6d4' },
+  { name: 'Yellow', value: '#eab308' },
+  { name: 'Red', value: '#ef4444' },
+]
 
 function getApiUrl(organization: { settings?: { api_url?: string } } | null): string {
   return organization?.settings?.api_url 
@@ -57,7 +92,7 @@ export function WooCommerceSettings() {
   
   const apiUrl = getApiUrl(organization)
   
-  // Current settings
+  // Current active settings
   const [settings, setSettings] = useState<WooCommerceSettingsData | null>(null)
   
   // Form fields
@@ -66,6 +101,14 @@ export function WooCommerceSettings() {
   const [consumerSecret, setConsumerSecret] = useState('')
   const [showConsumerKey, setShowConsumerKey] = useState(false)
   const [showConsumerSecret, setShowConsumerSecret] = useState(false)
+  
+  // Saved connections
+  const [savedConfigs, setSavedConfigs] = useState<SavedConfig[]>([])
+  const [showSaveDialog, setShowSaveDialog] = useState(false)
+  const [configName, setConfigName] = useState('')
+  const [configDescription, setConfigDescription] = useState('')
+  const [configColor, setConfigColor] = useState(CONFIG_COLORS[0].value)
+  const [editingConfig, setEditingConfig] = useState<SavedConfig | null>(null)
   
   // Sync settings
   const [syncSettings, setSyncSettings] = useState<SyncSettings>({
@@ -80,6 +123,9 @@ export function WooCommerceSettings() {
   const [isSaving, setIsSaving] = useState(false)
   const [isTesting, setIsTesting] = useState(false)
   const [isSyncing, setIsSyncing] = useState(false)
+  const [isSavingConfig, setIsSavingConfig] = useState(false)
+  const [isLoadingConfigs, setIsLoadingConfigs] = useState(false)
+  const [activatingConfigId, setActivatingConfigId] = useState<string | null>(null)
   
   // UI state
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
@@ -87,6 +133,7 @@ export function WooCommerceSettings() {
   
   useEffect(() => {
     loadSettings()
+    loadSavedConfigs()
   }, [])
   
   const checkApiServer = async () => {
@@ -124,11 +171,11 @@ export function WooCommerceSettings() {
       if (response.ok) {
         const data = await response.json()
         setSettings(data)
-        if (data.configured) {
-          setStoreUrl(data.store_url || '')
-          if (data.sync_settings) {
-            setSyncSettings(data.sync_settings)
-          }
+        if (data.configured && data.settings) {
+          setStoreUrl(data.settings.store_url || '')
+        }
+        if (data.sync_settings) {
+          setSyncSettings(data.sync_settings)
         }
       }
     } catch (err) {
@@ -138,6 +185,28 @@ export function WooCommerceSettings() {
       console.error('Failed to load WooCommerce settings:', err)
     } finally {
       setIsLoading(false)
+    }
+  }
+  
+  const loadSavedConfigs = async () => {
+    setIsLoadingConfigs(true)
+    try {
+      const token = await getAuthToken()
+      if (!token) return
+      
+      const response = await fetch(`${apiUrl}/integrations/woocommerce/configs`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+        signal: AbortSignal.timeout(5000)
+      })
+      
+      if (response.ok) {
+        const data = await response.json()
+        setSavedConfigs(data.configs || [])
+      }
+    } catch (err) {
+      console.error('Failed to load saved connections:', err)
+    } finally {
+      setIsLoadingConfigs(false)
     }
   }
   
@@ -232,6 +301,7 @@ export function WooCommerceSettings() {
           addToast('success', data.message || 'WooCommerce credentials saved!')
         }
         loadSettings()
+        loadSavedConfigs()
       } else {
         if (response.status === 401) {
           addToast('error', `Auth failed: ${data.message || 'Check API server Supabase config'}`)
@@ -245,6 +315,189 @@ export function WooCommerceSettings() {
     } finally {
       setIsSaving(false)
     }
+  }
+  
+  const handleSaveConfig = async (andConnect: boolean = true) => {
+    if (!configName.trim()) {
+      addToast('warning', 'Please enter a connection name')
+      return
+    }
+    if (!storeUrl || !consumerKey || !consumerSecret) {
+      addToast('warning', 'Please fill in all WooCommerce fields first')
+      return
+    }
+
+    const token = await getAuthToken()
+    if (!token) {
+      addToast('error', 'Session expired. Please log in again.')
+      return
+    }
+
+    setIsSavingConfig(true)
+
+    try {
+      const endpoint = editingConfig 
+        ? `${apiUrl}/integrations/woocommerce/configs/${editingConfig.id}`
+        : `${apiUrl}/integrations/woocommerce/configs`
+      
+      const method = editingConfig ? 'PUT' : 'POST'
+      
+      const response = await fetch(endpoint, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          name: configName.trim(),
+          description: configDescription.trim() || null,
+          store_url: storeUrl,
+          consumer_key: consumerKey,
+          consumer_secret: consumerSecret,
+          color: configColor,
+          skip_test: !andConnect
+        })
+      })
+
+      const data = await response.json()
+
+      if (response.ok) {
+        const configId = data.config?.id || editingConfig?.id
+        
+        // Only activate if andConnect is true
+        if (andConnect && configId) {
+          try {
+            const activateResponse = await fetch(`${apiUrl}/integrations/woocommerce/configs/${configId}/activate`, {
+              method: 'POST',
+              headers: { 'Authorization': `Bearer ${token}` }
+            })
+            const activateData = await activateResponse.json()
+            
+            if (activateResponse.ok) {
+              addToast(activateData.connected ? 'success' : 'warning', 
+                activateData.connected 
+                  ? `"${configName}" saved and connected!`
+                  : `"${configName}" saved but connection failed: ${activateData.message}`)
+              loadSettings()
+            } else {
+              addToast('warning', `Connection saved but activation failed: ${activateData.message}`)
+            }
+          } catch {
+            addToast('warning', 'Connection saved but failed to activate')
+          }
+        } else {
+          addToast('success', data.message || `Connection "${configName}" saved!`)
+        }
+        
+        setShowSaveDialog(false)
+        setConfigName('')
+        setConfigDescription('')
+        setConfigColor(CONFIG_COLORS[0].value)
+        setEditingConfig(null)
+        loadSavedConfigs()
+      } else {
+        addToast('error', data.message || 'Failed to save connection')
+      }
+    } catch (err) {
+      addToast('error', `Error: ${err}`)
+    } finally {
+      setIsSavingConfig(false)
+    }
+  }
+  
+  const handleLoadConfig = async (config: SavedConfig) => {
+    const token = await getAuthToken()
+    if (!token) {
+      addToast('error', 'Session expired. Please log in again.')
+      return
+    }
+
+    try {
+      // Fetch full config with credentials
+      const response = await fetch(`${apiUrl}/integrations/woocommerce/configs/${config.id}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        setStoreUrl(data.store_url)
+        setConsumerKey(data.consumer_key || '')
+        setConsumerSecret(data.consumer_secret || '')
+        addToast('info', `Loaded "${config.name}" - click Save & Test to activate`)
+      } else {
+        addToast('error', 'Failed to load connection')
+      }
+    } catch (err) {
+      addToast('error', `Error: ${err}`)
+    }
+  }
+  
+  const handleActivateConfig = async (config: SavedConfig) => {
+    const token = await getAuthToken()
+    if (!token) {
+      addToast('error', 'Session expired. Please log in again.')
+      return
+    }
+
+    setActivatingConfigId(config.id)
+
+    try {
+      const response = await fetch(`${apiUrl}/integrations/woocommerce/configs/${config.id}/activate`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+
+      const data = await response.json()
+
+      if (response.ok) {
+        addToast(data.connected ? 'success' : 'warning', data.message)
+        loadSettings()
+        loadSavedConfigs()
+      } else {
+        addToast('error', data.message || 'Failed to activate connection')
+      }
+    } catch (err) {
+      addToast('error', `Error: ${err}`)
+    } finally {
+      setActivatingConfigId(null)
+    }
+  }
+  
+  const handleDeleteConfig = async (config: SavedConfig) => {
+    if (!confirm(`Delete connection "${config.name}"?`)) return
+
+    const token = await getAuthToken()
+    if (!token) {
+      addToast('error', 'Session expired. Please log in again.')
+      return
+    }
+
+    try {
+      const response = await fetch(`${apiUrl}/integrations/woocommerce/configs/${config.id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+
+      if (response.ok) {
+        addToast('info', `Deleted "${config.name}"`)
+        loadSavedConfigs()
+      } else {
+        addToast('error', 'Failed to delete connection')
+      }
+    } catch (err) {
+      addToast('error', `Error: ${err}`)
+    }
+  }
+  
+  const handleEditConfig = (config: SavedConfig) => {
+    setEditingConfig(config)
+    setConfigName(config.name)
+    setConfigDescription(config.description || '')
+    setConfigColor(config.color || CONFIG_COLORS[0].value)
+    // Load the config values into form
+    handleLoadConfig(config).then(() => {
+      setShowSaveDialog(true)
+    })
   }
   
   const handleSync = async () => {
@@ -385,12 +638,163 @@ export function WooCommerceSettings() {
           </div>
         )}
         
+        {/* WooCommerce Connections Section - Always visible when API is online */}
+        {apiServerOnline !== false && (
+          <>
+            <div className="border border-plm-border rounded-lg overflow-hidden">
+              {/* Header with Add button */}
+              <div className="flex items-center justify-between px-3 py-2.5 bg-plm-sidebar border-b border-plm-border">
+                <div className="flex items-center gap-2">
+                  <FolderOpen size={16} className="text-plm-fg-muted" />
+                  <span className="text-sm font-medium text-plm-fg">WooCommerce Stores</span>
+                  {savedConfigs.length > 0 && (
+                    <span className="px-1.5 py-0.5 text-xs bg-plm-accent/20 text-plm-accent rounded">
+                      {savedConfigs.length}
+                    </span>
+                  )}
+                </div>
+                {isAdmin && (
+                  <button
+                    onClick={() => {
+                      setEditingConfig(null)
+                      setConfigName('')
+                      setConfigDescription('')
+                      setConfigColor(CONFIG_COLORS[0].value)
+                      // Clear form for new config
+                      setStoreUrl('')
+                      setConsumerKey('')
+                      setConsumerSecret('')
+                      setTestResult(null)
+                      setShowSaveDialog(true)
+                    }}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-plm-accent bg-plm-accent/10 hover:bg-plm-accent/20 rounded transition-colors"
+                  >
+                    <Plus size={14} />
+                    New Store
+                  </button>
+                )}
+              </div>
+              
+              {/* Connection list - always visible */}
+              <div className="bg-plm-bg">
+                {isLoadingConfigs ? (
+                  <div className="flex items-center justify-center py-6">
+                    <Loader2 size={16} className="animate-spin text-plm-fg-muted" />
+                  </div>
+                ) : savedConfigs.length === 0 ? (
+                  <div className="text-center py-6">
+                    <FolderOpen size={32} className="mx-auto mb-2 text-plm-fg-muted opacity-40" />
+                    <p className="text-sm text-plm-fg-muted">No saved stores yet</p>
+                    <p className="text-xs text-plm-fg-muted mt-1">Click "New Store" to add one</p>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-plm-border max-h-48 overflow-y-auto">
+                    {savedConfigs.map(config => (
+                      <div 
+                        key={config.id} 
+                        className={`flex items-center gap-3 px-3 py-2.5 hover:bg-plm-highlight/50 ${
+                          config.is_active ? 'bg-plm-accent/10' : ''
+                        }`}
+                      >
+                        {/* Color indicator */}
+                        <div 
+                          className="w-3 h-3 rounded-full flex-shrink-0"
+                          style={{ backgroundColor: config.color || '#96588a' }}
+                        />
+                        
+                        {/* Connection info */}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium text-plm-fg truncate">
+                              {config.name}
+                            </span>
+                            {config.is_active && (
+                              <span className="px-1.5 py-0.5 text-[10px] uppercase font-semibold bg-plm-success/20 text-plm-success rounded">
+                                Active
+                              </span>
+                            )}
+                            {config.last_test_success === true && (
+                              <Check size={12} className="text-plm-success flex-shrink-0" />
+                            )}
+                            {config.last_test_success === false && (
+                              <AlertCircle size={12} className="text-plm-error flex-shrink-0" />
+                            )}
+                          </div>
+                          <div className="text-xs text-plm-fg-muted truncate">
+                            {config.store_url}
+                          </div>
+                        </div>
+                        
+                        {/* Actions */}
+                        <div className="flex items-center gap-1 flex-shrink-0">
+                          {isAdmin && (
+                            <>
+                              {config.is_active ? (
+                                <button
+                                  onClick={handleDisconnect}
+                                  className="p-1.5 text-plm-fg-muted hover:text-plm-error hover:bg-plm-error/10 rounded transition-colors"
+                                  title="Disconnect this store"
+                                >
+                                  <Plug size={14} />
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={() => handleActivateConfig(config)}
+                                  disabled={activatingConfigId === config.id}
+                                  className="p-1.5 text-plm-fg-muted hover:text-plm-accent hover:bg-plm-accent/10 rounded transition-colors disabled:opacity-50"
+                                  title="Activate this store"
+                                >
+                                  {activatingConfigId === config.id ? (
+                                    <Loader2 size={14} className="animate-spin" />
+                                  ) : (
+                                    <Plug size={14} />
+                                  )}
+                                </button>
+                              )}
+                              <button
+                                onClick={() => handleLoadConfig(config)}
+                                className="p-1.5 text-plm-fg-muted hover:text-plm-fg hover:bg-plm-highlight rounded transition-colors"
+                                title="Load into form"
+                              >
+                                <FolderOpen size={14} />
+                              </button>
+                              <button
+                                onClick={() => handleEditConfig(config)}
+                                className="p-1.5 text-plm-fg-muted hover:text-plm-fg hover:bg-plm-highlight rounded transition-colors"
+                                title="Edit store"
+                              >
+                                <Edit2 size={14} />
+                              </button>
+                              <button
+                                onClick={() => handleDeleteConfig(config)}
+                                className="p-1.5 text-plm-fg-muted hover:text-plm-error hover:bg-plm-error/10 rounded transition-colors"
+                                title="Delete store"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </>
+        )}
+        
         {/* Status banner if connected */}
         {settings?.is_connected && (
           <div className="flex items-center justify-between p-3 bg-plm-success/10 border border-plm-success/30 rounded-lg text-sm">
             <div className="flex items-center gap-2 text-plm-success">
               <Check size={16} />
-              <span>Connected to {settings.store_name || settings.store_url}</span>
+              <span>
+                Connected to {settings.settings?.store_url}
+                {settings.settings?.config_name && (
+                  <span className="ml-1 text-plm-fg-muted">({settings.settings.config_name})</span>
+                )}
+              </span>
             </div>
             {settings.last_sync_at && (
               <span className="text-plm-fg-muted text-xs">
@@ -401,8 +805,8 @@ export function WooCommerceSettings() {
           </div>
         )}
         
-        {/* Configuration form */}
-        {apiServerOnline !== false && (
+        {/* Quick edit form - only show when connected */}
+        {settings?.is_connected && apiServerOnline !== false && (
           <>
             {/* Store URL */}
             <div className="space-y-2">
@@ -411,11 +815,10 @@ export function WooCommerceSettings() {
                 type="text"
                 value={storeUrl}
                 onChange={(e) => isAdmin && setStoreUrl(e.target.value)}
-                placeholder="https://mystore.com or https://mystore.com/shop"
+                placeholder="https://mystore.com"
                 readOnly={!isAdmin}
                 className={`w-full px-3 py-2 text-base bg-plm-sidebar border border-plm-border rounded-lg focus:outline-none focus:border-plm-accent font-mono ${!isAdmin ? 'opacity-60 cursor-not-allowed' : ''}`}
               />
-              <p className="text-xs text-plm-fg-muted">Your WooCommerce store URL (with or without /shop)</p>
             </div>
             
             {/* Consumer Key */}
@@ -426,7 +829,7 @@ export function WooCommerceSettings() {
                   type={showConsumerKey ? 'text' : 'password'}
                   value={consumerKey}
                   onChange={(e) => isAdmin && setConsumerKey(e.target.value)}
-                  placeholder={settings?.is_connected ? '••••••••••••' : 'ck_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'}
+                  placeholder={settings?.is_connected ? '••••••••••••' : 'ck_xxxxxxxx...'}
                   readOnly={!isAdmin}
                   className={`w-full px-3 py-2 pr-10 text-base bg-plm-sidebar border border-plm-border rounded-lg focus:outline-none focus:border-plm-accent font-mono ${!isAdmin ? 'opacity-60 cursor-not-allowed' : ''}`}
                 />
@@ -448,7 +851,7 @@ export function WooCommerceSettings() {
                   type={showConsumerSecret ? 'text' : 'password'}
                   value={consumerSecret}
                   onChange={(e) => isAdmin && setConsumerSecret(e.target.value)}
-                  placeholder={settings?.is_connected ? '••••••••••••' : 'cs_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'}
+                  placeholder={settings?.is_connected ? '••••••••••••' : 'cs_xxxxxxxx...'}
                   readOnly={!isAdmin}
                   className={`w-full px-3 py-2 pr-10 text-base bg-plm-sidebar border border-plm-border rounded-lg focus:outline-none focus:border-plm-accent font-mono ${!isAdmin ? 'opacity-60 cursor-not-allowed' : ''}`}
                 />
@@ -461,7 +864,7 @@ export function WooCommerceSettings() {
                 </button>
               </div>
               <p className="text-xs text-plm-fg-muted">
-                Generate at: WooCommerce → Settings → Advanced → REST API → Add Key
+                Generate at: WooCommerce → Settings → Advanced → REST API
               </p>
             </div>
             
@@ -599,23 +1002,6 @@ export function WooCommerceSettings() {
           </>
         )}
         
-        {/* Setup instructions (when not connected) */}
-        {!settings?.is_connected && apiServerOnline !== false && (
-          <div className="p-4 bg-plm-sidebar rounded-lg mt-4">
-            <p className="text-sm text-plm-fg-muted font-medium mb-3">Setup Instructions:</p>
-            <ol className="text-sm text-plm-fg-muted space-y-2 list-decimal list-inside">
-              <li>Log into your WordPress admin panel</li>
-              <li>Go to <strong>WooCommerce → Settings → Advanced → REST API</strong></li>
-              <li>Click <strong>Add Key</strong></li>
-              <li>Give it a description (e.g., "BluePLM Integration")</li>
-              <li>Set permissions to <strong>Read/Write</strong></li>
-              <li>Click <strong>Generate API Key</strong></li>
-              <li>Copy both the <strong>Consumer Key</strong> and <strong>Consumer Secret</strong></li>
-              <li>Paste them above and test the connection</li>
-            </ol>
-          </div>
-        )}
-        
         {/* Help link */}
         <div className="pt-2">
           <a
@@ -629,7 +1015,204 @@ export function WooCommerceSettings() {
           </a>
         </div>
       </div>
+      
+      {/* Save Connection Dialog - Full form (admin only) */}
+      {showSaveDialog && isAdmin && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-plm-bg border border-plm-border rounded-lg shadow-xl w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-plm-border sticky top-0 bg-plm-bg">
+              <h3 className="text-base font-medium text-plm-fg">
+                {editingConfig ? 'Edit Store' : 'New WooCommerce Store'}
+              </h3>
+              <button
+                onClick={() => {
+                  setShowSaveDialog(false)
+                  setEditingConfig(null)
+                }}
+                className="p-1 text-plm-fg-muted hover:text-plm-fg rounded"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            
+            <div className="p-4 space-y-4">
+              {/* Name & Color row */}
+              <div className="flex gap-3">
+                <div className="flex-1 space-y-2">
+                  <label className="text-sm text-plm-fg-muted">Store Name *</label>
+                  <input
+                    type="text"
+                    value={configName}
+                    onChange={(e) => setConfigName(e.target.value)}
+                    placeholder="e.g., Main Store, US Store"
+                    className="w-full px-3 py-2 text-sm bg-plm-sidebar border border-plm-border rounded-lg focus:outline-none focus:border-plm-accent"
+                    autoFocus
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm text-plm-fg-muted">Color</label>
+                  <div className="flex gap-1">
+                    {CONFIG_COLORS.slice(0, 4).map(color => (
+                      <button
+                        key={color.value}
+                        onClick={() => setConfigColor(color.value)}
+                        className={`w-8 h-8 rounded flex items-center justify-center transition-all ${
+                          configColor === color.value ? 'ring-2 ring-offset-1 ring-offset-plm-bg ring-plm-accent' : 'hover:opacity-80'
+                        }`}
+                        style={{ backgroundColor: color.value }}
+                        title={color.name}
+                      >
+                        {configColor === color.value && <Check size={12} className="text-white" />}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              
+              {/* More colors */}
+              <div className="flex gap-1 -mt-2">
+                {CONFIG_COLORS.slice(4).map(color => (
+                  <button
+                    key={color.value}
+                    onClick={() => setConfigColor(color.value)}
+                    className={`w-6 h-6 rounded flex items-center justify-center transition-all ${
+                      configColor === color.value ? 'ring-2 ring-offset-1 ring-offset-plm-bg ring-plm-accent' : 'hover:opacity-80'
+                    }`}
+                    style={{ backgroundColor: color.value }}
+                    title={color.name}
+                  >
+                    {configColor === color.value && <Check size={10} className="text-white" />}
+                  </button>
+                ))}
+              </div>
+              
+              {/* Description */}
+              <div className="space-y-2">
+                <label className="text-sm text-plm-fg-muted">Description (optional)</label>
+                <input
+                  type="text"
+                  value={configDescription}
+                  onChange={(e) => setConfigDescription(e.target.value)}
+                  placeholder="e.g., Main production store"
+                  className="w-full px-3 py-2 text-sm bg-plm-sidebar border border-plm-border rounded-lg focus:outline-none focus:border-plm-accent"
+                />
+              </div>
+              
+              <div className="h-px bg-plm-border my-2" />
+              
+              {/* Connection Details */}
+              <div className="text-xs font-medium text-plm-fg-muted uppercase tracking-wider">Connection Details</div>
+              
+              {/* Store URL */}
+              <div className="space-y-1">
+                <label className="text-sm text-plm-fg-muted">Store URL *</label>
+                <input
+                  type="text"
+                  value={storeUrl}
+                  onChange={(e) => setStoreUrl(e.target.value)}
+                  placeholder="https://mystore.com"
+                  className="w-full px-3 py-2 text-sm bg-plm-sidebar border border-plm-border rounded-lg focus:outline-none focus:border-plm-accent font-mono"
+                />
+              </div>
+              
+              {/* Consumer Key */}
+              <div className="space-y-1">
+                <label className="text-sm text-plm-fg-muted">Consumer Key *</label>
+                <div className="relative">
+                  <input
+                    type={showConsumerKey ? 'text' : 'password'}
+                    value={consumerKey}
+                    onChange={(e) => setConsumerKey(e.target.value)}
+                    placeholder="ck_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                    className="w-full px-3 py-2 pr-10 text-sm bg-plm-sidebar border border-plm-border rounded-lg focus:outline-none focus:border-plm-accent font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowConsumerKey(!showConsumerKey)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-plm-fg-muted hover:text-plm-fg"
+                  >
+                    {showConsumerKey ? <EyeOff size={14} /> : <Eye size={14} />}
+                  </button>
+                </div>
+              </div>
+              
+              {/* Consumer Secret */}
+              <div className="space-y-1">
+                <label className="text-sm text-plm-fg-muted">Consumer Secret *</label>
+                <div className="relative">
+                  <input
+                    type={showConsumerSecret ? 'text' : 'password'}
+                    value={consumerSecret}
+                    onChange={(e) => setConsumerSecret(e.target.value)}
+                    placeholder="cs_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                    className="w-full px-3 py-2 pr-10 text-sm bg-plm-sidebar border border-plm-border rounded-lg focus:outline-none focus:border-plm-accent font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowConsumerSecret(!showConsumerSecret)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-plm-fg-muted hover:text-plm-fg"
+                  >
+                    {showConsumerSecret ? <EyeOff size={14} /> : <Eye size={14} />}
+                  </button>
+                </div>
+                <p className="text-[11px] text-plm-fg-muted">
+                  Generate at: WooCommerce → Settings → Advanced → REST API → Add Key
+                </p>
+              </div>
+              
+              {/* Test result inside dialog */}
+              {testResult && (
+                <div className={`flex items-center gap-2 p-3 rounded-lg text-sm ${
+                  testResult.success 
+                    ? 'bg-plm-success/10 text-plm-success border border-plm-success/30' 
+                    : 'bg-plm-error/10 text-plm-error border border-plm-error/30'
+                }`}>
+                  {testResult.success ? <Check size={14} /> : <AlertCircle size={14} />}
+                  <span className="text-xs">{testResult.message}</span>
+                </div>
+              )}
+            </div>
+            
+            <div className="flex justify-between gap-2 px-4 py-3 border-t border-plm-border bg-plm-sidebar/50 sticky bottom-0">
+              <button
+                onClick={handleTest}
+                disabled={isTesting || !storeUrl || !consumerKey || !consumerSecret}
+                className="flex items-center gap-2 px-3 py-2 text-sm text-plm-fg-muted hover:text-plm-fg border border-plm-border rounded-lg transition-colors disabled:opacity-50"
+              >
+                {isTesting ? <Loader2 size={14} className="animate-spin" /> : <Plug size={14} />}
+                Test Connection
+              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    setShowSaveDialog(false)
+                    setEditingConfig(null)
+                  }}
+                  className="px-4 py-2 text-sm text-plm-fg-muted hover:text-plm-fg rounded-lg transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => handleSaveConfig(false)}
+                  disabled={isSavingConfig || !configName.trim() || !storeUrl || !consumerKey || !consumerSecret}
+                  className="flex items-center gap-2 px-4 py-2 text-sm bg-plm-sidebar border border-plm-border text-plm-fg rounded-lg hover:bg-plm-highlight transition-colors disabled:opacity-50"
+                >
+                  {isSavingConfig ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+                  {editingConfig ? 'Update' : 'Save'}
+                </button>
+                <button
+                  onClick={() => handleSaveConfig(true)}
+                  disabled={isSavingConfig || !configName.trim() || !storeUrl || !consumerKey || !consumerSecret}
+                  className="flex items-center gap-2 px-4 py-2 text-sm bg-plm-accent text-white rounded-lg hover:bg-plm-accent/90 transition-colors disabled:opacity-50"
+                >
+                  {isSavingConfig ? <Loader2 size={14} className="animate-spin" /> : <Plug size={14} />}
+                  {editingConfig ? 'Update & Connect' : 'Save & Connect'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
-

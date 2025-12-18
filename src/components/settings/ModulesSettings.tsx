@@ -235,6 +235,28 @@ function OrderListItemComponent({
     }
   }, [showParentSelect, showColorPicker])
   
+  // Common drag handlers with better reliability
+  const handleDragEvents = {
+    draggable: true,
+    onDragStart: () => onDragStart(index),
+    onDragOver: (e: React.DragEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      onDragOver(e, index)
+    },
+    onDragEnter: (e: React.DragEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      onDragOver(e, index)
+    },
+    onDrop: (e: React.DragEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      onDrop()
+    },
+    onDragEnd: onDragEnd
+  }
+
   if (item.type === 'divider') {
     return (
       <div className="relative">
@@ -245,19 +267,15 @@ function OrderListItemComponent({
           </div>
         )}
         <div
-          draggable
-          onDragStart={() => onDragStart(index)}
-          onDragOver={(e) => onDragOver(e, index)}
-          onDrop={onDrop}
-          onDragEnd={onDragEnd}
+          {...handleDragEvents}
           className={`flex items-center gap-3 px-3 py-2 rounded-lg border transition-all cursor-move ${
             isDragging 
               ? 'opacity-50 border-plm-accent bg-plm-accent/10' 
               : 'border-plm-border bg-plm-bg-secondary'
           }`}
         >
-        <GripVertical size={14} className="text-plm-fg-muted flex-shrink-0" />
-        <div className="flex items-center gap-2 flex-1">
+        <GripVertical size={14} className="text-plm-fg-muted flex-shrink-0 pointer-events-none" />
+        <div className="flex items-center gap-2 flex-1 pointer-events-none">
           <Minus size={16} className="text-plm-fg-muted" />
           <span className="text-xs text-plm-fg-muted font-medium uppercase tracking-wide">
             Divider
@@ -302,25 +320,21 @@ function OrderListItemComponent({
           </div>
         )}
         <div
-          draggable
-          onDragStart={() => onDragStart(index)}
-          onDragOver={(e) => onDragOver(e, index)}
-          onDrop={onDrop}
-          onDragEnd={onDragEnd}
+          {...handleDragEvents}
           className={`flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-all cursor-move ${
             isDragging 
               ? 'opacity-50 border-plm-accent bg-plm-accent/10' 
               : 'border-plm-accent/30 bg-plm-accent/5'
           }`}
         >
-        <GripVertical size={14} className="text-plm-fg-muted flex-shrink-0" />
+        <GripVertical size={14} className="text-plm-fg-muted flex-shrink-0 pointer-events-none" />
         <div 
-          className="p-1.5 rounded-md"
+          className="p-1.5 rounded-md pointer-events-none"
           style={{ color: group.iconColor || 'var(--plm-accent)' }}
         >
           {IconComponent ? <IconComponent size={16} /> : <Package size={16} />}
         </div>
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0 pointer-events-none">
           <div className="flex items-center gap-2">
             <span className="text-sm text-plm-fg font-medium">{group.name}</span>
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-plm-accent/20 text-plm-accent uppercase">Group</span>
@@ -398,11 +412,7 @@ function OrderListItemComponent({
         </div>
       )}
       <div
-        draggable
-        onDragStart={() => onDragStart(index)}
-        onDragOver={(e) => onDragOver(e, index)}
-        onDrop={onDrop}
-        onDragEnd={onDragEnd}
+        {...handleDragEvents}
         className={`flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-all cursor-move ${
           isDragging 
             ? 'opacity-50 border-plm-accent bg-plm-accent/10' 
@@ -413,11 +423,11 @@ function OrderListItemComponent({
           : 'border-plm-border/50 bg-plm-bg-secondary'
       } ${currentParentId ? 'ml-6 border-l-2 border-l-plm-accent/30' : ''}`}
     >
-      <GripVertical size={14} className="text-plm-fg-muted flex-shrink-0" />
+      <GripVertical size={14} className="text-plm-fg-muted flex-shrink-0 pointer-events-none" />
       
       {/* Icon with custom color support */}
       <div 
-        className={`p-1.5 rounded-md transition-all ${
+        className={`p-1.5 rounded-md transition-all pointer-events-none ${
           !customIconColor && (isEnabled && isVisible 
             ? 'text-plm-success bg-plm-success/10' 
             : isVisible 
@@ -432,7 +442,7 @@ function OrderListItemComponent({
         {moduleIcons[module.icon] || <Package size={16} />}
       </div>
       
-      <div className="flex-1 min-w-0">
+      <div className="flex-1 min-w-0 pointer-events-none">
         <div className="flex items-center gap-2">
           <span className={`text-sm ${isVisible ? 'text-plm-fg' : 'text-plm-fg-muted'}`}>
             {module.name}
