@@ -2,6 +2,27 @@
 
 All notable changes to BluePLM will be documented in this file.
 
+## [2.10.0] - 2025-12-18
+
+### Added
+- **Cascading sidebar panels**: Replaced tooltip submenus with elegant cascading sidebar panels for better navigation and module access
+- **Extended sidebar customization**: Full drag-and-drop customization of sidebar modules with custom groups
+- **Custom groups**: Create, edit, and organize modules into custom groups with parent selector dropdown
+
+### Changed
+- **Module dependencies display**: Simplified to inline, greyed-out style for cleaner appearance
+- **Icon system**: Unified icon lookup to use LucideIcons consistently throughout the app
+- **Group edit button**: Changed to pencil icon for better clarity
+
+### Fixed
+- **Drag-drop reliability**: Eliminated dead zones in drag-drop by using gap-based positioning
+- **Cascading sidebar behavior**: Prevent premature closing, position panels relative to hovered item
+- **Submenu item sizing**: Match cascading submenu items to parent menu sizing
+- **Group drag behavior**: Dragging a group now properly moves its child modules
+- **Left-aligned sidebar text**: Restored and added rule to prevent future changes
+
+---
+
 ## [2.9.7] - 2025-12-18
 
 ### Fixed
