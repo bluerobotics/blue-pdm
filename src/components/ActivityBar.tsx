@@ -158,7 +158,7 @@ function ActivityItem({ icon, view, title, badge, hasChildren, children, depth =
         </div>
         {isExpanded && (
           <>
-            <span className="text-[15px] font-medium whitespace-nowrap overflow-hidden flex-1">
+            <span className="text-[15px] font-medium whitespace-nowrap overflow-hidden flex-1 text-left">
               {title}
             </span>
             {/* Chevron for items with children */}

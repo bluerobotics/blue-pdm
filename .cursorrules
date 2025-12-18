@@ -5,6 +5,8 @@
 ## Critical Rules
 ⚠️ **ALWAYS update `supabase/schema.sql` when making database changes.** This file is the source of truth and must stay in sync with all migrations.
 
+⚠️ **Sidebar text must be left-aligned.** All text in `ActivityBar.tsx` must use `text-left`. Never center-justify sidebar labels.
+
 ## Tech Stack
 Frontend: React 19, TypeScript, Zustand, Tailwind CSS, Vite
 Backend: Supabase (PostgreSQL, Auth, Storage, Realtime)
