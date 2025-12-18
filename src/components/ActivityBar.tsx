@@ -155,8 +155,20 @@ function ActivityItem({ icon, view, title, badge, hasChildren, children, depth =
           parentRect={sidebarRect}
           children={children}
           depth={depth + 1}
-          onMouseEnter={() => setShowSubmenu(true)}
-          onMouseLeave={() => setShowSubmenu(false)}
+          onMouseEnter={() => {
+            // Clear any pending close timeout when entering submenu
+            if (submenuTimeoutRef.current) {
+              clearTimeout(submenuTimeoutRef.current)
+              submenuTimeoutRef.current = null
+            }
+            setShowSubmenu(true)
+          }}
+          onMouseLeave={() => {
+            // Delay close to allow moving back to parent
+            submenuTimeoutRef.current = setTimeout(() => {
+              setShowSubmenu(false)
+            }, 150)
+          }}
         />
       )}
     </div>
@@ -346,10 +358,16 @@ function CascadingSidebar({ parentRect, children, depth, onMouseEnter, onMouseLe
                       onMouseEnter={() => {
                         if (hoverTimeoutRef.current) {
                           clearTimeout(hoverTimeoutRef.current)
+                          hoverTimeoutRef.current = null
                         }
                         setHoveredChild(child.id)
                       }}
-                      onMouseLeave={() => setHoveredChild(null)}
+                      onMouseLeave={() => {
+                        // Delay close to allow moving back to parent
+                        hoverTimeoutRef.current = setTimeout(() => {
+                          setHoveredChild(null)
+                        }, 150)
+                      }}
                     />
                   )}
                 </div>
