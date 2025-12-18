@@ -2062,13 +2062,20 @@ function App() {
 
   // Auto-start SolidWorks service if enabled and SolidWorks is installed
   useEffect(() => {
-    const autoStart = usePDMStore.getState().autoStartSolidworksService
+    const { autoStartSolidworksService: autoStart, solidworksIntegrationEnabled } = usePDMStore.getState()
     const dmLicenseKey = organization?.settings?.solidworks_dm_license_key
     
     window.electronAPI?.log?.('info', '[SolidWorks] Auto-start effect triggered')
+    window.electronAPI?.log?.('info', `[SolidWorks] integrationEnabled: ${solidworksIntegrationEnabled}`)
     window.electronAPI?.log?.('info', `[SolidWorks] autoStart setting: ${autoStart}`)
     window.electronAPI?.log?.('info', `[SolidWorks] organization loaded: ${!!organization}`)
     window.electronAPI?.log?.('info', `[SolidWorks] dmLicenseKey from org settings: ${dmLicenseKey ? `PRESENT (${dmLicenseKey.length} chars)` : 'NOT PRESENT'}`)
+    
+    // Skip auto-start if integration is disabled
+    if (!solidworksIntegrationEnabled) {
+      window.electronAPI?.log?.('info', '[SolidWorks] Integration disabled, skipping auto-start')
+      return
+    }
     
     if (autoStart && window.electronAPI?.solidworks) {
       // First check if SolidWorks is installed on this machine
@@ -2180,6 +2187,8 @@ function App() {
         setUpdateProgress(null)
         setShowUpdateModal(false)
         addToast('error', `Update error: ${error.message}`)
+        // Request focus restoration after modal closes (fixes macOS UI freeze issue)
+        window.electronAPI?.requestFocus?.()
       })
     )
     

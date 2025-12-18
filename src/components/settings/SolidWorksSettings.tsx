@@ -112,6 +112,8 @@ export function SolidWorksSettings() {
     addToast,
     cadPreviewMode, 
     setCadPreviewMode,
+    solidworksIntegrationEnabled,
+    setSolidworksIntegrationEnabled,
     solidworksPath,
     setSolidworksPath,
     autoStartSolidworksService,
@@ -298,6 +300,45 @@ export function SolidWorksSettings() {
 
   return (
     <div className="space-y-6">
+      {/* Integration Enable/Disable Toggle */}
+      <div className="space-y-3">
+        <label className="text-sm text-plm-fg-muted uppercase tracking-wide font-medium">
+          SolidWorks Integration
+        </label>
+        <div className="p-4 bg-plm-bg rounded-lg border border-plm-border">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-sm text-plm-fg">Enable SolidWorks Integration</div>
+              <div className="text-xs text-plm-fg-muted">
+                Enable SolidWorks features like BOM extraction, property reading, and file exports.
+                Disable on computers without SolidWorks to hide status warnings.
+              </div>
+            </div>
+            <button
+              onClick={() => setSolidworksIntegrationEnabled(!solidworksIntegrationEnabled)}
+              className={`relative w-11 h-6 rounded-full transition-colors ${
+                solidworksIntegrationEnabled ? 'bg-plm-accent' : 'bg-plm-bg-secondary'
+              }`}
+            >
+              <div
+                className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
+                  solidworksIntegrationEnabled ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Show remaining settings only when integration is enabled */}
+      {!solidworksIntegrationEnabled ? (
+        <div className="p-4 bg-plm-bg rounded-lg border border-plm-border text-center">
+          <div className="text-sm text-plm-fg-muted">
+            SolidWorks integration is disabled. Enable it above to configure SolidWorks features.
+          </div>
+        </div>
+      ) : (
+        <>
       {/* Service Control */}
       <div className="space-y-3">
         <label className="text-sm text-plm-fg-muted uppercase tracking-wide font-medium">
@@ -710,7 +751,8 @@ export function SolidWorksSettings() {
           )}
         </div>
       </div>
-
+        </>
+      )}
     </div>
   )
 }

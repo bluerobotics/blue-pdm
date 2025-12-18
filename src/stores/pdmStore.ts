@@ -258,6 +258,7 @@ interface PDMState {
   cadPreviewMode: 'thumbnail' | 'edrawings'  // thumbnail = embedded preview, edrawings = open externally
   
   // SolidWorks settings
+  solidworksIntegrationEnabled: boolean  // Master toggle for SolidWorks integration (false = hide from settings, skip checks)
   solidworksPath: string | null  // Custom SolidWorks installation path (null = default)
   solidworksDmLicenseKey: string | null  // Document Manager API license key for fast mode
   autoStartSolidworksService: boolean  // Auto-start SolidWorks service on app bootup
@@ -282,6 +283,7 @@ interface PDMState {
   christmasBlusteryness: number  // Christmas theme snow wind intensity (0-100)
   christmasUseLocalWeather: boolean // Link wind to local weather data
   christmasSleighEnabled: boolean // Christmas theme sleigh animation enabled
+  christmasSleighDirection: 'push' | 'pull' // Sleigh direction: push (reindeer behind) or pull (reindeer in front)
   halloweenSparksEnabled: boolean  // Halloween theme bonfire sparks enabled
   halloweenSparksOpacity: number  // Halloween theme bonfire sparks opacity (0-100)
   halloweenSparksSpeed: number    // Halloween theme bonfire sparks speed (10-100)
@@ -342,7 +344,7 @@ interface PDMState {
   logSharingEnabled: boolean
   
   // Actions - Onboarding
-  completeOnboarding: () => void
+  completeOnboarding: (options?: { solidworksIntegrationEnabled?: boolean }) => void
   setLogSharingEnabled: (enabled: boolean) => void
   
   // Actions - Module Configuration
@@ -399,6 +401,7 @@ interface PDMState {
   setCadPreviewMode: (mode: 'thumbnail' | 'edrawings') => void
   
   // Actions - SolidWorks settings
+  setSolidworksIntegrationEnabled: (enabled: boolean) => void
   setSolidworksPath: (path: string | null) => void
   setSolidworksDmLicenseKey: (key: string | null) => void
   setAutoStartSolidworksService: (enabled: boolean) => void
@@ -424,6 +427,7 @@ interface PDMState {
   setChristmasBlusteryness: (blusteryness: number) => void
   setChristmasUseLocalWeather: (useLocalWeather: boolean) => void
   setChristmasSleighEnabled: (enabled: boolean) => void
+  setChristmasSleighDirection: (direction: 'push' | 'pull') => void
   setHalloweenSparksEnabled: (enabled: boolean) => void
   setHalloweenSparksOpacity: (opacity: number) => void
   setHalloweenSparksSpeed: (speed: number) => void
@@ -702,6 +706,7 @@ export const usePDMStore = create<PDMState>()(
       recentVaults: [],
       autoConnect: true,
       cadPreviewMode: 'thumbnail',
+      solidworksIntegrationEnabled: true,  // Enabled by default, but onboarding will auto-detect and disable on Mac
       solidworksPath: null,  // null = use default installation path
       solidworksDmLicenseKey: null,  // null = fast mode disabled
       autoStartSolidworksService: false,  // Don't auto-start by default
@@ -739,6 +744,7 @@ export const usePDMStore = create<PDMState>()(
       autoDownloadUpdates: false,     // Off by default
       autoDownloadExcludedFiles: {},  // Per-vault exclusion lists
       christmasSleighEnabled: true,  // Default ON
+      christmasSleighDirection: 'push',  // Default to push (funny: reindeer pushing sleigh)
       halloweenSparksEnabled: true,  // Default ON
       halloweenSparksOpacity: 70,  // Default 70%
       halloweenSparksSpeed: 40,    // Default 40% speed
@@ -834,12 +840,13 @@ export const usePDMStore = create<PDMState>()(
       },
       
       // Actions - Onboarding
-      completeOnboarding: () => set({ 
+      completeOnboarding: (options) => set({ 
         onboardingComplete: true,
         // Auto-enable these settings on first app startup for better out-of-box experience
         autoDownloadCloudFiles: true,
         autoDownloadUpdates: true,
-        autoStartSolidworksService: true,
+        autoStartSolidworksService: options?.solidworksIntegrationEnabled ?? true,
+        solidworksIntegrationEnabled: options?.solidworksIntegrationEnabled ?? true,
       }),
       setLogSharingEnabled: (logSharingEnabled) => set({ logSharingEnabled }),
       
@@ -1048,6 +1055,7 @@ export const usePDMStore = create<PDMState>()(
       },
       setAutoConnect: (autoConnect) => set({ autoConnect }),
       setCadPreviewMode: (cadPreviewMode) => set({ cadPreviewMode }),
+      setSolidworksIntegrationEnabled: (solidworksIntegrationEnabled) => set({ solidworksIntegrationEnabled }),
       setSolidworksPath: (solidworksPath) => set({ solidworksPath }),
       setSolidworksDmLicenseKey: (solidworksDmLicenseKey) => set({ solidworksDmLicenseKey }),
       setAutoStartSolidworksService: (autoStartSolidworksService) => set({ autoStartSolidworksService }),
@@ -1095,6 +1103,7 @@ export const usePDMStore = create<PDMState>()(
       setChristmasBlusteryness: (christmasBlusteryness) => set({ christmasBlusteryness }),
       setChristmasUseLocalWeather: (christmasUseLocalWeather) => set({ christmasUseLocalWeather }),
       setChristmasSleighEnabled: (christmasSleighEnabled) => set({ christmasSleighEnabled }),
+      setChristmasSleighDirection: (christmasSleighDirection) => set({ christmasSleighDirection }),
       setHalloweenSparksEnabled: (halloweenSparksEnabled) => set({ halloweenSparksEnabled }),
       setHalloweenSparksOpacity: (halloweenSparksOpacity) => set({ halloweenSparksOpacity }),
       setHalloweenSparksSpeed: (halloweenSparksSpeed) => set({ halloweenSparksSpeed }),
@@ -2036,6 +2045,7 @@ export const usePDMStore = create<PDMState>()(
         onboardingComplete: state.onboardingComplete,
         logSharingEnabled: state.logSharingEnabled,
         cadPreviewMode: state.cadPreviewMode,
+        solidworksIntegrationEnabled: state.solidworksIntegrationEnabled,
         solidworksPath: state.solidworksPath,
         solidworksDmLicenseKey: state.solidworksDmLicenseKey,
         autoStartSolidworksService: state.autoStartSolidworksService,
@@ -2056,6 +2066,7 @@ export const usePDMStore = create<PDMState>()(
         christmasBlusteryness: state.christmasBlusteryness,
         christmasUseLocalWeather: state.christmasUseLocalWeather,
         christmasSleighEnabled: state.christmasSleighEnabled,
+        christmasSleighDirection: state.christmasSleighDirection,
         halloweenSparksEnabled: state.halloweenSparksEnabled,
         halloweenSparksOpacity: state.halloweenSparksOpacity,
         halloweenSparksSpeed: state.halloweenSparksSpeed,
@@ -2131,6 +2142,9 @@ export const usePDMStore = create<PDMState>()(
           // Ensure cadPreviewMode has a default
           cadPreviewMode: (persisted.cadPreviewMode as 'thumbnail' | 'edrawings') || 'thumbnail',
           // Restore SolidWorks settings
+          solidworksIntegrationEnabled: persisted.solidworksIntegrationEnabled !== undefined 
+            ? (persisted.solidworksIntegrationEnabled as boolean) 
+            : true,  // Default enabled, onboarding will auto-detect
           solidworksPath: (persisted.solidworksPath as string | null) || null,
           solidworksDmLicenseKey: (persisted.solidworksDmLicenseKey as string | null) || null,
           autoStartSolidworksService: (persisted.autoStartSolidworksService as boolean) || false,
@@ -2182,6 +2196,8 @@ export const usePDMStore = create<PDMState>()(
           autoDownloadCloudFiles: (persisted.autoDownloadCloudFiles as boolean) || false,
           autoDownloadUpdates: (persisted.autoDownloadUpdates as boolean) || false,
           autoDownloadExcludedFiles: (persisted.autoDownloadExcludedFiles as Record<string, string[]>) || {},
+          // Ensure Christmas sleigh direction has default (new field for existing users)
+          christmasSleighDirection: (persisted.christmasSleighDirection as 'push' | 'pull') || 'push',
           // Ensure columns have all fields
           columns: currentState.columns.map(defaultCol => {
             const persistedCol = (persisted.columns as ColumnConfig[] || [])

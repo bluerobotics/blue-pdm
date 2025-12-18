@@ -99,7 +99,7 @@ function StatusDot({ status }: { status: IntegrationStatus }) {
 }
 
 export function SettingsNavigation({ activeTab, onTabChange }: SettingsNavigationProps) {
-  const { organization, solidworksPath } = usePDMStore()
+  const { organization, solidworksPath, solidworksIntegrationEnabled } = usePDMStore()
   const [statuses, setStatuses] = useState<Record<string, IntegrationStatus>>({
     'supabase': 'not-configured',
     'solidworks': 'not-configured',
@@ -141,33 +141,39 @@ export function SettingsNavigation({ activeTab, onTabChange }: SettingsNavigatio
     // Green: Both SW API and DM API are up
     // Yellow: SW API is down (no SW installed), but DM API is up
     // Red: DM API is down
-    try {
-      const swResult = await window.electronAPI?.solidworks?.getServiceStatus()
-      if (swResult?.success && swResult.data?.running) {
-        const data = swResult.data as any
-        const swInstalled = data.installed ?? data.swInstalled
-        const dmApiAvailable = data.documentManagerAvailable ?? data.fastModeEnabled
-        
-        if (dmApiAvailable) {
-          if (swInstalled) {
-            // Both APIs up → Green
-            newStatuses['solidworks'] = 'online'
+    // Gray (not-configured): Integration is disabled
+    if (!solidworksIntegrationEnabled) {
+      // Integration disabled - show as not configured (gray dot, no red warning)
+      newStatuses['solidworks'] = 'not-configured'
+    } else {
+      try {
+        const swResult = await window.electronAPI?.solidworks?.getServiceStatus()
+        if (swResult?.success && swResult.data?.running) {
+          const data = swResult.data as any
+          const swInstalled = data.installed ?? data.swInstalled
+          const dmApiAvailable = data.documentManagerAvailable ?? data.fastModeEnabled
+          
+          if (dmApiAvailable) {
+            if (swInstalled) {
+              // Both APIs up → Green
+              newStatuses['solidworks'] = 'online'
+            } else {
+              // SW not installed but DM API up → Yellow
+              newStatuses['solidworks'] = 'partial'
+            }
           } else {
-            // SW not installed but DM API up → Yellow
-            newStatuses['solidworks'] = 'partial'
+            // DM API is down → Red
+            newStatuses['solidworks'] = 'offline'
           }
-        } else {
-          // DM API is down → Red
+        } else if (solidworksPath || organization?.settings?.solidworks_dm_license_key) {
+          // Service not running but configured
           newStatuses['solidworks'] = 'offline'
+        } else {
+          newStatuses['solidworks'] = 'not-configured'
         }
-      } else if (solidworksPath || organization?.settings?.solidworks_dm_license_key) {
-        // Service not running but configured
-        newStatuses['solidworks'] = 'offline'
-      } else {
-        newStatuses['solidworks'] = 'not-configured'
+      } catch {
+        newStatuses['solidworks'] = (solidworksPath || organization?.settings?.solidworks_dm_license_key) ? 'offline' : 'not-configured'
       }
-    } catch {
-      newStatuses['solidworks'] = (solidworksPath || organization?.settings?.solidworks_dm_license_key) ? 'offline' : 'not-configured'
     }
     
     // Google Drive - check org settings

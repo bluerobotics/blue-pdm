@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Globe, FileText, Check, ChevronRight, Shield } from 'lucide-react'
 import { usePDMStore, Language } from '../stores/pdmStore'
 
@@ -141,6 +141,43 @@ export function OnboardingScreen() {
   const [selectedLanguage, setSelectedLanguage] = useState<Language>(language)
   const [logsEnabled, setLogsEnabled] = useState(true)
   
+  // Platform/SolidWorks detection for auto-configuration
+  const [solidworksEnabled, setSolidworksEnabled] = useState(true)
+  
+  useEffect(() => {
+    // Auto-detect platform and SolidWorks availability
+    const detectSolidWorksAvailability = async () => {
+      try {
+        const platform = await window.electronAPI?.getPlatform()
+        
+        // On Mac (darwin), always disable SolidWorks integration
+        if (platform === 'darwin') {
+          setSolidworksEnabled(false)
+          return
+        }
+        
+        // On Windows, check if SolidWorks is installed
+        if (platform === 'win32') {
+          const result = await window.electronAPI?.solidworks?.isInstalled()
+          if (result?.success && result.data?.installed) {
+            setSolidworksEnabled(true)
+          } else {
+            // SolidWorks not installed - disable integration
+            setSolidworksEnabled(false)
+          }
+        } else {
+          // Linux or other platforms - disable
+          setSolidworksEnabled(false)
+        }
+      } catch {
+        // If detection fails, default to disabled (safer)
+        setSolidworksEnabled(false)
+      }
+    }
+    
+    detectSolidWorksAvailability()
+  }, [])
+  
   const t = getTranslations(selectedLanguage)
   
   const handleLanguageSelect = (lang: Language) => {
@@ -153,7 +190,7 @@ export function OnboardingScreen() {
       setStep('permissions')
     } else {
       setLogSharingEnabled(logsEnabled)
-      completeOnboarding()
+      completeOnboarding({ solidworksIntegrationEnabled: solidworksEnabled })
     }
   }
 
