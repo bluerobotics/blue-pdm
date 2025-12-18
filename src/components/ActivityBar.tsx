@@ -491,6 +491,7 @@ const moduleTranslationKeys: Record<ModuleId, string> = {
   'suppliers': 'sidebar.suppliers',
   'supplier-portal': 'sidebar.supplierPortal',
   'google-drive': 'sidebar.googleDrive',
+  'settings': 'sidebar.settings',
 }
 
 export function ActivityBar() {
