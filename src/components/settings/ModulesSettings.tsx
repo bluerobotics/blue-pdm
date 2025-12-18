@@ -188,8 +188,9 @@ function OrderListItemComponent({
   onDragStart,
   onDragOver,
   onDrop,
+  onDragEnd,
   isDragging,
-  isDropTarget,
+  dropIndicator,
   onSetParent,
   onSetIconColor,
   onEditGroup,
@@ -199,14 +200,17 @@ function OrderListItemComponent({
   index: number
   onDragStart: (index: number) => void
   onDragOver: (e: React.DragEvent, index: number) => void
-  onDrop: (index: number) => void
+  onDrop: () => void
+  onDragEnd: () => void
   isDragging: boolean
-  isDropTarget: boolean
+  dropIndicator: { index: number; position: 'before' | 'after' } | null
   onSetParent?: (moduleId: ModuleId, parentId: string | null) => void
   onSetIconColor?: (moduleId: ModuleId, color: string | null) => void
   onEditGroup?: (group: { id: string; name: string; icon: string; iconColor: string | null }) => void
   onRemoveGroup?: (groupId: string) => void
 }) {
+  const showDropBefore = dropIndicator?.index === index && dropIndicator.position === 'before'
+  const showDropAfter = dropIndicator?.index === index && dropIndicator.position === 'after'
   const { moduleConfig, setModuleEnabled, removeDivider } = usePDMStore()
   const [showParentSelect, setShowParentSelect] = useState(false)
   const [showColorPicker, setShowColorPicker] = useState(false)
@@ -233,19 +237,25 @@ function OrderListItemComponent({
   
   if (item.type === 'divider') {
     return (
-      <div
-        draggable
-        onDragStart={() => onDragStart(index)}
-        onDragOver={(e) => onDragOver(e, index)}
-        onDrop={() => onDrop(index)}
-        className={`flex items-center gap-3 px-3 py-2 rounded-lg border transition-all cursor-move ${
-          isDragging 
-            ? 'opacity-50 border-plm-accent bg-plm-accent/10' 
-            : isDropTarget
-            ? 'border-plm-accent border-dashed bg-plm-accent/5'
-            : 'border-plm-border bg-plm-bg-secondary'
-        }`}
-      >
+      <div className="relative">
+        {showDropBefore && (
+          <div className="absolute -top-1 left-0 right-0 h-0.5 bg-plm-accent z-10">
+            <div className="absolute -left-1 -top-1 w-2.5 h-2.5 rounded-full bg-plm-accent" />
+            <div className="absolute -right-1 -top-1 w-2.5 h-2.5 rounded-full bg-plm-accent" />
+          </div>
+        )}
+        <div
+          draggable
+          onDragStart={() => onDragStart(index)}
+          onDragOver={(e) => onDragOver(e, index)}
+          onDrop={onDrop}
+          onDragEnd={onDragEnd}
+          className={`flex items-center gap-3 px-3 py-2 rounded-lg border transition-all cursor-move ${
+            isDragging 
+              ? 'opacity-50 border-plm-accent bg-plm-accent/10' 
+              : 'border-plm-border bg-plm-bg-secondary'
+          }`}
+        >
         <GripVertical size={14} className="text-plm-fg-muted flex-shrink-0" />
         <div className="flex items-center gap-2 flex-1">
           <Minus size={16} className="text-plm-fg-muted" />
@@ -263,6 +273,13 @@ function OrderListItemComponent({
         >
           <X size={14} />
         </button>
+        </div>
+        {showDropAfter && (
+          <div className="absolute -bottom-1 left-0 right-0 h-0.5 bg-plm-accent z-10">
+            <div className="absolute -left-1 -top-1 w-2.5 h-2.5 rounded-full bg-plm-accent" />
+            <div className="absolute -right-1 -top-1 w-2.5 h-2.5 rounded-full bg-plm-accent" />
+          </div>
+        )}
       </div>
     )
   }
@@ -277,19 +294,25 @@ function OrderListItemComponent({
     const childCount = getChildModules(group.id, moduleConfig).length
     
     return (
-      <div
-        draggable
-        onDragStart={() => onDragStart(index)}
-        onDragOver={(e) => onDragOver(e, index)}
-        onDrop={() => onDrop(index)}
-        className={`flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-all cursor-move ${
-          isDragging 
-            ? 'opacity-50 border-plm-accent bg-plm-accent/10' 
-            : isDropTarget
-            ? 'border-plm-accent border-dashed bg-plm-accent/5'
-            : 'border-plm-accent/30 bg-plm-accent/5'
-        }`}
-      >
+      <div className="relative">
+        {showDropBefore && (
+          <div className="absolute -top-1 left-0 right-0 h-0.5 bg-plm-accent z-10">
+            <div className="absolute -left-1 -top-1 w-2.5 h-2.5 rounded-full bg-plm-accent" />
+            <div className="absolute -right-1 -top-1 w-2.5 h-2.5 rounded-full bg-plm-accent" />
+          </div>
+        )}
+        <div
+          draggable
+          onDragStart={() => onDragStart(index)}
+          onDragOver={(e) => onDragOver(e, index)}
+          onDrop={onDrop}
+          onDragEnd={onDragEnd}
+          className={`flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-all cursor-move ${
+            isDragging 
+              ? 'opacity-50 border-plm-accent bg-plm-accent/10' 
+              : 'border-plm-accent/30 bg-plm-accent/5'
+          }`}
+        >
         <GripVertical size={14} className="text-plm-fg-muted flex-shrink-0" />
         <div 
           className="p-1.5 rounded-md"
@@ -326,6 +349,13 @@ function OrderListItemComponent({
         >
           <X size={14} />
         </button>
+        </div>
+        {showDropAfter && (
+          <div className="absolute -bottom-1 left-0 right-0 h-0.5 bg-plm-accent z-10">
+            <div className="absolute -left-1 -top-1 w-2.5 h-2.5 rounded-full bg-plm-accent" />
+            <div className="absolute -right-1 -top-1 w-2.5 h-2.5 rounded-full bg-plm-accent" />
+          </div>
+        )}
       </div>
     )
   }
@@ -360,17 +390,23 @@ function OrderListItemComponent({
   const availableParents = MODULES.filter(m => !descendants.includes(m.id))
   
   return (
-    <div
-      draggable
-      onDragStart={() => onDragStart(index)}
-      onDragOver={(e) => onDragOver(e, index)}
-      onDrop={() => onDrop(index)}
-      className={`flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-all cursor-move ${
-        isDragging 
-          ? 'opacity-50 border-plm-accent bg-plm-accent/10' 
-          : isDropTarget
-          ? 'border-plm-accent border-dashed bg-plm-accent/5'
-          : isEnabled && isVisible
+    <div className="relative">
+      {showDropBefore && (
+        <div className="absolute -top-1 left-0 right-0 h-0.5 bg-plm-accent z-10">
+          <div className="absolute -left-1 -top-1 w-2.5 h-2.5 rounded-full bg-plm-accent" />
+          <div className="absolute -right-1 -top-1 w-2.5 h-2.5 rounded-full bg-plm-accent" />
+        </div>
+      )}
+      <div
+        draggable
+        onDragStart={() => onDragStart(index)}
+        onDragOver={(e) => onDragOver(e, index)}
+        onDrop={onDrop}
+        onDragEnd={onDragEnd}
+        className={`flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-all cursor-move ${
+          isDragging 
+            ? 'opacity-50 border-plm-accent bg-plm-accent/10' 
+            : isEnabled && isVisible
           ? 'border-plm-success/30 bg-gradient-to-r from-plm-success/5 to-transparent hover:from-plm-success/10 shadow-[inset_0_0_0_1px_rgba(34,197,94,0.1)]'
           : isVisible
           ? 'border-plm-border bg-plm-bg hover:bg-plm-highlight/50'
@@ -598,6 +634,13 @@ function OrderListItemComponent({
           {moduleConfig.enabledModules[moduleId] ? 'On' : 'Off'}
         </span>
       </button>
+      </div>
+      {showDropAfter && (
+        <div className="absolute -bottom-1 left-0 right-0 h-0.5 bg-plm-accent z-10">
+          <div className="absolute -left-1 -top-1 w-2.5 h-2.5 rounded-full bg-plm-accent" />
+          <div className="absolute -right-1 -top-1 w-2.5 h-2.5 rounded-full bg-plm-accent" />
+        </div>
+      )}
     </div>
   )
 }
@@ -619,7 +662,7 @@ export function ModulesSettings() {
   } = usePDMStore()
   
   const [dragIndex, setDragIndex] = useState<number | null>(null)
-  const [dropTargetIndex, setDropTargetIndex] = useState<number | null>(null)
+  const [dropIndicator, setDropIndicator] = useState<{ index: number; position: 'before' | 'after' } | null>(null)
   const [isSaving, setIsSaving] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [saveResult, setSaveResult] = useState<'success' | 'error' | null>(null)
@@ -639,23 +682,52 @@ export function ModulesSettings() {
   
   const handleDragOver = (e: React.DragEvent, index: number) => {
     e.preventDefault()
-    setDropTargetIndex(index)
+    if (dragIndex === null || index === dragIndex) {
+      setDropIndicator(null)
+      return
+    }
+    
+    // Calculate if we're in the top or bottom half
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    const y = e.clientY - rect.top
+    const position = y < rect.height / 2 ? 'before' : 'after'
+    
+    // Don't show indicator right next to dragged item
+    if (position === 'after' && index === dragIndex - 1) {
+      setDropIndicator(null)
+      return
+    }
+    if (position === 'before' && index === dragIndex + 1) {
+      setDropIndicator(null)
+      return
+    }
+    
+    setDropIndicator({ index, position })
   }
   
-  const handleDrop = (toIndex: number) => {
-    if (dragIndex !== null && dragIndex !== toIndex) {
+  const handleDrop = () => {
+    if (dragIndex !== null && dropIndicator !== null) {
       const newList = [...combinedList]
       const [removed] = newList.splice(dragIndex, 1)
-      newList.splice(toIndex, 0, removed)
+      
+      let insertIndex = dropIndicator.index
+      if (dropIndicator.position === 'after') {
+        insertIndex++
+      }
+      if (dragIndex < insertIndex) {
+        insertIndex--
+      }
+      
+      newList.splice(insertIndex, 0, removed)
       setCombinedOrder(newList)
     }
     setDragIndex(null)
-    setDropTargetIndex(null)
+    setDropIndicator(null)
   }
   
   const handleDragEnd = () => {
     setDragIndex(null)
-    setDropTargetIndex(null)
+    setDropIndicator(null)
   }
   
   const handleAddDivider = () => {
@@ -801,8 +873,9 @@ export function ModulesSettings() {
                 onDragStart={handleDragStart}
                 onDragOver={handleDragOver}
                 onDrop={handleDrop}
+                onDragEnd={handleDragEnd}
                 isDragging={dragIndex === index}
-                isDropTarget={dropTargetIndex === index && dragIndex !== index}
+                dropIndicator={dropIndicator}
                 onSetParent={setModuleParent}
                 onSetIconColor={setModuleIconColor}
                 onEditGroup={handleEditGroup}

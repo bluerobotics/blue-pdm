@@ -30,6 +30,7 @@ import {
   MODULES, 
   isModuleVisible,
   getChildModules,
+  buildCombinedOrderList,
   type ModuleId,
   type ModuleDefinition
 } from '../types/modules'
@@ -549,16 +550,52 @@ export function ActivityBar() {
   
   const totalBadge = unreadNotificationCount + pendingReviewCount
   
-  // Build the visible modules list based on module order and visibility
-  // Only show top-level modules (those without a parent)
-  const visibleModules = useMemo(() => {
-    return moduleConfig.moduleOrder.filter(moduleId => {
-      const module = MODULES.find(m => m.id === moduleId)
-      // Only show if visible AND is top-level (no parent in config)
-      const hasParent = moduleConfig.moduleParents?.[moduleId]
-      return module && !hasParent && isModuleVisible(moduleId, moduleConfig)
-    })
+  // Build the visible sidebar items (modules and groups) using combined order
+  type SidebarItem = 
+    | { type: 'module'; id: ModuleId; module: ModuleDefinition }
+    | { type: 'group'; id: string; group: typeof moduleConfig.customGroups[0] }
+  
+  const visibleSidebarItems = useMemo(() => {
+    const items: SidebarItem[] = []
+    const combinedList = buildCombinedOrderList(
+      moduleConfig.moduleOrder,
+      moduleConfig.dividers,
+      moduleConfig.customGroups || []
+    )
+    
+    for (const item of combinedList) {
+      if (item.type === 'group') {
+        const group = (moduleConfig.customGroups || []).find(g => g.id === item.id && g.enabled)
+        if (group) {
+          // Only show if group has visible children
+          const childModules = getChildModules(group.id, moduleConfig).filter(child => 
+            isModuleVisible(child.id, moduleConfig)
+          )
+          if (childModules.length > 0) {
+            items.push({ type: 'group', id: group.id, group })
+          }
+        }
+      } else if (item.type === 'module') {
+        const moduleId = item.id as ModuleId
+        const module = MODULES.find(m => m.id === moduleId)
+        if (!module) continue
+        
+        // Only show if visible AND is top-level (no parent)
+        const hasParent = moduleConfig.moduleParents?.[moduleId]
+        if (!hasParent && isModuleVisible(moduleId, moduleConfig)) {
+          items.push({ type: 'module', id: moduleId, module })
+        }
+      }
+    }
+    return items
   }, [moduleConfig])
+  
+  // For backward compat - list of just visible module IDs for divider positioning
+  const visibleModules = useMemo(() => {
+    return visibleSidebarItems
+      .filter((item): item is SidebarItem & { type: 'module' } => item.type === 'module')
+      .map(item => item.id)
+  }, [visibleSidebarItems])
   
   // Build a map of original index to visible index for divider positioning
   const originalToVisibleIndex = useMemo(() => {
@@ -679,37 +716,61 @@ export function ActivityBar() {
               ref={scrollContainerRef}
               className="h-full overflow-y-auto overflow-x-hidden scrollbar-hidden"
             >
-              {/* Dynamic Modules */}
+              {/* Dynamic Modules and Groups */}
               <div className="flex flex-col pt-[4px]">
-                {visibleModules.map((moduleId, visibleIndex) => {
-                  const module = MODULES.find(m => m.id === moduleId)
-                  if (!module) return null
-                  
-                  const translationKey = moduleTranslationKeys[moduleId]
-                  const title = translationKey ? t(translationKey) : module.name
-                  
-                  // Special handling for reviews badge
-                  const badge = moduleId === 'reviews' ? totalBadge : undefined
-                  
-                  // Get visible child modules (using config's moduleParents)
-                  const childModules = getChildModules(moduleId, moduleConfig).filter(child => 
-                    isModuleVisible(child.id, moduleConfig)
-                  )
-                  const moduleHasChildren = childModules.length > 0
-                  
-                  return (
-                    <div key={moduleId}>
+                {visibleSidebarItems.map((item) => {
+                  if (item.type === 'group') {
+                    // Render custom group
+                    const { group } = item
+                    const childModules = getChildModules(group.id, moduleConfig).filter(child => 
+                      isModuleVisible(child.id, moduleConfig)
+                    )
+                    
+                    return (
                       <ActivityItem
-                        icon={getModuleIcon(module.icon)}
-                        view={moduleId as SidebarView}
-                        title={title}
-                        badge={badge}
-                        hasChildren={moduleHasChildren}
+                        key={group.id}
+                        icon={getModuleIcon(group.icon, 22, group.iconColor)}
+                        view={'explorer' as SidebarView}  // Groups don't navigate directly
+                        title={group.name}
+                        hasChildren={true}
                         children={childModules}
                       />
-                      {getDividerAfterVisibleIndex.has(visibleIndex) && <SectionDivider />}
-                    </div>
-                  )
+                    )
+                  } else {
+                    // Render module
+                    const { module, id: moduleId } = item
+                    const translationKey = moduleTranslationKeys[moduleId]
+                    const title = translationKey ? t(translationKey) : module.name
+                    
+                    // Special handling for reviews badge
+                    const badge = moduleId === 'reviews' ? totalBadge : undefined
+                    
+                    // Get visible child modules (using config's moduleParents)
+                    const childModules = getChildModules(moduleId, moduleConfig).filter(child => 
+                      isModuleVisible(child.id, moduleConfig)
+                    )
+                    const moduleHasChildren = childModules.length > 0
+                    
+                    // Get custom icon color
+                    const customIconColor = moduleConfig.moduleIconColors?.[moduleId] || null
+                    
+                    // Find visible index for this module for divider positioning
+                    const visibleIndex = visibleModules.indexOf(moduleId)
+                    
+                    return (
+                      <div key={moduleId}>
+                        <ActivityItem
+                          icon={getModuleIcon(module.icon, 22, customIconColor)}
+                          view={moduleId as SidebarView}
+                          title={title}
+                          badge={badge}
+                          hasChildren={moduleHasChildren}
+                          children={childModules}
+                        />
+                        {visibleIndex >= 0 && getDividerAfterVisibleIndex.has(visibleIndex) && <SectionDivider />}
+                      </div>
+                    )
+                  }
                 })}
               </div>
 
