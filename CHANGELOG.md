@@ -2,7 +2,14 @@
 
 All notable changes to BluePLM will be documented in this file.
 
-## [2.9.5] - 2025-12-18
+## [2.9.7] - 2025-12-18
+
+### Fixed
+- **macOS auto-update**: Include zip file in release artifacts (required for electron-updater)
+
+---
+
+## [2.9.6] - 2025-12-18
 
 ### Added
 - **SolidWorks integration toggle**: Enable/disable SolidWorks integration from settings
