@@ -633,7 +633,7 @@ export const usePDMStore = create<PDMState>()(
       
       // Onboarding (first app boot)
       onboardingComplete: false,
-      logSharingEnabled: false,
+      logSharingEnabled: true,
       
       vaultPath: null,
       vaultName: null,

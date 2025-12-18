@@ -333,6 +333,10 @@ declare global {
       getMachineName: () => Promise<string | null>
       getAppVersion: () => Promise<string>
       
+      // Analytics settings
+      setAnalyticsEnabled: (enabled: boolean) => Promise<{ success: boolean }>
+      getAnalyticsEnabled: () => Promise<boolean>
+      
       // Clipboard operations (more reliable than navigator.clipboard in Electron)
       copyToClipboard: (text: string) => Promise<{ success: boolean; error?: string }>
       readFromClipboard: () => Promise<{ success: boolean; text?: string; error?: string }>

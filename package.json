@@ -22,6 +22,7 @@
     "@fastify/rate-limit": "^10.2.1",
     "@fastify/swagger": "^9.4.2",
     "@fastify/swagger-ui": "^5.2.1",
+    "@sentry/electron": "^7.5.0",
     "@supabase/supabase-js": "^2.39.0",
     "@tanstack/react-query": "^5.14.0",
     "@tanstack/react-table": "^8.11.0",

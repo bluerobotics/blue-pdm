@@ -18,11 +18,11 @@ const TRANSLATIONS: Record<string, {
   welcome: string
   selectLanguage: string
   permissions: string
-  logSharingTitle: string
-  logSharingDesc: string
-  logSharingHelp: string
-  enableLogs: string
-  noLogs: string
+  usageStatsTitle: string
+  usageStatsDesc: string
+  usageStatsHelp: string
+  enableStats: string
+  noStats: string
   continue: string
   getStarted: string
   step: string
@@ -31,12 +31,12 @@ const TRANSLATIONS: Record<string, {
   en: {
     welcome: 'Welcome to BluePLM',
     selectLanguage: 'Select your language',
-    permissions: 'Permissions',
-    logSharingTitle: 'Help improve BluePLM',
-    logSharingDesc: 'Share anonymous diagnostic logs to help us identify and fix issues faster.',
-    logSharingHelp: 'Logs contain error messages and performance data only. No file contents or personal data.',
-    enableLogs: 'Enable log sharing',
-    noLogs: 'No thanks',
+    permissions: 'Usage Statistics',
+    usageStatsTitle: 'Help improve BluePLM',
+    usageStatsDesc: 'Send anonymous usage statistics to help us identify and fix issues faster.',
+    usageStatsHelp: 'Includes error reports and performance data only. No file contents or personal data.',
+    enableStats: 'Help improve BluePLM',
+    noStats: 'No thanks',
     continue: 'Continue',
     getStarted: 'Get Started',
     step: 'Step',
@@ -45,12 +45,12 @@ const TRANSLATIONS: Record<string, {
   'zh-CN': {
     welcome: '欢迎使用 BluePLM',
     selectLanguage: '选择您的语言',
-    permissions: '权限设置',
-    logSharingTitle: '帮助改进 BluePLM',
-    logSharingDesc: '分享匿名诊断日志,帮助我们更快地发现和修复问题。',
-    logSharingHelp: '日志仅包含错误信息和性能数据,不包含文件内容或个人数据。',
-    enableLogs: '启用日志分享',
-    noLogs: '暂不需要',
+    permissions: '使用统计',
+    usageStatsTitle: '帮助改进 BluePLM',
+    usageStatsDesc: '发送匿名使用统计数据,帮助我们更快地发现和修复问题。',
+    usageStatsHelp: '仅包含错误报告和性能数据,不包含文件内容或个人数据。',
+    enableStats: '帮助改进 BluePLM',
+    noStats: '暂不需要',
     continue: '继续',
     getStarted: '开始使用',
     step: '步骤',
@@ -59,12 +59,12 @@ const TRANSLATIONS: Record<string, {
   'zh-TW': {
     welcome: '歡迎使用 BluePLM',
     selectLanguage: '選擇您的語言',
-    permissions: '權限設定',
-    logSharingTitle: '幫助改進 BluePLM',
-    logSharingDesc: '分享匿名診斷日誌,幫助我們更快地發現和修復問題。',
-    logSharingHelp: '日誌僅包含錯誤信息和性能數據,不包含文件內容或個人數據。',
-    enableLogs: '啟用日誌分享',
-    noLogs: '暫不需要',
+    permissions: '使用統計',
+    usageStatsTitle: '幫助改進 BluePLM',
+    usageStatsDesc: '發送匿名使用統計數據,幫助我們更快地發現和修復問題。',
+    usageStatsHelp: '僅包含錯誤報告和性能數據,不包含文件內容或個人數據。',
+    enableStats: '幫助改進 BluePLM',
+    noStats: '暫不需要',
     continue: '繼續',
     getStarted: '開始使用',
     step: '步驟',
@@ -73,12 +73,12 @@ const TRANSLATIONS: Record<string, {
   de: {
     welcome: 'Willkommen bei BluePLM',
     selectLanguage: 'Wählen Sie Ihre Sprache',
-    permissions: 'Berechtigungen',
-    logSharingTitle: 'Helfen Sie BluePLM zu verbessern',
-    logSharingDesc: 'Teilen Sie anonyme Diagnoseprotokolle, um uns zu helfen, Probleme schneller zu erkennen und zu beheben.',
-    logSharingHelp: 'Protokolle enthalten nur Fehlermeldungen und Leistungsdaten. Keine Dateiinhalte oder persönlichen Daten.',
-    enableLogs: 'Protokollfreigabe aktivieren',
-    noLogs: 'Nein, danke',
+    permissions: 'Nutzungsstatistiken',
+    usageStatsTitle: 'Helfen Sie BluePLM zu verbessern',
+    usageStatsDesc: 'Senden Sie anonyme Nutzungsstatistiken, um uns zu helfen, Probleme schneller zu erkennen und zu beheben.',
+    usageStatsHelp: 'Enthält nur Fehlerberichte und Leistungsdaten. Keine Dateiinhalte oder persönlichen Daten.',
+    enableStats: 'BluePLM verbessern helfen',
+    noStats: 'Nein, danke',
     continue: 'Weiter',
     getStarted: 'Loslegen',
     step: 'Schritt',
@@ -87,12 +87,12 @@ const TRANSLATIONS: Record<string, {
   fr: {
     welcome: 'Bienvenue sur BluePLM',
     selectLanguage: 'Sélectionnez votre langue',
-    permissions: 'Autorisations',
-    logSharingTitle: 'Aidez à améliorer BluePLM',
-    logSharingDesc: 'Partagez des journaux de diagnostic anonymes pour nous aider à identifier et corriger les problèmes plus rapidement.',
-    logSharingHelp: 'Les journaux contiennent uniquement des messages d\'erreur et des données de performance. Aucun contenu de fichier ni données personnelles.',
-    enableLogs: 'Activer le partage des journaux',
-    noLogs: 'Non merci',
+    permissions: 'Statistiques d\'utilisation',
+    usageStatsTitle: 'Aidez à améliorer BluePLM',
+    usageStatsDesc: 'Envoyez des statistiques d\'utilisation anonymes pour nous aider à identifier et corriger les problèmes plus rapidement.',
+    usageStatsHelp: 'Comprend uniquement les rapports d\'erreurs et les données de performance. Aucun contenu de fichier ni données personnelles.',
+    enableStats: 'Aider à améliorer BluePLM',
+    noStats: 'Non merci',
     continue: 'Continuer',
     getStarted: 'Commencer',
     step: 'Étape',
@@ -101,12 +101,12 @@ const TRANSLATIONS: Record<string, {
   es: {
     welcome: 'Bienvenido a BluePLM',
     selectLanguage: 'Selecciona tu idioma',
-    permissions: 'Permisos',
-    logSharingTitle: 'Ayuda a mejorar BluePLM',
-    logSharingDesc: 'Comparte registros de diagnóstico anónimos para ayudarnos a identificar y solucionar problemas más rápido.',
-    logSharingHelp: 'Los registros contienen solo mensajes de error y datos de rendimiento. Sin contenido de archivos ni datos personales.',
-    enableLogs: 'Habilitar compartir registros',
-    noLogs: 'No, gracias',
+    permissions: 'Estadísticas de uso',
+    usageStatsTitle: 'Ayuda a mejorar BluePLM',
+    usageStatsDesc: 'Envía estadísticas de uso anónimas para ayudarnos a identificar y solucionar problemas más rápido.',
+    usageStatsHelp: 'Incluye solo reportes de errores y datos de rendimiento. Sin contenido de archivos ni datos personales.',
+    enableStats: 'Ayudar a mejorar BluePLM',
+    noStats: 'No, gracias',
     continue: 'Continuar',
     getStarted: 'Comenzar',
     step: 'Paso',
@@ -115,12 +115,12 @@ const TRANSLATIONS: Record<string, {
   pt: {
     welcome: 'Bem-vindo ao BluePLM',
     selectLanguage: 'Selecione o seu idioma',
-    permissions: 'Permissões',
-    logSharingTitle: 'Ajude a melhorar o BluePLM',
-    logSharingDesc: 'Partilhe registos de diagnóstico anónimos para nos ajudar a identificar e corrigir problemas mais rapidamente.',
-    logSharingHelp: 'Os registos contêm apenas mensagens de erro e dados de desempenho. Sem conteúdo de ficheiros ou dados pessoais.',
-    enableLogs: 'Ativar partilha de registos',
-    noLogs: 'Não, obrigado',
+    permissions: 'Estatísticas de uso',
+    usageStatsTitle: 'Ajude a melhorar o BluePLM',
+    usageStatsDesc: 'Envie estatísticas de uso anónimas para nos ajudar a identificar e corrigir problemas mais rapidamente.',
+    usageStatsHelp: 'Inclui apenas relatórios de erros e dados de desempenho. Sem conteúdo de ficheiros ou dados pessoais.',
+    enableStats: 'Ajudar a melhorar o BluePLM',
+    noStats: 'Não, obrigado',
     continue: 'Continuar',
     getStarted: 'Começar',
     step: 'Passo',
@@ -185,11 +185,13 @@ export function OnboardingScreen() {
     setLanguage(lang)
   }
   
-  const handleContinue = () => {
+  const handleContinue = async () => {
     if (step === 'language') {
       setStep('permissions')
     } else {
       setLogSharingEnabled(logsEnabled)
+      // Notify main process of analytics preference
+      await window.electronAPI?.setAnalyticsEnabled(logsEnabled)
       completeOnboarding({ solidworksIntegrationEnabled: solidworksEnabled })
     }
   }
@@ -295,9 +297,9 @@ export function OnboardingScreen() {
                     <FileText size={24} className="text-blue-400" />
                   </div>
                   <div className="flex-1">
-                    <h3 className="font-semibold text-plm-fg mb-2">{t.logSharingTitle}</h3>
-                    <p className="text-sm text-plm-fg-muted mb-3">{t.logSharingDesc}</p>
-                    <p className="text-xs text-plm-fg-dim">{t.logSharingHelp}</p>
+                    <h3 className="font-semibold text-plm-fg mb-2">{t.usageStatsTitle}</h3>
+                    <p className="text-sm text-plm-fg-muted mb-3">{t.usageStatsDesc}</p>
+                    <p className="text-xs text-plm-fg-dim">{t.usageStatsHelp}</p>
                   </div>
                 </div>
 
@@ -310,7 +312,7 @@ export function OnboardingScreen() {
                         : 'border-plm-border hover:border-plm-border-light'
                     }`}
                   >
-                    <span className="font-medium text-plm-fg">{t.enableLogs}</span>
+                    <span className="font-medium text-plm-fg">{t.enableStats}</span>
                     {logsEnabled && <Check size={18} className="text-plm-accent" />}
                   </button>
                   
@@ -322,7 +324,7 @@ export function OnboardingScreen() {
                         : 'border-plm-border hover:border-plm-border-light'
                     }`}
                   >
-                    <span className="font-medium text-plm-fg">{t.noLogs}</span>
+                    <span className="font-medium text-plm-fg">{t.noStats}</span>
                     {!logsEnabled && <Check size={18} className="text-plm-accent" />}
                   </button>
                 </div>

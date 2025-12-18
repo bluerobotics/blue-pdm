@@ -115,6 +115,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getMachineName: () => ipcRenderer.invoke('app:get-machine-name'),
   getAppVersion: () => ipcRenderer.invoke('app:get-app-version'),
   
+  // Analytics settings
+  setAnalyticsEnabled: (enabled: boolean) => ipcRenderer.invoke('analytics:set-enabled', enabled),
+  getAnalyticsEnabled: () => ipcRenderer.invoke('analytics:get-enabled'),
+  
   // Clipboard operations (more reliable than navigator.clipboard in Electron)
   copyToClipboard: (text: string) => ipcRenderer.invoke('clipboard:write-text', text),
   readFromClipboard: () => ipcRenderer.invoke('clipboard:read-text'),

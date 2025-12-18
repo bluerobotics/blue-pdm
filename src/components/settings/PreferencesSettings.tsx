@@ -22,13 +22,16 @@ import {
   CloudDownload,
   CloudSun,
   Crown,
-  Trash2
+  Trash2,
+  BarChart3,
+  Shield
 } from 'lucide-react'
 import { usePDMStore, ThemeMode, Language } from '../../stores/pdmStore'
 import { CalendarDays } from 'lucide-react'
 import { signOut, getSupabaseClient, endRemoteSession } from '../../lib/supabase'
 import { getMachineId } from '../../lib/backup'
 import { useTranslation } from '../../lib/i18n'
+import { isAnalyticsEnabled, initAnalytics } from '../../lib/analytics'
 
 interface UserSession {
   id: string
@@ -75,7 +78,9 @@ export function PreferencesSettings() {
     autoDownloadUpdates,
     setAutoDownloadUpdates,
     autoDownloadExcludedFiles,
-    clearAutoDownloadExclusions
+    clearAutoDownloadExclusions,
+    logSharingEnabled,
+    setLogSharingEnabled
   } = usePDMStore()
   
   const [sessions, setSessions] = useState<UserSession[]>([])
@@ -604,6 +609,64 @@ export function PreferencesSettings() {
               </button>
             </div>
           )}
+        </div>
+      </section>
+
+      {/* Privacy & Usage Statistics */}
+      <section>
+        <h2 className="text-sm text-plm-fg-muted uppercase tracking-wide font-medium mb-3">
+          Privacy
+        </h2>
+        <div className="p-4 bg-plm-bg rounded-lg border border-plm-border space-y-4">
+          {/* Usage Statistics Toggle */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-plm-highlight">
+                <BarChart3 size={18} className="text-plm-fg-muted" />
+              </div>
+              <div>
+                <div className="text-base text-plm-fg">Usage Statistics</div>
+                <div className="text-sm text-plm-fg-muted mt-0.5">
+                  Send anonymous error reports and performance data to help improve BluePLM
+                </div>
+              </div>
+            </div>
+            <button
+              onClick={async () => {
+                const newValue = !logSharingEnabled
+                setLogSharingEnabled(newValue)
+                // Notify main process of the change
+                await window.electronAPI?.setAnalyticsEnabled(newValue)
+                // If enabling, try to initialize analytics in renderer
+                if (newValue) {
+                  initAnalytics(true)
+                }
+              }}
+              className="text-plm-accent"
+            >
+              {logSharingEnabled ? (
+                <ToggleRight size={28} />
+              ) : (
+                <ToggleLeft size={28} className="text-plm-fg-muted" />
+              )}
+            </button>
+          </div>
+          
+          {/* Status indicator */}
+          <div className="flex items-center gap-2 px-3 py-2 bg-plm-bg-secondary rounded-lg">
+            <Shield size={14} className={logSharingEnabled && isAnalyticsEnabled() ? 'text-plm-success' : 'text-plm-fg-muted'} />
+            <span className="text-sm text-plm-fg-muted">
+              {logSharingEnabled && isAnalyticsEnabled() 
+                ? 'Analytics active — errors and performance data are being reported'
+                : logSharingEnabled 
+                  ? 'Analytics enabled — will activate on next app restart'
+                  : 'Analytics disabled — no data is sent to our servers'}
+            </span>
+          </div>
+          
+          <p className="text-xs text-plm-fg-dim">
+            We collect error reports, crash data, and basic performance metrics. No file contents, personal data, or design information is ever transmitted.
+          </p>
         </div>
       </section>
 
