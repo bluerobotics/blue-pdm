@@ -340,6 +340,18 @@ process.on('unhandledRejection', (reason) => {
 
 let mainWindow: BrowserWindow | null = null
 
+// Helper to restore focus to main window after dialogs (fixes macOS UI freeze issue)
+function restoreMainWindowFocus() {
+  if (process.platform === 'darwin' && mainWindow && !mainWindow.isDestroyed()) {
+    // Use setImmediate to ensure dialog is fully closed first
+    setImmediate(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.focus()
+      }
+    })
+  }
+}
+
 // Local working directory for checked-out files
 let workingDirectory: string | null = null
 let fileWatcher: chokidar.FSWatcher | null = null
@@ -575,10 +587,12 @@ function createWindow() {
       }
       
       // Create a popup window for Google sign-in - uses same session as main window
+      // NOTE: On macOS, using 'parent' can cause UI responsiveness issues where
+      // the main window becomes unresponsive to clicks. We avoid setting parent on macOS.
       googleAuthWindow = new BrowserWindow({
         width: 500,
         height: 700,
-        parent: mainWindow || undefined,
+        parent: process.platform === 'darwin' ? undefined : (mainWindow || undefined),
         modal: false,
         show: true,
         title: 'Sign in to Google',
@@ -610,11 +624,22 @@ function createWindow() {
         }
       })
       
-      // When window closes (auto or manual), refresh the iframe
+      // When window closes (auto or manual), refresh the iframe and restore main window focus
       googleAuthWindow.on('closed', () => {
         log('[Window] Google auth window closed')
         googleAuthWindow = null
         mainWindow?.webContents.send('gdrive:session-authenticated')
+        // On macOS, ensure main window regains focus after child window closes
+        if (process.platform === 'darwin' && mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.focus()
+        }
+      })
+      
+      // Handle case where auth window loses focus but isn't closed (can cause UI to seem frozen)
+      googleAuthWindow.on('blur', () => {
+        // If auth window loses focus and main window is focused, this is normal
+        // But if neither has focus, the UI may appear frozen
+        log('[Window] Google auth window lost focus')
       })
       
       return { action: 'deny' }
@@ -754,6 +779,41 @@ function createAppMenu() {
           accelerator: process.platform === 'darwin' ? 'Cmd+Alt+I' : 'Ctrl+Shift+I',
           role: 'toggleDevTools'
         }
+      ]
+    },
+    {
+      label: 'Window',
+      submenu: [
+        { role: 'minimize' },
+        { role: 'zoom' },
+        { type: 'separator' },
+        {
+          label: 'Force Focus',
+          accelerator: 'CmdOrCtrl+Shift+F',
+          click: () => {
+            // Emergency focus recovery - closes any lingering child windows
+            // and forces focus back to main window
+            log('[Window] Force focus requested')
+            const allWindows = BrowserWindow.getAllWindows()
+            for (const win of allWindows) {
+              if (win !== mainWindow && !win.isDestroyed()) {
+                log('[Window] Closing orphaned window:', win.getTitle())
+                win.close()
+              }
+            }
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              if (mainWindow.isMinimized()) mainWindow.restore()
+              mainWindow.show()
+              mainWindow.focus()
+              // On macOS, also try to bring the app to front
+              if (process.platform === 'darwin') {
+                app.dock?.show()
+              }
+            }
+          }
+        },
+        { type: 'separator' },
+        { role: 'front' }
       ]
     },
     {
@@ -1515,6 +1575,35 @@ ipcMain.handle('app:reload', () => {
   return { success: false, error: 'No window' }
 })
 
+// Request focus restoration - useful after modals/dialogs on macOS
+ipcMain.handle('app:request-focus', () => {
+  log('[Main] Focus restoration requested')
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    // Close any orphaned child windows first
+    const allWindows = BrowserWindow.getAllWindows()
+    for (const win of allWindows) {
+      if (win !== mainWindow && !win.isDestroyed()) {
+        log('[Window] Closing orphaned window during focus request:', win.getTitle())
+        win.close()
+      }
+    }
+    
+    // Restore and focus main window
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+    
+    // On macOS, also ensure dock icon is visible and app is frontmost
+    if (process.platform === 'darwin') {
+      app.dock?.show()
+      app.focus({ steal: true })
+    }
+    
+    return { success: true }
+  }
+  return { success: false, error: 'No window' }
+})
+
 // Performance monitor pop-out window
 let performanceWindow: BrowserWindow | null = null
 
@@ -1739,6 +1828,9 @@ ipcMain.handle('logs:export', async () => {
         { name: 'Log Files', extensions: ['log'] }
       ]
     })
+    
+    // Restore focus on macOS after dialog closes
+    restoreMainWindowFocus()
     
     if (result.canceled || !result.filePath) {
       return { success: false, canceled: true }
@@ -2190,6 +2282,9 @@ ipcMain.handle('logs:export-filtered', async (_, entries: Array<{ raw: string }>
       ]
     })
     
+    // Restore focus on macOS after dialog closes
+    restoreMainWindowFocus()
+    
     if (result.canceled || !result.filePath) {
       return { success: false, canceled: true }
     }
@@ -2232,6 +2327,9 @@ ipcMain.handle('working-dir:select', async () => {
     title: 'Select Working Directory',
     properties: ['openDirectory', 'createDirectory']
   })
+  
+  // Restore focus on macOS after dialog closes
+  restoreMainWindowFocus()
   
   if (!result.canceled && result.filePaths.length > 0) {
     workingDirectory = result.filePaths[0]
@@ -3607,6 +3705,9 @@ ipcMain.handle('dialog:select-files', async () => {
     ]
   })
   
+  // Restore focus on macOS after dialog closes
+  restoreMainWindowFocus()
+  
   if (!result.canceled && result.filePaths.length > 0) {
     const allFiles: Array<{ name: string; path: string; extension: string; size: number; modifiedTime: string }> = []
     
@@ -3637,6 +3738,9 @@ ipcMain.handle('dialog:select-folder', async () => {
     properties: ['openDirectory']
   })
   
+  // Restore focus on macOS after dialog closes
+  restoreMainWindowFocus()
+  
   if (!result.canceled && result.filePaths.length > 0) {
     const folderPath = result.filePaths[0]
     const folderName = path.basename(folderPath)
@@ -3666,6 +3770,9 @@ ipcMain.handle('dialog:save-file', async (_, defaultName: string, filters?: Arra
       { name: 'All Files', extensions: ['*'] }
     ]
   })
+  
+  // Restore focus on macOS after dialog closes
+  restoreMainWindowFocus()
   
   if (!result.canceled && result.filePath) {
     return { success: true, path: result.filePath }
@@ -5676,6 +5783,14 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow()
+    } else if (mainWindow) {
+      // On macOS, clicking the dock icon should always restore focus to the main window
+      // This helps recover from states where UI becomes unresponsive
+      if (mainWindow.isMinimized()) {
+        mainWindow.restore()
+      }
+      mainWindow.show()
+      mainWindow.focus()
     }
   })
   

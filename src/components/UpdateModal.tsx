@@ -95,7 +95,11 @@ export function UpdateModal() {
     setInstallerPath(null)
     setUpdateDownloaded(false)
     setIsExiting(true)
-    setTimeout(() => setShowUpdateModal(false), 200)
+    setTimeout(() => {
+      setShowUpdateModal(false)
+      // Request focus restoration after modal closes (fixes macOS UI freeze issue)
+      window.electronAPI?.requestFocus?.()
+    }, 200)
   }
 
   // Format bytes to human readable
@@ -140,8 +144,15 @@ export function UpdateModal() {
         isExiting ? 'opacity-0' : 'opacity-100'
       }`}
     >
-      {/* Dark blur backdrop - blocks entire app */}
-      <div className="absolute inset-0 bg-black/80 backdrop-blur-md" />
+      {/* Dark blur backdrop - blocks entire app, click to dismiss if not downloading */}
+      <div 
+        className="absolute inset-0 bg-black/80 backdrop-blur-md" 
+        onClick={() => {
+          if (!updateDownloading && !updateDownloaded) {
+            handleLater()
+          }
+        }}
+      />
       
       {/* Modal content */}
       <div 

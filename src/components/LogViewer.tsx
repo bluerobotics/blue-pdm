@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
+import { useState, useEffect, useMemo, useRef, useCallback, memo } from 'react'
 import {
   X,
   FileText,
@@ -292,7 +292,7 @@ function createHistogramBuckets(entries: LogEntry[], period: TimePeriod): Histog
 // Sub-Components
 // ============================================
 
-function LevelIcon({ level, size = 14 }: { level: LogLevel; size?: number }) {
+const LevelIcon = memo(function LevelIcon({ level, size = 14 }: { level: LogLevel; size?: number }) {
   switch (level) {
     case 'error':
       return <AlertCircle size={size} className="text-plm-error" />
@@ -303,9 +303,9 @@ function LevelIcon({ level, size = 14 }: { level: LogLevel; size?: number }) {
     case 'debug':
       return <Bug size={size} className="text-plm-fg-muted" />
   }
-}
+})
 
-function LevelBadge({ level }: { level: LogLevel }) {
+const LevelBadge = memo(function LevelBadge({ level }: { level: LogLevel }) {
   const styles: Record<LogLevel, string> = {
     error: 'bg-plm-error/20 text-plm-error border-plm-error/30',
     warn: 'bg-plm-warning/20 text-plm-warning border-plm-warning/30',
@@ -318,7 +318,7 @@ function LevelBadge({ level }: { level: LogLevel }) {
       {level}
     </span>
   )
-}
+})
 
 interface HistogramProps {
   buckets: HistogramBucket[]
@@ -329,7 +329,7 @@ interface HistogramProps {
   onHeightChange: (height: number) => void
 }
 
-function Histogram({ buckets, maxValue, onBucketClick, levelFilter, height, onHeightChange }: HistogramProps) {
+const Histogram = memo(function Histogram({ buckets, maxValue, onBucketClick, levelFilter, height, onHeightChange }: HistogramProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [isResizing, setIsResizing] = useState(false)
   
@@ -473,19 +473,19 @@ function Histogram({ buckets, maxValue, onBucketClick, levelFilter, height, onHe
       </div>
     </div>
   )
-}
+})
 
 interface LogEntryRowProps {
   entry: LogEntry
   isExpanded: boolean
-  onToggle: () => void
+  onToggle: (id: string) => void
   searchQuery: string
 }
 
-function LogEntryRow({ entry, isExpanded, onToggle, searchQuery }: LogEntryRowProps) {
+const LogEntryRow = memo(function LogEntryRow({ entry, isExpanded, onToggle, searchQuery }: LogEntryRowProps) {
   const [copied, setCopied] = useState(false)
   
-  const highlightText = (text: string) => {
+  const highlightText = useCallback((text: string) => {
     if (!searchQuery) return text
     const parts = text.split(new RegExp(`(${searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'))
     return parts.map((part, i) => 
@@ -493,13 +493,22 @@ function LogEntryRow({ entry, isExpanded, onToggle, searchQuery }: LogEntryRowPr
         ? <mark key={i} className="bg-plm-warning/40 text-plm-fg rounded px-0.5">{part}</mark>
         : part
     )
-  }
+  }, [searchQuery])
   
-  const copyEntry = async () => {
+  const copyEntry = useCallback(async () => {
     await navigator.clipboard.writeText(entry.raw)
     setCopied(true)
     setTimeout(() => setCopied(false), 1500)
-  }
+  }, [entry.raw])
+  
+  const handleToggle = useCallback(() => {
+    onToggle(entry.id)
+  }, [onToggle, entry.id])
+  
+  const handleCopyClick = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation()
+    copyEntry()
+  }, [copyEntry])
   
   return (
     <div
@@ -510,7 +519,7 @@ function LogEntryRow({ entry, isExpanded, onToggle, searchQuery }: LogEntryRowPr
     >
       <div
         className="flex items-start gap-3 px-3 py-2 cursor-pointer"
-        onClick={onToggle}
+        onClick={handleToggle}
       >
         {/* Level icon */}
         <div className="mt-0.5 flex-shrink-0">
@@ -537,10 +546,7 @@ function LogEntryRow({ entry, isExpanded, onToggle, searchQuery }: LogEntryRowPr
         {/* Actions */}
         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
           <button
-            onClick={(e) => {
-              e.stopPropagation()
-              copyEntry()
-            }}
+            onClick={handleCopyClick}
             className="p-1 hover:bg-plm-bg rounded transition-colors"
             title="Copy log entry"
           >
@@ -575,7 +581,97 @@ function LogEntryRow({ entry, isExpanded, onToggle, searchQuery }: LogEntryRowPr
       )}
     </div>
   )
+}, (prevProps, nextProps) => {
+  // Custom comparison for better memoization
+  return (
+    prevProps.entry.id === nextProps.entry.id &&
+    prevProps.entry.level === nextProps.entry.level &&
+    prevProps.entry.message === nextProps.entry.message &&
+    prevProps.entry.data === nextProps.entry.data &&
+    prevProps.isExpanded === nextProps.isExpanded &&
+    prevProps.searchQuery === nextProps.searchQuery
+  )
+})
+
+// ============================================
+// Virtualized Log List Component
+// ============================================
+
+interface VirtualizedLogListProps {
+  entries: LogEntry[]
+  expandedEntries: Set<string>
+  onToggle: (id: string) => void
+  searchQuery: string
 }
+
+const ITEM_HEIGHT = 44 // Approximate height of each log entry row
+const OVERSCAN = 10 // Number of items to render above/below viewport
+
+const VirtualizedLogList = memo(function VirtualizedLogList({ 
+  entries, 
+  expandedEntries, 
+  onToggle, 
+  searchQuery 
+}: VirtualizedLogListProps) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [scrollTop, setScrollTop] = useState(0)
+  const [containerHeight, setContainerHeight] = useState(0)
+  
+  // Track container height
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+    
+    const updateHeight = () => {
+      setContainerHeight(container.clientHeight)
+    }
+    
+    updateHeight()
+    
+    const resizeObserver = new ResizeObserver(updateHeight)
+    resizeObserver.observe(container)
+    
+    return () => resizeObserver.disconnect()
+  }, [])
+  
+  // Handle scroll with throttling
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    setScrollTop(e.currentTarget.scrollTop)
+  }, [])
+  
+  // Calculate visible range
+  const totalHeight = entries.length * ITEM_HEIGHT
+  const startIndex = Math.max(0, Math.floor(scrollTop / ITEM_HEIGHT) - OVERSCAN)
+  const endIndex = Math.min(
+    entries.length,
+    Math.ceil((scrollTop + containerHeight) / ITEM_HEIGHT) + OVERSCAN
+  )
+  
+  const visibleEntries = entries.slice(startIndex, endIndex)
+  const offsetY = startIndex * ITEM_HEIGHT
+  
+  return (
+    <div 
+      ref={containerRef}
+      className="h-full overflow-y-auto"
+      onScroll={handleScroll}
+    >
+      <div style={{ height: totalHeight, position: 'relative' }}>
+        <div style={{ transform: `translateY(${offsetY}px)` }}>
+          {visibleEntries.map(entry => (
+            <LogEntryRow
+              key={entry.id}
+              entry={entry}
+              isExpanded={expandedEntries.has(entry.id)}
+              onToggle={onToggle}
+              searchQuery={searchQuery}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+})
 
 // ============================================
 // Main Component (Modal version for backwards compatibility)
@@ -695,7 +791,7 @@ function LogViewerContent({ onClose }: LogViewerContentProps) {
     if (isRecording && selectedFile?.isCurrentSession) {
       refreshIntervalRef.current = window.setInterval(() => {
         loadLogContent(selectedFile, true)
-      }, 500) // Fast refresh for real-time feel
+      }, 2000) // Refresh every 2 seconds - balanced between real-time feel and performance
       
       return () => {
         if (refreshIntervalRef.current) {
@@ -903,7 +999,7 @@ function LogViewerContent({ onClose }: LogViewerContentProps) {
     })
   }
   
-  const toggleEntry = (id: string) => {
+  const toggleEntry = useCallback((id: string) => {
     setExpandedEntries(prev => {
       const next = new Set(prev)
       if (next.has(id)) {
@@ -913,7 +1009,7 @@ function LogViewerContent({ onClose }: LogViewerContentProps) {
       }
       return next
     })
-  }
+  }, [])
   
   // Filter entries
   const filteredEntries = useMemo(() => {
@@ -1690,7 +1786,7 @@ function LogViewerContent({ onClose }: LogViewerContentProps) {
             {/* Log entries / Crash content */}
             <div 
               ref={contentRef}
-              className="flex-1 overflow-y-auto bg-plm-bg"
+              className={`flex-1 bg-plm-bg ${isLoadingContent || selectedCrash || !selectedFile || filteredEntries.length === 0 ? 'overflow-y-auto' : 'overflow-hidden'}`}
             >
               {isLoadingContent ? (
                 <div className="flex items-center justify-center py-16">
@@ -1724,7 +1820,7 @@ function LogViewerContent({ onClose }: LogViewerContentProps) {
                   <button
                     onClick={() => {
                       setSearchQuery('')
-                      setLevelFilter(new Set(['info', 'warn', 'error', 'debug']))
+                      setLevelFilter(new Set<LogLevel>(['info', 'warn', 'error', 'debug']))
                       setTimePeriod('all')
                     }}
                     className="mt-3 text-xs text-plm-accent hover:underline"
@@ -1733,17 +1829,12 @@ function LogViewerContent({ onClose }: LogViewerContentProps) {
                   </button>
                 </div>
               ) : (
-                <div>
-                  {filteredEntries.map(entry => (
-                    <LogEntryRow
-                      key={entry.id}
-                      entry={entry}
-                      isExpanded={expandedEntries.has(entry.id)}
-                      onToggle={() => toggleEntry(entry.id)}
-                      searchQuery={searchQuery}
-                    />
-                  ))}
-                </div>
+                <VirtualizedLogList
+                  entries={filteredEntries}
+                  expandedEntries={expandedEntries}
+                  onToggle={toggleEntry}
+                  searchQuery={searchQuery}
+                />
               )}
             </div>
             
