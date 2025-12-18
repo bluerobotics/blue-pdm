@@ -2,6 +2,16 @@
 
 All notable changes to BluePLM will be documented in this file.
 
+## [2.11.0] - 2025-12-18
+
+### Added
+- **Sentry error tracking**: Integrated Sentry for crash reporting and error tracking with user consent
+
+### Fixed
+- **macOS update spinner**: Force quit app after update install to fix hanging spinner
+
+---
+
 ## [2.10.0] - 2025-12-18
 
 ### Added
