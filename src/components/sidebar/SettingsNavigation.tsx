@@ -46,6 +46,7 @@ const settingsSections: SettingsSection[] = [
       { id: 'google-drive', label: 'Google Drive' },
       { id: 'odoo', label: 'Odoo ERP' },
       { id: 'slack', label: 'Slack' },
+      { id: 'woocommerce', label: 'WooCommerce' },
       { id: 'webhooks', label: 'Webhooks' },
       { id: 'api', label: 'REST API' },
     ]
@@ -61,7 +62,7 @@ const settingsSections: SettingsSection[] = [
   },
 ]
 
-const integrationIds = ['supabase', 'solidworks', 'google-drive', 'odoo', 'slack', 'webhooks', 'api'] as const
+const integrationIds = ['supabase', 'solidworks', 'google-drive', 'odoo', 'slack', 'woocommerce', 'webhooks', 'api'] as const
 
 const API_URL_KEY = 'blueplm_api_url'
 const DEFAULT_API_URL = 'http://localhost:3001'
@@ -106,6 +107,7 @@ export function SettingsNavigation({ activeTab, onTabChange }: SettingsNavigatio
     'google-drive': 'not-configured',
     'odoo': 'not-configured',
     'slack': 'not-configured',
+    'woocommerce': 'coming-soon',
     'webhooks': 'coming-soon',
     'api': 'not-configured',
   })
@@ -269,6 +271,10 @@ export function SettingsNavigation({ activeTab, onTabChange }: SettingsNavigatio
     // Slack - not yet implemented in API, skip status check
     // TODO: Re-enable when /integrations/slack endpoint is added to API
     newStatuses['slack'] = 'not-configured'
+    
+    // WooCommerce - coming soon
+    // TODO: Re-enable when /integrations/woocommerce endpoint is added to API
+    newStatuses['woocommerce'] = 'coming-soon'
     
     // Webhooks - coming soon
     newStatuses['webhooks'] = 'coming-soon'

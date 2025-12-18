@@ -13,6 +13,7 @@ import {
   GoogleDriveSettings,
   OdooSettings,
   SlackSettings,
+  WooCommerceSettings,
   WebhooksSettings,
   ApiSettings,
   PerformanceSettings,
@@ -59,6 +60,8 @@ export function SettingsContent({ activeTab }: SettingsContentProps) {
         return <OdooSettings />
       case 'slack':
         return <SlackSettings />
+      case 'woocommerce':
+        return <WooCommerceSettings />
       case 'webhooks':
         return <WebhooksSettings />
       case 'api':

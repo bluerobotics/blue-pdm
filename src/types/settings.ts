@@ -15,6 +15,7 @@ export type SettingsTab =
   | 'google-drive' 
   | 'odoo' 
   | 'slack' 
+  | 'woocommerce'
   | 'webhooks' 
   | 'api' 
   | 'supabase' 

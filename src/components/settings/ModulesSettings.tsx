@@ -378,9 +378,6 @@ function OrderListItemComponent({
   const currentParent = currentParentId ? MODULES.find(m => m.id === currentParentId) : null
   const childCount = getChildModules(moduleId, moduleConfig).length
   
-  // Find modules that depend on this one
-  const dependentModules = MODULES.filter(m => m.dependencies?.includes(moduleId))
-  
   // Get custom icon color
   const customIconColor = moduleConfig.moduleIconColors?.[moduleId] || null
   
@@ -451,38 +448,19 @@ function OrderListItemComponent({
               {childCount}
             </span>
           )}
+          {/* Show dependencies inline */}
+          {module.dependencies && module.dependencies.length > 0 && (
+            <span className="text-[10px] text-plm-fg-dim">
+              (requires {module.dependencies.map((depId, i) => {
+                const depModule = MODULES.find(m => m.id === depId)
+                return (depModule?.name || depId) + (i < module.dependencies!.length - 1 ? ', ' : '')
+              }).join('')})
+            </span>
+          )}
         </div>
         {currentParent && (
           <div className="text-[10px] text-plm-fg-dim mt-0.5">
             Sub-item of: {currentParent.name}
-          </div>
-        )}
-        {/* Show dependencies */}
-        {module.dependencies && module.dependencies.length > 0 && (
-          <div className="text-[10px] text-plm-warning/80 mt-0.5 flex items-center gap-1">
-            <span>⚡ Requires:</span>
-            {module.dependencies.map((depId, i) => {
-              const depModule = MODULES.find(m => m.id === depId)
-              return (
-                <span key={depId} className="font-medium">
-                  {depModule?.name || depId}{i < module.dependencies!.length - 1 ? ',' : ''}
-                </span>
-              )
-            })}
-          </div>
-        )}
-        {/* Show dependent modules (what depends on this) */}
-        {dependentModules.length > 0 && (
-          <div className="text-[10px] text-plm-info/80 mt-0.5 flex items-center gap-1">
-            <span>📦 Required by:</span>
-            {dependentModules.slice(0, 3).map((dep, i) => (
-              <span key={dep.id} className="font-medium">
-                {dep.name}{i < Math.min(dependentModules.length, 3) - 1 ? ',' : ''}
-              </span>
-            ))}
-            {dependentModules.length > 3 && (
-              <span className="text-plm-fg-dim">+{dependentModules.length - 3} more</span>
-            )}
           </div>
         )}
       </div>

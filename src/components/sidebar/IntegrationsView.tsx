@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react'
 import { 
   Plug, 
   MessageSquare, 
-  ShoppingCart, 
+  ShoppingCart,
+  ShoppingBag,
   Settings, 
   Check, 
   X, 
@@ -535,6 +536,11 @@ export function IntegrationsView() {
           icon={<MessageSquare size={20} className="text-[#4A154B]" />}
           name="Slack"
           description="Approval reminders, review notifications, ECO channels"
+        />
+        <IntegrationCard
+          icon={<ShoppingBag size={20} className="text-[#96588a]" />}
+          name="WooCommerce"
+          description="Sync products and parts with your e-commerce store"
         />
         <IntegrationCard
           icon={<Settings size={20} className="text-plm-fg-muted" />}
