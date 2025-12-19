@@ -457,27 +457,105 @@ namespace BluePLM.SolidWorksService
             
             if (_dmApp == null)
             {
+                LogDebug("OpenDocument: _dmApp is null");
                 error = 1; // swDmDocumentOpenErrorFail
                 return null;
             }
 
-            var docType = GetDocumentTypeValue(filePath);
-            if (docType == 0) // swDmDocumentUnknown
+            var docTypeInt = GetDocumentTypeValue(filePath);
+            LogDebug($"OpenDocument: docType={docTypeInt} for {Path.GetFileName(filePath)}");
+            if (docTypeInt == 0) // swDmDocumentUnknown
             {
+                LogDebug("OpenDocument: Unknown document type");
                 error = 2; // swDmDocumentOpenErrorFileNotFound
                 return null;
             }
 
             try
             {
+                // Get the enum types from the loaded assembly
+                var docTypeEnumType = GetDmType("SwDmDocumentType");
+                var errorEnumType = GetDmType("SwDmDocumentOpenError");
+                
+                if (docTypeEnumType == null || errorEnumType == null)
+                {
+                    LogDebug("OpenDocument: Could not find enum types in assembly");
+                    error = 1;
+                    return null;
+                }
+                
+                // Convert int to the actual enum type
+                var docTypeEnum = Enum.ToObject(docTypeEnumType, docTypeInt);
+                LogDebug($"OpenDocument: Calling GetDocument with enum type {docTypeEnum}");
+                
+                // Use reflection to call GetDocument with proper enum types
+                var appType = _dmApp.GetType();
+                var getDocMethod = appType.GetMethod("ISwDMApplication_QueryInterface") ?? 
+                                   appType.GetMethod("GetDocument");
+                
+                // Try using the ISwDMApplication interface
+                var iAppType = GetDmType("ISwDMApplication");
+                if (iAppType != null)
+                {
+                    getDocMethod = iAppType.GetMethod("GetDocument");
+                }
+                
+                if (getDocMethod != null)
+                {
+                    LogDebug($"OpenDocument: Found GetDocument method via reflection");
+                    var errorOut = Enum.ToObject(errorEnumType, 0);
+                    var parameters = new object[] { filePath, docTypeEnum, true, errorOut };
+                    var doc = getDocMethod.Invoke(_dmApp, parameters);
+                    error = Convert.ToInt32(parameters[3]);
+                    LogDebug($"OpenDocument: Reflection call returned, error={error}, doc={(doc != null ? "success" : "null")}");
+                    
+                    if (error != 0)
+                    {
+                        LogDecodeError(error);
+                    }
+                    return doc;
+                }
+                
+                // Fallback: try dynamic with enum
+                LogDebug("OpenDocument: Falling back to dynamic call with enum");
                 dynamic app = _dmApp;
-                return app.GetDocument(filePath, docType, true, out error);
+                dynamic errorEnum = Enum.ToObject(errorEnumType, 0);
+                var result = app.GetDocument(filePath, docTypeEnum, true, out errorEnum);
+                error = Convert.ToInt32(errorEnum);
+                LogDebug($"OpenDocument: Dynamic call returned, error={error}, doc={(result != null ? "success" : "null")}");
+                
+                if (error != 0)
+                {
+                    LogDecodeError(error);
+                }
+                
+                return result;
             }
-            catch
+            catch (Exception ex)
             {
+                LogDebug($"OpenDocument: Exception - {ex.Message}");
+                if (ex.InnerException != null)
+                {
+                    LogDebug($"OpenDocument: Inner exception - {ex.InnerException.Message}");
+                }
                 error = 1;
                 return null;
             }
+        }
+        
+        private void LogDecodeError(int error)
+        {
+            var errMsg = error switch
+            {
+                1 => "swDmDocumentOpenErrorFail - Generic failure (file locked or license issue?)",
+                2 => "swDmDocumentOpenErrorFileNotFound",
+                3 => "swDmDocumentOpenErrorFileReadOnly",
+                4 => "swDmDocumentOpenErrorNonNativeFileType",
+                5 => "swDmDocumentOpenErrorFileAlreadyOpened - File is open in another application",
+                6 => "swDmDocumentOpenErrorFutureVersion - File from newer SolidWorks version",
+                _ => $"Unknown error code: {error}"
+            };
+            LogDebug($"OpenDocument: Error - {errMsg}");
         }
 
         private int GetDocumentTypeValue(string filePath)
@@ -1035,12 +1113,17 @@ namespace BluePLM.SolidWorksService
 
         /// <summary>
         /// Extract high-resolution preview image from a SolidWorks file.
-        /// Returns the image as a base64-encoded PNG string.
+        /// Returns the image as a base64-encoded BMP string.
         /// </summary>
         public CommandResult GetPreviewImage(string? filePath, string? configuration = null)
         {
+            LogDebug($"GetPreviewImage called for: {filePath}, config: {configuration ?? "(default)"}");
+            
             if (!Initialize() || _dmApp == null)
+            {
+                LogDebug($"DM API not available: {_initError}");
                 return new CommandResult { Success = false, Error = _initError ?? "Document Manager not available" };
+            }
 
             if (string.IsNullOrEmpty(filePath))
                 return new CommandResult { Success = false, Error = "Missing 'filePath'" };
@@ -1051,58 +1134,415 @@ namespace BluePLM.SolidWorksService
             object? doc = null;
             try
             {
+                LogDebug("Opening document...");
                 doc = OpenDocument(filePath!, out var openError);
                 if (doc == null)
+                {
+                    LogDebug($"Failed to open document, error code: {openError}");
                     return new CommandResult { Success = false, Error = $"Failed to open file: error code {openError}" };
+                }
+                LogDebug("Document opened successfully");
 
                 dynamic dynDoc = doc;
                 object? previewBitmap = null;
+                int previewError = -1;
                 
-                // Try to get preview from specific configuration first
-                if (!string.IsNullOrEmpty(configuration))
+                // First, try to get preview via ConfigurationManager (this is how PDM does it)
+                LogDebug("Trying to get preview via ConfigurationManager...");
+                try
                 {
-                    try
+                    var configMgr = dynDoc.ConfigurationManager;
+                    if (configMgr != null)
                     {
-                        var config = dynDoc.ConfigurationManager.GetConfigurationByName(configuration);
-                        if (config != null)
+                        LogDebug($"ConfigurationManager type: {configMgr.GetType().Name}");
+                        
+                        // Get configuration names
+                        string[]? configNames = null;
+                        try
                         {
-                            int errResult;
-                            previewBitmap = config.GetPreviewBitmap(out errResult);
-                            if (errResult != 0) // swDmPreviewErrorNone
-                                previewBitmap = null;
+                            configNames = configMgr.GetConfigurationNames() as string[];
+                            if (configNames != null && configNames.Length > 0)
+                            {
+                                LogDebug($"Found {configNames.Length} configurations: {string.Join(", ", configNames.Take(5))}");
+                            }
+                        }
+                        catch { }
+                        
+                        // Get the active configuration or use the specified one
+                        string targetConfig = configuration ?? "";
+                        if (string.IsNullOrEmpty(targetConfig) && configNames != null && configNames.Length > 0)
+                        {
+                            // Try to get active configuration
+                            try
+                            {
+                                targetConfig = dynDoc.ActiveConfiguration?.Name ?? configNames[0];
+                            }
+                            catch
+                            {
+                                targetConfig = configNames[0];
+                            }
+                        }
+                        
+                        if (!string.IsNullOrEmpty(targetConfig))
+                        {
+                            LogDebug($"Getting configuration: {targetConfig}");
+                            try
+                            {
+                                dynamic config = configMgr.GetConfigurationByName(targetConfig);
+                                if (config != null)
+                                {
+                                    LogDebug($"Configuration type: {config.GetType().Name}");
+                                    
+                                    // List methods on configuration
+                                    var configType = ((object)config).GetType();
+                                    var configInterfaces = configType.GetInterfaces();
+                                    LogDebug($"Configuration implements {configInterfaces.Length} interfaces");
+                                    foreach (var iface in configInterfaces.Where(i => i.Name.Contains("Configuration")).Take(5))
+                                    {
+                                        LogDebug($"  - {iface.Name}");
+                                        var previewMeth = iface.GetMethod("GetPreviewBitmap") ?? iface.GetMethod("GetPreviewPNGBitmapData");
+                                        if (previewMeth != null)
+                                        {
+                                            LogDebug($"    Found preview method: {previewMeth.Name}");
+                                        }
+                                    }
+                                    
+                                    // Try GetPreviewBitmap on configuration using reflection
+                                    var previewErrorType = GetDmType("SwDmPreviewError");
+                                    LogDebug($"SwDmPreviewError enum type: {previewErrorType?.FullName ?? "NOT FOUND"}");
+                                    
+                                    // Find GetPreviewBitmap on ISwDMConfiguration interfaces
+                                    var configObjType = ((object)config).GetType();
+                                    var configInterfaces2 = configObjType.GetInterfaces();
+                                    
+                                    foreach (var cfgIface in configInterfaces2.Where(i => i.Name.Contains("Configuration")).OrderByDescending(i => i.Name))
+                                    {
+                                        var previewMeth = cfgIface.GetMethod("GetPreviewBitmap");
+                                        if (previewMeth != null)
+                                        {
+                                            LogDebug($"Trying {cfgIface.Name}.GetPreviewBitmap via reflection...");
+                                            try
+                                            {
+                                                // Create properly typed enum argument
+                                                object errorArg = previewErrorType != null 
+                                                    ? Enum.ToObject(previewErrorType, 0) 
+                                                    : 0;
+                                                object[] args = new object[] { errorArg };
+                                                
+                                                var result = previewMeth.Invoke(config, args);
+                                                previewError = Convert.ToInt32(args[0]);
+                                                
+                                                LogDebug($"Config GetPreviewBitmap result: {(result != null ? result.GetType().Name : "null")}, error={previewError}");
+                                                
+                                                if (result is byte[] bmpData && bmpData.Length > 0 && previewError == 0)
+                                                {
+                                                    LogDebug($"SUCCESS! Got preview from configuration: {bmpData.Length} bytes");
+                                                    previewBitmap = bmpData;
+                                                    break;
+                                                }
+                                            }
+                                            catch (TargetInvocationException tie)
+                                            {
+                                                var inner = tie.InnerException ?? tie;
+                                                LogDebug($"Config GetPreviewBitmap failed: {inner.GetType().Name}: {inner.Message}");
+                                                if (inner is System.Runtime.InteropServices.COMException comEx)
+                                                {
+                                                    LogDebug($"COM Error: 0x{comEx.ErrorCode:X8}");
+                                                }
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                LogDebug($"Config GetPreviewBitmap failed: {ex.Message}");
+                                            }
+                                        }
+                                    }
+                                    
+                                    // If we got a preview, process it
+                                    if (previewBitmap is byte[] configBmpData && configBmpData.Length > 0)
+                                    {
+                                        // Convert DIB to BMP and return
+                                        var bmpBytes = ConvertDibToBmp(configBmpData);
+                                        if (bmpBytes != null && bmpBytes.Length > 0)
+                                        {
+                                            LogDebug($"Converted DIB to BMP: {bmpBytes.Length} bytes");
+                                            return new CommandResult
+                                            {
+                                                Success = true,
+                                                Data = new
+                                                {
+                                                    filePath,
+                                                    configuration = targetConfig,
+                                                    imageData = Convert.ToBase64String(bmpBytes),
+                                                    mimeType = "image/bmp",
+                                                    sizeBytes = bmpBytes.Length
+                                                }
+                                            };
+                                        }
+                                    }
+                                }
+                            }
+                            catch (Exception configEx)
+                            {
+                                LogDebug($"GetConfigurationByName failed: {configEx.Message}");
+                            }
                         }
                     }
-                    catch { previewBitmap = null; }
+                }
+                catch (Exception cfgMgrEx)
+                {
+                    LogDebug($"ConfigurationManager access failed: {cfgMgrEx.Message}");
                 }
 
                 // Fall back to document-level preview
                 if (previewBitmap == null)
                 {
-                    try
+                    LogDebug("Trying document-level preview...");
+                    
+                    // List interfaces implemented by the document object
+                    var docType = doc.GetType();
+                    var interfaces = docType.GetInterfaces();
+                    LogDebug($"Document implements {interfaces.Length} interfaces:");
+                    foreach (var iface in interfaces.Take(10))
                     {
-                        int errResult;
-                        previewBitmap = dynDoc.GetPreviewBitmap(out errResult);
-                        if (errResult != 0 || previewBitmap == null)
+                        LogDebug($"  - {iface.Name}");
+                    }
+                    
+                    // Try to find and call GetPreviewBitmap on the correct interface
+                    // The method is on ISwDMDocument, not SwDMDocumentClass
+                    MethodInfo? previewMethod = null;
+                    Type? targetInterface = null;
+                    
+                    // Search for GetPreviewPNGBitmapData first (newer, returns PNG)
+                    foreach (var iface in interfaces)
+                    {
+                        if (iface.Name.StartsWith("ISwDMDocument"))
                         {
-                            return new CommandResult { Success = false, Error = "No preview available for this file" };
+                            var method = iface.GetMethod("GetPreviewPNGBitmapData");
+                            if (method != null)
+                            {
+                                LogDebug($"Found GetPreviewPNGBitmapData on {iface.Name}");
+                                previewMethod = method;
+                                targetInterface = iface;
+                                break;
+                            }
                         }
                     }
-                    catch (Exception ex)
+                    
+                    // Try GetPreviewPNGBitmapData
+                    if (previewMethod != null)
                     {
-                        return new CommandResult { Success = false, Error = $"Failed to extract preview: {ex.Message}" };
+                        LogDebug("Calling GetPreviewPNGBitmapData via interface...");
+                        try
+                        {
+                            object[] args = new object[] { 0 };
+                            var result = previewMethod.Invoke(doc, args);
+                            previewError = Convert.ToInt32(args[0]);
+                            
+                            LogDebug($"GetPreviewPNGBitmapData result: {(result != null ? result.GetType().Name : "null")}, error={previewError}");
+                            
+                            if (result is byte[] pngBytes && pngBytes.Length > 0 && previewError == 0)
+                            {
+                                LogDebug($"SUCCESS! Got PNG preview: {pngBytes.Length} bytes");
+                                return new CommandResult
+                                {
+                                    Success = true,
+                                    Data = new
+                                    {
+                                        filePath,
+                                        configuration = configuration ?? "default",
+                                        imageData = Convert.ToBase64String(pngBytes),
+                                        mimeType = "image/png",
+                                        sizeBytes = pngBytes.Length
+                                    }
+                                };
+                            }
+                        }
+                        catch (Exception pngEx)
+                        {
+                            var inner = (pngEx as TargetInvocationException)?.InnerException ?? pngEx;
+                            LogDebug($"GetPreviewPNGBitmapData failed: {inner.GetType().Name}: {inner.Message}");
+                        }
+                    }
+                    
+                    // Search for GetPreviewBitmap (fallback, returns DIB)
+                    previewMethod = null;
+                    foreach (var iface in interfaces)
+                    {
+                        if (iface.Name.StartsWith("ISwDMDocument"))
+                        {
+                            var method = iface.GetMethod("GetPreviewBitmap");
+                            if (method != null)
+                            {
+                                LogDebug($"Found GetPreviewBitmap on {iface.Name}");
+                                previewMethod = method;
+                                targetInterface = iface;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    if (previewMethod != null)
+                    {
+                        LogDebug("Calling GetPreviewBitmap via interface...");
+                        try
+                        {
+                            object[] args = new object[] { 0 };
+                            previewBitmap = previewMethod.Invoke(doc, args);
+                            previewError = Convert.ToInt32(args[0]);
+                            
+                            LogDebug($"GetPreviewBitmap result: {(previewBitmap != null ? previewBitmap.GetType().Name : "null")}, error={previewError}");
+                        }
+                        catch (Exception bmpEx)
+                        {
+                            var inner = (bmpEx as TargetInvocationException)?.InnerException ?? bmpEx;
+                            LogDebug($"GetPreviewBitmap failed: {inner.GetType().Name}: {inner.Message}");
+                            
+                            if (inner is System.Runtime.InteropServices.COMException comEx)
+                            {
+                                LogDebug($"COM Error: 0x{comEx.ErrorCode:X8}");
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // GetPreviewBitmap not found - try GetEDrawingsData which may contain preview
+                        LogDebug("GetPreviewBitmap not found. Trying GetEDrawingsData...");
+                        
+                        var eDrawingsMethod = interfaces
+                            .Where(i => i.Name.StartsWith("ISwDMDocument") || i.Name.StartsWith("SwDMDocument"))
+                            .SelectMany(i => i.GetMethods())
+                            .FirstOrDefault(m => m.Name == "GetEDrawingsData");
+                        
+                        if (eDrawingsMethod != null)
+                        {
+                            LogDebug("Found GetEDrawingsData method");
+                            try
+                            {
+                                // GetEDrawingsData returns byte array of eDrawings format data
+                                var eDrawingsData = eDrawingsMethod.Invoke(doc, null);
+                                if (eDrawingsData is byte[] edData && edData.Length > 0)
+                                {
+                                    LogDebug($"Got eDrawings data: {edData.Length} bytes");
+                                    // eDrawings data is not directly usable as an image
+                                    // But we can try to extract preview from the document using COM
+                                }
+                            }
+                            catch (Exception edEx)
+                            {
+                                LogDebug($"GetEDrawingsData failed: {edEx.Message}");
+                            }
+                        }
+                        
+                        // Try using the full SolidWorks API instead via SolidWorks application
+                        // since Document Manager doesn't have preview methods in this version
+                        LogDebug("Document Manager doesn't support GetPreviewBitmap.");
+                        LogDebug("The interop assembly may be outdated. Available interfaces:");
+                        foreach (var iface in interfaces)
+                        {
+                            LogDebug($"  - {iface.FullName}");
+                        }
+                        
+                        // Check if we have access to newer interface versions in the assembly
+                        if (_dmAssembly != null)
+                        {
+                            var allTypes = _dmAssembly.GetTypes();
+                            var docInterfaces = allTypes.Where(t => t.Name.StartsWith("ISwDMDocument") && t.IsInterface).ToList();
+                            LogDebug($"Available ISwDMDocument interfaces in assembly ({docInterfaces.Count}):");
+                            foreach (var docIface in docInterfaces.OrderBy(t => t.Name).Take(5))
+                            {
+                                var hasPreview = docIface.GetMethod("GetPreviewBitmap") != null;
+                                LogDebug($"  - {docIface.Name} (HasGetPreviewBitmap: {hasPreview})");
+                            }
+                            
+                            // Get the SwDmPreviewError enum type
+                            var previewErrorType = GetDmType("SwDmPreviewError");
+                            LogDebug($"SwDmPreviewError type: {(previewErrorType != null ? previewErrorType.FullName : "NOT FOUND")}");
+                            
+                            // Try to cast doc to a versioned interface
+                            foreach (var docIface in docInterfaces.OrderByDescending(t => t.Name))
+                            {
+                                var previewMeth = docIface.GetMethod("GetPreviewBitmap");
+                                if (previewMeth != null)
+                                {
+                                    LogDebug($"Trying to use {docIface.Name}.GetPreviewBitmap...");
+                                    try
+                                    {
+                                        // Create the enum value properly
+                                        object errorArg;
+                                        if (previewErrorType != null)
+                                        {
+                                            errorArg = Enum.ToObject(previewErrorType, 0); // swDmPreviewErrorNone = 0
+                                        }
+                                        else
+                                        {
+                                            errorArg = 0;
+                                        }
+                                        
+                                        object[] args = new object[] { errorArg };
+                                        previewBitmap = previewMeth.Invoke(doc, args);
+                                        
+                                        // Get the error value back
+                                        if (args[0] != null)
+                                        {
+                                            previewError = Convert.ToInt32(args[0]);
+                                        }
+                                        
+                                        LogDebug($"GetPreviewBitmap result: type={previewBitmap?.GetType().Name ?? "null"}, error={previewError}");
+                                        
+                                        if (previewBitmap != null)
+                                        {
+                                            LogDebug($"SUCCESS! Got preview via {docIface.Name}");
+                                            break;
+                                        }
+                                    }
+                                    catch (TargetInvocationException tie)
+                                    {
+                                        var inner = tie.InnerException ?? tie;
+                                        LogDebug($"Failed (inner): {inner.GetType().Name}: {inner.Message}");
+                                        if (inner is System.Runtime.InteropServices.COMException comEx)
+                                        {
+                                            LogDebug($"COM Error: 0x{comEx.ErrorCode:X8}");
+                                        }
+                                    }
+                                    catch (Exception castEx)
+                                    {
+                                        LogDebug($"Failed: {castEx.Message}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    if (previewError != 0 || previewBitmap == null)
+                    {
+                        var errorMsg = previewError switch
+                        {
+                            0 => "No preview data returned",
+                            1 => "No preview saved in file",
+                            2 => "Preview is out of date", 
+                            3 => "Preview not supported for this file type",
+                            -1 => "Method not found on document interface",
+                            _ => $"Preview error code: {previewError}"
+                        };
+                        LogDebug($"Preview failed: {errorMsg}");
+                        return new CommandResult { Success = false, Error = errorMsg };
                     }
                 }
 
                 // The preview bitmap is a byte array containing DIB data
+                LogDebug($"Preview bitmap type: {previewBitmap?.GetType().Name ?? "null"}");
                 if (previewBitmap is byte[] dibData && dibData.Length > 0)
                 {
-                    var pngData = ConvertDibToPng(dibData);
-                    if (pngData == null || pngData.Length == 0)
+                    LogDebug($"DIB data length: {dibData.Length} bytes");
+                    var bmpData = ConvertDibToBmp(dibData);
+                    if (bmpData == null || bmpData.Length == 0)
                     {
+                        LogDebug("Failed to convert DIB to BMP");
                         return new CommandResult { Success = false, Error = "Failed to convert preview image" };
                     }
 
-                    var base64 = Convert.ToBase64String(pngData);
+                    var base64 = Convert.ToBase64String(bmpData);
+                    LogDebug($"Preview extracted successfully: {bmpData.Length} bytes");
 
                     return new CommandResult
                     {
@@ -1112,16 +1552,18 @@ namespace BluePLM.SolidWorksService
                             filePath,
                             configuration = configuration ?? "default",
                             imageData = base64,
-                            mimeType = "image/png",
-                            sizeBytes = pngData.Length
+                            mimeType = "image/bmp",
+                            sizeBytes = bmpData.Length
                         }
                     };
                 }
 
+                LogDebug($"Preview data not in expected format: {previewBitmap?.GetType().Name ?? "null"}");
                 return new CommandResult { Success = false, Error = "Preview data is not in expected format" };
             }
             catch (Exception ex)
             {
+                LogDebug($"GetPreviewImage exception: {ex.Message}");
                 return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
             }
             finally
@@ -1135,9 +1577,10 @@ namespace BluePLM.SolidWorksService
         }
 
         /// <summary>
-        /// Convert a DIB (Device Independent Bitmap) byte array to BMP format.
+        /// Convert a DIB (Device Independent Bitmap) byte array to BMP file format.
+        /// DIB is the raw bitmap data without the file header; BMP adds the "BM" file header.
         /// </summary>
-        private static byte[]? ConvertDibToPng(byte[] dibData)
+        private static byte[]? ConvertDibToBmp(byte[] dibData)
         {
             try
             {

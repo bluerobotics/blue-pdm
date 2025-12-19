@@ -273,8 +273,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openInEDrawings: (filePath: string) => ipcRenderer.invoke('edrawings:open-file', filePath),
   getWindowHandle: () => ipcRenderer.invoke('edrawings:get-window-handle'),
   
-  // SolidWorks thumbnail extraction
+  // SolidWorks thumbnail extraction (low-res, for file browser icons)
   extractSolidWorksThumbnail: (filePath: string) => ipcRenderer.invoke('solidworks:extract-thumbnail', filePath),
+  
+  // SolidWorks high-quality preview extraction (reads OLE stream directly)
+  extractSolidWorksPreview: (filePath: string) => ipcRenderer.invoke('solidworks:extract-preview', filePath),
   
   // SolidWorks Service API (requires SolidWorks installed)
   solidworks: {

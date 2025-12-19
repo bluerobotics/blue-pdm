@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
-import { Cpu, MemoryStick, HardDrive, ArrowDown, ArrowUp, Activity, Gauge, Box } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { Cpu, MemoryStick, HardDrive, ArrowDown, ArrowUp, Activity, Box } from 'lucide-react'
 
 interface SystemStats {
   cpu: { usage: number; cores: number[] }
@@ -11,55 +11,7 @@ interface SystemStats {
 
 interface SystemStatsProps {
   condensed?: boolean
-}
-
-// FPS Counter hook - measures actual render frame rate at high speed
-function useFps(enabled: boolean) {
-  const [fps, setFps] = useState(0)
-  const frameCount = useRef(0)
-  const lastTime = useRef(performance.now())
-  const rafId = useRef<number>(0)
-  
-  const measureFps = useCallback(() => {
-    frameCount.current++
-    const now = performance.now()
-    const delta = now - lastTime.current
-    
-    // Update FPS every 100ms for faster updates
-    if (delta >= 100) {
-      setFps(Math.round((frameCount.current / delta) * 1000))
-      frameCount.current = 0
-      lastTime.current = now
-    }
-    
-    rafId.current = requestAnimationFrame(measureFps)
-  }, [])
-  
-  useEffect(() => {
-    if (!enabled) {
-      setFps(0)
-      return
-    }
-    
-    frameCount.current = 0
-    lastTime.current = performance.now()
-    rafId.current = requestAnimationFrame(measureFps)
-    
-    return () => {
-      if (rafId.current) {
-        cancelAnimationFrame(rafId.current)
-      }
-    }
-  }, [enabled, measureFps])
-  
-  return fps
-}
-
-// Get FPS color based on value
-function getFpsColor(fps: number): string {
-  if (fps >= 55) return 'text-emerald-400'
-  if (fps >= 30) return 'text-amber-400'
-  return 'text-rose-400'
+  forceExpanded?: boolean  // Override internal collapsed state
 }
 
 // Format bytes to human readable
@@ -105,36 +57,24 @@ function getDotColor(percent: number): string {
   return 'bg-rose-500'
 }
 
-export function SystemStats({ condensed = false }: SystemStatsProps) {
+export function SystemStats({ condensed = false, forceExpanded }: SystemStatsProps) {
   const [stats, setStats] = useState<SystemStats | null>(null)
   const [showTooltip, setShowTooltip] = useState(false)
-  const [isCollapsed, setIsCollapsed] = useState(() => {
+  const [isCollapsedInternal, setIsCollapsedInternal] = useState(() => {
     // Load from localStorage, default to collapsed
     const saved = localStorage.getItem('systemStats.collapsed')
     return saved !== 'false' // Default to true (collapsed)
   })
-  const [showFps, setShowFps] = useState(() => {
-    // Load from localStorage, default to hidden
-    return localStorage.getItem('systemStats.showFps') === 'true'
-  })
   const containerRef = useRef<HTMLDivElement>(null)
   
-  // FPS counter
-  const fps = useFps(showFps)
+  // Use forceExpanded prop if provided, otherwise use internal state
+  const isCollapsed = forceExpanded !== undefined ? !forceExpanded : isCollapsedInternal
   
   // Persist collapsed state
   const toggleCollapsed = () => {
-    const newState = !isCollapsed
-    setIsCollapsed(newState)
+    const newState = !isCollapsedInternal
+    setIsCollapsedInternal(newState)
     localStorage.setItem('systemStats.collapsed', String(newState))
-  }
-  
-  // Toggle FPS display
-  const toggleFps = (e: React.MouseEvent) => {
-    e.stopPropagation()
-    const newState = !showFps
-    setShowFps(newState)
-    localStorage.setItem('systemStats.showFps', String(newState))
   }
 
   useEffect(() => {
@@ -167,21 +107,10 @@ export function SystemStats({ condensed = false }: SystemStatsProps) {
         onMouseEnter={() => setShowTooltip(true)}
         onMouseLeave={() => setShowTooltip(false)}
       >
-        {/* FPS Counter (condensed) */}
-        {showFps && (
-          <button
-            onClick={toggleFps}
-            className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono tabular-nums hover:bg-plm-bg-lighter transition-colors ${getFpsColor(fps)}`}
-            title="Click to hide FPS"
-          >
-            {fps}
-          </button>
-        )}
-        
         <button
-          onClick={showFps ? toggleCollapsed : toggleFps}
+          onClick={toggleCollapsed}
           className="flex items-center justify-center w-6 h-6 rounded hover:bg-plm-bg-lighter transition-colors"
-          title={showFps ? "System status" : "Click to show FPS"}
+          title="System status"
         >
           <div className={`w-2 h-2 rounded-full ${getDotColor(maxUsage)}`} />
         </button>
@@ -319,18 +248,6 @@ export function SystemStats({ condensed = false }: SystemStatsProps) {
         onMouseEnter={() => setShowTooltip(true)}
         onMouseLeave={() => setShowTooltip(false)}
       >
-        {/* FPS Counter Toggle */}
-        <button
-          onClick={toggleFps}
-          className={`flex items-center gap-1 px-1.5 py-1 rounded hover:bg-plm-bg-lighter transition-colors ${
-            showFps ? getFpsColor(fps) : 'text-plm-fg-muted hover:text-plm-fg'
-          }`}
-          title={showFps ? `${fps} FPS - Click to hide` : 'Show FPS counter'}
-        >
-          <Gauge size={12} />
-          {showFps && <span className="text-[10px] font-mono tabular-nums min-w-[20px]">{fps}</span>}
-        </button>
-        
         {/* Stats dots - click to expand */}
         <button
           onClick={toggleCollapsed}
@@ -481,18 +398,6 @@ export function SystemStats({ condensed = false }: SystemStatsProps) {
       onMouseEnter={() => setShowTooltip(true)}
       onMouseLeave={() => setShowTooltip(false)}
     >
-      {/* FPS Counter Toggle */}
-      <button
-        onClick={toggleFps}
-        className={`flex items-center gap-1 px-1 py-0.5 rounded hover:bg-plm-bg-lighter transition-colors ${
-          showFps ? getFpsColor(fps) : 'text-plm-fg-muted hover:text-plm-fg'
-        }`}
-        title={showFps ? `${fps} FPS - Click to hide` : 'Show FPS counter'}
-      >
-        <Gauge size={12} />
-        {showFps && <span className="text-[10px] font-mono tabular-nums min-w-[20px]">{fps}</span>}
-      </button>
-
       {/* Stats - click to collapse */}
       <button
         onClick={toggleCollapsed}

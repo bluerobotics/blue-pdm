@@ -4,6 +4,7 @@ import { formatFileSize, getFileIconType } from '../types/pdm'
 import { formatDistanceToNow } from 'date-fns'
 import { getFileVersions } from '../lib/supabase'
 import { ContainsTab, WhereUsedTab } from './SolidWorksPanel'
+import { SolidWorksPreviewPanel } from './SolidWorksPreviewPanel'
 import { 
   FileBox, 
   Layers, 
@@ -108,6 +109,10 @@ export function RightPanel() {
   
   // eDrawings state
   const [, setEDrawingsStatus] = useState<{ checked: boolean; installed: boolean; path: string | null }>({ checked: false, installed: false, path: null })
+  
+  // CAD preview state
+  const [cadPreview, setCadPreview] = useState<string | null>(null)
+  const [cadPreviewLoading, setCadPreviewLoading] = useState(false)
 
   // Check if eDrawings is installed
   useEffect(() => {
@@ -145,6 +150,53 @@ export function RightPanel() {
     loadPdf()
   }, [file?.path, file?.extension, rightPanelTab])
 
+  // Load CAD preview when file changes
+  // Priority: 1) OLE preview extraction, 2) DM API preview, 3) OS thumbnail
+  useEffect(() => {
+    const loadPreview = async () => {
+      const ext = file?.extension?.toLowerCase() || ''
+      const isSolidWorks = ['.sldprt', '.sldasm', '.slddrw'].includes(ext)
+      
+      if (!isSolidWorks || rightPanelTab !== 'preview' || !file?.path) {
+        setCadPreview(null)
+        return
+      }
+      
+      setCadPreviewLoading(true)
+      try {
+        // First, try direct OLE preview extraction (most reliable, high quality)
+        const oleResult = await window.electronAPI?.extractSolidWorksPreview?.(file.path)
+        if (oleResult?.success && oleResult.data) {
+          setCadPreview(oleResult.data)
+          setCadPreviewLoading(false)
+          return
+        }
+        
+        // Second, try SolidWorks Document Manager API
+        const previewResult = await window.electronAPI?.solidworks?.getPreview(file.path)
+        if (previewResult?.success && previewResult.data?.imageData) {
+          const mimeType = previewResult.data.mimeType || 'image/png'
+          setCadPreview(`data:${mimeType};base64,${previewResult.data.imageData}`)
+          setCadPreviewLoading(false)
+          return
+        }
+        
+        // Fall back to OS thumbnail
+        const thumbResult = await window.electronAPI?.extractSolidWorksThumbnail(file.path)
+        if (thumbResult?.success && thumbResult.data) {
+          setCadPreview(thumbResult.data)
+        } else {
+          setCadPreview(null)
+        }
+      } catch {
+        setCadPreview(null)
+      } finally {
+        setCadPreviewLoading(false)
+      }
+    }
+    loadPreview()
+  }, [file?.path, file?.extension, rightPanelTab])
+
   // Load versions
   useEffect(() => {
     const loadVersions = async () => {
@@ -163,6 +215,7 @@ export function RightPanel() {
   }, [file?.pdmData?.id, rightPanelTab])
 
   const ext = file?.extension?.toLowerCase() || ''
+  const isSolidWorksFile = ['.sldprt', '.sldasm', '.slddrw'].includes(ext)
   const isCADFile = ['.sldprt', '.sldasm', '.slddrw', '.step', '.stp', '.stl', '.iges', '.igs'].includes(ext)
   const isImageFile = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg'].includes(ext)
   const isPDFFile = ext === '.pdf'
@@ -260,27 +313,59 @@ export function RightPanel() {
             )}
 
             {rightPanelTab === 'preview' && (
-              <div className="flex flex-col items-center justify-center h-full">
+              <div className="flex flex-col h-full">
                 {isPDFFile ? (
                   pdfLoading ? (
-                    <Loader2 className="animate-spin" size={24} />
+                    <div className="flex-1 flex items-center justify-center">
+                      <Loader2 className="animate-spin" size={24} />
+                    </div>
                   ) : pdfDataUrl ? (
                     <iframe src={pdfDataUrl} className="w-full h-full border-0 rounded bg-white" />
                   ) : (
-                    <div className="text-plm-fg-muted">Failed to load PDF</div>
+                    <div className="flex-1 flex items-center justify-center text-plm-fg-muted">Failed to load PDF</div>
                   )
                 ) : isImageFile ? (
-                  <img src={`file://${file.path}`} alt={file.name} className="max-w-full max-h-full object-contain" />
-                ) : isCADFile ? (
-                  <div className="text-center">
-                    <FileBox size={48} className="mx-auto mb-4 text-plm-accent" />
-                    <button onClick={handleOpenInEDrawings} className="btn btn-primary gap-2">
-                      <ExternalLink size={16} />
-                      Open in eDrawings
-                    </button>
+                  <div className="flex-1 flex items-center justify-center">
+                    <img src={`file://${file.path}`} alt={file.name} className="max-w-full max-h-full object-contain" />
                   </div>
+                ) : isSolidWorksFile ? (
+                  <SolidWorksPreviewPanel 
+                    file={file} 
+                    onOpenInEDrawings={handleOpenInEDrawings}
+                  />
+                ) : isCADFile ? (
+                  cadPreviewLoading ? (
+                    <div className="flex-1 flex items-center justify-center">
+                      <Loader2 className="animate-spin text-plm-accent" size={32} />
+                    </div>
+                  ) : cadPreview ? (
+                    <div className="flex-1 flex flex-col">
+                      <div className="flex-1 flex items-center justify-center bg-gradient-to-b from-gray-800 to-gray-900 rounded overflow-auto">
+                        <img 
+                          src={cadPreview} 
+                          alt={file.name}
+                          className="max-w-full max-h-full object-contain"
+                        />
+                      </div>
+                      <button 
+                        onClick={handleOpenInEDrawings} 
+                        className="btn btn-sm btn-secondary gap-2 mt-2 self-center"
+                      >
+                        <ExternalLink size={14} />
+                        Open in eDrawings
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex-1 flex flex-col items-center justify-center">
+                      <FileBox size={48} className="mb-4 text-plm-accent" />
+                      <button onClick={handleOpenInEDrawings} className="btn btn-primary gap-2">
+                        <ExternalLink size={16} />
+                        Open in eDrawings
+                      </button>
+                    </div>
+                  )
                 ) : (
-                  <div className="text-plm-fg-muted">No preview available</div>
+                  <div className="flex-1 flex items-center justify-center text-plm-fg-muted">No preview available</div>
                 )}
               </div>
             )}

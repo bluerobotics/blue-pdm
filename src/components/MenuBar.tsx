@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { registerModule, unregisterModule } from '@/lib/telemetry'
-import { LogOut, ChevronDown, Building2, Search, File, Folder, LayoutGrid, Database, ZoomIn, Minus, Plus, RotateCcw, Monitor, Laptop, Loader2, Settings, WifiOff } from 'lucide-react'
+import { LogOut, ChevronDown, Building2, Search, File, Folder, LayoutGrid, Database, ZoomIn, Minus, Plus, RotateCcw, Monitor, Laptop, Loader2, Settings, WifiOff, PanelLeft, PanelBottom, PanelRight, SlidersHorizontal, Gauge, Users, Activity, User } from 'lucide-react'
 import { usePDMStore } from '../stores/pdmStore'
 import { signInWithGoogle, signOut, isSupabaseConfigured, getActiveSessions, endRemoteSession, UserSession, supabase } from '../lib/supabase'
 import { getInitials } from '../types/pdm'
@@ -22,6 +22,43 @@ const uiLog = (level: 'info' | 'warn' | 'error' | 'debug', message: string, data
 function getUserInitial(user: { full_name?: string | null; email?: string } | null): string {
   if (!user) return '?'
   return getInitials(user.full_name || user.email)
+}
+
+// Simple FPS Counter component
+function FpsCounter() {
+  const [fps, setFps] = useState(0)
+  const frameCountRef = useRef(0)
+  const lastTimeRef = useRef(performance.now())
+  
+  useEffect(() => {
+    let rafId: number
+    
+    const measureFps = () => {
+      frameCountRef.current++
+      const now = performance.now()
+      const delta = now - lastTimeRef.current
+      
+      if (delta >= 100) {
+        setFps(Math.round((frameCountRef.current / delta) * 1000))
+        frameCountRef.current = 0
+        lastTimeRef.current = now
+      }
+      
+      rafId = requestAnimationFrame(measureFps)
+    }
+    
+    rafId = requestAnimationFrame(measureFps)
+    return () => cancelAnimationFrame(rafId)
+  }, [])
+  
+  const color = fps >= 55 ? 'text-emerald-400' : fps >= 30 ? 'text-amber-400' : 'text-rose-400'
+  
+  return (
+    <div className={`flex items-center gap-1 px-1.5 py-0.5 ${color}`} title={`${fps} FPS`}>
+      <Gauge size={12} />
+      <span className="text-[10px] font-mono tabular-nums">{fps}</span>
+    </div>
+  )
 }
 
 interface MenuBarProps {
@@ -46,7 +83,15 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
     switchVault,
     setActiveView,
     isOfflineMode,
-    setOfflineMode
+    setOfflineMode,
+    sidebarVisible,
+    toggleSidebar,
+    detailsPanelVisible,
+    toggleDetailsPanel,
+    rightPanelVisible,
+    toggleRightPanel,
+    topbarConfig,
+    setTopbarConfig
   } = usePDMStore()
   
   // Register module for telemetry tracking
@@ -61,6 +106,7 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
   const [showVaultDropdown, setShowVaultDropdown] = useState(false)
   const [showZoomDropdown, setShowZoomDropdown] = useState(false)
   const [showSearchTypeDropdown, setShowSearchTypeDropdown] = useState(false)
+  const [showTopbarConfigDropdown, setShowTopbarConfigDropdown] = useState(false)
   const [orgLogoUrl, setOrgLogoUrl] = useState<string | null>(null)
   const [zoomFactor, setZoomFactor] = useState(1)
   const [sessions, setSessions] = useState<UserSession[]>([])
@@ -69,6 +115,7 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
   const vaultDropdownRef = useRef<HTMLDivElement>(null)
   const zoomDropdownRef = useRef<HTMLDivElement>(null)
   const searchTypeDropdownRef = useRef<HTMLDivElement>(null)
+  const topbarConfigRef = useRef<HTMLDivElement>(null)
   const [titleBarPadding, setTitleBarPadding] = useState(140) // Default fallback
   const [platform, setPlatform] = useState<string>('win32') // Default to Windows
   const [localSearch, setLocalSearch] = useState(searchQuery || '')
@@ -82,7 +129,8 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
   const cpuCondensed = menuBarWidth < 1100  // CPU: full -> single dot
   const zoomCondensed = menuBarWidth < 1000  // Zoom: percentage -> icon only
   const searchCondensed = menuBarWidth < 900  // Search type: buttons -> dropdown
-  const showUserName = menuBarWidth > 800
+  const showUserNameByWidth = menuBarWidth > 800
+  const showUserNameFinal = showUserNameByWidth && topbarConfig.showUserName  // Both width and config must allow it
   const showVaultName = menuBarWidth > 700
   const showOrgName = menuBarWidth > 600
   const searchMaxWidth = menuBarWidth > 850 ? 'max-w-lg' : menuBarWidth > 700 ? 'max-w-sm' : menuBarWidth > 550 ? 'max-w-[200px]' : 'max-w-[140px]'
@@ -102,12 +150,15 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
       if (searchTypeDropdownRef.current && !searchTypeDropdownRef.current.contains(e.target as Node)) {
         setShowSearchTypeDropdown(false)
       }
+      if (topbarConfigRef.current && !topbarConfigRef.current.contains(e.target as Node)) {
+        setShowTopbarConfigDropdown(false)
+      }
     }
-    if (showUserMenu || showVaultDropdown || showZoomDropdown || showSearchTypeDropdown) {
+    if (showUserMenu || showVaultDropdown || showZoomDropdown || showSearchTypeDropdown || showTopbarConfigDropdown) {
       document.addEventListener('mousedown', handleClickOutside)
     }
     return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [showUserMenu, showVaultDropdown, showZoomDropdown, showSearchTypeDropdown])
+  }, [showUserMenu, showVaultDropdown, showZoomDropdown, showSearchTypeDropdown, showTopbarConfigDropdown])
 
   useEffect(() => {
     if (window.electronAPI) {
@@ -344,10 +395,10 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
           </div>
           
           {/* Separator */}
-          {!minimal && organization && <div className="w-px h-4 bg-plm-border mx-1" />}
+          {!minimal && organization && topbarConfig.showOrg && <div className="w-px h-4 bg-plm-border mx-1" />}
           
           {/* Organization (no dropdown for now - single org per user) */}
-          {!minimal && organization && (
+          {!minimal && organization && topbarConfig.showOrg && (
             <div className="flex items-center gap-1.5 px-2 py-1 rounded text-sm text-plm-fg-dim" title={organization.name}>
               {orgLogoUrl ? (
                 <img 
@@ -418,7 +469,7 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
 
       {/* Center - Search bar (flexible, gets squeezed between left and right) */}
       <div className={`flex-1 min-w-0 flex items-center justify-center px-2`}>
-        {!minimal && (
+        {!minimal && topbarConfig.showSearch && (
           <div className={`flex items-center gap-1 w-full ${searchMaxWidth} titlebar-no-drag`}>
             {/* Search type toggle - condenses to dropdown when narrow */}
             {searchCondensed ? (
@@ -544,14 +595,24 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
         className="flex-shrink-0 h-full flex items-center gap-1 pl-2 titlebar-no-drag"
         style={{ paddingRight: platform === 'darwin' ? 16 : titleBarPadding }}
       >
-        {/* System Stats - condenses to single dot when narrow */}
-        {!minimal && <SystemStats condensed={cpuCondensed} />}
+        {/* FPS Counter - independent from System Stats */}
+        {!minimal && topbarConfig.showFps && (
+          <FpsCounter />
+        )}
         
-        {/* Separator - hide when condensed to save space */}
-        {!minimal && !cpuCondensed && <div className="w-px h-4 bg-plm-border" />}
+        {/* System Stats - condenses based on user preference or screen width */}
+        {!minimal && topbarConfig.showSystemStats && (
+          <>
+            <SystemStats 
+              condensed={cpuCondensed} 
+              forceExpanded={topbarConfig.systemStatsExpanded}
+            />
+            {!cpuCondensed && <div className="w-px h-4 bg-plm-border" />}
+          </>
+        )}
         
         {/* Zoom dropdown - condenses to icon only when narrow */}
-        {!minimal && (
+        {!minimal && topbarConfig.showZoom && (
           <div className="relative" ref={zoomDropdownRef}>
             <button
               onClick={() => setShowZoomDropdown(!showZoomDropdown)}
@@ -621,7 +682,7 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
         )}
         
         {/* Online Users Indicator */}
-        {!minimal && organization && !isOfflineMode && (
+        {!minimal && organization && !isOfflineMode && topbarConfig.showOnlineUsers && (
           <>
             <div className="w-px h-4 bg-plm-border mx-1" />
             <OnlineUsersIndicator orgLogoUrl={orgLogoUrl} />
@@ -650,14 +711,183 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
           </>
         )}
         
-        {/* Session count indicator - show when multiple sessions */}
-        {user && !minimal && sessions.length > 1 && (
-          <div 
-            className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-plm-bg-lighter text-plm-fg-muted"
-            title={`${sessions.length} active sessions`}
-          >
-            <Monitor size={12} />
-            <span className="text-[10px] font-medium">{sessions.length}</span>
+        {/* Panel Toggle Buttons - VS Code style */}
+        {!minimal && topbarConfig.showPanelToggles && (
+          <>
+            <div className="w-px h-4 bg-plm-border mx-1" />
+            <div className="flex items-center gap-0.5">
+              <button
+                onClick={toggleSidebar}
+                className={`p-1.5 rounded transition-colors ${
+                  sidebarVisible 
+                    ? 'text-plm-fg hover:bg-plm-bg-lighter' 
+                    : 'text-plm-fg-muted hover:text-plm-fg hover:bg-plm-bg-lighter'
+                }`}
+                title={`${sidebarVisible ? 'Hide' : 'Show'} Left Sidebar (Ctrl+B)`}
+              >
+                <PanelLeft size={16} />
+              </button>
+              <button
+                onClick={toggleDetailsPanel}
+                className={`p-1.5 rounded transition-colors ${
+                  detailsPanelVisible 
+                    ? 'text-plm-fg hover:bg-plm-bg-lighter' 
+                    : 'text-plm-fg-muted hover:text-plm-fg hover:bg-plm-bg-lighter'
+                }`}
+                title={`${detailsPanelVisible ? 'Hide' : 'Show'} Bottom Panel (Ctrl+P)`}
+              >
+                <PanelBottom size={16} />
+              </button>
+              <button
+                onClick={toggleRightPanel}
+                className={`p-1.5 rounded transition-colors ${
+                  rightPanelVisible 
+                    ? 'text-plm-fg hover:bg-plm-bg-lighter' 
+                    : 'text-plm-fg-muted hover:text-plm-fg hover:bg-plm-bg-lighter'
+                }`}
+                title={`${rightPanelVisible ? 'Hide' : 'Show'} Right Sidebar`}
+              >
+                <PanelRight size={16} />
+              </button>
+            </div>
+          </>
+        )}
+        
+        {/* Topbar Configuration Dropdown */}
+        {!minimal && (
+          <div className="relative" ref={topbarConfigRef}>
+            <button
+              onClick={() => setShowTopbarConfigDropdown(!showTopbarConfigDropdown)}
+              className="p-1.5 rounded text-plm-fg-muted hover:text-plm-fg hover:bg-plm-bg-lighter transition-colors"
+              title="Configure Topbar"
+            >
+              <SlidersHorizontal size={14} />
+            </button>
+            
+            {showTopbarConfigDropdown && (
+              <div className="absolute right-0 top-full mt-1 w-52 bg-plm-bg-light border border-plm-border rounded-lg shadow-xl overflow-hidden z-50">
+                <div className="py-1">
+                  <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-plm-fg-dim">Show in Topbar</div>
+                  
+                  {/* FPS Counter */}
+                  <button
+                    onClick={() => setTopbarConfig({ showFps: !topbarConfig.showFps })}
+                    className="w-full flex items-center gap-2.5 px-3 py-1.5 text-sm text-plm-fg hover:bg-plm-bg-lighter transition-colors"
+                  >
+                    <span className="text-plm-fg-muted"><Gauge size={14} /></span>
+                    <span className="flex-1 text-left">FPS Counter</span>
+                    <div className={`w-8 h-4 rounded-full transition-colors relative ${topbarConfig.showFps ? 'bg-plm-accent' : 'bg-plm-border'}`}>
+                      <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm transition-transform ${topbarConfig.showFps ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                    </div>
+                  </button>
+                  
+                  {/* System Stats */}
+                  <button
+                    onClick={() => setTopbarConfig({ showSystemStats: !topbarConfig.showSystemStats })}
+                    className="w-full flex items-center gap-2.5 px-3 py-1.5 text-sm text-plm-fg hover:bg-plm-bg-lighter transition-colors"
+                  >
+                    <span className="text-plm-fg-muted"><Activity size={14} /></span>
+                    <span className="flex-1 text-left">System Stats</span>
+                    <div className={`w-8 h-4 rounded-full transition-colors relative ${topbarConfig.showSystemStats ? 'bg-plm-accent' : 'bg-plm-border'}`}>
+                      <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm transition-transform ${topbarConfig.showSystemStats ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                    </div>
+                  </button>
+                  {/* Sub-option: Expanded Stats */}
+                  <button
+                    onClick={() => topbarConfig.showSystemStats && setTopbarConfig({ systemStatsExpanded: !topbarConfig.systemStatsExpanded })}
+                    className={`w-full flex items-center gap-2.5 pl-8 pr-3 py-1 text-xs transition-colors ${
+                      topbarConfig.showSystemStats 
+                        ? 'text-plm-fg hover:bg-plm-bg-lighter' 
+                        : 'text-plm-fg-muted/40 cursor-not-allowed'
+                    }`}
+                    title="Toggle between minimal (dots) and expanded (full stats) view"
+                  >
+                    <span className="flex-1 text-left">Expanded</span>
+                    <div className={`w-7 h-3.5 rounded-full transition-colors relative ${
+                      !topbarConfig.showSystemStats ? 'bg-plm-border/30' :
+                      topbarConfig.systemStatsExpanded ? 'bg-plm-accent' : 'bg-plm-border'
+                    }`}>
+                      <div className={`absolute top-0.5 w-2.5 h-2.5 rounded-full shadow-sm transition-transform ${
+                        topbarConfig.showSystemStats ? 'bg-white' : 'bg-white/50'
+                      } ${topbarConfig.systemStatsExpanded ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
+                    </div>
+                  </button>
+                  
+                  {/* Zoom Controls */}
+                  <button
+                    onClick={() => setTopbarConfig({ showZoom: !topbarConfig.showZoom })}
+                    className="w-full flex items-center gap-2.5 px-3 py-1.5 text-sm text-plm-fg hover:bg-plm-bg-lighter transition-colors"
+                  >
+                    <span className="text-plm-fg-muted"><ZoomIn size={14} /></span>
+                    <span className="flex-1 text-left">Zoom Controls</span>
+                    <div className={`w-8 h-4 rounded-full transition-colors relative ${topbarConfig.showZoom ? 'bg-plm-accent' : 'bg-plm-border'}`}>
+                      <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm transition-transform ${topbarConfig.showZoom ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                    </div>
+                  </button>
+                  
+                  {/* Organization */}
+                  <button
+                    onClick={() => setTopbarConfig({ showOrg: !topbarConfig.showOrg })}
+                    className="w-full flex items-center gap-2.5 px-3 py-1.5 text-sm text-plm-fg hover:bg-plm-bg-lighter transition-colors"
+                  >
+                    <span className="text-plm-fg-muted"><Building2 size={14} /></span>
+                    <span className="flex-1 text-left">Organization</span>
+                    <div className={`w-8 h-4 rounded-full transition-colors relative ${topbarConfig.showOrg ? 'bg-plm-accent' : 'bg-plm-border'}`}>
+                      <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm transition-transform ${topbarConfig.showOrg ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                    </div>
+                  </button>
+                  
+                  {/* Search Bar */}
+                  <button
+                    onClick={() => setTopbarConfig({ showSearch: !topbarConfig.showSearch })}
+                    className="w-full flex items-center gap-2.5 px-3 py-1.5 text-sm text-plm-fg hover:bg-plm-bg-lighter transition-colors"
+                  >
+                    <span className="text-plm-fg-muted"><Search size={14} /></span>
+                    <span className="flex-1 text-left">Search Bar</span>
+                    <div className={`w-8 h-4 rounded-full transition-colors relative ${topbarConfig.showSearch ? 'bg-plm-accent' : 'bg-plm-border'}`}>
+                      <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm transition-transform ${topbarConfig.showSearch ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                    </div>
+                  </button>
+                  
+                  {/* Online Users */}
+                  <button
+                    onClick={() => setTopbarConfig({ showOnlineUsers: !topbarConfig.showOnlineUsers })}
+                    className="w-full flex items-center gap-2.5 px-3 py-1.5 text-sm text-plm-fg hover:bg-plm-bg-lighter transition-colors"
+                  >
+                    <span className="text-plm-fg-muted"><Users size={14} /></span>
+                    <span className="flex-1 text-left">Online Users</span>
+                    <div className={`w-8 h-4 rounded-full transition-colors relative ${topbarConfig.showOnlineUsers ? 'bg-plm-accent' : 'bg-plm-border'}`}>
+                      <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm transition-transform ${topbarConfig.showOnlineUsers ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                    </div>
+                  </button>
+                  
+                  {/* Panel Toggles */}
+                  <button
+                    onClick={() => setTopbarConfig({ showPanelToggles: !topbarConfig.showPanelToggles })}
+                    className="w-full flex items-center gap-2.5 px-3 py-1.5 text-sm text-plm-fg hover:bg-plm-bg-lighter transition-colors"
+                  >
+                    <span className="text-plm-fg-muted"><PanelLeft size={14} /></span>
+                    <span className="flex-1 text-left">Panel Toggles</span>
+                    <div className={`w-8 h-4 rounded-full transition-colors relative ${topbarConfig.showPanelToggles ? 'bg-plm-accent' : 'bg-plm-border'}`}>
+                      <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm transition-transform ${topbarConfig.showPanelToggles ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                    </div>
+                  </button>
+                  
+                  {/* User Avatar */}
+                  <button
+                    onClick={() => setTopbarConfig({ showUserName: !topbarConfig.showUserName })}
+                    className="w-full flex items-center gap-2.5 px-3 py-1.5 text-sm text-plm-fg hover:bg-plm-bg-lighter transition-colors"
+                    title="Toggle between avatar only and avatar with name"
+                  >
+                    <span className="text-plm-fg-muted"><User size={14} /></span>
+                    <span className="flex-1 text-left">User Name</span>
+                    <div className={`w-8 h-4 rounded-full transition-colors relative ${topbarConfig.showUserName ? 'bg-plm-accent' : 'bg-plm-border'}`}>
+                      <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm transition-transform ${topbarConfig.showUserName ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                    </div>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
         
@@ -666,7 +896,7 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
             <button 
               onClick={() => setShowUserMenu(!showUserMenu)}
               className={`flex items-center rounded hover:bg-plm-bg-lighter transition-colors ${
-                showUserName ? 'gap-2 px-2 py-1' : 'justify-center w-6 h-6'
+                showUserNameFinal ? 'gap-2 px-2 py-1' : 'justify-center w-6 h-6'
               }`}
               title={user.full_name || user.email}
             >
@@ -675,7 +905,7 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
                   <img 
                     src={user.avatar_url} 
                     alt={user.full_name || user.email}
-                    className={showUserName ? 'w-6 h-6 rounded-full' : 'w-5 h-5 rounded-full'}
+                    className={showUserNameFinal ? 'w-6 h-6 rounded-full' : 'w-5 h-5 rounded-full'}
                     onError={(e) => {
                       const target = e.target as HTMLImageElement
                       target.style.display = 'none'
@@ -683,19 +913,19 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
                     }}
                   />
                   <div className={`rounded-full bg-plm-accent flex items-center justify-center text-white font-semibold hidden ${
-                    showUserName ? 'w-6 h-6 text-xs' : 'w-5 h-5 text-[10px]'
+                    showUserNameFinal ? 'w-6 h-6 text-xs' : 'w-5 h-5 text-[10px]'
                   }`}>
                     {getUserInitial(user)}
                   </div>
                 </>
               ) : (
                 <div className={`rounded-full bg-plm-accent flex items-center justify-center text-white font-semibold ${
-                  showUserName ? 'w-6 h-6 text-xs' : 'w-5 h-5 text-[10px]'
+                  showUserNameFinal ? 'w-6 h-6 text-xs' : 'w-5 h-5 text-[10px]'
                 }`}>
                   {getUserInitial(user)}
                 </div>
               )}
-              {showUserName && (
+              {showUserNameFinal && (
                 <>
                   <span className="text-xs text-plm-fg-dim max-w-[120px] truncate">
                     {user.full_name || user.email}

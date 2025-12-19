@@ -305,19 +305,41 @@ namespace BluePLM.SolidWorksService
             return _swApi!.GetExternalReferences(filePath);
         }
 
+        // Track if Document Manager previews work (they don't for newer SW file formats)
+        static bool _dmPreviewWorks = true;
+        
         static CommandResult GetPreviewFast(string? filePath, string? configuration)
         {
-            // Document Manager can extract high-res previews without launching SW!
-            if (_dmApi != null && _dmApi.IsAvailable)
+            // Try Document Manager first (fast, no SW launch!) - but skip if we know it doesn't work
+            if (_dmPreviewWorks && _dmApi != null && _dmApi.IsAvailable)
             {
-                return _dmApi.GetPreviewImage(filePath, configuration);
+                var result = _dmApi.GetPreviewImage(filePath, configuration);
+                if (result.Success)
+                {
+                    return result;
+                }
+                
+                // If DM fails with "E_UNEXPECTED" or similar, don't try it again
+                if (result.Error?.Contains("E_UNEXPECTED") == true || 
+                    result.Error?.Contains("Method not found") == true ||
+                    result.Error?.Contains("Catastrophic") == true)
+                {
+                    Console.Error.WriteLine("[Service] Document Manager preview doesn't work for this file format.");
+                    Console.Error.WriteLine("[Service] Will use SolidWorks API directly for future previews.");
+                    _dmPreviewWorks = false;
+                }
             }
             
-            // Without DM API, we can't get previews without launching SW
+            // Use full SolidWorks API (slower but works with all file formats)
+            if (_swApi != null && _swApi.IsSolidWorksAvailable())
+            {
+                return _swApi.GetPreviewImage(filePath, configuration);
+            }
+            
             return new CommandResult 
             { 
                 Success = false, 
-                Error = "Document Manager API not available. Configure DM license key to enable high-res previews without launching SolidWorks." 
+                Error = "SolidWorks is not available for preview extraction" 
             };
         }
 

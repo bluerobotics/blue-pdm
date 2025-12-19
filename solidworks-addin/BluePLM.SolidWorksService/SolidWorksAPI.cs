@@ -1638,6 +1638,185 @@ namespace BluePLM.SolidWorksService
 
         #endregion
 
+        #region Preview Extraction
+
+        /// <summary>
+        /// Get preview image from a SolidWorks file using the full SolidWorks API.
+        /// This is slower than Document Manager but works with newer file formats.
+        /// </summary>
+        public CommandResult GetPreviewImage(string? filePath, string? configuration = null)
+        {
+            if (string.IsNullOrEmpty(filePath))
+                return new CommandResult { Success = false, Error = "File path is required" };
+
+            if (!File.Exists(filePath))
+                return new CommandResult { Success = false, Error = $"File not found: {filePath}" };
+
+            try
+            {
+                var sw = GetSolidWorks();
+                
+                // Check if file is already open
+                var openDoc = sw.IGetOpenDocumentByName2(filePath) as ModelDoc2;
+                bool weOpenedIt = false;
+                
+                if (openDoc == null)
+                {
+                    // Open the file in read-only mode with light-weight assembly
+                    int errors = 0, warnings = 0;
+                    
+                    // Determine document type
+                    var ext = Path.GetExtension(filePath).ToUpperInvariant();
+                    swDocumentTypes_e docType = ext switch
+                    {
+                        ".SLDPRT" => swDocumentTypes_e.swDocPART,
+                        ".SLDASM" => swDocumentTypes_e.swDocASSEMBLY,
+                        ".SLDDRW" => swDocumentTypes_e.swDocDRAWING,
+                        _ => throw new Exception($"Unsupported file type: {ext}")
+                    };
+                    
+                    // Open with options: read-only, silent, invisible
+                    int openOptions = (int)(swOpenDocOptions_e.swOpenDocOptions_ReadOnly | 
+                                           swOpenDocOptions_e.swOpenDocOptions_Silent);
+                    
+                    openDoc = sw.OpenDoc6(filePath, (int)docType, openOptions, 
+                                         configuration ?? "", ref errors, ref warnings) as ModelDoc2;
+                    
+                    if (openDoc == null)
+                        return new CommandResult { Success = false, Error = $"Failed to open file: errors={errors}, warnings={warnings}" };
+                    
+                    weOpenedIt = true;
+                }
+                
+                try
+                {
+                    // Activate the target configuration if specified
+                    if (!string.IsNullOrEmpty(configuration))
+                    {
+                        openDoc.ShowConfiguration2(configuration);
+                    }
+                    
+                    // Get the preview using SaveBMP to a temp file
+                    string tempPath = Path.Combine(Path.GetTempPath(), $"preview_{Guid.NewGuid()}.bmp");
+                    byte[]? imageData = null;
+                    string mimeType = "image/bmp";
+                    
+                    // Different sizes for different file types
+                    var ext = Path.GetExtension(filePath).ToUpperInvariant();
+                    int width, height;
+                    
+                    if (ext == ".SLDDRW")
+                    {
+                        // Drawings: Use higher res, landscape for sheets (most drawings are landscape)
+                        width = 1600;
+                        height = 1200;
+                    }
+                    else
+                    {
+                        // Parts/Assemblies: 3D view
+                        width = 1024;
+                        height = 768;
+                    }
+                    
+                    try
+                    {
+                        if (ext == ".SLDPRT" || ext == ".SLDASM")
+                        {
+                            // Zoom to fit for best preview
+                            openDoc.ViewZoomtofit2();
+                            
+                            // Save as bitmap
+                            bool result = openDoc.SaveBMP(tempPath, width, height);
+                            if (result && File.Exists(tempPath))
+                            {
+                                imageData = File.ReadAllBytes(tempPath);
+                            }
+                        }
+                        else if (ext == ".SLDDRW")
+                        {
+                            var drawDoc = openDoc as DrawingDoc;
+                            
+                            if (drawDoc != null)
+                            {
+                                // Get sheet size for proper aspect ratio
+                                var sheet = drawDoc.GetCurrentSheet() as Sheet;
+                                if (sheet != null)
+                                {
+                                    double sheetWidth = 0, sheetHeight = 0;
+                                    sheet.GetSize(ref sheetWidth, ref sheetHeight);
+                                    
+                                    if (sheetWidth > 0 && sheetHeight > 0)
+                                    {
+                                        // Calculate aspect ratio matching the sheet
+                                        double aspectRatio = sheetWidth / sheetHeight;
+                                        
+                                        // Use higher resolution for drawings
+                                        if (aspectRatio >= 1.0) // Landscape
+                                        {
+                                            width = 2000;
+                                            height = (int)(2000 / aspectRatio);
+                                        }
+                                        else // Portrait
+                                        {
+                                            height = 2000;
+                                            width = (int)(2000 * aspectRatio);
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            // Zoom to fit the drawing sheet
+                            openDoc.ViewZoomtofit2();
+                            
+                            // Save as bitmap with sheet's aspect ratio
+                            bool result = openDoc.SaveBMP(tempPath, width, height);
+                            if (result && File.Exists(tempPath))
+                            {
+                                imageData = File.ReadAllBytes(tempPath);
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        // Clean up temp file
+                        try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+                    }
+                    
+                    if (imageData == null || imageData.Length == 0)
+                        return new CommandResult { Success = false, Error = "Could not capture preview from document" };
+                    
+                    return new CommandResult
+                    {
+                        Success = true,
+                        Data = new
+                        {
+                            filePath,
+                            configuration = openDoc.ConfigurationManager?.ActiveConfiguration?.Name ?? "",
+                            imageData = Convert.ToBase64String(imageData),
+                            mimeType,
+                            width,
+                            height,
+                            sizeBytes = imageData.Length
+                        }
+                    };
+                }
+                finally
+                {
+                    // Close the document if we opened it
+                    if (weOpenedIt && openDoc != null)
+                    {
+                        sw.CloseDoc(openDoc.GetTitle());
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                return new CommandResult { Success = false, Error = $"Preview extraction failed: {ex.Message}" };
+            }
+        }
+
+        #endregion
+
         #region IDisposable
 
         public void Dispose()

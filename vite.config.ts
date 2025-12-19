@@ -3,8 +3,12 @@ import react from '@vitejs/plugin-react'
 import electron from 'vite-plugin-electron'
 import renderer from 'vite-plugin-electron-renderer'
 import { resolve } from 'path'
+import pkg from './package.json'
 
 export default defineConfig({
+  define: {
+    'import.meta.env.PACKAGE_VERSION': JSON.stringify(pkg.version),
+  },
   plugins: [
     react(),
     electron([

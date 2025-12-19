@@ -211,8 +211,11 @@ declare global {
       openInEDrawings: (filePath: string) => Promise<{ success: boolean; error?: string }>
       getWindowHandle: () => Promise<number[] | null>
       
-      // SolidWorks thumbnail extraction  
+      // SolidWorks thumbnail extraction (low-res, for file browser icons)
       extractSolidWorksThumbnail: (filePath: string) => Promise<{ success: boolean; data?: string; error?: string }>
+      
+      // SolidWorks high-quality preview extraction (reads OLE stream directly)
+      extractSolidWorksPreview: (filePath: string) => Promise<{ success: boolean; data?: string; error?: string }>
       
       // SolidWorks Service API (requires SolidWorks installed)
       solidworks: {

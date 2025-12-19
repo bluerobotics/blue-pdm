@@ -1,7 +1,9 @@
 // Analytics service using Sentry for error tracking and crash reporting
 // Respects user consent from onboarding (usageStatisticsEnabled)
+// Note: Using @sentry/browser instead of @sentry/electron/renderer to avoid
+// sentry-ipc:// protocol errors. Main process handles native crash reporting separately.
 
-import * as Sentry from '@sentry/electron/renderer'
+import * as Sentry from '@sentry/browser'
 
 // Sentry DSN for error tracking
 const SENTRY_DSN = import.meta.env.VITE_SENTRY_DSN || 'https://7e0fa5359dedac9d87c951c593def9fa@o4510557909417984.ingest.us.sentry.io/4510557913350144'
@@ -23,10 +25,14 @@ export function initAnalytics(enabled: boolean): boolean {
     return false
   }
 
+  // Get app version from package.json (injected by Vite)
+  const appVersion = import.meta.env.PACKAGE_VERSION || 'unknown'
+  
   try {
     Sentry.init({
       dsn: SENTRY_DSN,
       environment: import.meta.env.MODE || 'production',
+      release: `blueplm@${appVersion}`,
       // Don't send PII
       sendDefaultPii: false,
       // Sample rate for performance monitoring (0.1 = 10% of transactions)

@@ -264,13 +264,14 @@ export function DetailsPanel() {
     loadPdf()
   }, [file?.path, file?.extension, detailsPanelTab])
 
-  // Load CAD thumbnail when file changes (only if in thumbnail mode)
+  // Load CAD preview when file changes (only if in thumbnail mode)
+  // Priority: 1) OLE preview extraction, 2) DM API preview, 3) OS thumbnail
   useEffect(() => {
-    const loadThumbnail = async () => {
+    const loadPreview = async () => {
       const ext = file?.extension?.toLowerCase() || ''
       const isSolidWorks = ['.sldprt', '.sldasm', '.slddrw'].includes(ext)
       
-      // Don't load thumbnail if we're in eDrawings mode
+      // Don't load preview if we're in eDrawings mode
       if (cadPreviewMode === 'edrawings' || !isSolidWorks || detailsPanelTab !== 'preview' || !file?.path) {
         setCadThumbnail(null)
         return
@@ -278,21 +279,42 @@ export function DetailsPanel() {
       
       setCadThumbnailLoading(true)
       try {
-        const result = await window.electronAPI?.extractSolidWorksThumbnail(file.path)
-        if (result?.success && result.data) {
-          setCadThumbnail(result.data)
+        // First, try direct OLE preview extraction (most reliable, high quality)
+        const oleResult = await window.electronAPI?.extractSolidWorksPreview?.(file.path)
+        if (oleResult?.success && oleResult.data) {
+          console.log('[Preview] Using OLE-extracted preview')
+          setCadThumbnail(oleResult.data)
+          setCadThumbnailLoading(false)
+          return
+        }
+        
+        // Second, try SolidWorks Document Manager API
+        const previewResult = await window.electronAPI?.solidworks?.getPreview(file.path)
+        if (previewResult?.success && previewResult.data?.imageData) {
+          const mimeType = previewResult.data.mimeType || 'image/png'
+          console.log('[Preview] Using DM API preview')
+          setCadThumbnail(`data:${mimeType};base64,${previewResult.data.imageData}`)
+          setCadThumbnailLoading(false)
+          return
+        }
+        
+        // Fall back to OS thumbnail extraction
+        const thumbResult = await window.electronAPI?.extractSolidWorksThumbnail(file.path)
+        if (thumbResult?.success && thumbResult.data) {
+          console.log('[Preview] Using OS thumbnail fallback')
+          setCadThumbnail(thumbResult.data)
         } else {
           setCadThumbnail(null)
         }
       } catch (err) {
-        console.error('Failed to extract thumbnail:', err)
+        console.error('Failed to extract preview:', err)
         setCadThumbnail(null)
       } finally {
         setCadThumbnailLoading(false)
       }
     }
     
-    loadThumbnail()
+    loadPreview()
   }, [file?.path, file?.extension, detailsPanelTab, cadPreviewMode])
 
   // Load version history when file changes or history tab is selected

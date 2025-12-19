@@ -2,6 +2,19 @@
 
 All notable changes to BluePLM will be documented in this file.
 
+## [2.12.0] - 2025-12-19
+
+### Added
+- **Topbar panel toggles**: VS Code-style toggle buttons for left sidebar, bottom panel, and right sidebar
+- **Topbar configuration dropdown**: Customize which elements appear in the topbar (FPS, system stats, zoom, org, search, online users, panel toggles, user name)
+- **Independent FPS counter**: FPS display is now separate from system stats and can be toggled independently
+- **System stats display modes**: Toggle between minimal (dots) and expanded (full stats) view
+
+### Changed
+- **Removed session monitor**: Session count indicator removed from topbar (still accessible in user menu)
+
+---
+
 ## [2.11.0] - 2025-12-18
 
 ### Added

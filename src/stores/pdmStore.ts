@@ -257,6 +257,19 @@ interface PDMState {
   // Preview settings
   cadPreviewMode: 'thumbnail' | 'edrawings'  // thumbnail = embedded preview, edrawings = open externally
   
+  // Topbar configuration
+  topbarConfig: {
+    showFps: boolean
+    showSystemStats: boolean
+    systemStatsExpanded: boolean  // false = minimal (dots), true = expanded (full stats)
+    showZoom: boolean
+    showOrg: boolean
+    showSearch: boolean
+    showOnlineUsers: boolean
+    showUserName: boolean  // false = avatar only, true = avatar + name
+    showPanelToggles: boolean  // sidebar/panel toggle buttons
+  }
+  
   // SolidWorks settings
   solidworksIntegrationEnabled: boolean  // Master toggle for SolidWorks integration (false = hide from settings, skip checks)
   solidworksPath: string | null  // Custom SolidWorks installation path (null = default)
@@ -404,6 +417,7 @@ interface PDMState {
   
   // Actions - Preview settings
   setCadPreviewMode: (mode: 'thumbnail' | 'edrawings') => void
+  setTopbarConfig: (config: Partial<PDMState['topbarConfig']>) => void
   
   // Actions - SolidWorks settings
   setSolidworksIntegrationEnabled: (enabled: boolean) => void
@@ -711,6 +725,17 @@ export const usePDMStore = create<PDMState>()(
       recentVaults: [],
       autoConnect: true,
       cadPreviewMode: 'thumbnail',
+      topbarConfig: {
+        showFps: false,
+        showSystemStats: true,
+        systemStatsExpanded: false,  // minimal by default
+        showZoom: true,
+        showOrg: true,
+        showSearch: true,
+        showOnlineUsers: true,
+        showUserName: true,  // show name by default
+        showPanelToggles: true,  // show panel toggles by default
+      },
       solidworksIntegrationEnabled: true,  // Enabled by default, but onboarding will auto-detect and disable on Mac
       solidworksPath: null,  // null = use default installation path
       solidworksDmLicenseKey: null,  // null = fast mode disabled
@@ -1144,6 +1169,7 @@ export const usePDMStore = create<PDMState>()(
       },
       setAutoConnect: (autoConnect) => set({ autoConnect }),
       setCadPreviewMode: (cadPreviewMode) => set({ cadPreviewMode }),
+      setTopbarConfig: (config) => set((s) => ({ topbarConfig: { ...s.topbarConfig, ...config } })),
       setSolidworksIntegrationEnabled: (solidworksIntegrationEnabled) => set({ solidworksIntegrationEnabled }),
       setSolidworksPath: (solidworksPath) => set({ solidworksPath }),
       setSolidworksDmLicenseKey: (solidworksDmLicenseKey) => set({ solidworksDmLicenseKey }),
@@ -2134,6 +2160,7 @@ export const usePDMStore = create<PDMState>()(
         onboardingComplete: state.onboardingComplete,
         logSharingEnabled: state.logSharingEnabled,
         cadPreviewMode: state.cadPreviewMode,
+        topbarConfig: state.topbarConfig,
         solidworksIntegrationEnabled: state.solidworksIntegrationEnabled,
         solidworksPath: state.solidworksPath,
         solidworksDmLicenseKey: state.solidworksDmLicenseKey,

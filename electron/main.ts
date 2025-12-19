@@ -11,6 +11,7 @@ import * as si from 'systeminformation'
 import { exec } from 'child_process'
 import { promisify } from 'util'
 import * as Sentry from '@sentry/electron/main'
+import * as CFB from 'cfb'
 
 const execAsync = promisify(exec)
 
@@ -4013,6 +4014,125 @@ function isFileBeingThumbnailed(filePath: string): boolean {
 // IPC handler for extracting thumbnails
 ipcMain.handle('solidworks:extract-thumbnail', async (_, filePath: string) => {
   return extractSolidWorksThumbnail(filePath)
+})
+
+// Extract high-quality preview directly from SolidWorks OLE file structure
+// This bypasses the Document Manager API and reads the preview stream directly
+async function extractSolidWorksPreview(filePath: string): Promise<{ success: boolean; data?: string; error?: string }> {
+  const fileName = path.basename(filePath)
+  log(`[SWPreview] Extracting preview from: ${fileName}`)
+  
+  try {
+    // Read the file as a Compound File Binary (OLE)
+    const fileBuffer = fs.readFileSync(filePath)
+    const cfb = CFB.read(fileBuffer, { type: 'buffer' })
+    
+    // Log available entries for debugging
+    const entries = CFB.utils.cfb_dir(cfb)
+    log(`[SWPreview] Found ${entries.length} OLE entries in ${fileName}`)
+    
+    // Look for preview streams - SolidWorks uses various names
+    const previewStreamNames = [
+      'PreviewPNG',           // PNG preview (newer SW versions)
+      'Preview',              // Generic preview
+      'PreviewBitmap',        // Bitmap preview
+      '\\x05PreviewMetaFile', // MetaFile preview
+      'Thumbnails/thumbnail.png', // Some versions store here
+      'PackageContents',      // Package contents may have preview
+    ]
+    
+    // Also check for any stream containing 'preview' or 'thumbnail'
+    for (const entry of cfb.FileIndex) {
+      if (!entry || !entry.name) continue
+      const name = entry.name.toLowerCase()
+      if (name.includes('preview') || name.includes('thumbnail') || name.includes('png') || name.includes('bitmap')) {
+        log(`[SWPreview] Found potential preview entry: "${entry.name}" (size: ${entry.size})`)
+      }
+    }
+    
+    // Try to find and read preview data
+    for (const streamName of previewStreamNames) {
+      try {
+        const entry = CFB.find(cfb, streamName)
+        if (entry && entry.content && entry.content.length > 100) {
+          log(`[SWPreview] Found stream "${streamName}" with ${entry.content.length} bytes`)
+          
+          // Check if it's PNG data (starts with PNG signature)
+          const pngSignature = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+          if (entry.content.slice(0, 8).equals(pngSignature)) {
+            log(`[SWPreview] Found PNG preview in "${streamName}"!`)
+            const base64 = Buffer.from(entry.content).toString('base64')
+            return { success: true, data: `data:image/png;base64,${base64}` }
+          }
+          
+          // Check if it's BMP data (starts with "BM")
+          if (entry.content[0] === 0x42 && entry.content[1] === 0x4D) {
+            log(`[SWPreview] Found BMP preview in "${streamName}"!`)
+            const base64 = Buffer.from(entry.content).toString('base64')
+            return { success: true, data: `data:image/bmp;base64,${base64}` }
+          }
+          
+          // Check if it's a DIB (no header, just BITMAPINFOHEADER)
+          // BITMAPINFOHEADER starts with its size (40 = 0x28)
+          if (entry.content[0] === 0x28 && entry.content[1] === 0x00 && entry.content[2] === 0x00 && entry.content[3] === 0x00) {
+            log(`[SWPreview] Found DIB preview in "${streamName}", converting to BMP...`)
+            // Convert DIB to BMP by adding file header
+            const dibData = entry.content
+            const headerSize = dibData.readInt32LE(0)
+            const pixelOffset = 14 + headerSize // BMP header + DIB header
+            const fileSize = 14 + dibData.length
+            
+            // Create BMP file header
+            const bmpHeader = Buffer.alloc(14)
+            bmpHeader.write('BM', 0)
+            bmpHeader.writeInt32LE(fileSize, 2)
+            bmpHeader.writeInt32LE(0, 6) // Reserved
+            bmpHeader.writeInt32LE(pixelOffset, 10)
+            
+            const bmpData = Buffer.concat([bmpHeader, Buffer.from(dibData)])
+            const base64 = bmpData.toString('base64')
+            return { success: true, data: `data:image/bmp;base64,${base64}` }
+          }
+          
+          log(`[SWPreview] Stream "${streamName}" has unknown format (first bytes: ${Array.from(entry.content.slice(0, 8)).map(b => b.toString(16).padStart(2, '0')).join(' ')})`)
+        }
+      } catch (streamErr) {
+        // Stream doesn't exist, try next
+      }
+    }
+    
+    // Try to find any entry with image-like content
+    for (const entry of cfb.FileIndex) {
+      if (!entry || !entry.content || entry.content.length < 100) continue
+      
+      // Check for PNG signature
+      const pngSignature = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+      if (Buffer.from(entry.content.slice(0, 8)).equals(pngSignature)) {
+        log(`[SWPreview] Found PNG in entry "${entry.name}"!`)
+        const base64 = Buffer.from(entry.content).toString('base64')
+        return { success: true, data: `data:image/png;base64,${base64}` }
+      }
+      
+      // Check for JPEG signature
+      if (entry.content[0] === 0xFF && entry.content[1] === 0xD8 && entry.content[2] === 0xFF) {
+        log(`[SWPreview] Found JPEG in entry "${entry.name}"!`)
+        const base64 = Buffer.from(entry.content).toString('base64')
+        return { success: true, data: `data:image/jpeg;base64,${base64}` }
+      }
+    }
+    
+    log(`[SWPreview] No preview stream found in ${fileName}`)
+    return { success: false, error: 'No preview stream found in file' }
+    
+  } catch (err) {
+    log(`[SWPreview] Failed to extract preview from ${fileName}: ${err}`)
+    return { success: false, error: String(err) }
+  }
+}
+
+// IPC handler for extracting high-quality SolidWorks preview
+ipcMain.handle('solidworks:extract-preview', async (_, filePath: string) => {
+  return extractSolidWorksPreview(filePath)
 })
 
 // ============================================
