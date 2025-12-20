@@ -34,6 +34,13 @@ All notable changes to BluePLM will be documented in this file.
   - Tab groups with custom colors for organization
   - Pop out tabs to separate windows for multi-monitor setups
   - Enable in Settings → Preferences → Interface
+- **Serialization settings**: New settings page for sequential item/part numbers with org-level sync
+  - Custom prefix, suffix, and letter prefix (e.g., "PN-AB00001-REV")
+  - Configurable digit padding (3-8 digits)
+  - Keepout zones to reserve/skip number ranges
+  - Live preview of next serial number
+  - File type filtering: Select which extensions auto-receive serial numbers (e.g., .sldprt, .sldasm)
+- **Generate serial button**: Sparkles icon in Details Panel to auto-generate next item number
 
 ### Improved
 - **SolidWorks metadata extraction**: Expanded property name detection
@@ -45,14 +52,6 @@ All notable changes to BluePLM will be documented in this file.
 
 ### Fixed
 - **Right panel toggle**: Toggle button now properly shows/hides the right panel (auto-adds properties tab when empty)
-
-### Added
-- **Serialization settings**: New settings page for sequential item/part numbers with org-level sync
-  - Custom prefix, suffix, and letter prefix (e.g., "PN-AB00001-REV")
-  - Configurable digit padding (3-8 digits)
-  - Keepout zones to reserve/skip number ranges
-  - Live preview of next serial number
-- **Generate serial button**: Sparkles icon in Details Panel to auto-generate next item number
 
 ---
 

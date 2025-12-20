@@ -12,7 +12,7 @@ import type { Command, CheckinParams, CommandResult } from '../types'
 import { getSyncedFilesFromSelection } from '../types'
 import { ProgressTracker } from '../executor'
 import { checkinFile } from '../../supabase'
-import type { LocalFile } from '../../../stores/pdmStore'
+import type { LocalFile, PendingMetadata } from '../../../stores/pdmStore'
 
 // SolidWorks file extensions that support metadata extraction
 const SW_EXTENSIONS = ['.sldprt', '.sldasm', '.slddrw']
@@ -24,11 +24,7 @@ const SW_EXTENSIONS = ['.sldprt', '.sldasm', '.slddrw']
 async function extractSolidWorksMetadata(
   fullPath: string,
   extension: string
-): Promise<{
-  part_number?: string | null
-  description?: string | null
-  revision?: string | null
-} | null> {
+): Promise<PendingMetadata | null> {
   // Only process SolidWorks files
   if (!SW_EXTENSIONS.includes(extension.toLowerCase())) {
     return null
@@ -210,7 +206,7 @@ async function extractSolidWorksMetadata(
     return {
       part_number,
       description: description?.trim() || null,
-      revision: revision?.trim() || null
+      revision: revision?.trim() || undefined
     }
   } catch (err) {
     console.warn('[Checkin] Failed to extract SolidWorks metadata:', err)

@@ -13,10 +13,8 @@ import {
   Download,
   ChevronDown,
   ChevronRight,
-  ArrowUpRight,
   Settings2,
   Sparkles,
-  Cube,
   Hexagon,
   Box,
   Zap
@@ -99,56 +97,41 @@ function ConfigTab({
   config, 
   isActive, 
   onClick,
-  index,
-  total
+  index
 }: { 
   config: ConfigurationData
   isActive: boolean
   onClick: () => void
   index: number
-  total: number
 }) {
   // Alternate between different geometric icons
-  const icons = [Cube, Hexagon, Box, Sparkles, Zap]
+  const icons = [Box, Hexagon, Box, Sparkles, Zap]
   const IconComponent = icons[index % icons.length]
-  
-  // Create depth effect based on position
-  const depth = isActive ? 0 : 2
-  const rotate = isActive ? 0 : -2
   
   return (
     <button
       onClick={onClick}
       className={`
-        group relative flex items-center gap-2 px-4 py-2.5 rounded-lg
-        transition-all duration-300 ease-out transform
+        group relative flex items-center gap-1.5 px-3 py-1.5 rounded-md
+        transition-all duration-200 ease-out transform
         ${isActive 
-          ? 'bg-gradient-to-br from-cyan-500/20 via-cyan-400/10 to-transparent border-cyan-400/50 text-cyan-300 shadow-lg shadow-cyan-500/20 scale-105 z-10' 
+          ? 'bg-gradient-to-br from-cyan-500/20 via-cyan-400/10 to-transparent border-cyan-400/50 text-cyan-300 shadow-md shadow-cyan-500/20 z-10' 
           : 'bg-gradient-to-br from-plm-bg-light/80 to-plm-bg/50 border-plm-border/50 text-plm-fg-muted hover:text-plm-fg hover:border-plm-border hover:bg-plm-bg-light/60'
         }
         border backdrop-blur-sm
       `}
-      style={{
-        transform: `translateY(${depth}px) rotateX(${rotate}deg)`,
-        perspective: '1000px',
-      }}
     >
-      {/* Glow effect for active tab */}
-      {isActive && (
-        <div className="absolute inset-0 rounded-lg bg-gradient-to-r from-cyan-400/10 via-cyan-500/5 to-transparent animate-pulse" />
-      )}
-      
       {/* Icon with rotation animation */}
       <div className={`
-        relative transition-transform duration-300
+        relative transition-transform duration-200
         ${isActive ? 'rotate-0' : 'group-hover:rotate-12'}
       `}>
-        <IconComponent size={14} className={isActive ? 'text-cyan-400' : ''} />
+        <IconComponent size={12} className={isActive ? 'text-cyan-400' : ''} />
       </div>
       
       {/* Config name */}
       <span className={`
-        text-xs font-medium tracking-wide whitespace-nowrap
+        text-[11px] font-medium tracking-wide whitespace-nowrap
         ${isActive ? 'text-cyan-300' : ''}
       `}>
         {config.name}
@@ -157,23 +140,9 @@ function ConfigTab({
       {/* Active indicator dot */}
       {config.isActive && (
         <div className={`
-          w-1.5 h-1.5 rounded-full
-          ${isActive ? 'bg-cyan-400 shadow-lg shadow-cyan-400/50' : 'bg-emerald-400/60'}
+          w-1 h-1 rounded-full
+          ${isActive ? 'bg-cyan-400' : 'bg-emerald-400/60'}
         `} />
-      )}
-      
-      {/* Property count badge */}
-      {Object.keys(config.properties).length > 0 && (
-        <span className={`
-          absolute -top-1 -right-1 min-w-[16px] h-4 flex items-center justify-center
-          text-[9px] font-bold rounded-full px-1
-          ${isActive 
-            ? 'bg-cyan-400 text-cyan-950' 
-            : 'bg-plm-bg-lighter text-plm-fg-muted border border-plm-border/50'
-          }
-        `}>
-          {Object.keys(config.properties).length}
-        </span>
       )}
     </button>
   )
@@ -183,14 +152,14 @@ function ConfigTab({
 function PropertyRow({ label, value, highlight = false }: { label: string; value: string | null; highlight?: boolean }) {
   return (
     <div className={`
-      flex items-baseline gap-2 py-1 px-2 rounded transition-colors
+      flex items-baseline gap-3 py-1.5 px-3 rounded transition-colors
       ${highlight ? 'bg-cyan-400/5' : 'hover:bg-plm-bg-light/50'}
     `}>
-      <span className="text-[10px] uppercase tracking-wider text-plm-fg-muted w-20 flex-shrink-0 truncate">
+      <span className="text-[11px] uppercase tracking-wide text-plm-fg-muted w-24 flex-shrink-0 truncate">
         {label}
       </span>
       <span className={`
-        text-xs truncate flex-1
+        text-sm truncate flex-1
         ${value ? (highlight ? 'text-cyan-300 font-medium' : 'text-plm-fg') : 'text-plm-fg-dim italic'}
       `}>
         {value || '—'}
@@ -211,7 +180,7 @@ export function SWDatacardPanel({ file }: { file: LocalFile }) {
   const [isSyncing, setIsSyncing] = useState(false)
   
   const { status, startService, isStarting } = useSolidWorksService()
-  const { addToast, user, updateFileInStore, cadPreviewMode } = usePDMStore()
+  const { addToast, user, updateFileInStore } = usePDMStore()
   
   const ext = file.extension?.toLowerCase() || ''
   const fileType = ext === '.sldprt' ? 'Part' : ext === '.sldasm' ? 'Assembly' : 'Drawing'
@@ -286,6 +255,7 @@ export function SWDatacardPanel({ file }: { file: LocalFile }) {
   }, [file?.path, activeConfig?.name, activeConfigIndex, status.running])
 
   // Load preview for active configuration
+  // Priority: OLE extraction (fast) -> OS thumbnail (fast) -> SW service (slow, requires SW running)
   useEffect(() => {
     const loadPreview = async () => {
       if (!file?.path) return
@@ -294,25 +264,29 @@ export function SWDatacardPanel({ file }: { file: LocalFile }) {
       setPreview(null)
       
       try {
-        // Try SolidWorks service first (high quality)
-        const previewResult = await window.electronAPI?.solidworks?.getPreview(file.path, activeConfig?.name)
-        if (previewResult?.success && previewResult.data?.imageData) {
-          const mimeType = previewResult.data.mimeType || 'image/png'
-          setPreview(`data:${mimeType};base64,${previewResult.data.imageData}`)
-          return
-        }
-        
-        // Fallback to OLE preview
+        // 1. Try OLE preview extraction first (fast, no SW needed)
         const oleResult = await window.electronAPI?.extractSolidWorksPreview?.(file.path)
         if (oleResult?.success && oleResult.data) {
           setPreview(oleResult.data)
+          setPreviewLoading(false)
           return
         }
         
-        // Final fallback to OS thumbnail
+        // 2. Try OS thumbnail (fast, no SW needed)
         const thumbResult = await window.electronAPI?.extractSolidWorksThumbnail(file.path)
         if (thumbResult?.success && thumbResult.data) {
           setPreview(thumbResult.data)
+          setPreviewLoading(false)
+          return
+        }
+        
+        // 3. Only use SW service if already running (don't launch it just for preview)
+        if (status.running) {
+          const previewResult = await window.electronAPI?.solidworks?.getPreview(file.path, activeConfig?.name)
+          if (previewResult?.success && previewResult.data?.imageData) {
+            const mimeType = previewResult.data.mimeType || 'image/png'
+            setPreview(`data:${mimeType};base64,${previewResult.data.imageData}`)
+          }
         }
       } catch (err) {
         console.error('Failed to load preview:', err)
@@ -322,17 +296,34 @@ export function SWDatacardPanel({ file }: { file: LocalFile }) {
     }
     
     loadPreview()
-  }, [file?.path, activeConfig?.name])
+  }, [file?.path, activeConfig?.name, status.running])
 
-  // Refresh preview
+  // Refresh preview - try fast methods first
   const refreshPreview = async () => {
     setPreviewLoading(true)
     setPreview(null)
     try {
-      const previewResult = await window.electronAPI?.solidworks?.getPreview(file.path, activeConfig?.name)
-      if (previewResult?.success && previewResult.data?.imageData) {
-        const mimeType = previewResult.data.mimeType || 'image/png'
-        setPreview(`data:${mimeType};base64,${previewResult.data.imageData}`)
+      // Try OLE first
+      const oleResult = await window.electronAPI?.extractSolidWorksPreview?.(file.path)
+      if (oleResult?.success && oleResult.data) {
+        setPreview(oleResult.data)
+        return
+      }
+      
+      // Try thumbnail
+      const thumbResult = await window.electronAPI?.extractSolidWorksThumbnail(file.path)
+      if (thumbResult?.success && thumbResult.data) {
+        setPreview(thumbResult.data)
+        return
+      }
+      
+      // Only try SW service if already running
+      if (status.running) {
+        const previewResult = await window.electronAPI?.solidworks?.getPreview(file.path, activeConfig?.name)
+        if (previewResult?.success && previewResult.data?.imageData) {
+          const mimeType = previewResult.data.mimeType || 'image/png'
+          setPreview(`data:${mimeType};base64,${previewResult.data.imageData}`)
+        }
       }
     } catch {
       // Silent fail
@@ -490,40 +481,13 @@ export function SWDatacardPanel({ file }: { file: LocalFile }) {
   return (
     <div className="h-full flex flex-col">
       {/* Configuration Tabs - Unique datacard style */}
-      <div className="flex-shrink-0 mb-3">
-        {/* Header row */}
-        <div className="flex items-center justify-between mb-2">
-          <div className="flex items-center gap-2">
-            <SWFileIcon fileType={fileType} size={18} />
-            <span className="text-sm font-semibold text-plm-fg tracking-tight">{file.name}</span>
-            {status.running ? (
-              <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-lg shadow-emerald-400/50" title="Service connected" />
-            ) : (
-              <span className="w-2 h-2 rounded-full bg-amber-400" title="Service offline" />
-            )}
-          </div>
-          
-          {/* Quick actions */}
-          <div className="flex items-center gap-1">
-            {file.pdmData?.id && status.running && (
-              <button
-                onClick={handleSyncMetadata}
-                disabled={isSyncing}
-                className="p-1.5 rounded-lg hover:bg-cyan-400/10 text-plm-fg-muted hover:text-cyan-400 transition-colors"
-                title="Sync metadata from file"
-              >
-                {isSyncing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-              </button>
-            )}
-          </div>
-        </div>
-        
-        {/* Configuration tabs */}
-        <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-thin">
+      <div className="flex-shrink-0 mb-2">
+        {/* Configuration tabs with quick actions */}
+        <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-thin">
           {configsLoading ? (
-            <div className="flex items-center gap-2 px-3 py-2 text-plm-fg-muted">
-              <Loader2 size={14} className="animate-spin" />
-              <span className="text-xs">Loading configs...</span>
+            <div className="flex items-center gap-2 px-3 py-1.5 text-plm-fg-muted">
+              <Loader2 size={12} className="animate-spin" />
+              <span className="text-xs">Loading...</span>
             </div>
           ) : (
             configurations.map((config, index) => (
@@ -533,17 +497,35 @@ export function SWDatacardPanel({ file }: { file: LocalFile }) {
                 isActive={index === activeConfigIndex}
                 onClick={() => setActiveConfigIndex(index)}
                 index={index}
-                total={configurations.length}
               />
             ))
           )}
+          
+          {/* Service status and quick actions */}
+          <div className="flex items-center gap-1 ml-auto flex-shrink-0">
+            {status.running ? (
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" title="Service connected" />
+            ) : (
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" title="Service offline" />
+            )}
+            {file.pdmData?.id && status.running && (
+              <button
+                onClick={handleSyncMetadata}
+                disabled={isSyncing}
+                className="p-1 rounded hover:bg-cyan-400/10 text-plm-fg-muted hover:text-cyan-400 transition-colors"
+                title="Sync metadata from file"
+              >
+                {isSyncing ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Main content - Preview left, Properties right */}
+      {/* Main content - Preview left (compact), Properties right (larger) */}
       <div className="flex-1 flex gap-3 min-h-0 overflow-hidden">
-        {/* Preview Section */}
-        <div className="flex-1 flex flex-col min-w-0">
+        {/* Preview Section - compact left quarter */}
+        <div className="w-48 flex-shrink-0 flex flex-col">
           <div className="flex-1 relative rounded-xl overflow-hidden bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 border border-plm-border/30">
             {/* Grid background pattern */}
             <div 
@@ -616,8 +598,8 @@ export function SWDatacardPanel({ file }: { file: LocalFile }) {
           </div>
         </div>
 
-        {/* Properties Section */}
-        <div className="w-64 flex flex-col flex-shrink-0 bg-plm-bg/50 rounded-xl border border-plm-border/30 overflow-hidden">
+        {/* Properties Section - takes remaining space */}
+        <div className="flex-1 flex flex-col min-w-0 bg-plm-bg/50 rounded-xl border border-plm-border/30 overflow-hidden">
           {/* Properties header */}
           <div className="flex items-center justify-between px-3 py-2 bg-gradient-to-r from-plm-bg-light to-plm-bg border-b border-plm-border/30">
             <span className="text-xs font-semibold text-plm-fg tracking-wide uppercase">Properties</span>
@@ -678,9 +660,9 @@ export function SWDatacardPanel({ file }: { file: LocalFile }) {
           </div>
           
           {/* Export section */}
-          <div className="p-2 border-t border-plm-border/30 bg-gradient-to-r from-plm-bg-light to-plm-bg">
+          <div className="p-3 border-t border-plm-border/30 bg-gradient-to-r from-plm-bg-light to-plm-bg">
             <div className="text-[10px] uppercase tracking-wider text-plm-fg-muted mb-2">Export</div>
-            <div className="grid grid-cols-3 gap-1.5">
+            <div className="flex flex-wrap gap-2">
               {isPartOrAsm && (
                 <>
                   <button

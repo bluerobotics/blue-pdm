@@ -12,7 +12,8 @@ ADD COLUMN IF NOT EXISTS serialization_settings JSONB DEFAULT '{
   "current_counter": 0,
   "use_letters_before_numbers": false,
   "letter_prefix": "",
-  "keepout_zones": []
+  "keepout_zones": [],
+  "auto_apply_extensions": []
 }'::jsonb;
 
 -- Add comment explaining the structure
@@ -26,7 +27,8 @@ COMMENT ON COLUMN organizations.serialization_settings IS
 - current_counter: The next available number
 - use_letters_before_numbers: If true, letters come before numbers
 - letter_prefix: Fixed letter prefix (e.g., "AB" for AB00001)
-- keepout_zones: Array of {start, end, description} reserved ranges to skip';
+- keepout_zones: Array of {start, end, description} reserved ranges to skip
+- auto_apply_extensions: Array of file extensions to auto-serialize (e.g., [".sldprt", ".sldasm"])';
 
 -- Create a function to get the next serial number for an organization
 CREATE OR REPLACE FUNCTION get_next_serial_number(p_org_id UUID)

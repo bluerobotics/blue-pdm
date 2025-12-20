@@ -9,7 +9,9 @@ import {
   AlertTriangle,
   Eye,
   RefreshCw,
-  Info
+  Info,
+  FileBox,
+  Layers
 } from 'lucide-react'
 import { usePDMStore } from '@/stores/pdmStore'
 import { supabase } from '@/lib/supabase'
@@ -30,7 +32,25 @@ interface SerializationSettingsData {
   use_letters_before_numbers: boolean
   letter_prefix: string
   keepout_zones: KeepoutZone[]
+  auto_apply_extensions: string[]
 }
+
+// Common CAD file extensions for quick selection
+const COMMON_EXTENSIONS = [
+  { ext: '.sldprt', label: 'SolidWorks Part', icon: 'part' },
+  { ext: '.sldasm', label: 'SolidWorks Assembly', icon: 'assembly' },
+  { ext: '.slddrw', label: 'SolidWorks Drawing', icon: 'drawing' },
+  { ext: '.step', label: 'STEP', icon: 'step' },
+  { ext: '.stp', label: 'STP', icon: 'step' },
+  { ext: '.iges', label: 'IGES', icon: 'step' },
+  { ext: '.igs', label: 'IGS', icon: 'step' },
+  { ext: '.prt', label: 'Creo/NX Part', icon: 'part' },
+  { ext: '.asm', label: 'Creo Assembly', icon: 'assembly' },
+  { ext: '.ipt', label: 'Inventor Part', icon: 'part' },
+  { ext: '.iam', label: 'Inventor Assembly', icon: 'assembly' },
+  { ext: '.catpart', label: 'CATIA Part', icon: 'part' },
+  { ext: '.catproduct', label: 'CATIA Assembly', icon: 'assembly' },
+]
 
 const DEFAULT_SERIALIZATION_SETTINGS: SerializationSettingsData = {
   enabled: true,
@@ -41,7 +61,8 @@ const DEFAULT_SERIALIZATION_SETTINGS: SerializationSettingsData = {
   current_counter: 0,
   use_letters_before_numbers: false,
   letter_prefix: '',
-  keepout_zones: []
+  keepout_zones: [],
+  auto_apply_extensions: []
 }
 
 export function SerializationSettings() {
@@ -56,6 +77,9 @@ export function SerializationSettings() {
   // New keepout zone form
   const [newKeepout, setNewKeepout] = useState({ start: '', end: '', description: '' })
   const [showKeepoutForm, setShowKeepoutForm] = useState(false)
+  
+  // Custom extension input
+  const [customExtension, setCustomExtension] = useState('')
 
   // Generate a live preview of what the serial number will look like
   const livePreview = useMemo(() => {
@@ -102,7 +126,8 @@ export function SerializationSettings() {
         setSettings({
           ...DEFAULT_SERIALIZATION_SETTINGS,
           ...savedSettings,
-          keepout_zones: savedSettings.keepout_zones || []
+          keepout_zones: savedSettings.keepout_zones || [],
+          auto_apply_extensions: savedSettings.auto_apply_extensions || []
         })
       } catch (err) {
         console.error('Failed to load serialization settings:', err)
@@ -205,6 +230,33 @@ export function SerializationSettings() {
     updateSetting('keepout_zones', updated)
   }
 
+  // Toggle extension for auto-apply
+  const toggleExtension = (ext: string) => {
+    const normalizedExt = ext.toLowerCase().startsWith('.') ? ext.toLowerCase() : `.${ext.toLowerCase()}`
+    const current = settings.auto_apply_extensions || []
+    
+    if (current.includes(normalizedExt)) {
+      updateSetting('auto_apply_extensions', current.filter(e => e !== normalizedExt))
+    } else {
+      updateSetting('auto_apply_extensions', [...current, normalizedExt])
+    }
+  }
+
+  // Add custom extension
+  const addCustomExtension = () => {
+    if (!customExtension.trim()) return
+    
+    const normalizedExt = customExtension.toLowerCase().startsWith('.') 
+      ? customExtension.toLowerCase().trim() 
+      : `.${customExtension.toLowerCase().trim()}`
+    
+    const current = settings.auto_apply_extensions || []
+    if (!current.includes(normalizedExt)) {
+      updateSetting('auto_apply_extensions', [...current, normalizedExt])
+    }
+    setCustomExtension('')
+  }
+
   if (!organization) {
     return (
       <div className="text-center py-12 text-plm-fg-muted">
@@ -293,6 +345,103 @@ export function SerializationSettings() {
             />
           </button>
         </label>
+      </div>
+
+      {/* File Types for Auto-Serialization */}
+      <div className={`p-4 bg-plm-bg rounded-lg border border-plm-border ${!settings.enabled ? 'opacity-50' : ''}`}>
+        <div className="mb-4">
+          <h3 className="text-base font-medium text-plm-fg">Auto-Apply File Types</h3>
+          <p className="text-xs text-plm-fg-muted mt-0.5">
+            Select which file types should automatically receive a serial number when created
+          </p>
+        </div>
+        
+        {/* Common CAD extensions grid */}
+        <div className="grid grid-cols-3 gap-2 mb-4">
+          {COMMON_EXTENSIONS.map(({ ext, label, icon }) => {
+            const isSelected = (settings.auto_apply_extensions || []).includes(ext)
+            return (
+              <button
+                key={ext}
+                onClick={() => isAdmin && settings.enabled && toggleExtension(ext)}
+                disabled={!isAdmin || !settings.enabled}
+                className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-left text-sm transition-colors ${
+                  isSelected 
+                    ? 'bg-plm-accent/20 border-plm-accent text-plm-fg' 
+                    : 'bg-plm-highlight border-plm-border text-plm-fg-muted hover:border-plm-accent/50'
+                } ${(!isAdmin || !settings.enabled) ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}
+              >
+                {icon === 'part' && <FileBox size={16} className={isSelected ? 'text-plm-accent' : 'text-plm-fg-muted'} />}
+                {icon === 'assembly' && <Layers size={16} className={isSelected ? 'text-amber-400' : 'text-plm-fg-muted'} />}
+                {(icon === 'drawing' || icon === 'step') && <FileBox size={16} className={isSelected ? 'text-plm-accent' : 'text-plm-fg-muted'} />}
+                <div className="flex-1 min-w-0">
+                  <div className="font-mono text-xs">{ext}</div>
+                  <div className="text-xs text-plm-fg-muted truncate">{label}</div>
+                </div>
+                {isSelected && (
+                  <div className="w-2 h-2 rounded-full bg-plm-accent flex-shrink-0" />
+                )}
+              </button>
+            )
+          })}
+        </div>
+
+        {/* Custom extension input */}
+        <div className="flex items-center gap-2 pt-3 border-t border-plm-border">
+          <span className="text-sm text-plm-fg-muted">Custom:</span>
+          <input
+            type="text"
+            value={customExtension}
+            onChange={(e) => setCustomExtension(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && addCustomExtension()}
+            placeholder=".xyz"
+            disabled={!isAdmin || !settings.enabled}
+            className="w-24 px-2 py-1 bg-plm-input border border-plm-border rounded text-sm text-plm-fg font-mono placeholder:text-plm-fg-muted/50 focus:outline-none focus:border-plm-accent disabled:opacity-60 disabled:cursor-not-allowed"
+          />
+          <button
+            onClick={addCustomExtension}
+            disabled={!isAdmin || !settings.enabled || !customExtension.trim()}
+            className="px-2 py-1 text-sm bg-plm-highlight hover:bg-plm-highlight/80 text-plm-fg rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Add
+          </button>
+          
+          {/* Show selected extensions not in common list */}
+          <div className="flex-1 flex flex-wrap gap-1 ml-2">
+            {(settings.auto_apply_extensions || [])
+              .filter(ext => !COMMON_EXTENSIONS.some(c => c.ext === ext))
+              .map(ext => (
+                <span 
+                  key={ext}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 bg-plm-accent/20 text-plm-accent rounded text-xs font-mono"
+                >
+                  {ext}
+                  {isAdmin && settings.enabled && (
+                    <button 
+                      onClick={() => toggleExtension(ext)}
+                      className="hover:text-plm-error"
+                    >
+                      <X size={12} />
+                    </button>
+                  )}
+                </span>
+              ))
+            }
+          </div>
+        </div>
+
+        {/* Summary */}
+        {(settings.auto_apply_extensions || []).length > 0 && (
+          <div className="mt-3 text-xs text-plm-fg-muted">
+            Auto-serialization enabled for: <span className="font-mono text-plm-fg">{(settings.auto_apply_extensions || []).join(', ')}</span>
+          </div>
+        )}
+        {(settings.auto_apply_extensions || []).length === 0 && settings.enabled && (
+          <div className="mt-3 text-xs text-plm-warning flex items-center gap-1">
+            <AlertTriangle size={12} />
+            No file types selected. Auto-serialization won't apply to any files.
+          </div>
+        )}
       </div>
 
       {/* Format Settings */}

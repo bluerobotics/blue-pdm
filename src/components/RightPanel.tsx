@@ -4,7 +4,6 @@ import { formatFileSize, getFileIconType } from '../types/pdm'
 import { formatDistanceToNow } from 'date-fns'
 import { getFileVersions } from '../lib/supabase'
 import { ContainsTab, WhereUsedTab } from './SolidWorksPanel'
-import { SolidWorksPreviewPanel } from './SolidWorksPreviewPanel'
 import { SWDatacardPanel } from './SWDatacardPanel'
 import { 
   FileBox, 

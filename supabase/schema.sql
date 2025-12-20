@@ -81,7 +81,7 @@ CREATE TABLE organizations (
   module_defaults JSONB DEFAULT NULL,
   
   -- Serialization settings for sequential item numbers
-  -- Structure: { enabled, prefix, suffix, padding_digits, letter_count, current_counter, use_letters_before_numbers, letter_prefix, keepout_zones }
+  -- Structure: { enabled, prefix, suffix, padding_digits, letter_count, current_counter, use_letters_before_numbers, letter_prefix, keepout_zones, auto_apply_extensions }
   serialization_settings JSONB DEFAULT '{
     "enabled": true,
     "prefix": "PN-",
@@ -91,7 +91,8 @@ CREATE TABLE organizations (
     "current_counter": 0,
     "use_letters_before_numbers": false,
     "letter_prefix": "",
-    "keepout_zones": []
+    "keepout_zones": [],
+    "auto_apply_extensions": []
   }'::jsonb
 );
 

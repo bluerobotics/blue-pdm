@@ -454,7 +454,7 @@ export function TabBar() {
     setDraggedTab(null)
   }, [draggedTab, tabs, moveTab])
   
-  const handleNewTabClick = (e: React.MouseEvent) => {
+  const handleNewTabClick = () => {
     // Quick add explorer tab on single click
     addTab('explorer', 'Explorer')
   }

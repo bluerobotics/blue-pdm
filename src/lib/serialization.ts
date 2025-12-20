@@ -13,6 +13,7 @@ export interface SerializationSettings {
   use_letters_before_numbers: boolean
   letter_prefix: string
   keepout_zones: KeepoutZone[]
+  auto_apply_extensions: string[]
 }
 
 export interface KeepoutZone {
@@ -30,7 +31,8 @@ const DEFAULT_SETTINGS: SerializationSettings = {
   current_counter: 0,
   use_letters_before_numbers: false,
   letter_prefix: '',
-  keepout_zones: []
+  keepout_zones: [],
+  auto_apply_extensions: []
 }
 
 /**
@@ -42,7 +44,8 @@ const DEFAULT_SETTINGS: SerializationSettings = {
  */
 export async function getNextSerialNumber(orgId: string): Promise<string | null> {
   try {
-    const { data, error } = await supabase.rpc('get_next_serial_number', {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data, error } = await (supabase.rpc as any)('get_next_serial_number', {
       p_org_id: orgId
     })
     
@@ -67,7 +70,8 @@ export async function getNextSerialNumber(orgId: string): Promise<string | null>
  */
 export async function previewNextSerialNumber(orgId: string): Promise<string | null> {
   try {
-    const { data, error } = await supabase.rpc('preview_next_serial_number', {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data, error } = await (supabase.rpc as any)('preview_next_serial_number', {
       p_org_id: orgId
     })
     
@@ -102,9 +106,11 @@ export async function getSerializationSettings(orgId: string): Promise<Serializa
       return DEFAULT_SETTINGS
     }
     
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const settings = (data as any)?.serialization_settings
     return {
       ...DEFAULT_SETTINGS,
-      ...(data?.serialization_settings || {})
+      ...(settings || {})
     }
   } catch (err) {
     console.error('[Serialization] Error getting settings:', err)
@@ -133,8 +139,8 @@ export async function updateSerializationSettings(
       ...settings
     }
     
-    const { error } = await supabase
-      .from('organizations')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { error } = await (supabase.from('organizations') as any)
       .update({ serialization_settings: updated })
       .eq('id', orgId)
     
@@ -267,6 +273,48 @@ export async function serialNumberExists(
     console.error('[Serialization] Error checking serial number:', err)
     return false
   }
+}
+
+/**
+ * Check if a file extension should receive auto-serialization
+ * 
+ * @param extension - The file extension (with or without leading dot)
+ * @param settings - Serialization settings
+ * @returns True if the extension is in the auto-apply list
+ */
+export function shouldAutoSerialize(
+  extension: string,
+  settings: SerializationSettings
+): boolean {
+  if (!settings.enabled) return false
+  if (!settings.auto_apply_extensions || settings.auto_apply_extensions.length === 0) return false
+  
+  const normalizedExt = extension.toLowerCase().startsWith('.') 
+    ? extension.toLowerCase() 
+    : `.${extension.toLowerCase()}`
+  
+  return settings.auto_apply_extensions.includes(normalizedExt)
+}
+
+/**
+ * Get the next serial number for a file if it should be auto-serialized
+ * Returns null if the extension is not in the auto-apply list
+ * 
+ * @param orgId - Organization UUID
+ * @param extension - The file extension
+ * @returns The next serial number or null
+ */
+export async function getAutoSerialNumber(
+  orgId: string,
+  extension: string
+): Promise<string | null> {
+  const settings = await getSerializationSettings(orgId)
+  
+  if (!shouldAutoSerialize(extension, settings)) {
+    return null
+  }
+  
+  return getNextSerialNumber(orgId)
 }
 
 // Helper to escape special regex characters

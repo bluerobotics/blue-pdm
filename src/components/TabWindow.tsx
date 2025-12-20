@@ -20,7 +20,6 @@ const ReviewsView = lazy(() => import('./sidebar/ReviewsView').then(m => ({ defa
 const GSDView = lazy(() => import('./sidebar/GSDView').then(m => ({ default: m.GSDView })))
 const SuppliersView = lazy(() => import('./sidebar/SuppliersView').then(m => ({ default: m.SuppliersView })))
 const SupplierPortalView = lazy(() => import('./sidebar/SupplierPortalView').then(m => ({ default: m.SupplierPortalView })))
-const GoogleDriveView = lazy(() => import('./sidebar/GoogleDriveView').then(m => ({ default: m.GoogleDriveView })))
 const SettingsContent = lazy(() => import('./SettingsContent').then(m => ({ default: m.SettingsContent })))
 const FileBrowser = lazy(() => import('./FileBrowser').then(m => ({ default: m.FileBrowser })))
 const GoogleDrivePanel = lazy(() => import('./GoogleDrivePanel').then(m => ({ default: m.GoogleDrivePanel })))
@@ -40,7 +39,7 @@ interface TabWindowProps {
   customData?: Record<string, unknown>
 }
 
-export function TabWindow({ view, title, customData }: TabWindowProps) {
+export function TabWindow({ view, title }: TabWindowProps) {
   const theme = usePDMStore(s => s.theme)
   
   // Apply theme

@@ -4492,7 +4492,7 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
 
   return (
     <div 
-      className="flex-1 flex flex-col overflow-hidden relative"
+      className="flex-1 flex flex-col overflow-hidden relative min-w-0"
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
