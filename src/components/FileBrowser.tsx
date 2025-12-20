@@ -1018,7 +1018,12 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
     listRowSize,
     setListRowSize,
     hideSolidworksTempFiles,
-    keybindings
+    keybindings,
+    tabsEnabled,
+    setTabsEnabled,
+    addTab,
+    activeTabId,
+    updateTabFolder
   } = usePDMStore()
   
   // Helper function to get translated column label
@@ -1710,6 +1715,11 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
     logFileAction('Navigate to folder', folderPath)
     setCurrentFolder(folderPath)
     
+    // Sync with active tab when tabs are enabled
+    if (tabsEnabled && activeTabId) {
+      updateTabFolder(activeTabId, folderPath)
+    }
+    
     if (folderPath === '') return // Root doesn't need expansion
     
     // Expand the folder and all its parents in the sidebar
@@ -1733,6 +1743,10 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
   // Navigate to root
   const navigateToRoot = () => {
     setCurrentFolder('')
+    // Sync with active tab when tabs are enabled
+    if (tabsEnabled && activeTabId) {
+      updateTabFolder(activeTabId, '')
+    }
   }
 
   const handleColumnResize = useCallback((e: React.MouseEvent, columnId: string) => {
@@ -4653,6 +4667,29 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
           >
             <RefreshCw size={14} className={isRefreshing ? 'animate-spin' : ''} />
           </button>
+          
+          {/* Separator */}
+          <div className="w-px h-5 bg-plm-border mx-1" />
+          
+          {/* Tab toggle */}
+          <button
+            onClick={() => setTabsEnabled(!tabsEnabled)}
+            className={`btn btn-ghost btn-sm p-1 ${tabsEnabled ? 'bg-plm-accent/20 text-plm-accent' : ''}`}
+            title={tabsEnabled ? 'Hide tabs' : 'Show tabs (workspace tabs)'}
+          >
+            <Layers size={14} />
+          </button>
+          
+          {/* New tab button (only when tabs enabled) */}
+          {tabsEnabled && (
+            <button
+              onClick={() => addTab()}
+              className="btn btn-ghost btn-sm p-1"
+              title="New tab"
+            >
+              <Plus size={14} />
+            </button>
+          )}
           
           {/* Separator */}
           <div className="w-px h-5 bg-plm-border mx-1" />

@@ -4,52 +4,11 @@ import {
   Plus, 
   Pin, 
   Copy, 
-  ChevronRight,
-  ExternalLink,
   FolderOpen,
-  Clock,
-  Search,
-  GitBranch,
-  Trash2,
-  Terminal,
-  FileText,
-  Package,
-  Settings,
-  AlertTriangle,
-  Users,
-  Truck,
-  HardDrive,
-  LayoutGrid,
+  ChevronRight,
   Layers
 } from 'lucide-react'
-import { usePDMStore, type Tab, type TabGroup, type SidebarView } from '../stores/pdmStore'
-
-// Icon mapping for views
-function getViewIcon(view: SidebarView, size: number = 14) {
-  const iconProps = { size, className: 'flex-shrink-0' }
-  switch (view) {
-    case 'explorer': return <FolderOpen {...iconProps} />
-    case 'pending': return <Clock {...iconProps} />
-    case 'search': return <Search {...iconProps} />
-    case 'workflows': return <GitBranch {...iconProps} />
-    case 'history': return <Clock {...iconProps} />
-    case 'trash': return <Trash2 {...iconProps} />
-    case 'terminal': return <Terminal {...iconProps} />
-    case 'eco': return <FileText {...iconProps} />
-    case 'ecr': return <AlertTriangle {...iconProps} />
-    case 'products': return <Package {...iconProps} />
-    case 'process': return <GitBranch {...iconProps} />
-    case 'schedule': return <LayoutGrid {...iconProps} />
-    case 'reviews': return <FileText {...iconProps} />
-    case 'gsd': return <Layers {...iconProps} />
-    case 'deviations': return <AlertTriangle {...iconProps} />
-    case 'suppliers': return <Users {...iconProps} />
-    case 'supplier-portal': return <Truck {...iconProps} />
-    case 'google-drive': return <HardDrive {...iconProps} />
-    case 'settings': return <Settings {...iconProps} />
-    default: return <FileText {...iconProps} />
-  }
-}
+import { usePDMStore, type Tab, type TabGroup } from '../stores/pdmStore'
 
 // Tab group colors
 const groupColors = [
@@ -66,6 +25,7 @@ const groupColors = [
 interface TabItemProps {
   tab: Tab
   isActive: boolean
+  isOnlyTab: boolean
   group?: TabGroup
   onContextMenu: (e: React.MouseEvent, tab: Tab) => void
   onDragStart: (e: React.DragEvent, tab: Tab) => void
@@ -73,13 +33,15 @@ interface TabItemProps {
   onDrop: (e: React.DragEvent, targetTab: Tab) => void
 }
 
-function TabItem({ tab, isActive, group, onContextMenu, onDragStart, onDragOver, onDrop }: TabItemProps) {
+function TabItem({ tab, isActive, isOnlyTab, group, onContextMenu, onDragStart, onDragOver, onDrop }: TabItemProps) {
   const { setActiveTab, closeTab } = usePDMStore()
   const [isDragOver, setIsDragOver] = useState(false)
   
   const handleClose = (e: React.MouseEvent) => {
     e.stopPropagation()
-    closeTab(tab.id)
+    if (!isOnlyTab) {
+      closeTab(tab.id)
+    }
   }
   
   // Get group color class
@@ -117,21 +79,21 @@ function TabItem({ tab, isActive, group, onContextMenu, onDragStart, onDragOver,
         <Pin size={10} className="text-plm-accent flex-shrink-0" />
       )}
       
-      {/* Tab icon */}
-      {getViewIcon(tab.view)}
+      {/* Folder icon */}
+      <FolderOpen size={14} className="flex-shrink-0 text-plm-accent" />
       
       {/* Tab title */}
       <span className="truncate text-[13px] flex-1">
         {tab.title}
       </span>
       
-      {/* Close button (hidden for pinned tabs unless hovered) */}
-      {(!tab.isPinned || isActive) && (
+      {/* Close button (hidden for pinned or only tab) */}
+      {!isOnlyTab && !tab.isPinned && (
         <button
           onClick={handleClose}
           className={`
             p-0.5 rounded hover:bg-plm-bg-lighter transition-opacity
-            ${tab.isPinned ? 'opacity-0 group-hover:opacity-100' : 'opacity-0 group-hover:opacity-100'}
+            opacity-0 group-hover:opacity-100
             ${isActive ? 'opacity-100' : ''}
           `}
         >
@@ -147,21 +109,19 @@ interface TabContextMenuProps {
   position: { x: number; y: number }
   onClose: () => void
   tabGroups: TabGroup[]
+  tabCount: number
 }
 
-function TabContextMenu({ tab, position, onClose, tabGroups }: TabContextMenuProps) {
+function TabContextMenu({ tab, position, onClose, tabGroups, tabCount }: TabContextMenuProps) {
   const {
     closeTab,
-    closeTabsToRight,
     closeOtherTabs,
-    closeAllTabs,
     pinTab,
     unpinTab,
     duplicateTab,
     createTabGroup,
     addTabToGroup,
-    removeTabFromGroup,
-    tabs
+    removeTabFromGroup
   } = usePDMStore()
   
   const menuRef = useRef<HTMLDivElement>(null)
@@ -189,9 +149,8 @@ function TabContextMenu({ tab, position, onClose, tabGroups }: TabContextMenuPro
     return () => document.removeEventListener('keydown', handleEscape)
   }, [onClose])
   
-  const tabIndex = tabs.findIndex(t => t.id === tab.id)
-  const hasTabsToRight = tabIndex < tabs.length - 1
-  const hasOtherTabs = tabs.length > 1
+  const hasOtherTabs = tabCount > 1
+  const canClose = hasOtherTabs && !tab.isPinned
   
   const handleCreateGroup = () => {
     if (newGroupName.trim()) {
@@ -201,23 +160,16 @@ function TabContextMenu({ tab, position, onClose, tabGroups }: TabContextMenuPro
     }
   }
   
-  const handlePopOut = () => {
-    // Send IPC to create new window with this tab's view
-    window.electronAPI?.createTabWindow?.(tab.view, tab.title, tab.customData)
-    closeTab(tab.id)
-    onClose()
-  }
-  
   return (
     <div
       ref={menuRef}
       style={{ left: position.x, top: position.y }}
-      className="fixed z-50 w-56 bg-plm-bg-light border border-plm-border rounded-lg shadow-xl py-1 text-sm"
+      className="fixed z-50 w-52 bg-plm-bg-light border border-plm-border rounded-lg shadow-xl py-1 text-sm"
     >
       {/* Close actions */}
       <button
         onClick={() => { closeTab(tab.id); onClose() }}
-        disabled={tab.isPinned}
+        disabled={!canClose}
         className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-plm-bg-lighter disabled:opacity-50 disabled:cursor-not-allowed"
       >
         <X size={14} />
@@ -229,19 +181,6 @@ function TabContextMenu({ tab, position, onClose, tabGroups }: TabContextMenuPro
         className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-plm-bg-lighter disabled:opacity-50 disabled:cursor-not-allowed"
       >
         Close Other Tabs
-      </button>
-      <button
-        onClick={() => { closeTabsToRight(tab.id); onClose() }}
-        disabled={!hasTabsToRight}
-        className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-plm-bg-lighter disabled:opacity-50 disabled:cursor-not-allowed"
-      >
-        Close Tabs to the Right
-      </button>
-      <button
-        onClick={() => { closeAllTabs(); onClose() }}
-        className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-plm-bg-lighter"
-      >
-        Close All Tabs
       </button>
       
       <div className="h-px bg-plm-border my-1" />
@@ -337,78 +276,6 @@ function TabContextMenu({ tab, position, onClose, tabGroups }: TabContextMenuPro
           </div>
         )}
       </div>
-      
-      <div className="h-px bg-plm-border my-1" />
-      
-      {/* Pop out */}
-      <button
-        onClick={handlePopOut}
-        className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-plm-bg-lighter"
-      >
-        <ExternalLink size={14} />
-        Pop Out to New Window
-      </button>
-    </div>
-  )
-}
-
-interface NewTabMenuProps {
-  position: { x: number; y: number }
-  onClose: () => void
-}
-
-function NewTabMenu({ position, onClose }: NewTabMenuProps) {
-  const { addTab } = usePDMStore()
-  const menuRef = useRef<HTMLDivElement>(null)
-  
-  // Close on click outside
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        onClose()
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [onClose])
-  
-  const views: { view: SidebarView; label: string }[] = [
-    { view: 'explorer', label: 'Explorer' },
-    { view: 'pending', label: 'Pending' },
-    { view: 'search', label: 'Search' },
-    { view: 'history', label: 'History' },
-    { view: 'trash', label: 'Trash' },
-    { view: 'terminal', label: 'Terminal' },
-    { view: 'eco', label: 'ECOs' },
-    { view: 'ecr', label: 'ECRs' },
-    { view: 'products', label: 'Products' },
-    { view: 'reviews', label: 'Reviews' },
-    { view: 'suppliers', label: 'Suppliers' },
-    { view: 'google-drive', label: 'Google Drive' },
-    { view: 'settings', label: 'Settings' },
-  ]
-  
-  const handleAddTab = (view: SidebarView, label: string) => {
-    addTab(view, label)
-    onClose()
-  }
-  
-  return (
-    <div
-      ref={menuRef}
-      style={{ left: position.x, top: position.y }}
-      className="fixed z-50 w-48 bg-plm-bg-light border border-plm-border rounded-lg shadow-xl py-1 text-sm max-h-80 overflow-y-auto"
-    >
-      {views.map(({ view, label }) => (
-        <button
-          key={view}
-          onClick={() => handleAddTab(view, label)}
-          className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-plm-bg-lighter"
-        >
-          {getViewIcon(view)}
-          {label}
-        </button>
-      ))}
     </div>
   )
 }
@@ -424,11 +291,7 @@ export function TabBar() {
   } = usePDMStore()
   
   const [contextMenu, setContextMenu] = useState<{ tab: Tab; position: { x: number; y: number } } | null>(null)
-  const [newTabMenu, setNewTabMenu] = useState<{ position: { x: number; y: number } } | null>(null)
   const [draggedTab, setDraggedTab] = useState<Tab | null>(null)
-  
-  // Don't render if tabs are disabled or no tabs exist
-  if (!tabsEnabled) return null
   
   const handleContextMenu = useCallback((e: React.MouseEvent, tab: Tab) => {
     e.preventDefault()
@@ -454,15 +317,13 @@ export function TabBar() {
     setDraggedTab(null)
   }, [draggedTab, tabs, moveTab])
   
-  const handleNewTabClick = () => {
-    // Quick add explorer tab on single click
-    addTab('explorer', 'Explorer')
-  }
+  const handleNewTabClick = useCallback(() => {
+    // Add a new tab with current folder
+    addTab()
+  }, [addTab])
   
-  const handleNewTabContextMenu = (e: React.MouseEvent) => {
-    e.preventDefault()
-    setNewTabMenu({ position: { x: e.clientX, y: e.clientY } })
-  }
+  // Don't render if tabs are disabled
+  if (!tabsEnabled) return null
   
   // Group tabs by groupId for rendering
   const groupedTabs = tabs.reduce((acc, tab) => {
@@ -502,6 +363,7 @@ export function TabBar() {
                   key={tab.id}
                   tab={tab}
                   isActive={tab.id === activeTabId}
+                  isOnlyTab={tabs.length === 1}
                   group={group}
                   onContextMenu={handleContextMenu}
                   onDragStart={handleDragStart}
@@ -517,9 +379,8 @@ export function TabBar() {
       {/* New tab button */}
       <button
         onClick={handleNewTabClick}
-        onContextMenu={handleNewTabContextMenu}
         className="h-8 w-8 flex items-center justify-center text-plm-fg-dim hover:text-plm-fg hover:bg-plm-bg-lighter transition-colors flex-shrink-0"
-        title="New Tab (Right-click for menu)"
+        title="New Tab"
       >
         <Plus size={16} />
       </button>
@@ -534,17 +395,9 @@ export function TabBar() {
           position={contextMenu.position}
           onClose={() => setContextMenu(null)}
           tabGroups={tabGroups}
-        />
-      )}
-      
-      {/* New Tab Menu */}
-      {newTabMenu && (
-        <NewTabMenu
-          position={newTabMenu.position}
-          onClose={() => setNewTabMenu(null)}
+          tabCount={tabs.length}
         />
       )}
     </div>
   )
 }
-

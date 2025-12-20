@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { usePDMStore, LocalFile } from '../stores/pdmStore'
-import { syncSolidWorksFileMetadata } from '../lib/supabase'
+import { getNextSerialNumber } from '../lib/serialization'
 import {
   FileBox,
   Layers,
@@ -15,9 +15,9 @@ import {
   ChevronRight,
   Settings2,
   Sparkles,
-  Hexagon,
-  Box,
-  Zap
+  ZoomIn,
+  ZoomOut,
+  RotateCcw
 } from 'lucide-react'
 
 // Configuration data type
@@ -92,76 +92,99 @@ function SWFileIcon({ fileType, size = 16 }: { fileType: string; size?: number }
   }
 }
 
-// Configuration tab with unique 3D-inspired design
+// Simple configuration tab - no icons
 function ConfigTab({ 
   config, 
   isActive, 
-  onClick,
-  index
+  onClick
 }: { 
   config: ConfigurationData
   isActive: boolean
   onClick: () => void
-  index: number
 }) {
-  // Alternate between different geometric icons
-  const icons = [Box, Hexagon, Box, Sparkles, Zap]
-  const IconComponent = icons[index % icons.length]
-  
   return (
     <button
       onClick={onClick}
       className={`
-        group relative flex items-center gap-1.5 px-3 py-1.5 rounded-md
-        transition-all duration-200 ease-out transform
+        relative px-3 py-1 rounded-md text-xs font-medium whitespace-nowrap
+        transition-all duration-150
         ${isActive 
-          ? 'bg-gradient-to-br from-cyan-500/20 via-cyan-400/10 to-transparent border-cyan-400/50 text-cyan-300 shadow-md shadow-cyan-500/20 z-10' 
-          : 'bg-gradient-to-br from-plm-bg-light/80 to-plm-bg/50 border-plm-border/50 text-plm-fg-muted hover:text-plm-fg hover:border-plm-border hover:bg-plm-bg-light/60'
+          ? 'bg-cyan-500/20 text-cyan-300 border-cyan-400/50' 
+          : 'bg-plm-bg-light/50 text-plm-fg-muted hover:text-plm-fg hover:bg-plm-bg-light'
         }
-        border backdrop-blur-sm
+        border border-plm-border/50
       `}
     >
-      {/* Icon with rotation animation */}
-      <div className={`
-        relative transition-transform duration-200
-        ${isActive ? 'rotate-0' : 'group-hover:rotate-12'}
-      `}>
-        <IconComponent size={12} className={isActive ? 'text-cyan-400' : ''} />
-      </div>
-      
-      {/* Config name */}
-      <span className={`
-        text-[11px] font-medium tracking-wide whitespace-nowrap
-        ${isActive ? 'text-cyan-300' : ''}
-      `}>
-        {config.name}
-      </span>
-      
-      {/* Active indicator dot */}
+      {config.name}
       {config.isActive && (
-        <div className={`
-          w-1 h-1 rounded-full
-          ${isActive ? 'bg-cyan-400' : 'bg-emerald-400/60'}
-        `} />
+        <span className="ml-1.5 w-1 h-1 rounded-full bg-emerald-400 inline-block" />
       )}
     </button>
   )
 }
 
-// Property row with hover effects
-function PropertyRow({ label, value, highlight = false }: { label: string; value: string | null; highlight?: boolean }) {
+// Editable property field
+function PropertyField({ 
+  label, 
+  value, 
+  onChange,
+  onGenerateSerial,
+  isGenerating,
+  placeholder = '—',
+  editable = true
+}: { 
+  label: string
+  value: string
+  onChange?: (value: string) => void
+  onGenerateSerial?: () => void
+  isGenerating?: boolean
+  placeholder?: string
+  editable?: boolean
+}) {
   return (
-    <div className={`
-      flex items-baseline gap-3 py-1.5 px-3 rounded transition-colors
-      ${highlight ? 'bg-cyan-400/5' : 'hover:bg-plm-bg-light/50'}
-    `}>
-      <span className="text-[11px] uppercase tracking-wide text-plm-fg-muted w-24 flex-shrink-0 truncate">
+    <div className="flex items-center gap-2">
+      <label className="text-[11px] uppercase tracking-wide text-plm-fg-muted w-20 flex-shrink-0">
+        {label}
+      </label>
+      <div className="flex-1 flex items-center gap-1">
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => onChange?.(e.target.value)}
+          placeholder={placeholder}
+          disabled={!editable}
+          className={`
+            flex-1 px-2 py-1.5 text-sm rounded border transition-colors
+            ${editable 
+              ? 'bg-plm-bg border-plm-border focus:border-cyan-400/50 focus:ring-1 focus:ring-cyan-400/20 text-plm-fg' 
+              : 'bg-plm-bg-light/50 border-plm-border/50 text-plm-fg-muted cursor-not-allowed'
+            }
+            placeholder:text-plm-fg-dim placeholder:italic
+          `}
+        />
+        {onGenerateSerial && editable && (
+          <button
+            onClick={onGenerateSerial}
+            disabled={isGenerating}
+            className="p-1.5 rounded border border-plm-border hover:border-cyan-400/50 hover:text-cyan-400 text-plm-fg-muted transition-colors disabled:opacity-50"
+            title="Generate serial number"
+          >
+            {isGenerating ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// Read-only property display
+function PropertyDisplay({ label, value }: { label: string; value: string | null }) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-[11px] uppercase tracking-wide text-plm-fg-muted w-20 flex-shrink-0">
         {label}
       </span>
-      <span className={`
-        text-sm truncate flex-1
-        ${value ? (highlight ? 'text-cyan-300 font-medium' : 'text-plm-fg') : 'text-plm-fg-dim italic'}
-      `}>
+      <span className={`text-sm ${value ? 'text-plm-fg' : 'text-plm-fg-dim italic'}`}>
         {value || '—'}
       </span>
     </div>
@@ -172,15 +195,21 @@ function PropertyRow({ label, value, highlight = false }: { label: string; value
 export function SWDatacardPanel({ file }: { file: LocalFile }) {
   const [preview, setPreview] = useState<string | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewZoom, setPreviewZoom] = useState(100)
   const [configurations, setConfigurations] = useState<ConfigurationData[]>([])
   const [activeConfigIndex, setActiveConfigIndex] = useState(0)
   const [configsLoading, setConfigsLoading] = useState(false)
   const [showAllProps, setShowAllProps] = useState(false)
   const [isExporting, setIsExporting] = useState<string | null>(null)
-  const [isSyncing, setIsSyncing] = useState(false)
+  const [isGeneratingSerial, setIsGeneratingSerial] = useState(false)
+  
+  // Editable fields state (per configuration)
+  const [configSerials, setConfigSerials] = useState<Record<string, string>>({})
+  const [configDescriptions, setConfigDescriptions] = useState<Record<string, string>>({})
+  const [configRevisions, setConfigRevisions] = useState<Record<string, string>>({})
   
   const { status, startService, isStarting } = useSolidWorksService()
-  const { addToast, user, updateFileInStore } = usePDMStore()
+  const { addToast, organization } = usePDMStore()
   
   const ext = file.extension?.toLowerCase() || ''
   const fileType = ext === '.sldprt' ? 'Part' : ext === '.sldasm' ? 'Assembly' : 'Drawing'
@@ -188,6 +217,12 @@ export function SWDatacardPanel({ file }: { file: LocalFile }) {
   const isDrawing = ext === '.slddrw'
   
   const activeConfig = configurations[activeConfigIndex] || null
+  const activeConfigSerial = activeConfig ? (configSerials[activeConfig.name] || '') : ''
+
+  // Reset zoom when file changes
+  useEffect(() => {
+    setPreviewZoom(100)
+  }, [file?.path])
 
   // Load configurations and their properties
   useEffect(() => {
@@ -255,7 +290,7 @@ export function SWDatacardPanel({ file }: { file: LocalFile }) {
   }, [file?.path, activeConfig?.name, activeConfigIndex, status.running])
 
   // Load preview for active configuration
-  // Priority: OLE extraction (fast) -> OS thumbnail (fast) -> SW service (slow, requires SW running)
+  // Priority: OLE preview (high quality embedded) -> SW service (if running) -> OS thumbnail (fallback)
   useEffect(() => {
     const loadPreview = async () => {
       if (!file?.path) return
@@ -264,7 +299,7 @@ export function SWDatacardPanel({ file }: { file: LocalFile }) {
       setPreview(null)
       
       try {
-        // 1. Try OLE preview extraction first (fast, no SW needed)
+        // 1. Try OLE preview extraction first (high quality, embedded in file)
         const oleResult = await window.electronAPI?.extractSolidWorksPreview?.(file.path)
         if (oleResult?.success && oleResult.data) {
           setPreview(oleResult.data)
@@ -272,21 +307,21 @@ export function SWDatacardPanel({ file }: { file: LocalFile }) {
           return
         }
         
-        // 2. Try OS thumbnail (fast, no SW needed)
-        const thumbResult = await window.electronAPI?.extractSolidWorksThumbnail(file.path)
-        if (thumbResult?.success && thumbResult.data) {
-          setPreview(thumbResult.data)
-          setPreviewLoading(false)
-          return
-        }
-        
-        // 3. Only use SW service if already running (don't launch it just for preview)
+        // 2. If SW service is running, get high-quality preview from it
         if (status.running) {
           const previewResult = await window.electronAPI?.solidworks?.getPreview(file.path, activeConfig?.name)
           if (previewResult?.success && previewResult.data?.imageData) {
             const mimeType = previewResult.data.mimeType || 'image/png'
             setPreview(`data:${mimeType};base64,${previewResult.data.imageData}`)
+            setPreviewLoading(false)
+            return
           }
+        }
+        
+        // 3. Fall back to OS thumbnail (lower quality but always available)
+        const thumbResult = await window.electronAPI?.extractSolidWorksThumbnail(file.path)
+        if (thumbResult?.success && thumbResult.data) {
+          setPreview(thumbResult.data)
         }
       } catch (err) {
         console.error('Failed to load preview:', err)
@@ -298,32 +333,39 @@ export function SWDatacardPanel({ file }: { file: LocalFile }) {
     loadPreview()
   }, [file?.path, activeConfig?.name, status.running])
 
-  // Refresh preview - try fast methods first
+  // Handle mouse wheel zoom on preview
+  const handlePreviewWheel = (e: React.WheelEvent) => {
+    e.preventDefault()
+    const delta = e.deltaY > 0 ? -10 : 10
+    setPreviewZoom(prev => Math.max(50, Math.min(300, prev + delta)))
+  }
+
+  // Refresh preview - prefer high quality sources
   const refreshPreview = async () => {
     setPreviewLoading(true)
     setPreview(null)
     try {
-      // Try OLE first
+      // Try OLE first (high quality)
       const oleResult = await window.electronAPI?.extractSolidWorksPreview?.(file.path)
       if (oleResult?.success && oleResult.data) {
         setPreview(oleResult.data)
         return
       }
       
-      // Try thumbnail
-      const thumbResult = await window.electronAPI?.extractSolidWorksThumbnail(file.path)
-      if (thumbResult?.success && thumbResult.data) {
-        setPreview(thumbResult.data)
-        return
-      }
-      
-      // Only try SW service if already running
+      // Try SW service if running (high quality)
       if (status.running) {
         const previewResult = await window.electronAPI?.solidworks?.getPreview(file.path, activeConfig?.name)
         if (previewResult?.success && previewResult.data?.imageData) {
           const mimeType = previewResult.data.mimeType || 'image/png'
           setPreview(`data:${mimeType};base64,${previewResult.data.imageData}`)
+          return
         }
+      }
+      
+      // Fall back to thumbnail
+      const thumbResult = await window.electronAPI?.extractSolidWorksThumbnail(file.path)
+      if (thumbResult?.success && thumbResult.data) {
+        setPreview(thumbResult.data)
       }
     } catch {
       // Silent fail
@@ -339,6 +381,26 @@ export function SWDatacardPanel({ file }: { file: LocalFile }) {
       await window.electronAPI?.openInEDrawings(file.path)
     } catch {
       addToast('error', 'Failed to open in eDrawings')
+    }
+  }
+
+  // Generate serial number for current config
+  const handleGenerateSerial = async () => {
+    if (!organization?.id || !activeConfig) return
+    
+    setIsGeneratingSerial(true)
+    try {
+      const serial = await getNextSerialNumber(organization.id)
+      if (serial) {
+        setConfigSerials(prev => ({ ...prev, [activeConfig.name]: serial }))
+        addToast('success', `Generated: ${serial}`)
+      } else {
+        addToast('error', 'Serialization disabled or failed')
+      }
+    } catch (err) {
+      addToast('error', `Failed: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setIsGeneratingSerial(false)
     }
   }
 
@@ -390,69 +452,8 @@ export function SWDatacardPanel({ file }: { file: LocalFile }) {
     }
   }
 
-  // Sync metadata from SW file to PDM
-  const handleSyncMetadata = async () => {
-    if (!status.running || !file.pdmData?.id || !user) {
-      if (!status.running) addToast('info', 'Start SolidWorks service to sync metadata')
-      else if (!file.pdmData?.id) addToast('info', 'Sync file to cloud first')
-      return
-    }
-
-    setIsSyncing(true)
-    try {
-      const result = await window.electronAPI?.solidworks?.getProperties(file.path)
-      if (!result?.success || !result.data) {
-        addToast('error', 'Failed to read SolidWorks properties')
-        return
-      }
-
-      const allProps: Record<string, string> = { ...result.data.fileProperties }
-      const configProps = result.data.configurationProperties
-      if (configProps) {
-        const configName = Object.keys(configProps).find(k =>
-          k.toLowerCase() === 'default' || k.toLowerCase() === 'standard'
-        ) || Object.keys(configProps)[0]
-        if (configName && configProps[configName]) {
-          Object.assign(allProps, configProps[configName])
-        }
-      }
-
-      const partNumberKeys = [
-        'Base Item Number', 'PartNumber', 'Part Number', 'Part No', 'PartNo',
-        'ItemNumber', 'Item Number', 'Item No', 'ItemNo', 'PN', 'P/N'
-      ]
-      let partNumber: string | null = null
-      for (const key of partNumberKeys) {
-        if (allProps[key]?.trim()) {
-          partNumber = allProps[key].trim()
-          break
-        }
-      }
-
-      const description = allProps['Description'] || allProps['description'] || null
-
-      const syncResult = await syncSolidWorksFileMetadata(file.pdmData.id, user.id, {
-        part_number: partNumber,
-        description: description?.trim() || null
-      })
-
-      if (syncResult.success && syncResult.file) {
-        updateFileInStore(file.path, {
-          pdmData: { ...file.pdmData, ...syncResult.file }
-        })
-        addToast('success', 'Metadata synced from SolidWorks')
-      } else {
-        addToast('error', syncResult.error || 'Failed to sync metadata')
-      }
-    } catch (err) {
-      addToast('error', `Sync failed: ${err}`)
-    } finally {
-      setIsSyncing(false)
-    }
-  }
-
   // Get property value by key with aliases
-  const getPropertyValue = (key: string, aliases?: string[]): string | null => {
+  const getPropertyValue = useCallback((key: string, aliases?: string[]): string | null => {
     const props = activeConfig?.properties || {}
     if (props[key]) return props[key]
     if (aliases) {
@@ -463,6 +464,19 @@ export function SWDatacardPanel({ file }: { file: LocalFile }) {
       }
     }
     return null
+  }, [activeConfig?.properties])
+
+  // Get editable field values (user override or from SW properties)
+  const getConfigDescription = () => {
+    if (!activeConfig) return ''
+    if (configDescriptions[activeConfig.name] !== undefined) return configDescriptions[activeConfig.name]
+    return getPropertyValue('Description', ['DESCRIPTION']) || ''
+  }
+  
+  const getConfigRevision = () => {
+    if (!activeConfig) return ''
+    if (configRevisions[activeConfig.name] !== undefined) return configRevisions[activeConfig.name]
+    return getPropertyValue('Revision', ['REV', 'REVISION']) || ''
   }
 
   // Filter and sort properties for display
@@ -470,22 +484,13 @@ export function SWDatacardPanel({ file }: { file: LocalFile }) {
     .filter(([key, value]) => value && !key.startsWith('$') && !key.startsWith('SW-'))
     .sort(([a], [b]) => a.localeCompare(b))
 
-  // Key properties to highlight
-  const keyProps = [
-    { key: 'PartNumber', label: 'Part #', aliases: ['PartNo', 'Part Number', 'Item Number', 'Base Item Number'] },
-    { key: 'Description', label: 'Desc', aliases: ['DESCRIPTION'] },
-    { key: 'Revision', label: 'Rev', aliases: ['REV', 'REVISION'] },
-    { key: 'Material', label: 'Material', aliases: ['MATERIAL', 'Mat'] },
-  ]
-
   return (
     <div className="h-full flex flex-col">
-      {/* Configuration Tabs - Unique datacard style */}
+      {/* Configuration Tabs - simple, no icons */}
       <div className="flex-shrink-0 mb-2">
-        {/* Configuration tabs with quick actions */}
-        <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-thin">
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-thin">
           {configsLoading ? (
-            <div className="flex items-center gap-2 px-3 py-1.5 text-plm-fg-muted">
+            <div className="flex items-center gap-2 px-3 py-1 text-plm-fg-muted">
               <Loader2 size={12} className="animate-spin" />
               <span className="text-xs">Loading...</span>
             </div>
@@ -496,234 +501,229 @@ export function SWDatacardPanel({ file }: { file: LocalFile }) {
                 config={config}
                 isActive={index === activeConfigIndex}
                 onClick={() => setActiveConfigIndex(index)}
-                index={index}
               />
             ))
           )}
           
-          {/* Service status and quick actions */}
+          {/* Service status */}
           <div className="flex items-center gap-1 ml-auto flex-shrink-0">
             {status.running ? (
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" title="Service connected" />
             ) : (
               <span className="w-1.5 h-1.5 rounded-full bg-amber-400" title="Service offline" />
             )}
-            {file.pdmData?.id && status.running && (
-              <button
-                onClick={handleSyncMetadata}
-                disabled={isSyncing}
-                className="p-1 rounded hover:bg-cyan-400/10 text-plm-fg-muted hover:text-cyan-400 transition-colors"
-                title="Sync metadata from file"
-              >
-                {isSyncing ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-              </button>
-            )}
           </div>
         </div>
       </div>
 
-      {/* Main content - Preview left (compact), Properties right (larger) */}
+      {/* Main content - Preview left, Properties right */}
       <div className="flex-1 flex gap-3 min-h-0 overflow-hidden">
-        {/* Preview Section - compact left quarter */}
-        <div className="w-48 flex-shrink-0 flex flex-col">
-          <div className="flex-1 relative rounded-xl overflow-hidden bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 border border-plm-border/30">
-            {/* Grid background pattern */}
-            <div 
-              className="absolute inset-0 opacity-10"
-              style={{
-                backgroundImage: `
-                  linear-gradient(rgba(6, 182, 212, 0.1) 1px, transparent 1px),
-                  linear-gradient(90deg, rgba(6, 182, 212, 0.1) 1px, transparent 1px)
-                `,
-                backgroundSize: '20px 20px',
-              }}
-            />
-            
+        {/* Preview Section */}
+        <div className="w-56 flex-shrink-0 flex flex-col">
+          <div 
+            className="flex-1 relative rounded-lg overflow-hidden bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 border border-plm-border/30"
+            onWheel={handlePreviewWheel}
+          >
             {/* Preview content */}
-            <div className="absolute inset-0 flex items-center justify-center p-4">
+            <div className="absolute inset-0 flex items-center justify-center p-2 overflow-hidden">
               {previewLoading ? (
-                <div className="flex flex-col items-center gap-3">
-                  <div className="relative">
-                    <Loader2 className="animate-spin text-cyan-400" size={40} />
-                    <div className="absolute inset-0 animate-ping opacity-30">
-                      <Loader2 className="text-cyan-400" size={40} />
-                    </div>
-                  </div>
-                  <span className="text-xs text-plm-fg-muted">Loading preview...</span>
+                <div className="flex flex-col items-center gap-2">
+                  <Loader2 className="animate-spin text-cyan-400" size={32} />
+                  <span className="text-[10px] text-plm-fg-muted">Loading...</span>
                 </div>
               ) : preview ? (
                 <img 
                   src={preview} 
                   alt={file.name}
-                  className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
-                  style={{ filter: 'drop-shadow(0 0 20px rgba(6, 182, 212, 0.2))' }}
+                  className="max-w-full max-h-full object-contain transition-transform duration-150"
+                  style={{ 
+                    transform: `scale(${previewZoom / 100})`,
+                    filter: 'drop-shadow(0 0 10px rgba(0, 0, 0, 0.5))'
+                  }}
+                  draggable={false}
                 />
               ) : (
-                <div className="flex flex-col items-center gap-3 text-plm-fg-muted">
-                  <SWFileIcon fileType={fileType} size={64} />
-                  <span className="text-xs">No preview available</span>
+                <div className="flex flex-col items-center gap-2 text-plm-fg-muted">
+                  <SWFileIcon fileType={fileType} size={48} />
+                  <span className="text-[10px]">No preview</span>
                 </div>
               )}
+            </div>
+            
+            {/* Zoom controls */}
+            <div className="absolute bottom-1 right-1 flex items-center gap-0.5 bg-black/60 backdrop-blur-sm rounded px-1 py-0.5">
+              <button
+                onClick={() => setPreviewZoom(prev => Math.max(50, prev - 25))}
+                className="p-0.5 hover:text-cyan-400 text-plm-fg-muted transition-colors"
+                title="Zoom out"
+              >
+                <ZoomOut size={12} />
+              </button>
+              <span className="text-[9px] text-plm-fg-muted w-8 text-center">{previewZoom}%</span>
+              <button
+                onClick={() => setPreviewZoom(prev => Math.min(300, prev + 25))}
+                className="p-0.5 hover:text-cyan-400 text-plm-fg-muted transition-colors"
+                title="Zoom in"
+              >
+                <ZoomIn size={12} />
+              </button>
+              <button
+                onClick={() => setPreviewZoom(100)}
+                className="p-0.5 hover:text-cyan-400 text-plm-fg-muted transition-colors ml-0.5"
+                title="Reset zoom"
+              >
+                <RotateCcw size={10} />
+              </button>
             </div>
             
             {/* Refresh button */}
             <button
               onClick={refreshPreview}
               disabled={previewLoading}
-              className="absolute top-2 right-2 p-2 bg-black/60 hover:bg-black/80 backdrop-blur-sm rounded-lg text-plm-fg-muted hover:text-white transition-all border border-white/10"
-              title="Refresh preview"
+              className="absolute top-1 right-1 p-1 bg-black/60 hover:bg-black/80 backdrop-blur-sm rounded text-plm-fg-muted hover:text-white transition-all"
+              title="Refresh"
             >
-              <RefreshCw size={14} className={previewLoading ? 'animate-spin' : ''} />
+              <RefreshCw size={12} className={previewLoading ? 'animate-spin' : ''} />
             </button>
-            
-            {/* Config indicator overlay */}
-            {activeConfig && (
-              <div className="absolute bottom-2 left-2 px-3 py-1.5 bg-black/70 backdrop-blur-sm rounded-lg border border-cyan-400/20">
-                <span className="text-[10px] uppercase tracking-wider text-cyan-400">
-                  {activeConfig.name}
-                </span>
-              </div>
-            )}
           </div>
           
           {/* Preview actions */}
-          <div className="flex items-center justify-center gap-2 mt-2 flex-shrink-0">
+          <div className="flex items-center justify-center gap-1 mt-1.5 flex-shrink-0">
             <button
               onClick={handleOpenInEDrawings}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs bg-plm-bg border border-plm-border hover:border-cyan-400/50 hover:text-cyan-400 transition-colors"
+              className="flex items-center gap-1 px-2 py-1 rounded text-[10px] bg-plm-bg border border-plm-border hover:border-cyan-400/50 hover:text-cyan-400 transition-colors"
             >
-              <ExternalLink size={12} />
+              <ExternalLink size={10} />
               eDrawings
             </button>
           </div>
         </div>
 
-        {/* Properties Section - takes remaining space */}
-        <div className="flex-1 flex flex-col min-w-0 bg-plm-bg/50 rounded-xl border border-plm-border/30 overflow-hidden">
-          {/* Properties header */}
-          <div className="flex items-center justify-between px-3 py-2 bg-gradient-to-r from-plm-bg-light to-plm-bg border-b border-plm-border/30">
-            <span className="text-xs font-semibold text-plm-fg tracking-wide uppercase">Properties</span>
-            {activeConfig && configurations.length > 1 && (
-              <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-400/10 text-cyan-400 border border-cyan-400/20">
-                {activeConfig.name}
-              </span>
-            )}
+        {/* Properties Section - editable fields */}
+        <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+          {/* Config-specific fields */}
+          <div className="p-3 space-y-2 bg-plm-bg/30 rounded-lg">
+            <PropertyField
+              label="Item #"
+              value={activeConfigSerial}
+              onChange={(val) => activeConfig && setConfigSerials(prev => ({ ...prev, [activeConfig.name]: val }))}
+              onGenerateSerial={handleGenerateSerial}
+              isGenerating={isGeneratingSerial}
+              placeholder="Enter or generate..."
+            />
+            
+            <PropertyField
+              label="Description"
+              value={getConfigDescription()}
+              onChange={(val) => activeConfig && setConfigDescriptions(prev => ({ ...prev, [activeConfig.name]: val }))}
+              placeholder="Enter description..."
+            />
+            
+            <PropertyField
+              label="Revision"
+              value={getConfigRevision()}
+              onChange={(val) => activeConfig && setConfigRevisions(prev => ({ ...prev, [activeConfig.name]: val }))}
+              placeholder="A"
+            />
+            
+            <PropertyField
+              label="Material"
+              value={getPropertyValue('Material', ['MATERIAL', 'Mat']) || ''}
+              placeholder="Not specified"
+              editable={false}
+            />
           </div>
-          
-          {/* Key properties - always visible */}
-          <div className="p-2 border-b border-plm-border/20 space-y-0.5">
-            {keyProps.map(prop => (
-              <PropertyRow 
-                key={prop.key}
-                label={prop.label}
-                value={getPropertyValue(prop.key, prop.aliases)}
-                highlight={!!getPropertyValue(prop.key, prop.aliases)}
-              />
-            ))}
-          </div>
-          
-          {/* PDM Metadata section */}
-          {file.pdmData?.id && (
-            <div className="p-2 border-b border-plm-border/20 bg-plm-panel/30">
-              <div className="text-[10px] uppercase tracking-wider text-plm-fg-muted mb-1 px-2">PDM Data</div>
-              <div className="space-y-0.5">
-                <PropertyRow label="Rev" value={file.pdmData.revision || 'A'} />
-                <PropertyRow label="Ver" value={String(file.pdmData.version || 1)} />
-                <PropertyRow label="State" value={file.pdmData.state?.replace('_', ' ') || '—'} />
-              </div>
-            </div>
-          )}
           
           {/* All properties - scrollable */}
-          <div className="flex-1 overflow-y-auto min-h-0">
+          <div className="flex-1 overflow-y-auto min-h-0 mt-2">
             <button
               onClick={() => setShowAllProps(!showAllProps)}
-              className="w-full flex items-center gap-1.5 px-3 py-2 text-[10px] uppercase tracking-wider text-plm-fg-muted hover:text-plm-fg hover:bg-plm-bg-light/50 transition-colors"
+              className="w-full flex items-center gap-1.5 px-3 py-2 text-[10px] uppercase tracking-wider text-plm-fg-muted hover:text-plm-fg hover:bg-plm-bg-light/30 transition-colors rounded"
             >
               {showAllProps ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
               All Properties ({displayProperties.length})
             </button>
             
             {showAllProps && (
-              <div className="px-1 pb-2 space-y-0.5">
+              <div className="px-3 pb-2 space-y-1">
                 {displayProperties.length > 0 ? (
                   displayProperties.map(([key, value]) => (
-                    <PropertyRow key={key} label={key} value={value} />
+                    <PropertyDisplay key={key} label={key} value={value} />
                   ))
                 ) : (
-                  <div className="text-xs text-plm-fg-dim italic text-center py-4">
+                  <div className="text-xs text-plm-fg-dim italic text-center py-3">
                     {status.running ? 'No custom properties' : 'Start service to load'}
                   </div>
                 )}
               </div>
             )}
           </div>
+        </div>
+
+        {/* Export Section - right side */}
+        <div className="w-20 flex-shrink-0 flex flex-col gap-1.5">
+          <div className="text-[9px] uppercase tracking-wider text-plm-fg-muted mb-1">Export</div>
           
-          {/* Export section */}
-          <div className="p-3 border-t border-plm-border/30 bg-gradient-to-r from-plm-bg-light to-plm-bg">
-            <div className="text-[10px] uppercase tracking-wider text-plm-fg-muted mb-2">Export</div>
-            <div className="flex flex-wrap gap-2">
-              {isPartOrAsm && (
-                <>
-                  <button
-                    onClick={() => handleExport('step')}
-                    disabled={!!isExporting || !status.running}
-                    className="flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg text-[10px] font-medium bg-plm-bg border border-plm-border hover:border-cyan-400/50 hover:text-cyan-400 disabled:opacity-40 transition-colors"
-                  >
-                    {isExporting === 'step' ? <Loader2 size={10} className="animate-spin" /> : <Package size={10} />}
-                    STEP
-                  </button>
-                  <button
-                    onClick={() => handleExport('iges')}
-                    disabled={!!isExporting || !status.running}
-                    className="flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg text-[10px] font-medium bg-plm-bg border border-plm-border hover:border-cyan-400/50 hover:text-cyan-400 disabled:opacity-40 transition-colors"
-                  >
-                    {isExporting === 'iges' ? <Loader2 size={10} className="animate-spin" /> : <Package size={10} />}
-                    IGES
-                  </button>
-                  <button
-                    onClick={() => handleExport('stl')}
-                    disabled={!!isExporting || !status.running}
-                    className="flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg text-[10px] font-medium bg-plm-bg border border-plm-border hover:border-cyan-400/50 hover:text-cyan-400 disabled:opacity-40 transition-colors"
-                  >
-                    {isExporting === 'stl' ? <Loader2 size={10} className="animate-spin" /> : <Package size={10} />}
-                    STL
-                  </button>
-                </>
-              )}
-              {isDrawing && (
-                <>
-                  <button
-                    onClick={() => handleExport('pdf')}
-                    disabled={!!isExporting || !status.running}
-                    className="flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg text-[10px] font-medium bg-plm-bg border border-plm-border hover:border-cyan-400/50 hover:text-cyan-400 disabled:opacity-40 transition-colors"
-                  >
-                    {isExporting === 'pdf' ? <Loader2 size={10} className="animate-spin" /> : <FileOutput size={10} />}
-                    PDF
-                  </button>
-                  <button
-                    onClick={() => handleExport('dxf')}
-                    disabled={!!isExporting || !status.running}
-                    className="flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg text-[10px] font-medium bg-plm-bg border border-plm-border hover:border-cyan-400/50 hover:text-cyan-400 disabled:opacity-40 transition-colors"
-                  >
-                    {isExporting === 'dxf' ? <Loader2 size={10} className="animate-spin" /> : <Download size={10} />}
-                    DXF
-                  </button>
-                </>
-              )}
-            </div>
-            
-            {!status.running && (
+          {isPartOrAsm && (
+            <>
               <button
-                onClick={startService}
-                disabled={isStarting}
-                className="w-full mt-2 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium bg-gradient-to-r from-amber-500/20 to-amber-400/10 border border-amber-400/30 text-amber-400 hover:border-amber-400/50 transition-colors"
+                onClick={() => handleExport('step')}
+                disabled={!!isExporting || !status.running}
+                className="flex items-center justify-center gap-1 px-2 py-1.5 rounded text-[10px] font-medium bg-plm-bg border border-plm-border hover:border-cyan-400/50 hover:text-cyan-400 disabled:opacity-40 transition-colors"
               >
-                {isStarting ? <Loader2 size={12} className="animate-spin" /> : <Settings2 size={12} />}
-                Start SW Service
+                {isExporting === 'step' ? <Loader2 size={10} className="animate-spin" /> : <Package size={10} />}
+                STEP
               </button>
-            )}
-          </div>
+              <button
+                onClick={() => handleExport('iges')}
+                disabled={!!isExporting || !status.running}
+                className="flex items-center justify-center gap-1 px-2 py-1.5 rounded text-[10px] font-medium bg-plm-bg border border-plm-border hover:border-cyan-400/50 hover:text-cyan-400 disabled:opacity-40 transition-colors"
+              >
+                {isExporting === 'iges' ? <Loader2 size={10} className="animate-spin" /> : <Package size={10} />}
+                IGES
+              </button>
+              <button
+                onClick={() => handleExport('stl')}
+                disabled={!!isExporting || !status.running}
+                className="flex items-center justify-center gap-1 px-2 py-1.5 rounded text-[10px] font-medium bg-plm-bg border border-plm-border hover:border-cyan-400/50 hover:text-cyan-400 disabled:opacity-40 transition-colors"
+              >
+                {isExporting === 'stl' ? <Loader2 size={10} className="animate-spin" /> : <Package size={10} />}
+                STL
+              </button>
+            </>
+          )}
+          {isDrawing && (
+            <>
+              <button
+                onClick={() => handleExport('pdf')}
+                disabled={!!isExporting || !status.running}
+                className="flex items-center justify-center gap-1 px-2 py-1.5 rounded text-[10px] font-medium bg-plm-bg border border-plm-border hover:border-cyan-400/50 hover:text-cyan-400 disabled:opacity-40 transition-colors"
+              >
+                {isExporting === 'pdf' ? <Loader2 size={10} className="animate-spin" /> : <FileOutput size={10} />}
+                PDF
+              </button>
+              <button
+                onClick={() => handleExport('dxf')}
+                disabled={!!isExporting || !status.running}
+                className="flex items-center justify-center gap-1 px-2 py-1.5 rounded text-[10px] font-medium bg-plm-bg border border-plm-border hover:border-cyan-400/50 hover:text-cyan-400 disabled:opacity-40 transition-colors"
+              >
+                {isExporting === 'dxf' ? <Loader2 size={10} className="animate-spin" /> : <Download size={10} />}
+                DXF
+              </button>
+            </>
+          )}
+          
+          {!status.running && (
+            <button
+              onClick={startService}
+              disabled={isStarting}
+              className="mt-auto flex items-center justify-center gap-1 px-2 py-1.5 rounded text-[9px] font-medium bg-amber-500/10 border border-amber-400/30 text-amber-400 hover:border-amber-400/50 transition-colors"
+              title="Start SolidWorks Service"
+            >
+              {isStarting ? <Loader2 size={10} className="animate-spin" /> : <Settings2 size={10} />}
+              Start
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -731,4 +731,3 @@ export function SWDatacardPanel({ file }: { file: LocalFile }) {
 }
 
 export default SWDatacardPanel
-

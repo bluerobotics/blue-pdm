@@ -416,11 +416,14 @@ CREATE TABLE files (
   
   -- Soft delete (trash bin)
   deleted_at TIMESTAMPTZ,           -- When the file was moved to trash (NULL = not deleted)
-  deleted_by UUID REFERENCES users(id),  -- Who deleted the file
-  
-  -- Unique constraint: one file path per vault (only for non-deleted files)
-  UNIQUE(vault_id, file_path)
+  deleted_by UUID REFERENCES users(id)  -- Who deleted the file
 );
+
+-- Partial unique index: only one active (non-deleted) file per path per vault
+-- This allows soft-deleted files with the same path to exist in trash
+CREATE UNIQUE INDEX idx_files_vault_path_unique_active 
+  ON files(vault_id, file_path) 
+  WHERE deleted_at IS NULL;
 
 -- Indexes for common queries
 CREATE INDEX idx_files_org_id ON files(org_id);
@@ -1049,13 +1052,24 @@ CREATE TABLE backup_config (
   access_key_encrypted TEXT,
   secret_key_encrypted TEXT,
   
-  -- Schedule
+  -- Schedule (detailed settings)
   schedule_enabled BOOLEAN DEFAULT false,
   schedule_cron TEXT DEFAULT '0 0 * * *',  -- Midnight daily by default
+  schedule_hour INT DEFAULT 0,
+  schedule_minute INT DEFAULT 0,
+  schedule_timezone TEXT DEFAULT 'UTC',
   
   -- Designated backup machine (NULL = any admin can run)
   designated_machine_id TEXT,
   designated_machine_name TEXT,
+  designated_machine_platform TEXT,
+  designated_machine_user_email TEXT,
+  designated_machine_last_seen TIMESTAMPTZ,
+  
+  -- Backup request tracking (for remote trigger)
+  backup_requested_at TIMESTAMPTZ,
+  backup_requested_by TEXT,
+  backup_running_since TIMESTAMPTZ,
   
   -- Retention policy (GFS - Grandfather-Father-Son)
   retention_daily INT DEFAULT 14,
@@ -1349,6 +1363,75 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
+-- Backup heartbeat function (updates designated machine last seen)
+CREATE OR REPLACE FUNCTION update_backup_heartbeat(
+  p_org_id UUID,
+  p_machine_id TEXT
+)
+RETURNS BOOLEAN AS $$
+BEGIN
+  UPDATE backup_config
+  SET designated_machine_last_seen = NOW()
+  WHERE org_id = p_org_id
+    AND designated_machine_id = p_machine_id;
+  
+  RETURN FOUND;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Request backup function (triggers backup request)
+CREATE OR REPLACE FUNCTION request_backup(
+  p_org_id UUID,
+  p_requested_by TEXT
+)
+RETURNS BOOLEAN AS $$
+BEGIN
+  UPDATE backup_config
+  SET 
+    backup_requested_at = NOW(),
+    backup_requested_by = p_requested_by
+  WHERE org_id = p_org_id
+    AND designated_machine_id IS NOT NULL;
+  
+  RETURN FOUND;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Start backup function (marks backup as running)
+CREATE OR REPLACE FUNCTION start_backup(
+  p_org_id UUID,
+  p_machine_id TEXT
+)
+RETURNS BOOLEAN AS $$
+BEGIN
+  UPDATE backup_config
+  SET 
+    backup_running_since = NOW(),
+    backup_requested_at = NULL,
+    backup_requested_by = NULL
+  WHERE org_id = p_org_id
+    AND designated_machine_id = p_machine_id;
+  
+  RETURN FOUND;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Complete backup function (clears running state)
+CREATE OR REPLACE FUNCTION complete_backup(
+  p_org_id UUID,
+  p_machine_id TEXT
+)
+RETURNS BOOLEAN AS $$
+BEGIN
+  UPDATE backup_config
+  SET backup_running_since = NULL
+  WHERE org_id = p_org_id
+    AND designated_machine_id = p_machine_id;
+  
+  RETURN FOUND;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
 -- ===========================================
 -- USEFUL QUERIES
 -- ===========================================
@@ -1465,6 +1548,85 @@ CREATE POLICY "Engineers can manage file-eco associations"
   USING (eco_id IN (SELECT id FROM ecos WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role IN ('admin', 'engineer'))));
 
 -- ===========================================
+-- ECO TAG SYNC FUNCTIONS
+-- ===========================================
+-- Automatically sync eco_tags array on files table when ECOs are added/removed
+
+-- Function to sync ECO tags to the files table
+CREATE OR REPLACE FUNCTION sync_file_eco_tags()
+RETURNS TRIGGER AS $$
+DECLARE
+  v_file_id UUID;
+  v_eco_numbers TEXT[];
+BEGIN
+  -- Determine which file_id to update
+  IF TG_OP = 'DELETE' THEN
+    v_file_id := OLD.file_id;
+  ELSE
+    v_file_id := NEW.file_id;
+  END IF;
+  
+  -- Get all ECO numbers for this file
+  SELECT COALESCE(array_agg(e.eco_number ORDER BY e.eco_number), '{}')
+  INTO v_eco_numbers
+  FROM file_ecos fe
+  INNER JOIN ecos e ON fe.eco_id = e.id
+  WHERE fe.file_id = v_file_id;
+  
+  -- Update the files table
+  UPDATE files
+  SET eco_tags = v_eco_numbers
+  WHERE id = v_file_id;
+  
+  RETURN NULL; -- For AFTER triggers, return value is ignored
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Trigger when ECO is added to a file
+DROP TRIGGER IF EXISTS trigger_sync_eco_tags_insert ON file_ecos;
+CREATE TRIGGER trigger_sync_eco_tags_insert
+  AFTER INSERT ON file_ecos
+  FOR EACH ROW
+  EXECUTE FUNCTION sync_file_eco_tags();
+
+-- Trigger when ECO is removed from a file
+DROP TRIGGER IF EXISTS trigger_sync_eco_tags_delete ON file_ecos;
+CREATE TRIGGER trigger_sync_eco_tags_delete
+  AFTER DELETE ON file_ecos
+  FOR EACH ROW
+  EXECUTE FUNCTION sync_file_eco_tags();
+
+-- Function to sync ECO tags when ECO number changes
+CREATE OR REPLACE FUNCTION sync_eco_tags_on_eco_update()
+RETURNS TRIGGER AS $$
+BEGIN
+  -- Only run if eco_number changed
+  IF OLD.eco_number IS DISTINCT FROM NEW.eco_number THEN
+    -- Update all files that have this ECO
+    UPDATE files f
+    SET eco_tags = (
+      SELECT COALESCE(array_agg(e.eco_number ORDER BY e.eco_number), '{}')
+      FROM file_ecos fe
+      INNER JOIN ecos e ON fe.eco_id = e.id
+      WHERE fe.file_id = f.id
+    )
+    WHERE f.id IN (
+      SELECT file_id FROM file_ecos WHERE eco_id = NEW.id
+    );
+  END IF;
+  
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Trigger when ECO number changes
+DROP TRIGGER IF EXISTS trigger_sync_eco_tags_on_eco_update ON ecos;
+CREATE TRIGGER trigger_sync_eco_tags_on_eco_update
+  AFTER UPDATE ON ecos
+  FOR EACH ROW
+  EXECUTE FUNCTION sync_eco_tags_on_eco_update();
+
+-- ===========================================
 -- REVIEWS & NOTIFICATIONS SYSTEM
 -- ===========================================
 
@@ -1500,6 +1662,10 @@ CREATE TABLE reviews (
   status review_status DEFAULT 'pending',
   completed_at TIMESTAMPTZ,
   
+  -- Scheduling
+  due_date TIMESTAMPTZ,                     -- When the review should be completed by
+  priority TEXT DEFAULT 'normal',           -- 'low', 'normal', 'high', 'urgent'
+  
   -- Timestamps
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -1510,6 +1676,8 @@ CREATE INDEX idx_reviews_file_id ON reviews(file_id);
 CREATE INDEX idx_reviews_requested_by ON reviews(requested_by);
 CREATE INDEX idx_reviews_status ON reviews(status);
 CREATE INDEX idx_reviews_created_at ON reviews(created_at DESC);
+CREATE INDEX idx_reviews_due_date ON reviews(due_date) WHERE due_date IS NOT NULL;
+CREATE INDEX idx_reviews_priority ON reviews(priority);
 
 -- Review responses (individual reviewer responses)
 CREATE TABLE review_responses (
@@ -2184,6 +2352,245 @@ CREATE POLICY "Users can update own comments"
 CREATE POLICY "Users can delete own comments"
   ON file_comments FOR DELETE
   USING (user_id = auth.uid());
+
+-- ===========================================
+-- FILE WATCHER NOTIFICATIONS
+-- ===========================================
+
+-- Function to notify file watchers on changes
+CREATE OR REPLACE FUNCTION notify_file_watchers()
+RETURNS TRIGGER AS $$
+DECLARE
+  watcher RECORD;
+  change_type TEXT;
+  notification_title TEXT;
+  notification_message TEXT;
+  actor_name TEXT;
+BEGIN
+  -- Determine what changed
+  IF TG_OP = 'UPDATE' THEN
+    -- Get actor name
+    SELECT COALESCE(full_name, email) INTO actor_name 
+    FROM users 
+    WHERE id = COALESCE(NEW.updated_by, auth.uid());
+    
+    -- Check for checkin
+    IF OLD.checked_out_by IS NOT NULL AND NEW.checked_out_by IS NULL THEN
+      change_type := 'checkin';
+      notification_title := 'File Checked In: ' || NEW.file_name;
+      notification_message := actor_name || ' checked in ' || NEW.file_name;
+    -- Check for checkout
+    ELSIF OLD.checked_out_by IS NULL AND NEW.checked_out_by IS NOT NULL THEN
+      change_type := 'checkout';
+      notification_title := 'File Checked Out: ' || NEW.file_name;
+      notification_message := actor_name || ' checked out ' || NEW.file_name;
+    -- Check for state change
+    ELSIF OLD.state IS DISTINCT FROM NEW.state THEN
+      change_type := 'state_change';
+      notification_title := 'File State Changed: ' || NEW.file_name;
+      notification_message := NEW.file_name || ' changed from ' || OLD.state || ' to ' || NEW.state;
+    ELSE
+      -- No significant change for watchers
+      RETURN NEW;
+    END IF;
+    
+    -- Notify all watchers except the person who made the change
+    FOR watcher IN 
+      SELECT fw.user_id 
+      FROM file_watchers fw 
+      WHERE fw.file_id = NEW.id
+      AND fw.user_id != COALESCE(NEW.updated_by, auth.uid())
+      AND (
+        (change_type = 'checkin' AND fw.notify_on_checkin = true) OR
+        (change_type = 'checkout' AND fw.notify_on_checkout = true) OR
+        (change_type = 'state_change' AND fw.notify_on_state_change = true)
+      )
+    LOOP
+      INSERT INTO notifications (org_id, user_id, type, title, message, file_id, from_user_id)
+      VALUES (
+        NEW.org_id, 
+        watcher.user_id, 
+        'file_updated', 
+        notification_title, 
+        notification_message,
+        NEW.id,
+        COALESCE(NEW.updated_by, auth.uid())
+      );
+    END LOOP;
+  END IF;
+  
+  RETURN NEW;
+EXCEPTION WHEN OTHERS THEN
+  -- Don't fail file operations if notification fails
+  RAISE WARNING 'File watcher notification failed: %', SQLERRM;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Trigger for file changes
+DROP TRIGGER IF EXISTS notify_watchers_on_file_change ON files;
+CREATE TRIGGER notify_watchers_on_file_change
+  AFTER UPDATE ON files
+  FOR EACH ROW
+  EXECUTE FUNCTION notify_file_watchers();
+
+-- ===========================================
+-- FILE SHARE LINK FUNCTIONS
+-- ===========================================
+
+-- Function to generate a unique share token
+CREATE OR REPLACE FUNCTION generate_share_token()
+RETURNS TEXT AS $$
+DECLARE
+  chars TEXT := 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  result TEXT := '';
+  i INTEGER;
+BEGIN
+  FOR i IN 1..12 LOOP
+    result := result || substr(chars, floor(random() * length(chars) + 1)::int, 1);
+  END LOOP;
+  RETURN result;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Function to create a share link
+CREATE OR REPLACE FUNCTION create_file_share_link(
+  p_org_id UUID,
+  p_file_id UUID,
+  p_created_by UUID,
+  p_expires_in_days INTEGER DEFAULT NULL,
+  p_max_downloads INTEGER DEFAULT NULL,
+  p_require_auth BOOLEAN DEFAULT false
+)
+RETURNS TABLE (
+  link_id UUID,
+  token TEXT,
+  expires_at TIMESTAMPTZ
+) AS $$
+DECLARE
+  v_token TEXT;
+  v_expires_at TIMESTAMPTZ;
+  v_link_id UUID;
+BEGIN
+  -- Generate unique token
+  LOOP
+    v_token := generate_share_token();
+    EXIT WHEN NOT EXISTS (SELECT 1 FROM file_share_links WHERE file_share_links.token = v_token);
+  END LOOP;
+  
+  -- Calculate expiration
+  IF p_expires_in_days IS NOT NULL THEN
+    v_expires_at := NOW() + (p_expires_in_days || ' days')::interval;
+  END IF;
+  
+  -- Create the link
+  INSERT INTO file_share_links (org_id, file_id, token, created_by, expires_at, max_downloads, require_auth)
+  VALUES (p_org_id, p_file_id, v_token, p_created_by, v_expires_at, p_max_downloads, p_require_auth)
+  RETURNING id INTO v_link_id;
+  
+  RETURN QUERY SELECT v_link_id, v_token, v_expires_at;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Function to validate and increment download count for share link
+CREATE OR REPLACE FUNCTION validate_share_link(p_token TEXT)
+RETURNS TABLE (
+  is_valid BOOLEAN,
+  file_id UUID,
+  org_id UUID,
+  file_version INTEGER,
+  error_message TEXT
+) AS $$
+DECLARE
+  v_link RECORD;
+BEGIN
+  -- Get the link
+  SELECT * INTO v_link FROM file_share_links WHERE token = p_token;
+  
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT false::boolean, NULL::uuid, NULL::uuid, NULL::integer, 'Link not found'::text;
+    RETURN;
+  END IF;
+  
+  -- Check if active
+  IF NOT v_link.is_active THEN
+    RETURN QUERY SELECT false::boolean, NULL::uuid, NULL::uuid, NULL::integer, 'Link has been deactivated'::text;
+    RETURN;
+  END IF;
+  
+  -- Check expiration
+  IF v_link.expires_at IS NOT NULL AND v_link.expires_at < NOW() THEN
+    RETURN QUERY SELECT false::boolean, NULL::uuid, NULL::uuid, NULL::integer, 'Link has expired'::text;
+    RETURN;
+  END IF;
+  
+  -- Check download limit
+  IF v_link.max_downloads IS NOT NULL AND v_link.download_count >= v_link.max_downloads THEN
+    RETURN QUERY SELECT false::boolean, NULL::uuid, NULL::uuid, NULL::integer, 'Download limit reached'::text;
+    RETURN;
+  END IF;
+  
+  -- Increment download count and update last accessed
+  UPDATE file_share_links 
+  SET download_count = download_count + 1, last_accessed_at = NOW()
+  WHERE token = p_token;
+  
+  RETURN QUERY SELECT true::boolean, v_link.file_id, v_link.org_id, v_link.file_version, NULL::text;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ===========================================
+-- OVERDUE REVIEW NOTIFICATIONS
+-- ===========================================
+
+-- Function to check for overdue reviews and notify
+-- Call this periodically via cron or Edge Function
+CREATE OR REPLACE FUNCTION notify_overdue_reviews()
+RETURNS INTEGER AS $$
+DECLARE
+  overdue_review RECORD;
+  notified_count INTEGER := 0;
+BEGIN
+  -- Find reviews that are past due and still pending
+  FOR overdue_review IN
+    SELECT r.id, r.org_id, r.file_id, r.requested_by, r.due_date, f.file_name,
+           rr.reviewer_id
+    FROM reviews r
+    JOIN files f ON r.file_id = f.id
+    JOIN review_responses rr ON r.id = rr.review_id
+    WHERE r.status = 'pending'
+    AND r.due_date IS NOT NULL
+    AND r.due_date < NOW()
+    AND rr.status = 'pending'
+    -- Only notify once per day (check if we already notified today)
+    AND NOT EXISTS (
+      SELECT 1 FROM notifications n 
+      WHERE n.review_id = r.id 
+      AND n.user_id = rr.reviewer_id
+      AND n.type = 'review_request'
+      AND n.title LIKE '%OVERDUE%'
+      AND n.created_at > NOW() - INTERVAL '1 day'
+    )
+  LOOP
+    -- Notify the reviewer
+    INSERT INTO notifications (org_id, user_id, type, title, message, review_id, file_id, from_user_id)
+    VALUES (
+      overdue_review.org_id,
+      overdue_review.reviewer_id,
+      'review_request',
+      'OVERDUE: Review Request for ' || overdue_review.file_name,
+      'This review was due ' || to_char(overdue_review.due_date, 'Mon DD, YYYY') || '. Please review as soon as possible.',
+      overdue_review.id,
+      overdue_review.file_id,
+      overdue_review.requested_by
+    );
+    
+    notified_count := notified_count + 1;
+  END LOOP;
+  
+  RETURN notified_count;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- ===========================================
 -- GOOGLE DRIVE INTEGRATION FUNCTIONS
@@ -3771,6 +4178,55 @@ $$;
 
 GRANT EXECUTE ON FUNCTION get_org_module_defaults(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION set_org_module_defaults(UUID, JSONB, JSONB, JSONB, JSONB) TO authenticated;
+
+-- ===========================================
+-- COLUMN DEFAULTS
+-- ===========================================
+
+-- Helper function to get column defaults for an organization
+CREATE OR REPLACE FUNCTION get_org_column_defaults(p_org_id UUID)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  RETURN (
+    SELECT COALESCE(settings->'column_defaults', '[]'::jsonb)
+    FROM organizations
+    WHERE id = p_org_id
+  );
+END;
+$$;
+
+-- Helper function to set column defaults for an organization (admin only)
+CREATE OR REPLACE FUNCTION set_org_column_defaults(p_org_id UUID, p_column_defaults JSONB)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_user_role user_role;
+BEGIN
+  -- Check if user is admin
+  SELECT role INTO v_user_role
+  FROM users
+  WHERE id = auth.uid() AND org_id = p_org_id;
+  
+  IF v_user_role != 'admin' THEN
+    RAISE EXCEPTION 'Only admins can set column defaults';
+  END IF;
+  
+  -- Update the settings
+  UPDATE organizations
+  SET settings = COALESCE(settings, '{}'::jsonb) || jsonb_build_object('column_defaults', p_column_defaults)
+  WHERE id = p_org_id;
+  
+  RETURN TRUE;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION get_org_column_defaults(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION set_org_column_defaults(UUID, JSONB) TO authenticated;
 
 -- ===========================================
 -- SERIALIZATION (SEQUENTIAL ITEM NUMBERS)

@@ -45,15 +45,20 @@ export type ThemeMode = 'dark' | 'deep-blue' | 'light' | 'christmas' | 'hallowee
 export type Language = 'en' | 'fr' | 'de' | 'es' | 'it' | 'pt' | 'ja' | 'zh-CN' | 'zh-TW' | 'ko' | 'nl' | 'sv' | 'pl' | 'ru' | 'sindarin'
 export type DiffStatus = 'added' | 'modified' | 'deleted' | 'outdated' | 'cloud' | 'cloud_new' | 'moved' | 'ignored' | 'deleted_remote'
 
-// Tab system - browser-like tabs for multiple views
+// Tab system - browser-like tabs for file browser workspaces
+export interface TabPanelState {
+  sidebarVisible: boolean
+  detailsPanelVisible: boolean
+  rightPanelVisible: boolean
+}
+
 export interface Tab {
   id: string              // Unique tab ID
-  view: SidebarView       // The view this tab displays
-  title: string           // Tab display title
-  icon?: string           // Optional icon name (Lucide icon)
+  title: string           // Tab display title (folder name or custom)
+  folderPath: string      // Current folder path in file browser
+  panelState: TabPanelState  // Which panels are visible
   groupId?: string        // Optional tab group ID
   isPinned?: boolean      // Pinned tabs can't be closed easily
-  customData?: Record<string, unknown>  // View-specific data (e.g., folder path, ECO ID)
 }
 
 export interface TabGroup {
@@ -561,12 +566,10 @@ interface PDMState {
   setDetailsPanelHeight: (height: number) => void
   setDetailsPanelTab: (tab: DetailsPanelTab) => void
   
-  // Actions - Tabs
+  // Actions - Tabs (file browser workspaces)
   setTabsEnabled: (enabled: boolean) => void
-  addTab: (view: SidebarView, title?: string, customData?: Record<string, unknown>) => string  // Returns tab ID
+  addTab: (folderPath?: string, title?: string) => string  // Returns tab ID
   closeTab: (tabId: string) => void
-  closeTabsToRight: (tabId: string) => void
-  closeAllTabs: () => void
   closeOtherTabs: (tabId: string) => void
   setActiveTab: (tabId: string) => void
   moveTab: (tabId: string, newIndex: number) => void
@@ -574,15 +577,15 @@ interface PDMState {
   unpinTab: (tabId: string) => void
   duplicateTab: (tabId: string) => string  // Returns new tab ID
   updateTabTitle: (tabId: string, title: string) => void
-  updateTabCustomData: (tabId: string, data: Record<string, unknown>) => void
+  updateTabFolder: (tabId: string, folderPath: string) => void
+  updateTabPanelState: (tabId: string, panelState: Partial<TabPanelState>) => void
+  syncCurrentTabWithState: () => void  // Syncs current folder and panels to active tab
   // Tab Groups
   createTabGroup: (name: string, color: string) => string  // Returns group ID
   deleteTabGroup: (groupId: string) => void
   renameTabGroup: (groupId: string, name: string) => void
-  setTabGroupColor: (groupId: string, color: string) => void
   addTabToGroup: (tabId: string, groupId: string) => void
   removeTabFromGroup: (tabId: string) => void
-  toggleTabGroupCollapsed: (groupId: string) => void
   
   // Actions - Right Panel
   toggleRightPanel: () => void
@@ -735,11 +738,16 @@ export const usePDMStore = create<PDMState>()(
       rightPanelTab: null,
       rightPanelTabs: [],
       
-      // Tabs (browser-like tab system)
-      tabs: [],
-      activeTabId: null,
+      // Tabs (file browser workspaces)
+      tabs: [{
+        id: 'default-tab',
+        title: 'Explorer',
+        folderPath: '',
+        panelState: { sidebarVisible: true, detailsPanelVisible: true, rightPanelVisible: false }
+      }],
+      activeTabId: 'default-tab',
       tabGroups: [],
-      tabsEnabled: false,  // Disabled by default, users can enable in settings
+      tabsEnabled: false,  // Disabled by default, users can enable via breadcrumb icon
       
       // Google Drive navigation
       gdriveCurrentFolderId: null,
@@ -1711,7 +1719,19 @@ export const usePDMStore = create<PDMState>()(
       setCheckedOutFilter: (checkedOutFilter) => set({ checkedOutFilter }),
       
       // Actions - Layout
-      toggleSidebar: () => set((s) => ({ sidebarVisible: !s.sidebarVisible })),
+      toggleSidebar: () => {
+        const { sidebarVisible, tabsEnabled, activeTabId, tabs } = get()
+        const newVisible = !sidebarVisible
+        set({ sidebarVisible: newVisible })
+        // Sync with active tab if tabs enabled
+        if (tabsEnabled && activeTabId) {
+          set({
+            tabs: tabs.map(t => 
+              t.id === activeTabId ? { ...t, panelState: { ...t.panelState, sidebarVisible: newVisible } } : t
+            )
+          })
+        }
+      },
       setSidebarWidth: (width) => set({ sidebarWidth: Math.max(200, Math.min(900, width)) }),
       setActivityBarMode: (mode) => set({ activityBarMode: mode }),
       setActiveView: (activeView) => set({ activeView, sidebarVisible: true }),
@@ -1723,52 +1743,50 @@ export const usePDMStore = create<PDMState>()(
       }),
       setGdriveOpenDocument: (doc) => set({ gdriveOpenDocument: doc }),
       incrementGdriveAuthVersion: () => set((s) => ({ gdriveAuthVersion: s.gdriveAuthVersion + 1 })),
-      toggleDetailsPanel: () => set((s) => ({ detailsPanelVisible: !s.detailsPanelVisible })),
+      toggleDetailsPanel: () => {
+        const { detailsPanelVisible, tabsEnabled, activeTabId, tabs } = get()
+        const newVisible = !detailsPanelVisible
+        set({ detailsPanelVisible: newVisible })
+        // Sync with active tab if tabs enabled
+        if (tabsEnabled && activeTabId) {
+          set({
+            tabs: tabs.map(t => 
+              t.id === activeTabId ? { ...t, panelState: { ...t.panelState, detailsPanelVisible: newVisible } } : t
+            )
+          })
+        }
+      },
       setDetailsPanelHeight: (height) => set({ detailsPanelHeight: Math.max(100, Math.min(1200, height)) }),
       setDetailsPanelTab: (detailsPanelTab) => set({ detailsPanelTab }),
       
-      // Actions - Tabs
+      // Actions - Tabs (file browser workspaces)
       setTabsEnabled: (enabled) => set({ tabsEnabled: enabled }),
       
-      addTab: (view, title, customData) => {
+      addTab: (folderPath, title) => {
+        const { currentFolder, sidebarVisible, detailsPanelVisible, rightPanelVisible } = get()
         const id = `tab-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
-        const defaultTitles: Record<SidebarView, string> = {
-          explorer: 'Explorer',
-          pending: 'Pending',
-          search: 'Search',
-          workflows: 'Workflows',
-          history: 'History',
-          trash: 'Trash',
-          terminal: 'Terminal',
-          eco: 'ECOs',
-          ecr: 'ECRs',
-          products: 'Products',
-          process: 'Process',
-          schedule: 'Schedule',
-          reviews: 'Reviews',
-          gsd: 'GSD',
-          deviations: 'Deviations',
-          suppliers: 'Suppliers',
-          'supplier-portal': 'Supplier Portal',
-          'google-drive': 'Google Drive',
-          settings: 'Settings',
-        }
+        const folder = folderPath ?? currentFolder
+        const folderName = folder ? folder.split(/[/\\]/).pop() || 'Root' : 'Explorer'
+        
         const newTab: Tab = {
           id,
-          view,
-          title: title || defaultTitles[view] || view,
-          customData,
+          title: title || folderName,
+          folderPath: folder,
+          panelState: { sidebarVisible, detailsPanelVisible, rightPanelVisible }
         }
         set((s) => ({
           tabs: [...s.tabs, newTab],
           activeTabId: id,
-          activeView: view,
         }))
         return id
       },
       
       closeTab: (tabId) => {
         const { tabs, activeTabId } = get()
+        
+        // Always keep at least one tab
+        if (tabs.length <= 1) return
+        
         const tabIndex = tabs.findIndex(t => t.id === tabId)
         if (tabIndex === -1) return
         
@@ -1780,46 +1798,26 @@ export const usePDMStore = create<PDMState>()(
         
         // If closing active tab, switch to adjacent tab
         let newActiveId = activeTabId
+        let newActiveTab: Tab | undefined
         if (activeTabId === tabId && newTabs.length > 0) {
           const newIndex = Math.min(tabIndex, newTabs.length - 1)
-          newActiveId = newTabs[newIndex].id
-        } else if (newTabs.length === 0) {
-          newActiveId = null
+          newActiveTab = newTabs[newIndex]
+          newActiveId = newActiveTab.id
         }
         
-        set({
-          tabs: newTabs,
-          activeTabId: newActiveId,
-          activeView: newActiveId ? newTabs.find(t => t.id === newActiveId)?.view || 'explorer' : 'explorer',
-        })
-      },
-      
-      closeTabsToRight: (tabId) => {
-        const { tabs, activeTabId } = get()
-        const tabIndex = tabs.findIndex(t => t.id === tabId)
-        if (tabIndex === -1) return
-        
-        const newTabs = tabs.slice(0, tabIndex + 1)
-        const activeStillExists = newTabs.some(t => t.id === activeTabId)
-        
-        set({
-          tabs: newTabs,
-          activeTabId: activeStillExists ? activeTabId : tabId,
-          activeView: activeStillExists 
-            ? get().activeView 
-            : newTabs.find(t => t.id === tabId)?.view || 'explorer',
-        })
-      },
-      
-      closeAllTabs: () => {
-        const { tabs } = get()
-        // Keep pinned tabs
-        const pinnedTabs = tabs.filter(t => t.isPinned)
-        set({
-          tabs: pinnedTabs,
-          activeTabId: pinnedTabs.length > 0 ? pinnedTabs[0].id : null,
-          activeView: pinnedTabs.length > 0 ? pinnedTabs[0].view : 'explorer',
-        })
+        // Restore the new active tab's state
+        if (newActiveTab) {
+          set({
+            tabs: newTabs,
+            activeTabId: newActiveId,
+            currentFolder: newActiveTab.folderPath,
+            sidebarVisible: newActiveTab.panelState.sidebarVisible,
+            detailsPanelVisible: newActiveTab.panelState.detailsPanelVisible,
+            rightPanelVisible: newActiveTab.panelState.rightPanelVisible,
+          })
+        } else {
+          set({ tabs: newTabs, activeTabId: newActiveId })
+        }
       },
       
       closeOtherTabs: (tabId) => {
@@ -1832,17 +1830,22 @@ export const usePDMStore = create<PDMState>()(
         set({
           tabs: newTabs,
           activeTabId: tabId,
-          activeView: tab.view,
         })
       },
       
       setActiveTab: (tabId) => {
-        const { tabs } = get()
+        const { tabs, activeTabId } = get()
+        if (tabId === activeTabId) return
+        
         const tab = tabs.find(t => t.id === tabId)
         if (tab) {
+          // Restore the tab's folder and panel state
           set({
             activeTabId: tabId,
-            activeView: tab.view,
+            currentFolder: tab.folderPath,
+            sidebarVisible: tab.panelState.sidebarVisible,
+            detailsPanelVisible: tab.panelState.detailsPanelVisible,
+            rightPanelVisible: tab.panelState.rightPanelVisible,
           })
         }
       },
@@ -1915,11 +1918,38 @@ export const usePDMStore = create<PDMState>()(
         })
       },
       
-      updateTabCustomData: (tabId, data) => {
+      updateTabFolder: (tabId, folderPath) => {
+        const { tabs } = get()
+        const folderName = folderPath ? folderPath.split(/[/\\]/).pop() || 'Root' : 'Explorer'
+        set({
+          tabs: tabs.map(t => 
+            t.id === tabId ? { ...t, folderPath, title: folderName } : t
+          )
+        })
+      },
+      
+      updateTabPanelState: (tabId, panelState) => {
         const { tabs } = get()
         set({
           tabs: tabs.map(t => 
-            t.id === tabId ? { ...t, customData: { ...t.customData, ...data } } : t
+            t.id === tabId ? { ...t, panelState: { ...t.panelState, ...panelState } } : t
+          )
+        })
+      },
+      
+      syncCurrentTabWithState: () => {
+        const { activeTabId, tabs, currentFolder, sidebarVisible, detailsPanelVisible, rightPanelVisible } = get()
+        if (!activeTabId) return
+        
+        const folderName = currentFolder ? currentFolder.split(/[/\\]/).pop() || 'Root' : 'Explorer'
+        set({
+          tabs: tabs.map(t => 
+            t.id === activeTabId ? {
+              ...t,
+              folderPath: currentFolder,
+              title: folderName,
+              panelState: { sidebarVisible, detailsPanelVisible, rightPanelVisible }
+            } : t
           )
         })
       },
@@ -1936,7 +1966,6 @@ export const usePDMStore = create<PDMState>()(
       
       deleteTabGroup: (groupId) => {
         const { tabGroups, tabs } = get()
-        // Remove group and ungroup all tabs in it
         set({
           tabGroups: tabGroups.filter(g => g.id !== groupId),
           tabs: tabs.map(t => 
@@ -1950,15 +1979,6 @@ export const usePDMStore = create<PDMState>()(
         set({
           tabGroups: tabGroups.map(g => 
             g.id === groupId ? { ...g, name } : g
-          )
-        })
-      },
-      
-      setTabGroupColor: (groupId, color) => {
-        const { tabGroups } = get()
-        set({
-          tabGroups: tabGroups.map(g => 
-            g.id === groupId ? { ...g, color } : g
           )
         })
       },
@@ -1981,18 +2001,10 @@ export const usePDMStore = create<PDMState>()(
         })
       },
       
-      toggleTabGroupCollapsed: (groupId) => {
-        const { tabGroups } = get()
-        set({
-          tabGroups: tabGroups.map(g => 
-            g.id === groupId ? { ...g, collapsed: !g.collapsed } : g
-          )
-        })
-      },
-      
       // Actions - Right Panel
       toggleRightPanel: () => {
-        const { rightPanelVisible, rightPanelTabs } = get()
+        const { rightPanelVisible, rightPanelTabs, tabsEnabled, activeTabId, tabs } = get()
+        let newVisible: boolean
         if (!rightPanelVisible && rightPanelTabs.length === 0) {
           // If showing right panel but no tabs, add properties tab
           set({ 
@@ -2000,8 +2012,18 @@ export const usePDMStore = create<PDMState>()(
             rightPanelTabs: ['properties'], 
             rightPanelTab: 'properties' 
           })
+          newVisible = true
         } else {
-          set({ rightPanelVisible: !rightPanelVisible })
+          newVisible = !rightPanelVisible
+          set({ rightPanelVisible: newVisible })
+        }
+        // Sync with active tab if tabs enabled
+        if (tabsEnabled && activeTabId) {
+          set({
+            tabs: tabs.map(t => 
+              t.id === activeTabId ? { ...t, panelState: { ...t.panelState, rightPanelVisible: newVisible } } : t
+            )
+          })
         }
       },
       setRightPanelWidth: (width) => set({ rightPanelWidth: Math.max(200, Math.min(1200, width)) }),
@@ -2741,6 +2763,32 @@ export const usePDMStore = create<PDMState>()(
             const customGroups = persistedConfig.customGroups || defaults.customGroups
             
             return { enabledModules, enabledGroups, moduleOrder, dividers, moduleParents, moduleIconColors, customGroups }
+          })(),
+          // Ensure there's always at least one tab
+          tabs: (() => {
+            const persistedTabs = persisted.tabs as Tab[] | undefined
+            if (!persistedTabs || persistedTabs.length === 0) {
+              return [{
+                id: 'default-tab',
+                title: 'Explorer',
+                folderPath: '',
+                panelState: { sidebarVisible: true, detailsPanelVisible: true, rightPanelVisible: false }
+              }]
+            }
+            return persistedTabs
+          })(),
+          activeTabId: (() => {
+            const persistedTabs = persisted.tabs as Tab[] | undefined
+            const persistedActiveTabId = persisted.activeTabId as string | undefined
+            if (!persistedTabs || persistedTabs.length === 0) {
+              return 'default-tab'
+            }
+            // Ensure activeTabId points to a valid tab
+            const validTabIds = new Set(persistedTabs.map(t => t.id))
+            if (persistedActiveTabId && validTabIds.has(persistedActiveTabId)) {
+              return persistedActiveTabId
+            }
+            return persistedTabs[0]?.id || 'default-tab'
           })()
         }
       }

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { registerModule, unregisterModule } from '@/lib/telemetry'
-import { LogOut, ChevronDown, Building2, Search, File, Folder, LayoutGrid, Database, ZoomIn, Minus, Plus, RotateCcw, Monitor, Laptop, Loader2, Settings, WifiOff, PanelLeft, PanelBottom, PanelRight, SlidersHorizontal, Gauge, Users, Activity, User } from 'lucide-react'
+import { LogOut, ChevronDown, Building2, Search, File, Folder, LayoutGrid, Database, ZoomIn, Minus, Plus, RotateCcw, Monitor, Laptop, Loader2, Settings, WifiOff, PanelLeft, PanelBottom, PanelRight, SlidersHorizontal, Gauge, Users, Activity, User, Layers } from 'lucide-react'
 import { usePDMStore } from '../stores/pdmStore'
 import { signInWithGoogle, signOut, isSupabaseConfigured, getActiveSessions, endRemoteSession, UserSession, supabase } from '../lib/supabase'
 import { getInitials } from '../types/pdm'
@@ -91,7 +91,9 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
     rightPanelVisible,
     toggleRightPanel,
     topbarConfig,
-    setTopbarConfig
+    setTopbarConfig,
+    tabsEnabled,
+    setTabsEnabled
   } = usePDMStore()
   
   // Register module for telemetry tracking
@@ -870,6 +872,18 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
                     <span className="flex-1 text-left">Panel Toggles</span>
                     <div className={`w-8 h-4 rounded-full transition-colors relative ${topbarConfig.showPanelToggles ? 'bg-plm-accent' : 'bg-plm-border'}`}>
                       <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm transition-transform ${topbarConfig.showPanelToggles ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                    </div>
+                  </button>
+                  
+                  {/* Tab Bar */}
+                  <button
+                    onClick={() => setTabsEnabled(!tabsEnabled)}
+                    className="w-full flex items-center gap-2.5 px-3 py-1.5 text-sm text-plm-fg hover:bg-plm-bg-lighter transition-colors"
+                  >
+                    <span className="text-plm-fg-muted"><Layers size={14} /></span>
+                    <span className="flex-1 text-left">Tab Bar</span>
+                    <div className={`w-8 h-4 rounded-full transition-colors relative ${tabsEnabled ? 'bg-plm-accent' : 'bg-plm-border'}`}>
+                      <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm transition-transform ${tabsEnabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
                     </div>
                   </button>
                   

@@ -46,7 +46,7 @@ export class ErrorBoundary extends Component<Props, State> {
     }
   }
 
-  handleCopyLogs = () => {
+  handleCopyLogs = async () => {
     const { error, errorInfo } = this.state
     const timestamp = new Date().toISOString()
     
@@ -66,9 +66,33 @@ Component Stack:
 ${errorInfo?.componentStack || 'No component stack available'}
 `
     
-    navigator.clipboard.writeText(logContent)
-    this.setState({ copied: true })
-    setTimeout(() => this.setState({ copied: false }), 2000)
+    try {
+      // Try Electron clipboard API first (more reliable)
+      if (window.electronAPI?.copyToClipboard) {
+        const result = await window.electronAPI.copyToClipboard(logContent)
+        if (result.success) {
+          this.setState({ copied: true })
+          setTimeout(() => this.setState({ copied: false }), 2000)
+          return
+        }
+      }
+      
+      // Fallback to navigator.clipboard
+      await navigator.clipboard.writeText(logContent)
+      this.setState({ copied: true })
+      setTimeout(() => this.setState({ copied: false }), 2000)
+    } catch (err) {
+      console.error('Failed to copy to clipboard:', err)
+      // Last resort: select text for manual copy
+      const textArea = document.createElement('textarea')
+      textArea.value = logContent
+      document.body.appendChild(textArea)
+      textArea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textArea)
+      this.setState({ copied: true })
+      setTimeout(() => this.setState({ copied: false }), 2000)
+    }
   }
 
   handleReload = () => {
