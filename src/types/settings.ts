@@ -8,6 +8,7 @@ export type SettingsTab =
   | 'vaults'
   | 'members'
   | 'company-profile' 
+  | 'serialization'
   | 'rfq' 
   | 'metadata-columns' 
   | 'backup' 

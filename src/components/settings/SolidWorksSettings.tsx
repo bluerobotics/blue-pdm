@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Image, ExternalLink, FolderOpen, Info, Key, Play, Square, Loader2, Check, EyeOff, Eye, FileX, X } from 'lucide-react'
+import { Image, ExternalLink, FolderOpen, Info, Key, Play, Square, Loader2, Check, EyeOff, Eye, FileX, X, RefreshCw, Database } from 'lucide-react'
 import { usePDMStore } from '../../stores/pdmStore'
 import { supabase } from '../../lib/supabase'
+import { executeCommand } from '../../lib/commands'
 
 // Cast supabase client to bypass known v2 type inference issues
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -132,6 +133,10 @@ export function SolidWorksSettings() {
   const [dmLicenseKeyInput, setDmLicenseKeyInput] = useState(organization?.settings?.solidworks_dm_license_key || '')
   const [isSavingLicenseKey, setIsSavingLicenseKey] = useState(false)
   const [showLicenseKey, setShowLicenseKey] = useState(false)
+  
+  // Vault metadata sync state
+  const [isSyncingMetadata, setIsSyncingMetadata] = useState(false)
+  const [lastMetadataSyncResult, setLastMetadataSyncResult] = useState<{ updated: number; unchanged: number; failed: number } | null>(null)
   
   // Update local state when organization changes
   useEffect(() => {
@@ -274,6 +279,60 @@ export function SolidWorksSettings() {
       addToast('error', err instanceof Error ? err.message : 'Failed to clear license key')
     } finally {
       setIsSavingLicenseKey(false)
+    }
+  }
+  
+  // Get all synced SolidWorks files from the current store
+  const { files } = usePDMStore()
+  const swExtensions = ['.sldprt', '.sldasm', '.slddrw']
+  const syncedSwFiles = files.filter(f => 
+    !f.isDirectory && 
+    f.pdmData?.id && 
+    swExtensions.includes(f.extension.toLowerCase())
+  )
+  
+  const handleSyncAllVaultMetadata = async () => {
+    if (!status.running) {
+      addToast('error', 'SolidWorks service must be running to sync metadata')
+      return
+    }
+    
+    if (syncedSwFiles.length === 0) {
+      addToast('info', 'No SolidWorks files found in vault to sync')
+      return
+    }
+    
+    setIsSyncingMetadata(true)
+    setLastMetadataSyncResult(null)
+    
+    try {
+      const result = await executeCommand('sync-sw-metadata', { files: syncedSwFiles })
+      
+      // Parse result to show stats
+      // Result message is like "Synced 10 files: 5 updated, 5 unchanged"
+      const updated = result.details?.filter(d => d.includes('updated')).length || 
+        (result.message?.match(/(\d+) updated/)?.[1] ? parseInt(result.message.match(/(\d+) updated/)![1]) : 0)
+      const unchanged = result.message?.match(/(\d+) unchanged/)?.[1] 
+        ? parseInt(result.message.match(/(\d+) unchanged/)![1]) 
+        : result.succeeded - updated
+      
+      setLastMetadataSyncResult({
+        updated: updated,
+        unchanged: unchanged,
+        failed: result.failed
+      })
+      
+      if (result.failed > 0) {
+        addToast('warning', `Synced ${result.succeeded}/${result.total} files. ${result.failed} failed.`)
+      } else if (updated > 0) {
+        addToast('success', `Metadata synced! ${updated} file${updated > 1 ? 's' : ''} updated.`)
+      } else {
+        addToast('info', 'All metadata is already up to date')
+      }
+    } catch (err) {
+      addToast('error', `Metadata sync failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
+    } finally {
+      setIsSyncingMetadata(false)
     }
   }
 
@@ -748,6 +807,87 @@ export function SolidWorksSettings() {
                 </p>
               </div>
             </>
+          )}
+        </div>
+      </div>
+
+      {/* Vault Metadata Sync */}
+      <div className="space-y-3">
+        <label className="text-sm text-plm-fg-muted uppercase tracking-wide font-medium">
+          Vault Metadata Sync
+        </label>
+        <div className="p-4 bg-plm-bg rounded-lg border border-plm-border space-y-4">
+          <div className="flex items-start gap-2 text-sm text-plm-fg-muted">
+            <Database size={16} className="mt-0.5 flex-shrink-0" />
+            <span>
+              Extract part numbers, descriptions, and revisions from SolidWorks custom properties 
+              and sync them to the database. This is useful after bulk imports or if metadata 
+              wasn't extracted during initial check-in.
+            </span>
+          </div>
+          
+          {/* File count and sync button */}
+          <div className="flex items-center justify-between pt-2 border-t border-plm-border">
+            <div>
+              <div className="text-sm text-plm-fg">
+                {syncedSwFiles.length > 0 
+                  ? `${syncedSwFiles.length} SolidWorks file${syncedSwFiles.length > 1 ? 's' : ''} in vault`
+                  : 'No SolidWorks files found'
+                }
+              </div>
+              <div className="text-xs text-plm-fg-muted">
+                Parts, assemblies, and drawings with server records
+              </div>
+            </div>
+            <button
+              onClick={handleSyncAllVaultMetadata}
+              disabled={isSyncingMetadata || !status.running || syncedSwFiles.length === 0}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                !status.running 
+                  ? 'bg-plm-bg-secondary text-plm-fg-dim cursor-not-allowed'
+                  : isSyncingMetadata
+                    ? 'bg-plm-accent/50 text-white cursor-wait'
+                    : 'bg-plm-accent text-white hover:bg-plm-accent/80'
+              }`}
+              title={!status.running ? 'Start the SolidWorks service first' : undefined}
+            >
+              {isSyncingMetadata ? (
+                <Loader2 size={16} className="animate-spin" />
+              ) : (
+                <RefreshCw size={16} />
+              )}
+              {isSyncingMetadata ? 'Syncing...' : 'Sync All Vault Metadata'}
+            </button>
+          </div>
+          
+          {/* Last sync result */}
+          {lastMetadataSyncResult && (
+            <div className="flex items-center gap-4 text-sm pt-2 border-t border-plm-border">
+              <span className="text-plm-fg-muted">Last sync:</span>
+              {lastMetadataSyncResult.updated > 0 && (
+                <span className="text-green-400">
+                  {lastMetadataSyncResult.updated} updated
+                </span>
+              )}
+              {lastMetadataSyncResult.unchanged > 0 && (
+                <span className="text-plm-fg-dim">
+                  {lastMetadataSyncResult.unchanged} unchanged
+                </span>
+              )}
+              {lastMetadataSyncResult.failed > 0 && (
+                <span className="text-red-400">
+                  {lastMetadataSyncResult.failed} failed
+                </span>
+              )}
+            </div>
+          )}
+          
+          {/* Warning if service not running */}
+          {!status.running && (
+            <div className="flex items-center gap-2 text-sm text-yellow-400 pt-2 border-t border-plm-border">
+              <Info size={14} />
+              Start the SolidWorks service to enable metadata extraction
+            </div>
           )}
         </div>
       </div>

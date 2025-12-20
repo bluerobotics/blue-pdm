@@ -6,6 +6,7 @@ import {
   VaultsSettings,
   MembersSettings,
   CompanyProfileSettings,
+  SerializationSettings,
   RFQSettings,
   MetadataColumnsSettings,
   BackupSettings,
@@ -46,6 +47,8 @@ export function SettingsContent({ activeTab }: SettingsContentProps) {
         return <MembersSettings />
       case 'company-profile':
         return <CompanyProfileSettings />
+      case 'serialization':
+        return <SerializationSettings />
       case 'rfq':
         return <RFQSettings />
       case 'metadata-columns':

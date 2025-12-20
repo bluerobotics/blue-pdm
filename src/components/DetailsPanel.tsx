@@ -5,7 +5,9 @@ import { format, formatDistanceToNow } from 'date-fns'
 import { getFileVersions, getRecentActivity, updateFileMetadata } from '../lib/supabase'
 import { rollbackToVersion } from '../lib/fileService'
 import { downloadFile } from '../lib/storage'
+import { getNextSerialNumber } from '../lib/serialization'
 import { ContainsTab, WhereUsedTab, SWPropertiesTab } from './SolidWorksPanel'
+import { SWDatacardPanel } from './SWDatacardPanel'
 import { 
   FileBox, 
   Layers, 
@@ -42,7 +44,8 @@ import {
   X,
   ZoomIn,
   ZoomOut,
-  RotateCw
+  RotateCw,
+  Sparkles
 } from 'lucide-react'
 
 // Component to load OS icon for files
@@ -186,6 +189,7 @@ export function DetailsPanel() {
   const [editingField, setEditingField] = useState<'itemNumber' | 'description' | 'revision' | 'state' | null>(null)
   const [editValue, setEditValue] = useState('')
   const [isSavingEdit, setIsSavingEdit] = useState(false)
+  const [isGeneratingSerial, setIsGeneratingSerial] = useState(false)
   
   // Folder-specific state
   const [folderStats, setFolderStats] = useState<{ size: number; fileCount: number; folderCount: number } | null>(null)
@@ -615,6 +619,29 @@ export function DetailsPanel() {
     setEditValue('')
   }
   
+  // Handle generating a serial number for item number
+  const handleGenerateSerial = async () => {
+    if (!organization?.id) {
+      addToast('error', 'No organization connected')
+      return
+    }
+    
+    setIsGeneratingSerial(true)
+    try {
+      const serial = await getNextSerialNumber(organization.id)
+      if (serial) {
+        setEditValue(serial)
+        addToast('success', `Generated: ${serial}`)
+      } else {
+        addToast('error', 'Serialization is disabled or failed')
+      }
+    } catch (err) {
+      addToast('error', `Failed to generate serial: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setIsGeneratingSerial(false)
+    }
+  }
+  
   // Handle canceling an edit
   const handleCancelEdit = () => {
     setEditingField(null)
@@ -664,7 +691,13 @@ export function DetailsPanel() {
   // Check if file is SolidWorks
   const isSolidWorksFile = file && ['.sldprt', '.sldasm', '.slddrw'].includes(file.extension?.toLowerCase() || '')
 
-  const allTabs = [
+  // For SolidWorks files, combine Preview and Properties into a single Datacard tab
+  const allTabs = isSolidWorksFile && !isFolder ? [
+    { id: 'datacard', label: 'Datacard' },
+    { id: 'whereused', label: 'Where Used' },
+    { id: 'contains', label: 'Contains' },
+    { id: 'history', label: 'History' },
+  ] as const : [
     { id: 'preview', label: 'Preview' },
     { id: 'properties', label: 'Properties' },
     { id: 'whereused', label: 'Where Used' },
@@ -674,6 +707,15 @@ export function DetailsPanel() {
   
   // Filter out tabs that are in the right panel
   const tabs = allTabs.filter(tab => !rightPanelTabs.includes(tab.id))
+  
+  // Auto-switch to datacard tab when selecting a SolidWorks file
+  useEffect(() => {
+    if (isSolidWorksFile && !isFolder && (detailsPanelTab === 'preview' || detailsPanelTab === 'properties')) {
+      setDetailsPanelTab('datacard')
+    } else if (!isSolidWorksFile && detailsPanelTab === 'datacard') {
+      setDetailsPanelTab('preview')
+    }
+  }, [isSolidWorksFile, isFolder, detailsPanelTab, setDetailsPanelTab])
   
   // Check file types for preview
   const ext = file?.extension?.toLowerCase() || ''
@@ -725,6 +767,11 @@ export function DetailsPanel() {
           </div>
         ) : file && (
           <>
+            {/* Combined Datacard tab for SolidWorks files - Preview + Properties */}
+            {detailsPanelTab === 'datacard' && isSolidWorksFile && !isFolder && (
+              <SWDatacardPanel file={file} />
+            )}
+
             {detailsPanelTab === 'properties' && (
               isSolidWorksFile && !isFolder ? (
                 // SolidWorks files get the full SW Properties view with export options
@@ -805,6 +852,8 @@ export function DetailsPanel() {
                           onCancel={handleCancelEdit}
                           onEditValueChange={setEditValue}
                           placeholder="-"
+                          onGenerate={handleGenerateSerial}
+                          isGenerating={isGeneratingSerial}
                         />
                         <EditablePropertyItem 
                           icon={<FileText size={14} />}
@@ -1332,6 +1381,8 @@ interface EditablePropertyItemProps {
   onCancel: () => void
   onEditValueChange: (value: string) => void
   placeholder?: string
+  onGenerate?: () => void
+  isGenerating?: boolean
 }
 
 function EditablePropertyItem({ 
@@ -1346,7 +1397,9 @@ function EditablePropertyItem({
   onSave, 
   onCancel, 
   onEditValueChange,
-  placeholder = '-'
+  placeholder = '-',
+  onGenerate,
+  isGenerating
 }: EditablePropertyItemProps) {
   if (isEditing && editable) {
     return (
@@ -1366,12 +1419,22 @@ function EditablePropertyItem({
               }
             }}
             autoFocus
-            disabled={isSaving}
+            disabled={isSaving || isGenerating}
             className="flex-1 bg-plm-bg border border-plm-accent rounded px-2 py-0.5 text-sm text-plm-fg focus:outline-none focus:ring-1 focus:ring-plm-accent disabled:opacity-50"
           />
+          {onGenerate && (
+            <button
+              onClick={onGenerate}
+              disabled={isSaving || isGenerating}
+              className="p-1 rounded hover:bg-plm-accent/20 text-plm-accent disabled:opacity-50"
+              title="Generate next serial number"
+            >
+              {isGenerating ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+            </button>
+          )}
           <button
             onClick={onSave}
-            disabled={isSaving}
+            disabled={isSaving || isGenerating}
             className="p-1 rounded hover:bg-plm-success/20 text-plm-success disabled:opacity-50"
             title="Save"
           >
@@ -1379,7 +1442,7 @@ function EditablePropertyItem({
           </button>
           <button
             onClick={onCancel}
-            disabled={isSaving}
+            disabled={isSaving || isGenerating}
             className="p-1 rounded hover:bg-plm-error/20 text-plm-error disabled:opacity-50"
             title="Cancel"
           >

@@ -117,6 +117,7 @@ declare global {
       reloadApp: () => Promise<{ success: boolean; error?: string }>
       requestFocus: () => Promise<{ success: boolean; error?: string }>
       openPerformanceWindow: () => Promise<{ success: boolean; error?: string }>
+      createTabWindow: (view: string, title: string, customData?: Record<string, unknown>) => Promise<{ success: boolean; error?: string }>
       
       // System stats
       getSystemStats: () => Promise<SystemStats | null>

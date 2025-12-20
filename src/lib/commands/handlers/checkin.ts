@@ -27,6 +27,7 @@ async function extractSolidWorksMetadata(
 ): Promise<{
   part_number?: string | null
   description?: string | null
+  revision?: string | null
 } | null> {
   // Only process SolidWorks files
   if (!SW_EXTENSIONS.includes(extension.toLowerCase())) {
@@ -36,6 +37,7 @@ async function extractSolidWorksMetadata(
   // Check if SolidWorks service is available
   const status = await window.electronAPI?.solidworks?.getServiceStatus?.()
   if (!status?.data?.running) {
+    console.debug('[Checkin] SolidWorks service not running, skipping metadata extraction')
     return null
   }
   
@@ -43,6 +45,7 @@ async function extractSolidWorksMetadata(
     const result = await window.electronAPI?.solidworks?.getProperties?.(fullPath)
     
     if (!result?.success || !result.data) {
+      console.debug('[Checkin] Failed to get properties:', result?.error)
       return null
     }
     
@@ -52,58 +55,165 @@ async function extractSolidWorksMetadata(
     }
     
     // Merge file-level and active configuration properties
+    // Configuration properties take precedence over file-level properties
     const allProps: Record<string, string> = { ...data.fileProperties }
     
-    // Also check configuration properties (use first config or "Default")
+    // Also check configuration properties - try multiple common config names
     const configProps = data.configurationProperties
     if (configProps) {
-      const configName = Object.keys(configProps).find(k => 
-        k.toLowerCase() === 'default' || k.toLowerCase() === 'standard'
-      ) || Object.keys(configProps)[0]
+      // Priority order: Default, Standard, first available
+      const configNames = Object.keys(configProps)
+      const preferredConfig = configNames.find(k => 
+        k.toLowerCase() === 'default'
+      ) || configNames.find(k => 
+        k.toLowerCase() === 'standard'
+      ) || configNames.find(k =>
+        k.toLowerCase() === 'default configuration'
+      ) || configNames[0]
       
-      if (configName && configProps[configName]) {
-        Object.assign(allProps, configProps[configName])
+      if (preferredConfig && configProps[preferredConfig]) {
+        // Config properties override file-level properties
+        Object.assign(allProps, configProps[preferredConfig])
       }
     }
     
-    // Extract part number from common property names
+    // Log all available properties for debugging
+    const propKeys = Object.keys(allProps)
+    console.debug('[Checkin] Available properties:', propKeys.join(', '))
+    
+    // Extract part number from common property names (comprehensive list)
     const partNumberKeys = [
-      'Base Item Number',  // SolidWorks Document Manager standard property
-      'PartNumber', 'Part Number', 'Part No', 'Part No.', 'PartNo',
-      'ItemNumber', 'Item Number', 'Item No', 'Item No.', 'ItemNo',
-      'PN', 'P/N', 'Number', 'No', 'No.'
+      // SolidWorks standard/common
+      'Base Item Number',  // Document Manager standard property
+      'PartNumber', 'Part Number', 'PARTNUMBER', 'PART NUMBER',
+      'Part No', 'Part No.', 'PartNo', 'PARTNO', 'PART NO',
+      // Item number variations
+      'ItemNumber', 'Item Number', 'ITEMNUMBER', 'ITEM NUMBER',
+      'Item No', 'Item No.', 'ItemNo', 'ITEMNO', 'ITEM NO',
+      // Short forms
+      'PN', 'P/N', 'pn', 'p/n',
+      // Other common names
+      'Number', 'No', 'No.',
+      'Document Number', 'DocumentNumber', 'Doc Number', 'DocNo',
+      'Stock Code', 'StockCode', 'Stock Number', 'StockNumber',
+      'Product Number', 'ProductNumber', 'SKU',
+      // PDM-specific
+      'SW-File Name (File Name)', // Sometimes used as part number
     ]
+    
     let part_number: string | null = null
     for (const key of partNumberKeys) {
-      if (allProps[key] && allProps[key].trim()) {
+      if (allProps[key] && allProps[key].trim() && !allProps[key].startsWith('$')) {
         part_number = allProps[key].trim()
+        console.debug(`[Checkin] Found part number in "${key}": ${part_number}`)
         break
       }
     }
+    
     // Case-insensitive fallback
     if (!part_number) {
       for (const [key, value] of Object.entries(allProps)) {
         const lowerKey = key.toLowerCase()
+        // Skip formula references (start with $)
+        if (value?.startsWith?.('$')) continue
+        
         if ((lowerKey.includes('part') && (lowerKey.includes('number') || lowerKey.includes('no'))) ||
             (lowerKey.includes('item') && (lowerKey.includes('number') || lowerKey.includes('no'))) ||
-            lowerKey === 'pn' || lowerKey === 'p/n') {
+            lowerKey === 'pn' || lowerKey === 'p/n' ||
+            lowerKey.includes('stock') && (lowerKey.includes('code') || lowerKey.includes('number'))) {
           if (value && value.trim()) {
             part_number = value.trim()
+            console.debug(`[Checkin] Found part number (fallback) in "${key}": ${part_number}`)
             break
           }
         }
       }
     }
     
-    // Extract description
-    const description = allProps['Description'] || allProps['description'] || null
+    // Extract description (comprehensive list)
+    const descriptionKeys = [
+      'Description', 'DESCRIPTION', 'description',
+      'Desc', 'DESC', 'desc',
+      'Title', 'TITLE', 'title',
+      'Name', 'NAME', 'name',
+      'Part Description', 'PartDescription', 'PART DESCRIPTION',
+      'Component Description', 'ComponentDescription',
+      'Item Description', 'ItemDescription',
+    ]
+    
+    let description: string | null = null
+    for (const key of descriptionKeys) {
+      if (allProps[key] && allProps[key].trim() && !allProps[key].startsWith('$')) {
+        description = allProps[key].trim()
+        console.debug(`[Checkin] Found description in "${key}": ${description?.substring(0, 50)}`)
+        break
+      }
+    }
+    
+    // Case-insensitive fallback for description
+    if (!description) {
+      for (const [key, value] of Object.entries(allProps)) {
+        const lowerKey = key.toLowerCase()
+        if (value?.startsWith?.('$')) continue
+        
+        if (lowerKey.includes('description') || lowerKey.includes('desc')) {
+          if (value && value.trim()) {
+            description = value.trim()
+            console.debug(`[Checkin] Found description (fallback) in "${key}": ${description?.substring(0, 50)}`)
+            break
+          }
+        }
+      }
+    }
+    
+    // Extract revision (comprehensive list)
+    const revisionKeys = [
+      'Revision', 'REVISION', 'revision',
+      'Rev', 'REV', 'rev',
+      'Rev.', 'REV.',
+      'RevLevel', 'Rev Level', 'Revision Level', 'RevisionLevel',
+      'Rev No', 'RevNo', 'Rev Number', 'RevNumber',
+      'Version', 'VERSION', 'version',
+      'Ver', 'VER', 'ver',
+      'ECO', 'ECN', 'Change Level', 'ChangeLevel',
+      'Engineering Change', 'EngineeringChange',
+    ]
+    
+    let revision: string | null = null
+    for (const key of revisionKeys) {
+      if (allProps[key] && allProps[key].trim() && !allProps[key].startsWith('$')) {
+        revision = allProps[key].trim()
+        console.debug(`[Checkin] Found revision in "${key}": ${revision}`)
+        break
+      }
+    }
+    
+    // Case-insensitive fallback for revision
+    if (!revision) {
+      for (const [key, value] of Object.entries(allProps)) {
+        const lowerKey = key.toLowerCase()
+        if (value?.startsWith?.('$')) continue
+        
+        if (lowerKey.includes('revision') || lowerKey === 'rev' || 
+            lowerKey.includes('rev ') || lowerKey.startsWith('rev.')) {
+          if (value && value.trim()) {
+            revision = value.trim()
+            console.debug(`[Checkin] Found revision (fallback) in "${key}": ${revision}`)
+            break
+          }
+        }
+      }
+    }
+    
+    console.debug('[Checkin] Extracted metadata:', { part_number, description: description?.substring(0, 50), revision })
     
     return {
       part_number,
-      description: description?.trim() || null
+      description: description?.trim() || null,
+      revision: revision?.trim() || null
     }
   } catch (err) {
-    console.warn('Failed to extract SolidWorks metadata:', err)
+    console.warn('[Checkin] Failed to extract SolidWorks metadata:', err)
     return null
   }
 }

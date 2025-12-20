@@ -5,6 +5,7 @@ import { formatDistanceToNow } from 'date-fns'
 import { getFileVersions } from '../lib/supabase'
 import { ContainsTab, WhereUsedTab } from './SolidWorksPanel'
 import { SolidWorksPreviewPanel } from './SolidWorksPreviewPanel'
+import { SWDatacardPanel } from './SWDatacardPanel'
 import { 
   FileBox, 
   Layers, 
@@ -329,10 +330,8 @@ export function RightPanel() {
                     <img src={`file://${file.path}`} alt={file.name} className="max-w-full max-h-full object-contain" />
                   </div>
                 ) : isSolidWorksFile ? (
-                  <SolidWorksPreviewPanel 
-                    file={file} 
-                    onOpenInEDrawings={handleOpenInEDrawings}
-                  />
+                  // Use the combined datacard panel for SolidWorks files
+                  <SWDatacardPanel file={file} />
                 ) : isCADFile ? (
                   cadPreviewLoading ? (
                     <div className="flex-1 flex items-center justify-center">
@@ -402,6 +401,11 @@ export function RightPanel() {
 
             {rightPanelTab === 'contains' && (
               <ContainsTab file={file} />
+            )}
+
+            {/* Datacard tab - combined preview + properties for SolidWorks */}
+            {rightPanelTab === 'datacard' && isSolidWorksFile && (
+              <SWDatacardPanel file={file} />
             )}
           </>
         )}

@@ -38,12 +38,30 @@ export type SidebarView =
   | 'google-drive'  // Google Drive integration
   // System
   | 'settings'
-export type DetailsPanelTab = 'properties' | 'preview' | 'whereused' | 'contains' | 'history'
+export type DetailsPanelTab = 'properties' | 'preview' | 'whereused' | 'contains' | 'history' | 'datacard'
 export type PanelPosition = 'bottom' | 'right'
 export type ToastType = 'error' | 'success' | 'info' | 'warning' | 'progress' | 'update'
 export type ThemeMode = 'dark' | 'deep-blue' | 'light' | 'christmas' | 'halloween' | 'weather' | 'kenneth' | 'system'
 export type Language = 'en' | 'fr' | 'de' | 'es' | 'it' | 'pt' | 'ja' | 'zh-CN' | 'zh-TW' | 'ko' | 'nl' | 'sv' | 'pl' | 'ru' | 'sindarin'
 export type DiffStatus = 'added' | 'modified' | 'deleted' | 'outdated' | 'cloud' | 'cloud_new' | 'moved' | 'ignored' | 'deleted_remote'
+
+// Tab system - browser-like tabs for multiple views
+export interface Tab {
+  id: string              // Unique tab ID
+  view: SidebarView       // The view this tab displays
+  title: string           // Tab display title
+  icon?: string           // Optional icon name (Lucide icon)
+  groupId?: string        // Optional tab group ID
+  isPinned?: boolean      // Pinned tabs can't be closed easily
+  customData?: Record<string, unknown>  // View-specific data (e.g., folder path, ECO ID)
+}
+
+export interface TabGroup {
+  id: string
+  name: string
+  color: string           // Tailwind color class or hex color
+  collapsed?: boolean     // Whether the group is collapsed
+}
 
 // Connected vault - an org vault that's connected locally
 export interface ConnectedVault {
@@ -204,6 +222,12 @@ interface PDMState {
   detailsPanelVisible: boolean
   detailsPanelHeight: number
   detailsPanelTab: DetailsPanelTab
+  
+  // Tabs (browser-like tab system)
+  tabs: Tab[]
+  activeTabId: string | null
+  tabGroups: TabGroup[]
+  tabsEnabled: boolean  // Master toggle for tab system
   
   // Right panel (dockable from bottom panel)
   rightPanelVisible: boolean
@@ -537,6 +561,29 @@ interface PDMState {
   setDetailsPanelHeight: (height: number) => void
   setDetailsPanelTab: (tab: DetailsPanelTab) => void
   
+  // Actions - Tabs
+  setTabsEnabled: (enabled: boolean) => void
+  addTab: (view: SidebarView, title?: string, customData?: Record<string, unknown>) => string  // Returns tab ID
+  closeTab: (tabId: string) => void
+  closeTabsToRight: (tabId: string) => void
+  closeAllTabs: () => void
+  closeOtherTabs: (tabId: string) => void
+  setActiveTab: (tabId: string) => void
+  moveTab: (tabId: string, newIndex: number) => void
+  pinTab: (tabId: string) => void
+  unpinTab: (tabId: string) => void
+  duplicateTab: (tabId: string) => string  // Returns new tab ID
+  updateTabTitle: (tabId: string, title: string) => void
+  updateTabCustomData: (tabId: string, data: Record<string, unknown>) => void
+  // Tab Groups
+  createTabGroup: (name: string, color: string) => string  // Returns group ID
+  deleteTabGroup: (groupId: string) => void
+  renameTabGroup: (groupId: string, name: string) => void
+  setTabGroupColor: (groupId: string, color: string) => void
+  addTabToGroup: (tabId: string, groupId: string) => void
+  removeTabFromGroup: (tabId: string) => void
+  toggleTabGroupCollapsed: (groupId: string) => void
+  
   // Actions - Right Panel
   toggleRightPanel: () => void
   setRightPanelWidth: (width: number) => void
@@ -687,6 +734,12 @@ export const usePDMStore = create<PDMState>()(
       rightPanelWidth: 350,
       rightPanelTab: null,
       rightPanelTabs: [],
+      
+      // Tabs (browser-like tab system)
+      tabs: [],
+      activeTabId: null,
+      tabGroups: [],
+      tabsEnabled: false,  // Disabled by default, users can enable in settings
       
       // Google Drive navigation
       gdriveCurrentFolderId: null,
@@ -1674,8 +1727,283 @@ export const usePDMStore = create<PDMState>()(
       setDetailsPanelHeight: (height) => set({ detailsPanelHeight: Math.max(100, Math.min(1200, height)) }),
       setDetailsPanelTab: (detailsPanelTab) => set({ detailsPanelTab }),
       
+      // Actions - Tabs
+      setTabsEnabled: (enabled) => set({ tabsEnabled: enabled }),
+      
+      addTab: (view, title, customData) => {
+        const id = `tab-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+        const defaultTitles: Record<SidebarView, string> = {
+          explorer: 'Explorer',
+          pending: 'Pending',
+          search: 'Search',
+          workflows: 'Workflows',
+          history: 'History',
+          trash: 'Trash',
+          terminal: 'Terminal',
+          eco: 'ECOs',
+          ecr: 'ECRs',
+          products: 'Products',
+          process: 'Process',
+          schedule: 'Schedule',
+          reviews: 'Reviews',
+          gsd: 'GSD',
+          deviations: 'Deviations',
+          suppliers: 'Suppliers',
+          'supplier-portal': 'Supplier Portal',
+          'google-drive': 'Google Drive',
+          settings: 'Settings',
+        }
+        const newTab: Tab = {
+          id,
+          view,
+          title: title || defaultTitles[view] || view,
+          customData,
+        }
+        set((s) => ({
+          tabs: [...s.tabs, newTab],
+          activeTabId: id,
+          activeView: view,
+        }))
+        return id
+      },
+      
+      closeTab: (tabId) => {
+        const { tabs, activeTabId } = get()
+        const tabIndex = tabs.findIndex(t => t.id === tabId)
+        if (tabIndex === -1) return
+        
+        // Don't close pinned tabs directly
+        const tab = tabs[tabIndex]
+        if (tab.isPinned) return
+        
+        const newTabs = tabs.filter(t => t.id !== tabId)
+        
+        // If closing active tab, switch to adjacent tab
+        let newActiveId = activeTabId
+        if (activeTabId === tabId && newTabs.length > 0) {
+          const newIndex = Math.min(tabIndex, newTabs.length - 1)
+          newActiveId = newTabs[newIndex].id
+        } else if (newTabs.length === 0) {
+          newActiveId = null
+        }
+        
+        set({
+          tabs: newTabs,
+          activeTabId: newActiveId,
+          activeView: newActiveId ? newTabs.find(t => t.id === newActiveId)?.view || 'explorer' : 'explorer',
+        })
+      },
+      
+      closeTabsToRight: (tabId) => {
+        const { tabs, activeTabId } = get()
+        const tabIndex = tabs.findIndex(t => t.id === tabId)
+        if (tabIndex === -1) return
+        
+        const newTabs = tabs.slice(0, tabIndex + 1)
+        const activeStillExists = newTabs.some(t => t.id === activeTabId)
+        
+        set({
+          tabs: newTabs,
+          activeTabId: activeStillExists ? activeTabId : tabId,
+          activeView: activeStillExists 
+            ? get().activeView 
+            : newTabs.find(t => t.id === tabId)?.view || 'explorer',
+        })
+      },
+      
+      closeAllTabs: () => {
+        const { tabs } = get()
+        // Keep pinned tabs
+        const pinnedTabs = tabs.filter(t => t.isPinned)
+        set({
+          tabs: pinnedTabs,
+          activeTabId: pinnedTabs.length > 0 ? pinnedTabs[0].id : null,
+          activeView: pinnedTabs.length > 0 ? pinnedTabs[0].view : 'explorer',
+        })
+      },
+      
+      closeOtherTabs: (tabId) => {
+        const { tabs } = get()
+        const tab = tabs.find(t => t.id === tabId)
+        if (!tab) return
+        
+        // Keep the current tab and pinned tabs
+        const newTabs = tabs.filter(t => t.id === tabId || t.isPinned)
+        set({
+          tabs: newTabs,
+          activeTabId: tabId,
+          activeView: tab.view,
+        })
+      },
+      
+      setActiveTab: (tabId) => {
+        const { tabs } = get()
+        const tab = tabs.find(t => t.id === tabId)
+        if (tab) {
+          set({
+            activeTabId: tabId,
+            activeView: tab.view,
+          })
+        }
+      },
+      
+      moveTab: (tabId, newIndex) => {
+        const { tabs } = get()
+        const currentIndex = tabs.findIndex(t => t.id === tabId)
+        if (currentIndex === -1 || newIndex < 0 || newIndex >= tabs.length) return
+        
+        const newTabs = [...tabs]
+        const [movedTab] = newTabs.splice(currentIndex, 1)
+        newTabs.splice(newIndex, 0, movedTab)
+        set({ tabs: newTabs })
+      },
+      
+      pinTab: (tabId) => {
+        const { tabs } = get()
+        const newTabs = tabs.map(t => 
+          t.id === tabId ? { ...t, isPinned: true } : t
+        )
+        // Move pinned tab to the front (after other pinned tabs)
+        const pinnedCount = newTabs.filter(t => t.isPinned && t.id !== tabId).length
+        const tabIndex = newTabs.findIndex(t => t.id === tabId)
+        if (tabIndex > pinnedCount) {
+          const [tab] = newTabs.splice(tabIndex, 1)
+          newTabs.splice(pinnedCount, 0, tab)
+        }
+        set({ tabs: newTabs })
+      },
+      
+      unpinTab: (tabId) => {
+        const { tabs } = get()
+        set({
+          tabs: tabs.map(t => 
+            t.id === tabId ? { ...t, isPinned: false } : t
+          )
+        })
+      },
+      
+      duplicateTab: (tabId) => {
+        const { tabs } = get()
+        const tab = tabs.find(t => t.id === tabId)
+        if (!tab) return ''
+        
+        const newId = `tab-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+        const newTab: Tab = {
+          ...tab,
+          id: newId,
+          isPinned: false,
+          title: `${tab.title} (Copy)`,
+        }
+        
+        const tabIndex = tabs.findIndex(t => t.id === tabId)
+        const newTabs = [...tabs]
+        newTabs.splice(tabIndex + 1, 0, newTab)
+        
+        set({
+          tabs: newTabs,
+          activeTabId: newId,
+        })
+        return newId
+      },
+      
+      updateTabTitle: (tabId, title) => {
+        const { tabs } = get()
+        set({
+          tabs: tabs.map(t => 
+            t.id === tabId ? { ...t, title } : t
+          )
+        })
+      },
+      
+      updateTabCustomData: (tabId, data) => {
+        const { tabs } = get()
+        set({
+          tabs: tabs.map(t => 
+            t.id === tabId ? { ...t, customData: { ...t.customData, ...data } } : t
+          )
+        })
+      },
+      
+      // Tab Groups
+      createTabGroup: (name, color) => {
+        const id = `group-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+        const newGroup: TabGroup = { id, name, color }
+        set((s) => ({
+          tabGroups: [...s.tabGroups, newGroup]
+        }))
+        return id
+      },
+      
+      deleteTabGroup: (groupId) => {
+        const { tabGroups, tabs } = get()
+        // Remove group and ungroup all tabs in it
+        set({
+          tabGroups: tabGroups.filter(g => g.id !== groupId),
+          tabs: tabs.map(t => 
+            t.groupId === groupId ? { ...t, groupId: undefined } : t
+          )
+        })
+      },
+      
+      renameTabGroup: (groupId, name) => {
+        const { tabGroups } = get()
+        set({
+          tabGroups: tabGroups.map(g => 
+            g.id === groupId ? { ...g, name } : g
+          )
+        })
+      },
+      
+      setTabGroupColor: (groupId, color) => {
+        const { tabGroups } = get()
+        set({
+          tabGroups: tabGroups.map(g => 
+            g.id === groupId ? { ...g, color } : g
+          )
+        })
+      },
+      
+      addTabToGroup: (tabId, groupId) => {
+        const { tabs } = get()
+        set({
+          tabs: tabs.map(t => 
+            t.id === tabId ? { ...t, groupId } : t
+          )
+        })
+      },
+      
+      removeTabFromGroup: (tabId) => {
+        const { tabs } = get()
+        set({
+          tabs: tabs.map(t => 
+            t.id === tabId ? { ...t, groupId: undefined } : t
+          )
+        })
+      },
+      
+      toggleTabGroupCollapsed: (groupId) => {
+        const { tabGroups } = get()
+        set({
+          tabGroups: tabGroups.map(g => 
+            g.id === groupId ? { ...g, collapsed: !g.collapsed } : g
+          )
+        })
+      },
+      
       // Actions - Right Panel
-      toggleRightPanel: () => set((s) => ({ rightPanelVisible: !s.rightPanelVisible })),
+      toggleRightPanel: () => {
+        const { rightPanelVisible, rightPanelTabs } = get()
+        if (!rightPanelVisible && rightPanelTabs.length === 0) {
+          // If showing right panel but no tabs, add properties tab
+          set({ 
+            rightPanelVisible: true, 
+            rightPanelTabs: ['properties'], 
+            rightPanelTab: 'properties' 
+          })
+        } else {
+          set({ rightPanelVisible: !rightPanelVisible })
+        }
+      },
       setRightPanelWidth: (width) => set({ rightPanelWidth: Math.max(200, Math.min(1200, width)) }),
       setRightPanelTab: (rightPanelTab) => set({ rightPanelTab }),
       moveTabToRight: (tab) => {
@@ -2203,6 +2531,11 @@ export const usePDMStore = create<PDMState>()(
         rightPanelVisible: state.rightPanelVisible,
         rightPanelWidth: state.rightPanelWidth,
         rightPanelTabs: state.rightPanelTabs,
+        // Tabs
+        tabs: state.tabs,
+        activeTabId: state.activeTabId,
+        tabGroups: state.tabGroups,
+        tabsEnabled: state.tabsEnabled,
         columns: state.columns,
         expandedFolders: Array.from(state.expandedFolders),
         ignorePatterns: state.ignorePatterns,

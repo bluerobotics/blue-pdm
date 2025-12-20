@@ -1733,6 +1733,67 @@ ipcMain.handle('app:open-performance-window', () => {
   return { success: true }
 })
 
+// Tab pop-out window
+const tabWindows: Map<string, BrowserWindow> = new Map()
+
+ipcMain.handle('app:create-tab-window', (_event, view: string, title: string, customData?: Record<string, unknown>) => {
+  log(`[Main] Creating tab window for view: ${view}, title: ${title}`)
+  
+  // Generate unique window ID
+  const windowId = `tab-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+  
+  // Create new tab window
+  const tabWindow = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    minWidth: 600,
+    minHeight: 400,
+    backgroundColor: '#0a1929',
+    title: `${title} - BluePLM`,
+    titleBarStyle: 'hidden',
+    titleBarOverlay: {
+      color: '#181818',
+      symbolColor: '#cccccc',
+      height: 36
+    },
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
+    }
+  })
+  
+  // Encode custom data as base64 JSON for URL
+  const customDataParam = customData ? encodeURIComponent(btoa(JSON.stringify(customData))) : ''
+  
+  // Load the app with tab mode query params
+  const loadPath = isDev 
+    ? `http://localhost:5173?mode=tab&view=${view}&title=${encodeURIComponent(title)}&customData=${customDataParam}` 
+    : path.join(__dirname, '../dist/index.html')
+  
+  if (isDev) {
+    tabWindow.loadURL(loadPath)
+  } else {
+    tabWindow.loadFile(loadPath.replace(/\?.*$/, ''), { 
+      query: { 
+        mode: 'tab', 
+        view, 
+        title,
+        customData: customDataParam 
+      } 
+    })
+  }
+  
+  tabWindows.set(windowId, tabWindow)
+  
+  tabWindow.on('closed', () => {
+    tabWindows.delete(windowId)
+  })
+  
+  return { success: true, windowId }
+})
+
 // Zoom level handlers
 ipcMain.handle('app:get-zoom-factor', () => {
   if (!mainWindow) return 1

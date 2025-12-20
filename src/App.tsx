@@ -27,6 +27,8 @@ import { VaultNotFoundDialog } from './components/VaultNotFoundDialog'
 import { PerformanceWindow } from './components/PerformanceWindow'
 import { ImpersonationBanner } from './components/ImpersonationBanner'
 import { UpdateModal } from './components/UpdateModal'
+import { TabBar } from './components/TabBar'
+import { TabWindow, isTabWindowMode, parseTabWindowParams } from './components/TabWindow'
 import { executeTerminalCommand } from './lib/commands/parser'
 import { executeCommand } from './lib/commands'
 import { logKeyboard, logUserAction } from './lib/userActionLogger'
@@ -172,6 +174,14 @@ function App() {
   // Render standalone performance window if in that mode
   if (isPerformanceMode()) {
     return <PerformanceWindow />
+  }
+  
+  // Check for tab window mode (popped out tab)
+  if (isTabWindowMode()) {
+    const tabParams = parseTabWindowParams()
+    if (tabParams) {
+      return <TabWindow view={tabParams.view} title={tabParams.title} customData={tabParams.customData} />
+    }
   }
   
   // Apply theme and language
@@ -2293,6 +2303,9 @@ function App() {
         onRefresh={loadFiles}
         minimal={isSignInScreen}
       />
+      
+      {/* Tab bar (browser-like tabs) - only shown when tabs are enabled */}
+      {!showWelcome && <TabBar />}
       
       {/* Role impersonation banner (dev tools) */}
       <ImpersonationBanner />

@@ -82,6 +82,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   reloadApp: () => ipcRenderer.invoke('app:reload'),
   requestFocus: () => ipcRenderer.invoke('app:request-focus'),
   openPerformanceWindow: () => ipcRenderer.invoke('app:open-performance-window'),
+  createTabWindow: (view: string, title: string, customData?: Record<string, unknown>) => 
+    ipcRenderer.invoke('app:create-tab-window', view, title, customData),
   
   // System stats
   getSystemStats: () => ipcRenderer.invoke('system:get-stats'),

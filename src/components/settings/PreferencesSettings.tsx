@@ -24,7 +24,8 @@ import {
   Crown,
   Trash2,
   BarChart3,
-  Shield
+  Shield,
+  Layers
 } from 'lucide-react'
 import { usePDMStore, ThemeMode, Language } from '../../stores/pdmStore'
 import { CalendarDays } from 'lucide-react'
@@ -80,7 +81,9 @@ export function PreferencesSettings() {
     autoDownloadExcludedFiles,
     clearAutoDownloadExclusions,
     logSharingEnabled,
-    setLogSharingEnabled
+    setLogSharingEnabled,
+    tabsEnabled,
+    setTabsEnabled
   } = usePDMStore()
   
   const [sessions, setSessions] = useState<UserSession[]>([])
@@ -667,6 +670,39 @@ export function PreferencesSettings() {
           <p className="text-xs text-plm-fg-dim">
             We collect error reports, crash data, and basic performance metrics. No file contents, personal data, or design information is ever transmitted.
           </p>
+        </div>
+      </section>
+
+      {/* Interface */}
+      <section>
+        <h2 className="text-sm text-plm-fg-muted uppercase tracking-wide font-medium mb-3">
+          Interface
+        </h2>
+        <div className="p-4 bg-plm-bg rounded-lg border border-plm-border space-y-4">
+          {/* Browser-like Tabs Toggle */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-plm-highlight">
+                <Layers size={18} className="text-plm-fg-muted" />
+              </div>
+              <div>
+                <div className="text-base text-plm-fg">Browser-like Tabs</div>
+                <div className="text-sm text-plm-fg-muted mt-0.5">
+                  Enable tabs below the menu bar for multiple views. Right-click tabs for more options.
+                </div>
+              </div>
+            </div>
+            <button
+              onClick={() => setTabsEnabled(!tabsEnabled)}
+              className="text-plm-accent"
+            >
+              {tabsEnabled ? (
+                <ToggleRight size={28} />
+              ) : (
+                <ToggleLeft size={28} className="text-plm-fg-muted" />
+              )}
+            </button>
+          </div>
         </div>
       </section>
 
