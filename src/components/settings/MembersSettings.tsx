@@ -16,13 +16,18 @@ import {
   RefreshCw,
   Key,
   AlertTriangle,
-  ExternalLink
+  ExternalLink,
+  UsersRound,
+  Plus,
+  X
 } from 'lucide-react'
+import * as LucideIcons from 'lucide-react'
 import { usePDMStore } from '../../stores/pdmStore'
 import { supabase, getCurrentConfig, updateUserRole, removeUserFromOrg, getOrgVaultAccess, setUserVaultAccess } from '../../lib/supabase'
 import { generateOrgCode } from '../../lib/supabaseConfig'
 import { getInitials } from '../../types/pdm'
 import { UserProfileModal } from './UserProfileModal'
+import type { Team } from '../../types/permissions'
 
 interface OrgUser {
   id: string
@@ -31,6 +36,7 @@ interface OrgUser {
   avatar_url: string | null
   role: string
   last_sign_in: string | null
+  teams?: { id: string; name: string; color: string; icon: string }[]
 }
 
 interface Vault {
@@ -55,6 +61,7 @@ export function MembersSettings() {
   
   const [orgUsers, setOrgUsers] = useState<OrgUser[]>([])
   const [orgVaults, setOrgVaults] = useState<Vault[]>([])
+  const [orgTeams, setOrgTeams] = useState<Team[]>([])
   const [isLoadingUsers, setIsLoadingUsers] = useState(false)
   
   // User management state
@@ -82,12 +89,18 @@ export function MembersSettings() {
   const [regenerateConfirm1, setRegenerateConfirm1] = useState('')
   const [regenerateConfirm2, setRegenerateConfirm2] = useState('')
   
+  // Team assignment state
+  const [editingTeamsUser, setEditingTeamsUser] = useState<OrgUser | null>(null)
+  const [pendingTeams, setPendingTeams] = useState<string[]>([])
+  const [isSavingTeams, setIsSavingTeams] = useState(false)
+  
   // Load data on mount
   useEffect(() => {
     if (organization) {
       loadOrgUsers()
       loadOrgVaults()
       loadVaultAccess()
+      loadOrgTeams()
     }
   }, [organization])
   
@@ -96,7 +109,8 @@ export function MembersSettings() {
     
     setIsLoadingUsers(true)
     try {
-      const { data, error } = await supabase
+      // Load users
+      const { data: usersData, error } = await supabase
         .from('users')
         .select('id, email, full_name, avatar_url, role, last_sign_in')
         .eq('org_id', organization.id)
@@ -104,13 +118,52 @@ export function MembersSettings() {
       
       if (error) {
         console.error('Failed to load org users:', error)
-      } else {
-        setOrgUsers(data || [])
+        return
       }
+      
+      // Load team memberships for all users
+      const { data: membershipsData } = await supabase
+        .from('team_members')
+        .select(`
+          user_id,
+          team:teams(id, name, color, icon)
+        `)
+        .in('user_id', (usersData || []).map(u => u.id))
+      
+      // Map teams to users
+      const usersWithTeams = (usersData || []).map(user => {
+        const userMemberships = (membershipsData || []).filter(m => m.user_id === user.id)
+        return {
+          ...user,
+          teams: userMemberships.map(m => m.team).filter(Boolean) as { id: string; name: string; color: string; icon: string }[]
+        }
+      })
+      
+      setOrgUsers(usersWithTeams)
     } catch (err) {
       console.error('Failed to load org users:', err)
     } finally {
       setIsLoadingUsers(false)
+    }
+  }
+  
+  const loadOrgTeams = async () => {
+    if (!organization) return
+    
+    try {
+      const { data, error } = await supabase
+        .from('teams')
+        .select('*')
+        .eq('org_id', organization.id)
+        .order('name')
+      
+      if (error) {
+        console.error('Failed to load org teams:', error)
+      } else {
+        setOrgTeams(data || [])
+      }
+    } catch (err) {
+      console.error('Failed to load org teams:', err)
     }
   }
   
@@ -293,6 +346,67 @@ See you on the team!`
         : [...current, vaultId]
     )
   }
+  
+  // Team assignment
+  const openTeamEditor = (targetUser: OrgUser) => {
+    setEditingTeamsUser(targetUser)
+    setPendingTeams((targetUser.teams || []).map(t => t.id))
+  }
+  
+  const handleSaveTeams = async () => {
+    if (!editingTeamsUser || !user || !organization) return
+    
+    setIsSavingTeams(true)
+    try {
+      const currentTeamIds = (editingTeamsUser.teams || []).map(t => t.id)
+      
+      // Teams to add
+      const toAdd = pendingTeams.filter(id => !currentTeamIds.includes(id))
+      // Teams to remove
+      const toRemove = currentTeamIds.filter(id => !pendingTeams.includes(id))
+      
+      // Add new team memberships
+      if (toAdd.length > 0) {
+        const { error: addError } = await supabase
+          .from('team_members')
+          .insert(toAdd.map(teamId => ({
+            team_id: teamId,
+            user_id: editingTeamsUser.id,
+            added_by: user.id
+          })))
+        
+        if (addError) throw addError
+      }
+      
+      // Remove team memberships
+      if (toRemove.length > 0) {
+        const { error: removeError } = await supabase
+          .from('team_members')
+          .delete()
+          .eq('user_id', editingTeamsUser.id)
+          .in('team_id', toRemove)
+        
+        if (removeError) throw removeError
+      }
+      
+      addToast('success', `Updated team assignments for ${editingTeamsUser.full_name || editingTeamsUser.email}`)
+      await loadOrgUsers()
+      setEditingTeamsUser(null)
+    } catch (err) {
+      console.error('Failed to update teams:', err)
+      addToast('error', 'Failed to update team assignments')
+    } finally {
+      setIsSavingTeams(false)
+    }
+  }
+  
+  const toggleTeamMembership = (teamId: string) => {
+    setPendingTeams(current => 
+      current.includes(teamId)
+        ? current.filter(id => id !== teamId)
+        : [...current, teamId]
+    )
+  }
 
   if (!organization) {
     return (
@@ -459,12 +573,32 @@ See you on the team!`
                         <span className="text-sm text-plm-fg-dim">(you)</span>
                       )}
                     </div>
-                    <div className="text-sm text-plm-fg-muted truncate flex items-center gap-2">
-                      {orgUser.email}
+                    <div className="text-sm text-plm-fg-muted truncate flex items-center gap-2 flex-wrap">
+                      <span className="truncate">{orgUser.email}</span>
                       {orgUser.role !== 'admin' && getUserVaultAccessCount(orgUser.id) > 0 && (
                         <span className="flex items-center gap-1 px-1.5 py-0.5 bg-plm-fg-muted/10 rounded text-plm-fg-dim">
                           <Lock size={12} />
                           {getUserVaultAccessCount(orgUser.id)} vault{getUserVaultAccessCount(orgUser.id) !== 1 ? 's' : ''}
+                        </span>
+                      )}
+                      {/* Team badges */}
+                      {(orgUser.teams || []).slice(0, 3).map(team => {
+                        const TeamIcon = (LucideIcons as any)[team.icon] || UsersRound
+                        return (
+                          <span 
+                            key={team.id}
+                            className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px]"
+                            style={{ backgroundColor: `${team.color}15`, color: team.color }}
+                            title={team.name}
+                          >
+                            <TeamIcon size={10} />
+                            {team.name}
+                          </span>
+                        )
+                      })}
+                      {(orgUser.teams || []).length > 3 && (
+                        <span className="text-[11px] text-plm-fg-dim">
+                          +{(orgUser.teams || []).length - 3} more
                         </span>
                       )}
                     </div>
@@ -524,6 +658,17 @@ See you on the team!`
                     </div>
                   )}
                 </div>
+                
+                {/* Team Assignment button */}
+                {canManage && orgTeams.length > 0 && (
+                  <button
+                    onClick={() => openTeamEditor(orgUser)}
+                    className="p-1.5 text-plm-fg-muted hover:text-plm-accent hover:bg-plm-accent/10 rounded opacity-0 group-hover:opacity-100 transition-all"
+                    title="Manage team assignments"
+                  >
+                    <UsersRound size={16} />
+                  </button>
+                )}
                 
                 {/* Vault Access button */}
                 {canManage && (
@@ -607,26 +752,12 @@ See you on the team!`
 
       {/* Remove User Dialog */}
       {removingUser && (
-        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center" onClick={() => setRemovingUser(null)}>
-          <div className="bg-plm-bg-light border border-plm-border rounded-xl p-6 max-w-md w-full mx-4" onClick={e => e.stopPropagation()}>
-            <h3 className="text-lg font-medium text-plm-fg mb-4">Remove User</h3>
-            <p className="text-base text-plm-fg-muted mb-4">
-              Are you sure you want to remove <strong>{removingUser.full_name || removingUser.email}</strong> from the organization?
-            </p>
-            <div className="flex gap-2 justify-end">
-              <button onClick={() => setRemovingUser(null)} className="btn btn-ghost">
-                Cancel
-              </button>
-              <button
-                onClick={handleRemoveUser}
-                disabled={isRemoving}
-                className="btn bg-plm-error text-white hover:bg-plm-error/90"
-              >
-                {isRemoving ? 'Removing...' : 'Remove User'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <RemoveUserConfirmDialog
+          user={removingUser}
+          onClose={() => setRemovingUser(null)}
+          onConfirm={handleRemoveUser}
+          isRemoving={isRemoving}
+        />
       )}
 
       {/* Vault Access Editor Dialog */}
@@ -665,6 +796,66 @@ See you on the team!`
                 className="btn btn-primary"
               >
                 {isSavingVaultAccess ? 'Saving...' : 'Save Access'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Team Assignment Editor Dialog */}
+      {editingTeamsUser && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center" onClick={() => setEditingTeamsUser(null)}>
+          <div className="bg-plm-bg-light border border-plm-border rounded-xl p-6 max-w-md w-full mx-4" onClick={e => e.stopPropagation()}>
+            <h3 className="text-lg font-medium text-plm-fg mb-2">Team Assignments</h3>
+            <p className="text-base text-plm-fg-muted mb-4">
+              Select which teams <strong>{editingTeamsUser.full_name || editingTeamsUser.email}</strong> belongs to.
+            </p>
+            <div className="space-y-2 mb-4 max-h-60 overflow-y-auto">
+              {orgTeams.length === 0 ? (
+                <div className="text-center py-4 text-plm-fg-muted">
+                  No teams created yet. Create teams in the Teams & Permissions settings.
+                </div>
+              ) : (
+                orgTeams.map(team => {
+                  const TeamIcon = (LucideIcons as any)[team.icon] || UsersRound
+                  return (
+                    <label 
+                      key={team.id} 
+                      className="flex items-center gap-3 p-2 hover:bg-plm-highlight rounded cursor-pointer"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={pendingTeams.includes(team.id)}
+                        onChange={() => toggleTeamMembership(team.id)}
+                        className="w-4 h-4 rounded border-plm-border text-plm-accent focus:ring-plm-accent"
+                      />
+                      <div
+                        className="p-1.5 rounded"
+                        style={{ backgroundColor: `${team.color}15`, color: team.color }}
+                      >
+                        <TeamIcon size={16} />
+                      </div>
+                      <div className="flex-1">
+                        <span className="text-base text-plm-fg">{team.name}</span>
+                        {team.is_default && (
+                          <span className="ml-2 text-xs text-plm-accent">(default)</span>
+                        )}
+                      </div>
+                    </label>
+                  )
+                })
+              )}
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setEditingTeamsUser(null)} className="btn btn-ghost">
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveTeams}
+                disabled={isSavingTeams || orgTeams.length === 0}
+                className="btn btn-primary"
+              >
+                {isSavingTeams ? 'Saving...' : 'Save Teams'}
               </button>
             </div>
           </div>
@@ -784,6 +975,85 @@ See you on the team!`
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// Remove User Confirmation Dialog
+function RemoveUserConfirmDialog({
+  user,
+  onClose,
+  onConfirm,
+  isRemoving
+}: {
+  user: OrgUser
+  onClose: () => void
+  onConfirm: () => void
+  isRemoving: boolean
+}) {
+  const [confirmText, setConfirmText] = useState('')
+  
+  const displayName = user.full_name || user.email
+  const isConfirmed = confirmText === displayName
+  
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center" onClick={onClose}>
+      <div className="bg-plm-bg-light border border-plm-border rounded-xl p-6 max-w-md w-full mx-4" onClick={e => e.stopPropagation()}>
+        <div className="flex items-start gap-3 mb-4">
+          <div className="p-2 rounded-full bg-plm-error/20">
+            <AlertTriangle className="w-5 h-5 text-plm-error" />
+          </div>
+          <div>
+            <h3 className="text-lg font-medium text-plm-fg">Remove User from Organization</h3>
+            <p className="text-sm text-plm-fg-muted mt-1">This action cannot be undone</p>
+          </div>
+        </div>
+        
+        <div className="space-y-4 mb-6">
+          <div className="p-3 bg-plm-error/10 border border-plm-error/30 rounded-lg">
+            <p className="text-sm text-plm-fg">
+              You are about to remove <strong>{displayName}</strong> from this organization. They will:
+            </p>
+            <ul className="text-sm text-plm-fg-muted list-disc list-inside mt-2 space-y-1">
+              <li>Lose access to all vaults and files</li>
+              <li>Be removed from all teams</li>
+              <li>Need to be re-invited to rejoin</li>
+            </ul>
+          </div>
+          
+          <div>
+            <p className="text-sm text-plm-fg-muted mb-2">
+              To confirm, type <strong className="text-plm-fg">{displayName}</strong> below:
+            </p>
+            <input
+              type="text"
+              value={confirmText}
+              onChange={e => setConfirmText(e.target.value)}
+              placeholder={displayName}
+              className="w-full px-3 py-2 bg-plm-bg border border-plm-border rounded-lg text-plm-fg placeholder:text-plm-fg-muted/50 focus:outline-none focus:border-plm-error"
+              autoFocus
+            />
+          </div>
+        </div>
+        
+        <div className="flex gap-2 justify-end">
+          <button onClick={onClose} className="btn btn-ghost">
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={!isConfirmed || isRemoving}
+            className={`btn flex items-center gap-2 ${
+              isConfirmed
+                ? 'bg-plm-error hover:bg-plm-error/90 text-white'
+                : 'bg-plm-fg-muted/20 text-plm-fg-muted cursor-not-allowed'
+            }`}
+          >
+            {isRemoving ? <Loader2 size={16} className="animate-spin" /> : <UserMinus size={16} />}
+            {isRemoving ? 'Removing...' : 'Remove User'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

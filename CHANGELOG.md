@@ -2,6 +2,32 @@
 
 All notable changes to BluePLM will be documented in this file.
 
+## [2.14.0] - 2025-12-20
+
+### Added
+- **Teams & Permissions**: Full team management system with granular resource permissions
+  - Create teams with custom colors, icons, and descriptions
+  - Visual permissions matrix editor with 5 action types (view, create, edit, delete, admin)
+  - Group-level permission toggles for bulk assignment
+  - Copy existing team permissions when creating new teams
+- **Custom Notifications**: Send notifications to any organization member
+  - New + button in notifications panel to compose messages
+  - Support for categories: General, Review, Change, Purchasing, Quality, Workflow
+  - Priority levels: Low, Normal, High, Urgent
+  - Multi-recipient selection with search
+- **Notification Badge**: Red unread count badge on the notifications bell icon
+- **Database**: Teams tables (`teams`, `team_members`, `team_permissions`, `permission_presets`) with RLS policies
+- **New modules shelled out**: Production Analytics, additional Quality and Supply Chain modules ready for implementation
+
+### Improved
+- **Offline mode**: Enhanced reliability with numerous bug fixes for disconnected operation
+
+### Changed
+- **Notifications moved**: Now appears at top-level of sidebar near Settings (not nested under Change Control)
+- **Members Settings**: Now shows team memberships and allows team assignment
+
+---
+
 ## [2.13.1] - 2025-12-19
 
 ### Improved

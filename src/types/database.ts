@@ -1421,6 +1421,156 @@ export interface Database {
           updated_by?: string | null
         }
       }
+      // Teams
+      teams: {
+        Row: {
+          id: string
+          org_id: string
+          name: string
+          description: string | null
+          color: string
+          icon: string
+          parent_team_id: string | null
+          created_at: string
+          created_by: string | null
+          updated_at: string
+          updated_by: string | null
+          is_default: boolean
+          is_system: boolean
+        }
+        Insert: {
+          id?: string
+          org_id: string
+          name: string
+          description?: string | null
+          color?: string
+          icon?: string
+          parent_team_id?: string | null
+          created_at?: string
+          created_by?: string | null
+          updated_at?: string
+          updated_by?: string | null
+          is_default?: boolean
+          is_system?: boolean
+        }
+        Update: {
+          id?: string
+          org_id?: string
+          name?: string
+          description?: string | null
+          color?: string
+          icon?: string
+          parent_team_id?: string | null
+          created_at?: string
+          created_by?: string | null
+          updated_at?: string
+          updated_by?: string | null
+          is_default?: boolean
+          is_system?: boolean
+        }
+      }
+      team_members: {
+        Row: {
+          id: string
+          team_id: string
+          user_id: string
+          is_team_admin: boolean
+          added_at: string
+          added_by: string | null
+        }
+        Insert: {
+          id?: string
+          team_id: string
+          user_id: string
+          is_team_admin?: boolean
+          added_at?: string
+          added_by?: string | null
+        }
+        Update: {
+          id?: string
+          team_id?: string
+          user_id?: string
+          is_team_admin?: boolean
+          added_at?: string
+          added_by?: string | null
+        }
+      }
+      team_permissions: {
+        Row: {
+          id: string
+          team_id: string
+          resource: string
+          actions: ('view' | 'create' | 'edit' | 'delete' | 'admin')[]
+          granted_at: string
+          granted_by: string | null
+          updated_at: string
+          updated_by: string | null
+        }
+        Insert: {
+          id?: string
+          team_id: string
+          resource: string
+          actions?: ('view' | 'create' | 'edit' | 'delete' | 'admin')[]
+          granted_at?: string
+          granted_by?: string | null
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Update: {
+          id?: string
+          team_id?: string
+          resource?: string
+          actions?: ('view' | 'create' | 'edit' | 'delete' | 'admin')[]
+          granted_at?: string
+          granted_by?: string | null
+          updated_at?: string
+          updated_by?: string | null
+        }
+      }
+      permission_presets: {
+        Row: {
+          id: string
+          org_id: string
+          name: string
+          description: string | null
+          color: string
+          icon: string
+          permissions: Record<string, ('view' | 'create' | 'edit' | 'delete' | 'admin')[]>
+          is_system: boolean
+          created_at: string
+          created_by: string | null
+          updated_at: string
+          updated_by: string | null
+        }
+        Insert: {
+          id?: string
+          org_id: string
+          name: string
+          description?: string | null
+          color?: string
+          icon?: string
+          permissions?: Record<string, ('view' | 'create' | 'edit' | 'delete' | 'admin')[]>
+          is_system?: boolean
+          created_at?: string
+          created_by?: string | null
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Update: {
+          id?: string
+          org_id?: string
+          name?: string
+          description?: string | null
+          color?: string
+          icon?: string
+          permissions?: Record<string, ('view' | 'create' | 'edit' | 'delete' | 'admin')[]>
+          is_system?: boolean
+          created_at?: string
+          created_by?: string | null
+          updated_at?: string
+          updated_by?: string | null
+        }
+      }
       // Admin Recovery Codes - Emergency admin access
       admin_recovery_codes: {
         Row: {
@@ -1564,7 +1714,29 @@ export interface Database {
 // ===========================================
 
 export type ReviewStatus = 'pending' | 'approved' | 'rejected' | 'cancelled'
-export type NotificationType = 'review_request' | 'review_approved' | 'review_rejected' | 'review_comment' | 'mention' | 'file_updated' | 'checkout_request'
+export type NotificationType = 
+  // File Reviews
+  | 'review_request' | 'review_approved' | 'review_rejected' | 'review_comment'
+  // Change Management (ECO/ECR)
+  | 'eco_submitted' | 'eco_approved' | 'eco_rejected' | 'eco_comment'
+  | 'ecr_submitted' | 'ecr_approved' | 'ecr_rejected'
+  // Purchasing
+  | 'po_approval_request' | 'po_approved' | 'po_rejected'
+  | 'supplier_approval_request' | 'supplier_approved' | 'supplier_rejected'
+  | 'rfq_response_received'
+  // Quality
+  | 'ncr_created' | 'ncr_assigned' | 'ncr_resolved'
+  | 'capa_created' | 'capa_assigned' | 'capa_due_soon' | 'capa_overdue'
+  | 'fai_submitted' | 'fai_approved'
+  | 'calibration_due' | 'calibration_overdue'
+  // Workflow
+  | 'workflow_state_change' | 'workflow_approval_request' | 'workflow_approved' | 'workflow_rejected'
+  // General
+  | 'mention' | 'file_updated' | 'file_checked_in' | 'checkout_request'
+  | 'comment_added' | 'task_assigned' | 'task_due_soon' | 'task_overdue' | 'system_alert'
+
+export type NotificationCategory = 'review' | 'change' | 'purchasing' | 'quality' | 'workflow' | 'system'
+export type NotificationPriority = 'low' | 'normal' | 'high' | 'urgent'
 
 // ===========================================
 // Account Types (User vs Supplier)
@@ -1761,14 +1933,32 @@ export interface Notification {
   org_id: string
   user_id: string
   type: NotificationType
+  category: NotificationCategory | null
   title: string
   message: string | null
+  priority: NotificationPriority
+  
+  // Related entities
   review_id: string | null
   file_id: string | null
   from_user_id: string | null
+  eco_id: string | null
+  po_id: string | null
+  ncr_id: string | null
+  capa_id: string | null
+  
+  // Action metadata
+  action_url: string | null
+  action_type: 'approve' | 'reject' | 'view' | 'respond' | null
+  action_completed: boolean
+  action_completed_at: string | null
+  
+  // Status
   read: boolean
   read_at: string | null
   created_at: string
+  expires_at: string | null
+  
   // Joined fields
   from_user?: {
     email: string

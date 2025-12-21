@@ -95,6 +95,8 @@ export interface CheckoutParams extends BaseCommandParams {}
 export interface CheckinParams extends BaseCommandParams {
   // If provided, will upload new content (for modified files)
   uploadContent?: boolean
+  // Optional comment for the checkin
+  comment?: string
 }
 
 // First check-in / Sync (upload new files to server)

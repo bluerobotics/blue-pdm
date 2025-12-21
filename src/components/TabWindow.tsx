@@ -5,7 +5,6 @@ import { usePDMStore, type SidebarView } from '../stores/pdmStore'
 // Lazy loaded views
 const ExplorerView = lazy(() => import('./sidebar/ExplorerView').then(m => ({ default: m.ExplorerView })))
 const PendingView = lazy(() => import('./sidebar/PendingView').then(m => ({ default: m.PendingView })))
-const SearchView = lazy(() => import('./sidebar/SearchView').then(m => ({ default: m.SearchView })))
 const WorkflowsView = lazy(() => import('./sidebar/WorkflowsView').then(m => ({ default: m.WorkflowsView })))
 const HistoryView = lazy(() => import('./sidebar/HistoryView').then(m => ({ default: m.HistoryView })))
 const TrashView = lazy(() => import('./sidebar/TrashView').then(m => ({ default: m.TrashView })))
@@ -16,8 +15,7 @@ const DeviationsView = lazy(() => import('./sidebar/DeviationsView').then(m => (
 const ProductsView = lazy(() => import('./sidebar/ProductsView').then(m => ({ default: m.ProductsView })))
 const ProcessView = lazy(() => import('./sidebar/ProcessView').then(m => ({ default: m.ProcessView })))
 const ScheduleView = lazy(() => import('./sidebar/ScheduleView').then(m => ({ default: m.ScheduleView })))
-const ReviewsView = lazy(() => import('./sidebar/ReviewsView').then(m => ({ default: m.ReviewsView })))
-const GSDView = lazy(() => import('./sidebar/GSDView').then(m => ({ default: m.GSDView })))
+const NotificationsView = lazy(() => import('./sidebar/NotificationsView').then(m => ({ default: m.NotificationsView })))
 const SuppliersView = lazy(() => import('./sidebar/SuppliersView').then(m => ({ default: m.SuppliersView })))
 const SupplierPortalView = lazy(() => import('./sidebar/SupplierPortalView').then(m => ({ default: m.SupplierPortalView })))
 const SettingsContent = lazy(() => import('./SettingsContent').then(m => ({ default: m.SettingsContent })))
@@ -102,12 +100,6 @@ export function TabWindow({ view, title }: TabWindowProps) {
             <PendingView onRefresh={() => {}} />
           </Suspense>
         )
-      case 'search':
-        return (
-          <Suspense fallback={<ViewLoading />}>
-            <SearchView />
-          </Suspense>
-        )
       case 'workflows':
         return (
           <Suspense fallback={<ViewLoading />}>
@@ -162,25 +154,19 @@ export function TabWindow({ view, title }: TabWindowProps) {
             <ProcessView />
           </Suspense>
         )
-      case 'schedule':
+      case 'release-schedule':
         return (
           <Suspense fallback={<ViewLoading />}>
             <ScheduleView />
           </Suspense>
         )
-      case 'reviews':
+      case 'notifications':
         return (
           <Suspense fallback={<ViewLoading />}>
-            <ReviewsView />
+            <NotificationsView />
           </Suspense>
         )
-      case 'gsd':
-        return (
-          <Suspense fallback={<ViewLoading />}>
-            <GSDView />
-          </Suspense>
-        )
-      case 'suppliers':
+      case 'supplier-database':
         return (
           <Suspense fallback={<ViewLoading />}>
             <SuppliersView />

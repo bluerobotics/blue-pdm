@@ -5,6 +5,8 @@ import {
   ModulesSettings,
   VaultsSettings,
   MembersSettings,
+  TeamsSettings,
+  TeamMembersSettings,
   CompanyProfileSettings,
   SerializationSettings,
   RFQSettings,
@@ -45,6 +47,10 @@ export function SettingsContent({ activeTab }: SettingsContentProps) {
         return <VaultsSettings />
       case 'members':
         return <MembersSettings />
+      case 'teams':
+        return <TeamsSettings />
+      case 'team-members':
+        return <TeamMembersSettings />
       case 'company-profile':
         return <CompanyProfileSettings />
       case 'serialization':

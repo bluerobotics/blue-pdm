@@ -2,7 +2,7 @@ import { lazy, Suspense } from 'react'
 import { usePDMStore } from '../stores/pdmStore'
 import type { SettingsTab } from '../types/settings'
 import { isModuleVisible } from '../types/modules'
-import { Loader2 } from 'lucide-react'
+import { Loader2, Construction } from 'lucide-react'
 
 // Eagerly loaded views (always needed)
 import { SettingsNavigation } from './sidebar/SettingsNavigation'
@@ -10,7 +10,6 @@ import { SettingsNavigation } from './sidebar/SettingsNavigation'
 // Lazy loaded views - only loaded when the module is enabled and selected
 const ExplorerView = lazy(() => import('./sidebar/ExplorerView').then(m => ({ default: m.ExplorerView })))
 const PendingView = lazy(() => import('./sidebar/PendingView').then(m => ({ default: m.PendingView })))
-const SearchView = lazy(() => import('./sidebar/SearchView').then(m => ({ default: m.SearchView })))
 const WorkflowsView = lazy(() => import('./sidebar/WorkflowsView').then(m => ({ default: m.WorkflowsView })))
 const HistoryView = lazy(() => import('./sidebar/HistoryView').then(m => ({ default: m.HistoryView })))
 const TrashView = lazy(() => import('./sidebar/TrashView').then(m => ({ default: m.TrashView })))
@@ -21,8 +20,7 @@ const DeviationsView = lazy(() => import('./sidebar/DeviationsView').then(m => (
 const ProductsView = lazy(() => import('./sidebar/ProductsView').then(m => ({ default: m.ProductsView })))
 const ProcessView = lazy(() => import('./sidebar/ProcessView').then(m => ({ default: m.ProcessView })))
 const ScheduleView = lazy(() => import('./sidebar/ScheduleView').then(m => ({ default: m.ScheduleView })))
-const ReviewsView = lazy(() => import('./sidebar/ReviewsView').then(m => ({ default: m.ReviewsView })))
-const GSDView = lazy(() => import('./sidebar/GSDView').then(m => ({ default: m.GSDView })))
+const NotificationsView = lazy(() => import('./sidebar/NotificationsView').then(m => ({ default: m.NotificationsView })))
 const SuppliersView = lazy(() => import('./sidebar/SuppliersView').then(m => ({ default: m.SuppliersView })))
 const SupplierPortalView = lazy(() => import('./sidebar/SupplierPortalView').then(m => ({ default: m.SupplierPortalView })))
 const GoogleDriveView = lazy(() => import('./sidebar/GoogleDriveView').then(m => ({ default: m.GoogleDriveView })))
@@ -61,6 +59,21 @@ function ModuleDisabled({ moduleName }: { moduleName: string }) {
   )
 }
 
+// Placeholder for modules not yet implemented
+function ModuleComingSoon({ moduleName }: { moduleName: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center h-48 text-plm-fg-muted p-4 text-center">
+      <Construction size={32} className="mb-3 text-plm-accent" />
+      <p className="text-sm font-medium">
+        {moduleName}
+      </p>
+      <p className="text-xs mt-1 text-plm-fg-dim">
+        Coming soon
+      </p>
+    </div>
+  )
+}
+
 export function Sidebar({ onOpenVault, onOpenRecentVault, onRefresh, settingsTab = 'profile', onSettingsTabChange }: SidebarProps) {
   const { activeView, sidebarWidth, connectedVaults, moduleConfig } = usePDMStore()
   
@@ -79,28 +92,68 @@ export function Sidebar({ onOpenVault, onOpenRecentVault, onRefresh, settingsTab
     
     // Map view names to readable names for the disabled message
     const viewNames: Record<string, string> = {
+      // Source Files
       'explorer': 'Explorer',
       'pending': 'Pending Changes',
-      'search': 'Search',
-      'workflows': 'File Workflows',
       'history': 'History',
+      'workflows': 'File Workflows',
       'trash': 'Trash',
-      'terminal': 'Terminal',
-      'eco': 'ECOs',
-      'ecr': 'ECR / Issues',
-      'deviations': 'Deviations',
+      // Items
+      'items': 'Item Browser',
+      'boms': 'BOMs',
       'products': 'Products',
+      // Change Control
+      'ecr': 'ECRs / Issues',
+      'eco': 'ECOs',
+      'notifications': 'Notifications',
+      'deviations': 'Deviations',
+      'release-schedule': 'Release Schedule',
       'process': 'Process Editor',
-      'schedule': 'Schedule',
-      'reviews': 'Reviews',
-      'gsd': 'GSD Summary',
-      'suppliers': 'Suppliers',
+      // Supply Chain - Suppliers
+      'supplier-database': 'Supplier Database',
       'supplier-portal': 'Supplier Portal',
+      // Supply Chain - Purchasing
+      'purchase-requests': 'Purchase Requests',
+      'purchase-orders': 'Purchase Orders',
+      'invoices': 'Invoices',
+      // Supply Chain - Logistics
+      'shipping': 'Shipping',
+      'receiving': 'Receiving',
+      // Production
+      'manufacturing-orders': 'Manufacturing Orders',
+      'travellers': 'Travellers',
+      'work-instructions': 'Work Instructions',
+      'production-schedule': 'Production Schedule',
+      'routings': 'Routings',
+      'work-centers': 'Work Centers',
+      'process-flows': 'Process Flows',
+      'equipment': 'Equipment',
+      // Production - Analytics
+      'yield-tracking': 'Yield Tracking',
+      'error-codes': 'Error Codes',
+      'downtime': 'Downtime',
+      'oee': 'OEE Dashboard',
+      'scrap-tracking': 'Scrap Tracking',
+      // Quality
+      'fai': 'First Article Inspection (FAI)',
+      'ncr': 'Non-Conformance Report (NCR)',
+      'imr': 'Incoming Material Report (IMR)',
+      'scar': 'Supplier Corrective Action (SCAR)',
+      'capa': 'Corrective & Preventive Action (CAPA)',
+      'rma': 'Return Material Authorization (RMA)',
+      'certificates': 'Certificates',
+      'calibration': 'Calibration',
+      'quality-templates': 'Templates',
+      // Integrations
       'google-drive': 'Google Drive',
+      // System
+      'terminal': 'Terminal',
     }
     
     switch (activeView) {
-      // PDM Views
+      // ============================================
+      // SOURCE FILES
+      // ============================================
       case 'explorer':
         return isEnabled ? (
           <Suspense fallback={<ViewLoading />}>
@@ -115,10 +168,10 @@ export function Sidebar({ onOpenVault, onOpenRecentVault, onRefresh, settingsTab
           </Suspense>
         ) : <ModuleDisabled moduleName={viewNames[activeView]} />
         
-      case 'search':
+      case 'history':
         return isEnabled ? (
           <Suspense fallback={<ViewLoading />}>
-            <SearchView />
+            <HistoryView />
           </Suspense>
         ) : <ModuleDisabled moduleName={viewNames[activeView]} />
         
@@ -129,28 +182,39 @@ export function Sidebar({ onOpenVault, onOpenRecentVault, onRefresh, settingsTab
           </Suspense>
         ) : <ModuleDisabled moduleName={viewNames[activeView]} />
         
-      case 'history':
-        return isEnabled ? (
-          <Suspense fallback={<ViewLoading />}>
-            <HistoryView />
-          </Suspense>
-        ) : <ModuleDisabled moduleName={viewNames[activeView]} />
-        
       case 'trash':
         return isEnabled ? (
           <Suspense fallback={<ViewLoading />}>
             <TrashView />
           </Suspense>
         ) : <ModuleDisabled moduleName={viewNames[activeView]} />
+
+      // ============================================
+      // ITEMS
+      // ============================================
+      case 'items':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
         
-      case 'terminal':
+      case 'boms':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+        
+      case 'products':
         return isEnabled ? (
           <Suspense fallback={<ViewLoading />}>
-            <TerminalView onRefresh={onRefresh} />
+            <ProductsView />
+          </Suspense>
+        ) : <ModuleDisabled moduleName={viewNames[activeView]} />
+
+      // ============================================
+      // CHANGE CONTROL
+      // ============================================
+      case 'ecr':
+        return isEnabled ? (
+          <Suspense fallback={<ViewLoading />}>
+            <ECRView />
           </Suspense>
         ) : <ModuleDisabled moduleName={viewNames[activeView]} />
         
-      // PLM Views
       case 'eco':
         return isEnabled ? (
           <Suspense fallback={<ViewLoading />}>
@@ -158,10 +222,10 @@ export function Sidebar({ onOpenVault, onOpenRecentVault, onRefresh, settingsTab
           </Suspense>
         ) : <ModuleDisabled moduleName={viewNames[activeView]} />
         
-      case 'ecr':
+      case 'notifications':
         return isEnabled ? (
           <Suspense fallback={<ViewLoading />}>
-            <ECRView />
+            <NotificationsView />
           </Suspense>
         ) : <ModuleDisabled moduleName={viewNames[activeView]} />
         
@@ -172,10 +236,10 @@ export function Sidebar({ onOpenVault, onOpenRecentVault, onRefresh, settingsTab
           </Suspense>
         ) : <ModuleDisabled moduleName={viewNames[activeView]} />
         
-      case 'products':
+      case 'release-schedule':
         return isEnabled ? (
           <Suspense fallback={<ViewLoading />}>
-            <ProductsView />
+            <ScheduleView />
           </Suspense>
         ) : <ModuleDisabled moduleName={viewNames[activeView]} />
         
@@ -185,29 +249,11 @@ export function Sidebar({ onOpenVault, onOpenRecentVault, onRefresh, settingsTab
             <ProcessView />
           </Suspense>
         ) : <ModuleDisabled moduleName={viewNames[activeView]} />
-        
-      case 'schedule':
-        return isEnabled ? (
-          <Suspense fallback={<ViewLoading />}>
-            <ScheduleView />
-          </Suspense>
-        ) : <ModuleDisabled moduleName={viewNames[activeView]} />
-        
-      case 'reviews':
-        return isEnabled ? (
-          <Suspense fallback={<ViewLoading />}>
-            <ReviewsView />
-          </Suspense>
-        ) : <ModuleDisabled moduleName={viewNames[activeView]} />
-        
-      case 'gsd':
-        return isEnabled ? (
-          <Suspense fallback={<ViewLoading />}>
-            <GSDView />
-          </Suspense>
-        ) : <ModuleDisabled moduleName={viewNames[activeView]} />
-        
-      case 'suppliers':
+
+      // ============================================
+      // SUPPLY CHAIN - SUPPLIERS
+      // ============================================
+      case 'supplier-database':
         return isEnabled ? (
           <Suspense fallback={<ViewLoading />}>
             <SuppliersView />
@@ -220,11 +266,134 @@ export function Sidebar({ onOpenVault, onOpenRecentVault, onRefresh, settingsTab
             <SupplierPortalView />
           </Suspense>
         ) : <ModuleDisabled moduleName={viewNames[activeView]} />
+
+      // ============================================
+      // SUPPLY CHAIN - PURCHASING
+      // ============================================
+      case 'purchase-requests':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
         
+      case 'purchase-orders':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+        
+      case 'invoices':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+
+      // ============================================
+      // SUPPLY CHAIN - LOGISTICS
+      // ============================================
+      case 'shipping':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+        
+      case 'receiving':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+
+      // ============================================
+      // PRODUCTION
+      // ============================================
+      case 'manufacturing-orders':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+        
+      case 'travellers':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+        
+      case 'work-instructions':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+        
+      case 'production-schedule':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+        
+      case 'routings':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+        
+      case 'work-centers':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+        
+      case 'process-flows':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+        
+      case 'equipment':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+
+      // ============================================
+      // PRODUCTION - ANALYTICS
+      // ============================================
+      case 'yield-tracking':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+        
+      case 'error-codes':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+        
+      case 'downtime':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+        
+      case 'oee':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+        
+      case 'scrap-tracking':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+
+      // ============================================
+      // QUALITY
+      // ============================================
+      case 'fai':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+        
+      case 'ncr':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+        
+      case 'imr':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+        
+      case 'scar':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+        
+      case 'capa':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+        
+      case 'rma':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+        
+      case 'certificates':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+        
+      case 'calibration':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+        
+      case 'quality-templates':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+
+      // ============================================
+      // ACCOUNTING
+      // ============================================
+      case 'accounts-payable':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+      case 'accounts-receivable':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+      case 'general-ledger':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+      case 'cost-tracking':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+      case 'budgets':
+        return isEnabled ? <ModuleComingSoon moduleName={viewNames[activeView]} /> : <ModuleDisabled moduleName={viewNames[activeView]} />
+
+      // ============================================
+      // INTEGRATIONS
+      // ============================================
       case 'google-drive':
         return isEnabled ? (
           <Suspense fallback={<ViewLoading />}>
             <GoogleDriveView />
+          </Suspense>
+        ) : <ModuleDisabled moduleName={viewNames[activeView]} />
+
+      // ============================================
+      // SYSTEM
+      // ============================================
+      case 'terminal':
+        return isEnabled ? (
+          <Suspense fallback={<ViewLoading />}>
+            <TerminalView onRefresh={onRefresh} />
           </Suspense>
         ) : <ModuleDisabled moduleName={viewNames[activeView]} />
         
@@ -240,45 +409,118 @@ export function Sidebar({ onOpenVault, onOpenRecentVault, onRefresh, settingsTab
 
   const getTitle = () => {
     switch (activeView) {
-      // PDM Views
+      // Source Files
       case 'explorer':
         return 'EXPLORER'
       case 'pending':
         return 'PENDING'
-      case 'search':
-        return 'SEARCH'
-      case 'workflows':
-        return 'FILE WORKFLOWS'
       case 'history':
         return 'HISTORY'
+      case 'workflows':
+        return 'FILE WORKFLOWS'
       case 'trash':
         return 'TRASH'
-      case 'terminal':
-        return 'TERMINAL'
-      // PLM Views
-      case 'eco':
-        return 'ECOs'
-      case 'ecr':
-        return 'ECRs / ISSUES'
-      case 'deviations':
-        return 'DEVIATIONS'
+      // Items
+      case 'items':
+        return 'ITEM BROWSER'
+      case 'boms':
+        return 'BOMS'
       case 'products':
         return 'PRODUCTS'
+      // Change Control
+      case 'ecr':
+        return 'ECRS / ISSUES'
+      case 'eco':
+        return 'ECOS'
+      case 'notifications':
+        return 'NOTIFICATIONS'
+      case 'deviations':
+        return 'DEVIATIONS'
+      case 'release-schedule':
+        return 'RELEASE SCHEDULE'
       case 'process':
         return 'PROCESS EDITOR'
-      case 'schedule':
-        return 'SCHEDULE'
-      case 'reviews':
-        return 'REVIEWS'
-      case 'gsd':
-        return 'GSD SUMMARY'
-      case 'suppliers':
-        return 'SUPPLIERS'
+      // Supply Chain - Suppliers
+      case 'supplier-database':
+        return 'SUPPLIER DATABASE'
       case 'supplier-portal':
         return 'SUPPLIER PORTAL'
+      // Supply Chain - Purchasing
+      case 'purchase-requests':
+        return 'PURCHASE REQUESTS'
+      case 'purchase-orders':
+        return 'PURCHASE ORDERS'
+      case 'invoices':
+        return 'INVOICES'
+      // Supply Chain - Logistics
+      case 'shipping':
+        return 'SHIPPING'
+      case 'receiving':
+        return 'RECEIVING'
+      // Production
+      case 'manufacturing-orders':
+        return 'MANUFACTURING ORDERS'
+      case 'travellers':
+        return 'TRAVELLERS'
+      case 'work-instructions':
+        return 'WORK INSTRUCTIONS'
+      case 'production-schedule':
+        return 'PRODUCTION SCHEDULE'
+      case 'routings':
+        return 'ROUTINGS'
+      case 'work-centers':
+        return 'WORK CENTERS'
+      case 'process-flows':
+        return 'PROCESS FLOWS'
+      case 'equipment':
+        return 'EQUIPMENT'
+      // Production - Analytics
+      case 'yield-tracking':
+        return 'YIELD TRACKING'
+      case 'error-codes':
+        return 'ERROR CODES'
+      case 'downtime':
+        return 'DOWNTIME'
+      case 'oee':
+        return 'OEE DASHBOARD'
+      case 'scrap-tracking':
+        return 'SCRAP TRACKING'
+      // Quality
+      case 'fai':
+        return 'FIRST ARTICLE INSPECTION (FAI)'
+      case 'ncr':
+        return 'NON-CONFORMANCE REPORT (NCR)'
+      case 'imr':
+        return 'INCOMING MATERIAL REPORT (IMR)'
+      case 'scar':
+        return 'SUPPLIER CORRECTIVE ACTION (SCAR)'
+      case 'capa':
+        return 'CORRECTIVE & PREVENTIVE ACTION (CAPA)'
+      case 'rma':
+        return 'RETURN MATERIAL AUTHORIZATION (RMA)'
+      case 'certificates':
+        return 'CERTIFICATES'
+      case 'calibration':
+        return 'CALIBRATION'
+      case 'quality-templates':
+        return 'TEMPLATES'
+      // Accounting
+      case 'accounts-payable':
+        return 'ACCOUNTS PAYABLE'
+      case 'accounts-receivable':
+        return 'ACCOUNTS RECEIVABLE'
+      case 'general-ledger':
+        return 'GENERAL LEDGER'
+      case 'cost-tracking':
+        return 'COST TRACKING'
+      case 'budgets':
+        return 'BUDGETS'
+      // Integrations
       case 'google-drive':
         return 'GOOGLE DRIVE'
-      // System Views
+      // System
+      case 'terminal':
+        return 'TERMINAL'
       case 'settings':
         return 'SETTINGS'
       default:

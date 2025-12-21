@@ -4005,20 +4005,38 @@ try {
 // Track files currently having thumbnails extracted (for debugging file locks)
 const thumbnailsInProgress = new Set<string>()
 
+// Simple LRU cache for thumbnails to avoid re-extracting
+const thumbnailCache = new Map<string, { data: string; mtime: number }>()
+const THUMBNAIL_CACHE_MAX_SIZE = 500
+
 // Extract thumbnail or icon from files using Windows Shell API (same as Explorer)
 // First tries to get a preview thumbnail, then falls back to the file type icon
 async function extractSolidWorksThumbnail(filePath: string): Promise<{ success: boolean; data?: string; error?: string }> {
   const fileName = path.basename(filePath)
-  const startTime = Date.now()
+  
+  // Check cache first
+  try {
+    const stats = fs.statSync(filePath)
+    const mtime = stats.mtimeMs
+    const cached = thumbnailCache.get(filePath)
+    if (cached && cached.mtime === mtime) {
+      return { success: true, data: cached.data }
+    }
+  } catch {
+    // File may not exist, continue with extraction
+  }
+  
+  // Skip if already in progress for this file
+  if (thumbnailsInProgress.has(filePath)) {
+    return { success: false, error: 'Extraction already in progress' }
+  }
   
   // Track this extraction
   thumbnailsInProgress.add(filePath)
-  log(`[Thumbnail] START extraction: ${fileName} (${thumbnailsInProgress.size} in progress)`)
   
   try {
     // First, try to get a preview thumbnail (works for images, PDFs with preview, SolidWorks, etc.)
     try {
-      log(`[Thumbnail] Calling createThumbnailFromPath for: ${fileName}`)
       const thumbnail = await nativeImage.createThumbnailFromPath(filePath, { 
         width: 256, 
         height: 256 
@@ -4027,43 +4045,52 @@ async function extractSolidWorksThumbnail(filePath: string): Promise<{ success: 
       if (thumbnail && !thumbnail.isEmpty()) {
         const pngData = thumbnail.toPNG()
         if (pngData && pngData.length > 100) {
-          const elapsed = Date.now() - startTime
-          log(`[Thumbnail] Got OS thumbnail for: ${fileName}, size: ${pngData.length}, time: ${elapsed}ms`)
-          return { success: true, data: `data:image/png;base64,${pngData.toString('base64')}` }
+          const data = `data:image/png;base64,${pngData.toString('base64')}`
+          // Cache the result
+          cacheThumb(filePath, data)
+          return { success: true, data }
         }
       }
-      log(`[Thumbnail] createThumbnailFromPath returned empty for: ${fileName}`)
-    } catch (thumbErr) {
-      log(`[Thumbnail] createThumbnailFromPath failed for ${fileName}: ${thumbErr}`)
+    } catch {
       // Thumbnail not available, will try icon below
     }
     
     // Fall back to file type icon (like Explorer shows for PDFs, Excel files, etc.)
     try {
-      log(`[Thumbnail] Trying getFileIcon for: ${fileName}`)
       const icon = await app.getFileIcon(filePath, { size: 'large' })
       if (icon && !icon.isEmpty()) {
         const pngData = icon.toPNG()
         if (pngData && pngData.length > 100) {
-          const elapsed = Date.now() - startTime
-          log(`[Thumbnail] Got OS file icon for: ${fileName}, size: ${pngData.length}, time: ${elapsed}ms`)
-          return { success: true, data: `data:image/png;base64,${pngData.toString('base64')}` }
+          const data = `data:image/png;base64,${pngData.toString('base64')}`
+          // Cache the result
+          cacheThumb(filePath, data)
+          return { success: true, data }
         }
       }
-    } catch (iconErr) {
-      log(`[Thumbnail] getFileIcon failed for ${fileName}: ${iconErr}`)
+    } catch {
+      // Icon extraction failed
     }
     
-    const elapsed = Date.now() - startTime
-    log(`[Thumbnail] No OS thumbnail/icon available for: ${fileName}, time: ${elapsed}ms`)
     return { success: false, error: 'No thumbnail or icon available from OS' }
   } catch (err) {
-    const elapsed = Date.now() - startTime
-    log(`[Thumbnail] Extraction failed for ${fileName}: ${err}, time: ${elapsed}ms`)
     return { success: false, error: String(err) }
   } finally {
     thumbnailsInProgress.delete(filePath)
-    log(`[Thumbnail] END extraction: ${fileName} (${thumbnailsInProgress.size} still in progress)`)
+  }
+}
+
+// Helper to cache thumbnails with LRU eviction
+function cacheThumb(filePath: string, data: string) {
+  try {
+    const stats = fs.statSync(filePath)
+    // Evict oldest entries if cache is full
+    if (thumbnailCache.size >= THUMBNAIL_CACHE_MAX_SIZE) {
+      const firstKey = thumbnailCache.keys().next().value
+      if (firstKey) thumbnailCache.delete(firstKey)
+    }
+    thumbnailCache.set(filePath, { data, mtime: stats.mtimeMs })
+  } catch {
+    // Ignore cache failures
   }
 }
 

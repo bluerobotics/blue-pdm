@@ -35,6 +35,7 @@ import {
   InlineUploadButton, 
   InlineSyncButton,
   InlineCheckinButton,
+  InlineStageCheckinButton,
   FolderDownloadButton,
   FolderUploadButton,
   FolderCheckinButton
@@ -101,6 +102,10 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     setVaultPath,
     setVaultConnected,
     hideSolidworksTempFiles,
+    isOfflineMode,
+    stageCheckin,
+    unstageCheckin,
+    getStagedCheckin,
   } = usePDMStore()
   
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; file: LocalFile } | null>(null)
@@ -855,6 +860,30 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     
     executeCommand('sync', { files: targetFiles }, { onRefresh })
     setIsUploadHovered(false)
+  }
+
+  // Stage/unstage a file for check-in when back online (offline mode feature)
+  const handleStageCheckin = (e: React.MouseEvent, file: LocalFile) => {
+    e.stopPropagation()
+    
+    const existingStaged = getStagedCheckin(file.relativePath)
+    
+    if (existingStaged) {
+      // Unstage the file
+      unstageCheckin(file.relativePath)
+      addToast('info', `Unstaged "${file.name}" from check-in queue`)
+    } else {
+      // Stage the file for check-in
+      stageCheckin({
+        relativePath: file.relativePath,
+        fileName: file.name,
+        localHash: file.localHash || '',
+        stagedAt: new Date().toISOString(),
+        serverVersion: file.pdmData?.version,
+        serverHash: file.pdmData?.content_hash || undefined
+      })
+      addToast('success', `Staged "${file.name}" for check-in when online`)
+    }
   }
 
   const getFileIcon = (file: LocalFile) => {
@@ -1626,15 +1655,15 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
           {/* Order from left to right: update, cloud, avatar checkout, green cloud, local */}
           {!isRenaming && file.isDirectory && (localOnlyCount > 0 || file.diffStatus === 'cloud' || (diffCounts && (diffCounts.cloud > 0 || diffCounts.outdated > 0)) || folderCheckoutUsers.length > 0 || folderSyncedCount > 0) && (
             <span className="flex items-center gap-1 ml-auto mr-0.5 text-[10px]">
-              {/* 1. Update (outdated) - farthest left */}
-              {diffCounts && diffCounts.outdated > 0 && (
+              {/* 1. Update (outdated) - farthest left - only when online */}
+              {!isOfflineMode && diffCounts && diffCounts.outdated > 0 && (
                 <InlineSyncButton
                   onClick={(e) => handleInlineDownload(e, file)}
                   count={diffCounts.outdated}
                 />
               )}
-              {/* 2. Cloud files to download */}
-              {((diffCounts && diffCounts.cloud > 0) || file.diffStatus === 'cloud') && (
+              {/* 2. Cloud files to download - only when online */}
+              {!isOfflineMode && ((diffCounts && diffCounts.cloud > 0) || file.diffStatus === 'cloud') && (
                 <FolderDownloadButton
                   onClick={(e) => !isProcessing && handleInlineDownload(e, file)}
                   cloudCount={diffCounts?.cloud || 0}
@@ -1642,8 +1671,8 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                   disabled={isProcessing}
                 />
               )}
-              {/* 3. Avatar checkout (users with check-in button) */}
-              {folderCheckoutUsers.length > 0 && (
+              {/* 3. Avatar checkout (users with check-in button) - only when online */}
+              {!isOfflineMode && folderCheckoutUsers.length > 0 && (
                 <FolderCheckinButton
                   onClick={(e) => handleInlineCheckin(e, file)}
                   users={folderCheckoutUsers}
@@ -1651,15 +1680,15 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                   totalCheckouts={folderTotalCheckouts}
                 />
               )}
-              {/* 4. Green cloud - synced files ready to checkout */}
-              {folderSyncedCount > 0 && (
+              {/* 4. Green cloud - synced files ready to checkout - only when online */}
+              {!isOfflineMode && folderSyncedCount > 0 && (
                 <InlineCheckoutButton
                   onClick={(e) => handleInlineCheckout(e, file)}
                   count={folderSyncedCount}
                 />
               )}
-              {/* 5. Local files - farthest right */}
-              {localOnlyCount > 0 && (
+              {/* 5. Local files - clickable upload button when online only */}
+              {!isOfflineMode && localOnlyCount > 0 && (
                 <FolderUploadButton
                   onClick={(e) => handleInlineFirstCheckin(e, file)}
                   localCount={localOnlyCount}
@@ -1668,8 +1697,8 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
             </span>
           )}
           
-          {/* Download for individual cloud files (not folders) */}
-          {!isRenaming && !isProcessing && !file.isDirectory && (file.diffStatus === 'cloud' || file.diffStatus === 'cloud_new') && (
+          {/* Download for individual cloud files (not folders) - only when online */}
+          {!isRenaming && !isProcessing && !file.isDirectory && !isOfflineMode && (file.diffStatus === 'cloud' || file.diffStatus === 'cloud_new') && (
             <InlineDownloadButton
               onClick={(e) => handleInlineDownload(e, file)}
               isCloudNew={file.diffStatus === 'cloud_new'}
@@ -1680,8 +1709,8 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
             />
           )}
           
-          {/* Sync outdated files - newer version available on server */}
-          {!isRenaming && !isProcessing && !file.isDirectory && file.diffStatus === 'outdated' && (
+          {/* Sync outdated files - newer version available on server - only when online */}
+          {!isRenaming && !isProcessing && !file.isDirectory && !isOfflineMode && file.diffStatus === 'outdated' && (
             <InlineSyncButton 
               onClick={(e) => handleInlineDownload(e, file)}
               selectedCount={selectedFiles.includes(file.path) && selectedUpdatableFiles.length > 1 ? selectedUpdatableFiles.length : undefined}
@@ -1691,8 +1720,30 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
             />
           )}
           
-          {/* First Check In for individual local-only files (not folders) */}
-          {!isRenaming && !isProcessing && !file.isDirectory && (!file.pdmData || file.diffStatus === 'added') && file.diffStatus !== 'cloud' && (
+          {/* Stage Check-In button (offline mode) - only for files with actual local changes */}
+          {/* Shows for modified or new local files, allows staging for check-in when back online */}
+          {!isRenaming && !isProcessing && !file.isDirectory && isOfflineMode && file.diffStatus !== 'cloud' && (
+            (() => {
+              const isStaged = !!getStagedCheckin(file.relativePath)
+              // Show for: new local files OR modified synced files OR already staged files
+              // NOT for files that are just checked out without changes
+              const hasLocalChanges = file.diffStatus === 'added' || file.diffStatus === 'modified'
+              if (!hasLocalChanges && !isStaged) return null
+              return (
+                <InlineStageCheckinButton
+                  onClick={(e) => handleStageCheckin(e, file)}
+                  isStaged={isStaged}
+                  title={isStaged 
+                    ? 'Click to unstage (keep working on file)' 
+                    : 'Stage for check-in when online'
+                  }
+                />
+              )
+            })()
+          )}
+          
+          {/* First Check In for individual local-only files (not folders) - only when online */}
+          {!isRenaming && !isProcessing && !file.isDirectory && !isOfflineMode && (!file.pdmData || file.diffStatus === 'added') && file.diffStatus !== 'cloud' && (
             <InlineUploadButton 
               onClick={(e) => handleInlineFirstCheckin(e, file)}
               selectedCount={selectedFiles.includes(file.path) && selectedUploadableFiles.length > 1 ? selectedUploadableFiles.length : undefined}
@@ -1704,16 +1755,20 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
           
           {/* Inline action buttons for individual files - show on hover */}
           {!isRenaming && !isBeingProcessed(file.relativePath) && !file.isDirectory && (() => {
-            const showCheckout = file.pdmData && !file.pdmData.checked_out_by && file.diffStatus !== 'cloud'
-            const showCheckin = file.pdmData?.checked_out_by === user?.id
+            // In offline mode, checkout/checkin buttons don't work - use stage button instead
+            // But we still show checkout status (avatar) for files checked out by others
+            const showCheckout = !isOfflineMode && file.pdmData && !file.pdmData.checked_out_by && file.diffStatus !== 'cloud'
+            const showCheckin = !isOfflineMode && file.pdmData?.checked_out_by === user?.id
             const checkedOutByOther = file.pdmData?.checked_out_by && file.pdmData.checked_out_by !== user?.id
             const checkedOutUser = checkedOutByOther ? (file.pdmData as any)?.checked_out_user : null
+            // In offline mode, show a lock icon for files I have checked out (visual indicator only)
+            const showOfflineCheckoutIndicator = isOfflineMode && file.pdmData?.checked_out_by === user?.id
             
-            if (!showCheckout && !showCheckin && !checkedOutByOther) return null
+            if (!showCheckout && !showCheckin && !checkedOutByOther && !showOfflineCheckoutIndicator) return null
             
             return (
               <span className="flex items-center gap-0.5 ml-1">
-                {/* Check Out */}
+                {/* Check Out - only when online */}
                 {showCheckout && (
                   <InlineCheckoutButton 
                     onClick={(e) => handleInlineCheckout(e, file)}
@@ -1723,7 +1778,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                     onMouseLeave={() => setIsCheckoutHovered(false)}
                   />
                 )}
-                {/* Check In - for individual files checked out by me */}
+                {/* Check In - for individual files checked out by me (only when online) */}
                 {showCheckin && (
                   <InlineCheckinButton
                     onClick={(e) => handleInlineCheckin(e, file)}
@@ -1735,6 +1790,31 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                     onMouseEnter={() => selectedCheckinableFiles.length > 1 && selectedFiles.includes(file.path) && setIsCheckinHovered(true)}
                     onMouseLeave={() => setIsCheckinHovered(false)}
                   />
+                )}
+                {/* Offline checkout indicator - shows I have this file checked out while offline */}
+                {showOfflineCheckoutIndicator && (
+                  <div 
+                    className="relative w-5 h-5 flex-shrink-0" 
+                    title="You have this file checked out (use stage button to queue check-in)"
+                  >
+                    {user?.avatar_url ? (
+                      <img 
+                        src={user.avatar_url} 
+                        alt={user?.full_name || user?.email?.split('@')[0] || 'You'}
+                        className="w-5 h-5 rounded-full object-cover ring-2 ring-plm-accent"
+                        onError={(e) => {
+                          const target = e.target as HTMLImageElement
+                          target.style.display = 'none'
+                          target.nextElementSibling?.classList.remove('hidden')
+                        }}
+                      />
+                    ) : null}
+                    <div 
+                      className={`w-5 h-5 rounded-full bg-plm-accent/30 text-plm-accent flex items-center justify-center text-[9px] font-medium ring-2 ring-plm-accent ${user?.avatar_url ? 'hidden' : ''}`}
+                    >
+                      {getInitials(user?.full_name || user?.email?.split('@')[0] || 'U')}
+                    </div>
+                  </div>
                 )}
                 {/* Avatar for files checked out by someone else - no button, just shows who has it */}
                 {checkedOutByOther && (
@@ -1934,16 +2014,16 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
             <div className="flex items-center gap-1">
               {/* Order from left to right: update, cloud, avatar checkout, green cloud, local */}
               
-              {/* 1. Update files (outdated) - farthest left */}
-              {outdatedFilesCount > 0 && (
+              {/* 1. Update files (outdated) - farthest left - only when online */}
+              {!isOfflineMode && outdatedFilesCount > 0 && (
                 <InlineSyncButton
                   onClick={handleUpdateAllOutdated}
                   count={outdatedFilesCount}
                 />
               )}
               
-              {/* 2. Cloud files to download */}
-              {cloudFilesCount > 0 && (
+              {/* 2. Cloud files to download - only when online */}
+              {!isOfflineMode && cloudFilesCount > 0 && (
                 <FolderDownloadButton
                   onClick={handleDownloadAllCloudFiles}
                   cloudCount={cloudFilesCount}
@@ -1951,8 +2031,8 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                 />
               )}
               
-              {/* 3. Avatar checkout (users with check-in button) */}
-              {allCheckoutUsers.length > 0 && (
+              {/* 3. Avatar checkout (users with check-in button) - only when online */}
+              {!isOfflineMode && allCheckoutUsers.length > 0 && (
                 <FolderCheckinButton
                   onClick={handleCheckInMyCheckouts}
                   users={allCheckoutUsers}
@@ -1963,16 +2043,16 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                 />
               )}
               
-              {/* 4. Green cloud - synced files ready to checkout */}
-              {syncedFilesCount > 0 && (
+              {/* 4. Green cloud - synced files ready to checkout - only when online */}
+              {!isOfflineMode && syncedFilesCount > 0 && (
                 <InlineCheckoutButton
                   onClick={handleCheckoutAllSynced}
                   count={syncedFilesCount}
                 />
               )}
               
-              {/* 5. Local files to upload - farthest right */}
-              {localOnlyFilesCount > 0 && (
+              {/* 5. Local files - clickable upload button when online only */}
+              {!isOfflineMode && localOnlyFilesCount > 0 && (
                 <FolderUploadButton
                   onClick={handleFirstCheckinAllLocal}
                   localCount={localOnlyFilesCount}
@@ -2422,15 +2502,15 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                       {/* Folder inline action buttons - order from left to right: update, cloud, avatar checkout, green cloud, local */}
                       {pinned.isDirectory && actualFile && pinned.vaultId === activeVaultId && (localOnlyCount > 0 || actualFile.diffStatus === 'cloud' || (pinnedDiffCounts && (pinnedDiffCounts.cloud > 0 || pinnedDiffCounts.outdated > 0)) || pinnedFolderCheckoutUsers.length > 0 || pinnedFolderSyncedCount > 0) && (
                         <span className="flex items-center gap-1 ml-auto mr-0.5 text-[10px]">
-                          {/* 1. Update (outdated) - farthest left */}
-                          {pinnedDiffCounts && pinnedDiffCounts.outdated > 0 && (
+                          {/* 1. Update (outdated) - farthest left - only when online */}
+                          {!isOfflineMode && pinnedDiffCounts && pinnedDiffCounts.outdated > 0 && (
                             <InlineSyncButton
                               onClick={(e) => handleInlineDownload(e, actualFile)}
                               count={pinnedDiffCounts.outdated}
                             />
                           )}
-                          {/* 2. Cloud files to download */}
-                          {((pinnedDiffCounts && pinnedDiffCounts.cloud > 0) || actualFile.diffStatus === 'cloud') && (
+                          {/* 2. Cloud files to download - only when online */}
+                          {!isOfflineMode && ((pinnedDiffCounts && pinnedDiffCounts.cloud > 0) || actualFile.diffStatus === 'cloud') && (
                             <FolderDownloadButton
                               onClick={(e) => !isBeingProcessed(actualFile.relativePath) && handleInlineDownload(e, actualFile)}
                               cloudCount={pinnedDiffCounts?.cloud || 0}
@@ -2438,8 +2518,8 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                               disabled={isBeingProcessed(actualFile.relativePath)}
                             />
                           )}
-                          {/* 3. Avatar checkout (users with check-in button) */}
-                          {pinnedFolderCheckoutUsers.length > 0 && (
+                          {/* 3. Avatar checkout (users with check-in button) - only when online */}
+                          {!isOfflineMode && pinnedFolderCheckoutUsers.length > 0 && (
                             <FolderCheckinButton
                               onClick={(e) => handleInlineCheckin(e, actualFile)}
                               users={pinnedFolderCheckoutUsers}
@@ -2447,15 +2527,15 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                               totalCheckouts={pinnedFolderTotalCheckouts}
                             />
                           )}
-                          {/* 4. Green cloud - synced files ready to checkout */}
-                          {pinnedFolderSyncedCount > 0 && (
+                          {/* 4. Green cloud - synced files ready to checkout - only when online */}
+                          {!isOfflineMode && pinnedFolderSyncedCount > 0 && (
                             <InlineCheckoutButton
                               onClick={(e) => handleInlineCheckout(e, actualFile)}
                               count={pinnedFolderSyncedCount}
                             />
                           )}
-                          {/* 5. Local files - farthest right */}
-                          {localOnlyCount > 0 && (
+                          {/* 5. Local files - clickable upload button when online only */}
+                          {!isOfflineMode && localOnlyCount > 0 && (
                             <FolderUploadButton
                               onClick={(e) => handleInlineFirstCheckin(e, actualFile)}
                               localCount={localOnlyCount}
@@ -2467,8 +2547,8 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                       {/* Status icon for files */}
                       {!pinned.isDirectory && getPinnedStatusIcon()}
                       
-                      {/* Download for individual cloud files (not folders) */}
-                      {!pinned.isDirectory && actualFile && pinned.vaultId === activeVaultId && !isBeingProcessed(actualFile.relativePath) && (actualFile.diffStatus === 'cloud' || actualFile.diffStatus === 'cloud_new') && (
+                      {/* Download for individual cloud files (not folders) - only when online */}
+                      {!pinned.isDirectory && actualFile && pinned.vaultId === activeVaultId && !isOfflineMode && !isBeingProcessed(actualFile.relativePath) && (actualFile.diffStatus === 'cloud' || actualFile.diffStatus === 'cloud_new') && (
                         <InlineDownloadButton
                           onClick={(e) => handleInlineDownload(e, actualFile)}
                           isCloudNew={actualFile.diffStatus === 'cloud_new'}
@@ -2479,8 +2559,29 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                         />
                       )}
                       
-                      {/* First Check In for individual local-only files (not folders) */}
-                      {!pinned.isDirectory && actualFile && pinned.vaultId === activeVaultId && !isBeingProcessed(actualFile.relativePath) && (!actualFile.pdmData || actualFile.diffStatus === 'added') && actualFile.diffStatus !== 'cloud' && (
+                      {/* Stage Check-In button (offline mode) - only for pinned files with actual local changes */}
+                      {!pinned.isDirectory && actualFile && pinned.vaultId === activeVaultId && isOfflineMode && !isBeingProcessed(actualFile.relativePath) && actualFile.diffStatus !== 'cloud' && (
+                        (() => {
+                          const isStaged = !!getStagedCheckin(actualFile.relativePath)
+                          // Show for: new local files OR modified synced files OR already staged files
+                          // NOT for files that are just checked out without changes
+                          const hasLocalChanges = actualFile.diffStatus === 'added' || actualFile.diffStatus === 'modified'
+                          if (!hasLocalChanges && !isStaged) return null
+                          return (
+                            <InlineStageCheckinButton
+                              onClick={(e) => handleStageCheckin(e, actualFile)}
+                              isStaged={isStaged}
+                              title={isStaged 
+                                ? 'Click to unstage (keep working on file)' 
+                                : 'Stage for check-in when online'
+                              }
+                            />
+                          )
+                        })()
+                      )}
+                      
+                      {/* First Check In for individual local-only files (not folders) - only when online */}
+                      {!pinned.isDirectory && actualFile && pinned.vaultId === activeVaultId && !isOfflineMode && !isBeingProcessed(actualFile.relativePath) && (!actualFile.pdmData || actualFile.diffStatus === 'added') && actualFile.diffStatus !== 'cloud' && (
                         <InlineUploadButton 
                           onClick={(e) => handleInlineFirstCheckin(e, actualFile)}
                           selectedCount={selectedFiles.includes(actualFile.path) && selectedUploadableFiles.length > 1 ? selectedUploadableFiles.length : undefined}
@@ -2492,14 +2593,16 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                       
                       {/* Inline action buttons for individual files - show on hover */}
                       {!pinned.isDirectory && actualFile && pinned.vaultId === activeVaultId && !isBeingProcessed(actualFile.relativePath) && (() => {
-                        const showCheckout = actualFile.pdmData && !actualFile.pdmData.checked_out_by && actualFile.diffStatus !== 'cloud'
-                        const showCheckin = actualFile.pdmData?.checked_out_by === user?.id
+                        // In offline mode, checkout/checkin buttons don't work - use stage button instead
+                        const showCheckout = !isOfflineMode && actualFile.pdmData && !actualFile.pdmData.checked_out_by && actualFile.diffStatus !== 'cloud'
+                        const showCheckin = !isOfflineMode && actualFile.pdmData?.checked_out_by === user?.id
+                        const showOfflineCheckoutIndicator = isOfflineMode && actualFile.pdmData?.checked_out_by === user?.id
                         
-                        if (!showCheckout && !showCheckin) return null
+                        if (!showCheckout && !showCheckin && !showOfflineCheckoutIndicator) return null
                         
                         return (
                           <span className="flex items-center gap-0.5 ml-1">
-                            {/* Check Out */}
+                            {/* Check Out - only when online */}
                             {showCheckout && (
                               <InlineCheckoutButton 
                                 onClick={(e) => handleInlineCheckout(e, actualFile)}
@@ -2509,7 +2612,7 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                                 onMouseLeave={() => setIsCheckoutHovered(false)}
                               />
                             )}
-                            {/* Check In - for individual files checked out by me */}
+                            {/* Check In - for individual files checked out by me - only when online */}
                             {showCheckin && (
                               <InlineCheckinButton
                                 onClick={(e) => handleInlineCheckin(e, actualFile)}
@@ -2521,6 +2624,31 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                                 onMouseEnter={() => selectedCheckinableFiles.length > 1 && selectedFiles.includes(actualFile.path) && setIsCheckinHovered(true)}
                                 onMouseLeave={() => setIsCheckinHovered(false)}
                               />
+                            )}
+                            {/* Offline checkout indicator - shows I have this file checked out while offline */}
+                            {showOfflineCheckoutIndicator && (
+                              <div 
+                                className="relative w-5 h-5 flex-shrink-0" 
+                                title="You have this file checked out (use stage button to queue check-in)"
+                              >
+                                {user?.avatar_url ? (
+                                  <img 
+                                    src={user.avatar_url} 
+                                    alt={user?.full_name || user?.email?.split('@')[0] || 'You'}
+                                    className="w-5 h-5 rounded-full object-cover ring-2 ring-plm-accent"
+                                    onError={(e) => {
+                                      const target = e.target as HTMLImageElement
+                                      target.style.display = 'none'
+                                      target.nextElementSibling?.classList.remove('hidden')
+                                    }}
+                                  />
+                                ) : null}
+                                <div 
+                                  className={`w-5 h-5 rounded-full bg-plm-accent/30 text-plm-accent flex items-center justify-center text-[9px] font-medium ring-2 ring-plm-accent ${user?.avatar_url ? 'hidden' : ''}`}
+                                >
+                                  {getInitials(user?.full_name || user?.email?.split('@')[0] || 'U')}
+                                </div>
+                              </div>
                             )}
                           </span>
                         )

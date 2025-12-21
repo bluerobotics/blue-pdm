@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { PDMFile, FileState, Organization, User } from '../types/pdm'
-import type { ModuleId, ModuleGroupId, ModuleConfig, SectionDivider, OrderListItem } from '../types/modules'
+import type { ModuleId, ModuleGroupId, ModuleConfig, SectionDivider, OrderListItem, OrgModuleDefaults } from '../types/modules'
 import { getDefaultModuleConfig, MODULES, MODULE_GROUPS, isModuleVisible, extractFromCombinedList } from '../types/modules'
 import type { KeybindingAction, KeybindingsConfig, Keybinding } from '../types/settings'
 import { supabase } from '../lib/supabase'
@@ -16,27 +16,68 @@ function buildFullPath(vaultPath: string, relativePath: string): string {
 }
 
 export type SidebarView = 
-  // PDM views
+  // Source Files
   | 'explorer' 
   | 'pending' 
-  | 'search' 
-  | 'workflows'  // File workflows
   | 'history' 
+  | 'workflows'
   | 'trash' 
-  | 'terminal'
-  // PLM views
-  | 'eco'        // ECO management
-  | 'ecr'        // Engineering Change Requests / Issues
-  | 'products'   // Product information
-  | 'process'    // ECO process editor
-  | 'schedule'   // ECO schedule
-  | 'reviews'    // Gate approvals & reviews
-  | 'gsd'        // ECO summary (Getting Stuff Done)
-  | 'deviations' // Deviations tracking
-  | 'suppliers'  // Supplier database
-  | 'supplier-portal'  // Supplier portal
-  | 'google-drive'  // Google Drive integration
+  // Items
+  | 'items'
+  | 'boms'
+  | 'products'
+  // Change Control
+  | 'ecr'
+  | 'eco'
+  | 'notifications'
+  | 'deviations'
+  | 'release-schedule'
+  | 'process'
+  // Supply Chain - Suppliers
+  | 'supplier-database'
+  | 'supplier-portal'
+  // Supply Chain - Purchasing
+  | 'purchase-requests'
+  | 'purchase-orders'
+  | 'invoices'
+  // Supply Chain - Logistics
+  | 'shipping'
+  | 'receiving'
+  // Production
+  | 'manufacturing-orders'
+  | 'travellers'
+  | 'work-instructions'
+  | 'production-schedule'
+  | 'routings'
+  | 'work-centers'
+  | 'process-flows'
+  | 'equipment'
+  // Production - Analytics
+  | 'yield-tracking'
+  | 'error-codes'
+  | 'downtime'
+  | 'oee'
+  | 'scrap-tracking'
+  // Quality
+  | 'fai'
+  | 'ncr'
+  | 'imr'
+  | 'scar'
+  | 'capa'
+  | 'rma'
+  | 'certificates'
+  | 'calibration'
+  | 'quality-templates'
+  // Accounting
+  | 'accounts-payable'
+  | 'accounts-receivable'
+  | 'general-ledger'
+  | 'cost-tracking'
+  | 'budgets'
+  // Integrations
+  | 'google-drive'
   // System
+  | 'terminal'
   | 'settings'
 export type DetailsPanelTab = 'properties' | 'preview' | 'whereused' | 'contains' | 'history' | 'datacard'
 export type PanelPosition = 'bottom' | 'right'
@@ -174,6 +215,17 @@ export interface MissingStorageFile {
   detectedAt: string         // When we detected this issue
 }
 
+// Staged check-in - file modified locally while offline, queued for check-in when online
+export interface StagedCheckin {
+  relativePath: string       // Relative path in vault (unique key)
+  fileName: string           // File name for display
+  localHash: string          // Hash of local file at time of staging
+  stagedAt: string           // ISO timestamp when staged
+  comment?: string           // Optional check-in comment
+  serverVersion?: number     // Server version at time of staging (for conflict detection)
+  serverHash?: string        // Server content hash at time of staging (for conflict detection)
+}
+
 interface PDMState {
   // Auth & Org
   user: User | null
@@ -184,6 +236,11 @@ interface PDMState {
   
   // Role impersonation (dev tools, non-persisted)
   impersonatedRole: 'admin' | 'engineer' | 'viewer' | null
+  
+  // Teams & Permissions
+  userTeams: Array<{ id: string; name: string; color: string; icon: string }> | null
+  userPermissions: Record<string, string[]> | null  // resource -> actions
+  permissionsLoaded: boolean
   
   // Vault (legacy single vault)
   vaultPath: string | null
@@ -213,6 +270,7 @@ interface PDMState {
   searchType: 'files' | 'folders' | 'all'
   searchResults: LocalFile[]
   isSearching: boolean
+  recentSearches: string[]
   
   // Filter
   stateFilter: FileState[]
@@ -239,6 +297,7 @@ interface PDMState {
   rightPanelWidth: number
   rightPanelTab: DetailsPanelTab | null
   rightPanelTabs: DetailsPanelTab[]  // Tabs stacked in right panel
+  bottomPanelTabOrder: DetailsPanelTab[]  // Custom order for bottom panel tabs
   
   // Google Drive navigation (shared between sidebar and main panel)
   gdriveCurrentFolderId: string | null
@@ -375,6 +434,9 @@ interface PDMState {
   // Orphaned checkouts (files force-checked-in from another machine)
   orphanedCheckouts: OrphanedCheckout[]
   
+  // Staged check-ins (files modified while offline, queued for check-in when online)
+  stagedCheckins: StagedCheckin[]
+  
   // Missing storage files (database has records but storage blobs are missing)
   missingStorageFiles: MissingStorageFile[]
   
@@ -406,6 +468,10 @@ interface PDMState {
   resetModulesToDefaults: () => void
   loadOrgModuleDefaults: () => Promise<{ success: boolean; error?: string }>
   saveOrgModuleDefaults: () => Promise<{ success: boolean; error?: string }>
+  loadTeamModuleDefaults: (teamId: string) => Promise<{ success: boolean; defaults: OrgModuleDefaults | null; error?: string }>
+  saveTeamModuleDefaults: (teamId: string, config?: ModuleConfig) => Promise<{ success: boolean; error?: string }>
+  clearTeamModuleDefaults: (teamId: string) => Promise<{ success: boolean; error?: string }>
+  loadUserModuleDefaults: () => Promise<{ success: boolean; defaults: OrgModuleDefaults | null; error?: string }>
   isModuleVisible: (moduleId: ModuleId) => boolean
   
   // Actions - Toasts
@@ -436,6 +502,10 @@ interface PDMState {
   // Actions - Role Impersonation (dev tools)
   setImpersonatedRole: (role: 'admin' | 'engineer' | 'viewer' | null) => void
   getEffectiveRole: () => 'admin' | 'engineer' | 'viewer'
+  
+  // Actions - Teams & Permissions
+  loadUserPermissions: () => Promise<void>
+  hasPermission: (resource: string, action: string) => boolean
   
   // Actions - Vault
   setVaultPath: (path: string | null) => void
@@ -545,6 +615,8 @@ interface PDMState {
   setSearchType: (type: 'files' | 'folders' | 'all') => void
   setSearchResults: (results: LocalFile[]) => void
   setIsSearching: (searching: boolean) => void
+  addRecentSearch: (query: string) => void
+  clearRecentSearches: () => void
   
   // Actions - Sort & Filter
   setSortColumn: (column: string) => void
@@ -584,6 +656,7 @@ interface PDMState {
   createTabGroup: (name: string, color: string) => string  // Returns group ID
   deleteTabGroup: (groupId: string) => void
   renameTabGroup: (groupId: string, name: string) => void
+  setTabGroupColor: (groupId: string, color: string) => void
   addTabToGroup: (tabId: string, groupId: string) => void
   removeTabFromGroup: (tabId: string) => void
   
@@ -593,6 +666,7 @@ interface PDMState {
   setRightPanelTab: (tab: DetailsPanelTab | null) => void
   moveTabToRight: (tab: DetailsPanelTab) => void
   moveTabToBottom: (tab: DetailsPanelTab) => void
+  reorderTabsInPanel: (panel: 'bottom' | 'right', tabId: DetailsPanelTab, newIndex: number) => void
   
   // Actions - Terminal
   toggleTerminal: () => void
@@ -622,6 +696,13 @@ interface PDMState {
   addOrphanedCheckout: (checkout: OrphanedCheckout) => void
   removeOrphanedCheckout: (fileId: string) => void
   clearOrphanedCheckouts: () => void
+  
+  // Actions - Staged Check-ins (offline mode)
+  stageCheckin: (checkin: StagedCheckin) => void
+  unstageCheckin: (relativePath: string) => void
+  updateStagedCheckinComment: (relativePath: string, comment: string) => void
+  clearStagedCheckins: () => void
+  getStagedCheckin: (relativePath: string) => StagedCheckin | undefined
   
   // Actions - Missing Storage Files
   setMissingStorageFiles: (files: MissingStorageFile[]) => void
@@ -695,6 +776,11 @@ export const usePDMStore = create<PDMState>()(
       isConnecting: false,
       impersonatedRole: null,
       
+      // Teams & Permissions
+      userTeams: null,
+      userPermissions: null,
+      permissionsLoaded: false,
+      
       // Onboarding (first app boot)
       onboardingComplete: false,
       logSharingEnabled: true,
@@ -720,6 +806,7 @@ export const usePDMStore = create<PDMState>()(
       searchType: 'all',
       searchResults: [],
       isSearching: false,
+      recentSearches: [],
       
       stateFilter: [],
       extensionFilter: [],
@@ -737,6 +824,7 @@ export const usePDMStore = create<PDMState>()(
       rightPanelWidth: 350,
       rightPanelTab: null,
       rightPanelTabs: [],
+      bottomPanelTabOrder: [],  // Empty means use default order
       
       // Tabs (file browser workspaces)
       tabs: [{
@@ -747,7 +835,7 @@ export const usePDMStore = create<PDMState>()(
       }],
       activeTabId: 'default-tab',
       tabGroups: [],
-      tabsEnabled: false,  // Disabled by default, users can enable via breadcrumb icon
+      tabsEnabled: true,  // Enabled by default for file browser
       
       // Google Drive navigation
       gdriveCurrentFolderId: null,
@@ -862,6 +950,7 @@ export const usePDMStore = create<PDMState>()(
       unreadNotificationCount: 0,
       pendingReviewCount: 0,
       orphanedCheckouts: [],
+      stagedCheckins: [],
       missingStorageFiles: [],
       
       // Module configuration
@@ -1200,6 +1289,100 @@ export const usePDMStore = create<PDMState>()(
         }
       },
       
+      loadTeamModuleDefaults: async (teamId: string) => {
+        try {
+          const { data, error } = await (supabase.rpc as any)('get_team_module_defaults', {
+            p_team_id: teamId
+          })
+          
+          if (error) throw error
+          
+          // Convert from database format (snake_case) to TypeScript format (camelCase)
+          if (data) {
+            const defaults: OrgModuleDefaults = {
+              enabledModules: data.enabled_modules || {},
+              enabledGroups: data.enabled_groups || {},
+              moduleOrder: data.module_order || [],
+              dividers: data.dividers || [],
+              moduleParents: data.module_parents || {},
+              moduleIconColors: data.module_icon_colors || {},
+              customGroups: data.custom_groups || []
+            }
+            return { success: true, defaults }
+          }
+          
+          return { success: true, defaults: null }
+        } catch (err) {
+          console.error('Failed to load team module defaults:', err)
+          return { success: false, defaults: null, error: err instanceof Error ? err.message : 'Unknown error' }
+        }
+      },
+      
+      saveTeamModuleDefaults: async (teamId: string, config?: ModuleConfig) => {
+        const { moduleConfig } = get()
+        const configToSave = config || moduleConfig
+        
+        try {
+          const { error } = await (supabase.rpc as any)('set_team_module_defaults', {
+            p_team_id: teamId,
+            p_enabled_modules: configToSave.enabledModules,
+            p_enabled_groups: configToSave.enabledGroups,
+            p_module_order: configToSave.moduleOrder,
+            p_dividers: configToSave.dividers,
+            p_module_parents: configToSave.moduleParents,
+            p_module_icon_colors: configToSave.moduleIconColors,
+            p_custom_groups: configToSave.customGroups
+          })
+          
+          if (error) throw error
+          return { success: true }
+        } catch (err) {
+          console.error('Failed to save team module defaults:', err)
+          return { success: false, error: err instanceof Error ? err.message : 'Unknown error' }
+        }
+      },
+      
+      clearTeamModuleDefaults: async (teamId: string) => {
+        try {
+          const { error } = await (supabase.rpc as any)('clear_team_module_defaults', {
+            p_team_id: teamId
+          })
+          
+          if (error) throw error
+          return { success: true }
+        } catch (err) {
+          console.error('Failed to clear team module defaults:', err)
+          return { success: false, error: err instanceof Error ? err.message : 'Unknown error' }
+        }
+      },
+      
+      loadUserModuleDefaults: async () => {
+        try {
+          const { data, error } = await (supabase.rpc as any)('get_user_module_defaults', {})
+          
+          if (error) throw error
+          
+          // Convert from database format (snake_case) to TypeScript format (camelCase)
+          if (data) {
+            const defaults: OrgModuleDefaults = {
+              enabledModules: data.enabled_modules || {},
+              enabledGroups: data.enabled_groups || {},
+              moduleOrder: data.module_order || [],
+              dividers: data.dividers || [],
+              moduleParents: data.module_parents || {},
+              moduleIconColors: data.module_icon_colors || {},
+              customGroups: data.custom_groups || []
+            }
+            return { success: true, defaults }
+          }
+          
+          return { success: true, defaults: null }
+        } catch (err) {
+          console.error('Failed to load user module defaults:', err)
+          return { success: false, defaults: null, error: err instanceof Error ? err.message : 'Unknown error' }
+        }
+      },
+      
       isModuleVisible: (moduleId) => {
         const { moduleConfig } = get()
         return isModuleVisible(moduleId, moduleConfig)
@@ -1217,6 +1400,53 @@ export const usePDMStore = create<PDMState>()(
       getEffectiveRole: () => {
         const { user, impersonatedRole } = get()
         return impersonatedRole ?? user?.role ?? 'viewer'
+      },
+      
+      // Actions - Teams & Permissions
+      loadUserPermissions: async () => {
+        const { user } = get()
+        if (!user) {
+          set({ userTeams: null, userPermissions: null, permissionsLoaded: false })
+          return
+        }
+        
+        try {
+          const { getUserTeams, getUserPermissions } = await import('../lib/supabase')
+          
+          // Load teams
+          const { teams } = await getUserTeams(user.id)
+          
+          // Load permissions
+          const { permissions } = await getUserPermissions(user.id, user.role)
+          
+          set({
+            userTeams: teams,
+            userPermissions: permissions,
+            permissionsLoaded: true
+          })
+        } catch (err) {
+          console.error('Failed to load user permissions:', err)
+          set({ permissionsLoaded: true })
+        }
+      },
+      
+      hasPermission: (resource: string, action: string) => {
+        const { user, impersonatedRole, userPermissions } = get()
+        const effectiveRole = impersonatedRole ?? user?.role ?? 'viewer'
+        
+        // Admins always have full access
+        if (effectiveRole === 'admin') {
+          return true
+        }
+        
+        // Check team-based permissions
+        if (!userPermissions) return false
+        
+        // Check for __admin__ flag (returned for admin users)
+        if (userPermissions.__admin__) return true
+        
+        const resourcePerms = userPermissions[resource] || []
+        return resourcePerms.includes(action) || resourcePerms.includes('admin')
       },
       
       // Actions - Vault
@@ -1702,6 +1932,13 @@ export const usePDMStore = create<PDMState>()(
       setSearchType: (searchType) => set({ searchType }),
       setSearchResults: (searchResults) => set({ searchResults }),
       setIsSearching: (isSearching) => set({ isSearching }),
+      addRecentSearch: (query) => {
+        const { recentSearches } = get()
+        // Remove duplicate if exists, add to front, limit to 20
+        const filtered = recentSearches.filter(s => s.toLowerCase() !== query.toLowerCase())
+        set({ recentSearches: [query, ...filtered].slice(0, 20) })
+      },
+      clearRecentSearches: () => set({ recentSearches: [] }),
       
       // Actions - Sort & Filter
       setSortColumn: (sortColumn) => set({ sortColumn }),
@@ -1983,6 +2220,15 @@ export const usePDMStore = create<PDMState>()(
         })
       },
       
+      setTabGroupColor: (groupId, color) => {
+        const { tabGroups } = get()
+        set({
+          tabGroups: tabGroups.map(g => 
+            g.id === groupId ? { ...g, color } : g
+          )
+        })
+      },
+      
       addTabToGroup: (tabId, groupId) => {
         const { tabs } = get()
         set({
@@ -2003,20 +2249,9 @@ export const usePDMStore = create<PDMState>()(
       
       // Actions - Right Panel
       toggleRightPanel: () => {
-        const { rightPanelVisible, rightPanelTabs, tabsEnabled, activeTabId, tabs } = get()
-        let newVisible: boolean
-        if (!rightPanelVisible && rightPanelTabs.length === 0) {
-          // If showing right panel but no tabs, add properties tab
-          set({ 
-            rightPanelVisible: true, 
-            rightPanelTabs: ['properties'], 
-            rightPanelTab: 'properties' 
-          })
-          newVisible = true
-        } else {
-          newVisible = !rightPanelVisible
-          set({ rightPanelVisible: newVisible })
-        }
+        const { rightPanelVisible, tabsEnabled, activeTabId, tabs } = get()
+        const newVisible = !rightPanelVisible
+        set({ rightPanelVisible: newVisible })
         // Sync with active tab if tabs enabled
         if (tabsEnabled && activeTabId) {
           set({
@@ -2050,6 +2285,37 @@ export const usePDMStore = create<PDMState>()(
           rightPanelVisible: newTabs.length > 0,
           detailsPanelTab: tab
         })
+      },
+      reorderTabsInPanel: (panel, tabId, newIndex) => {
+        if (panel === 'right') {
+          const { rightPanelTabs } = get()
+          const currentIndex = rightPanelTabs.indexOf(tabId)
+          if (currentIndex === -1 || currentIndex === newIndex) return
+          
+          const newTabs = [...rightPanelTabs]
+          newTabs.splice(currentIndex, 1)
+          newTabs.splice(newIndex, 0, tabId)
+          set({ rightPanelTabs: newTabs })
+        } else {
+          // For bottom panel, we need to track custom order
+          const { bottomPanelTabOrder } = get()
+          // Default order if no custom order set
+          const defaultOrder: DetailsPanelTab[] = ['preview', 'properties', 'datacard', 'whereused', 'contains', 'history']
+          const currentOrder = bottomPanelTabOrder.length > 0 ? bottomPanelTabOrder : defaultOrder
+          
+          const currentIndex = currentOrder.indexOf(tabId)
+          if (currentIndex === -1) {
+            // Tab not in order, add it at new index
+            const newOrder = [...currentOrder]
+            newOrder.splice(newIndex, 0, tabId)
+            set({ bottomPanelTabOrder: newOrder })
+          } else if (currentIndex !== newIndex) {
+            const newOrder = [...currentOrder]
+            newOrder.splice(currentIndex, 1)
+            newOrder.splice(newIndex, 0, tabId)
+            set({ bottomPanelTabOrder: newOrder })
+          }
+        }
       },
       
       // Actions - Terminal
@@ -2161,6 +2427,21 @@ export const usePDMStore = create<PDMState>()(
         orphanedCheckouts: state.orphanedCheckouts.filter(c => c.fileId !== fileId)
       })),
       clearOrphanedCheckouts: () => set({ orphanedCheckouts: [] }),
+      
+      // Actions - Staged Check-ins (offline mode)
+      stageCheckin: (checkin) => set(state => ({
+        stagedCheckins: [...state.stagedCheckins.filter(c => c.relativePath !== checkin.relativePath), checkin]
+      })),
+      unstageCheckin: (relativePath) => set(state => ({
+        stagedCheckins: state.stagedCheckins.filter(c => c.relativePath !== relativePath)
+      })),
+      updateStagedCheckinComment: (relativePath, comment) => set(state => ({
+        stagedCheckins: state.stagedCheckins.map(c => 
+          c.relativePath === relativePath ? { ...c, comment } : c
+        )
+      })),
+      clearStagedCheckins: () => set({ stagedCheckins: [] }),
+      getStagedCheckin: (relativePath) => get().stagedCheckins.find(c => c.relativePath === relativePath),
       
       // Actions - Missing Storage Files
       setMissingStorageFiles: (files) => set({ missingStorageFiles: files }),
@@ -2553,6 +2834,7 @@ export const usePDMStore = create<PDMState>()(
         rightPanelVisible: state.rightPanelVisible,
         rightPanelWidth: state.rightPanelWidth,
         rightPanelTabs: state.rightPanelTabs,
+        bottomPanelTabOrder: state.bottomPanelTabOrder,
         // Tabs
         tabs: state.tabs,
         activeTabId: state.activeTabId,
@@ -2561,10 +2843,12 @@ export const usePDMStore = create<PDMState>()(
         columns: state.columns,
         expandedFolders: Array.from(state.expandedFolders),
         ignorePatterns: state.ignorePatterns,
+        stagedCheckins: state.stagedCheckins,
         terminalVisible: state.terminalVisible,
         terminalHeight: state.terminalHeight,
         terminalHistory: state.terminalHistory.slice(0, 100),  // Keep last 100
         moduleConfig: state.moduleConfig,
+        recentSearches: state.recentSearches.slice(0, 20),  // Keep last 20
       }),
       merge: (persistedState, currentState) => {
         const persisted = persistedState as Record<string, unknown>
@@ -2677,6 +2961,8 @@ export const usePDMStore = create<PDMState>()(
           }),
           // Ensure ignorePatterns has a default
           ignorePatterns: (persisted.ignorePatterns as Record<string, string[]>) || {},
+          // Staged check-ins (offline mode)
+          stagedCheckins: (persisted.stagedCheckins as StagedCheckin[]) || [],
           // Terminal settings
           terminalVisible: (persisted.terminalVisible as boolean) || false,
           terminalHeight: (persisted.terminalHeight as number) || 250,
@@ -2739,14 +3025,23 @@ export const usePDMStore = create<PDMState>()(
               }
             }
             
-            // Module parents - merge with defaults
+            // Module parents - use defaults, only override for user-customized values
+            // If persisted has no group parents (old format), use new defaults
             const moduleParents = { ...defaults.moduleParents }
             if (persistedConfig.moduleParents) {
-              for (const [key, value] of Object.entries(persistedConfig.moduleParents)) {
-                if (key in moduleParents) {
-                  moduleParents[key as ModuleId] = value as ModuleId | null
+              // Check if persisted has any group-based parents (new format)
+              const hasGroupParents = Object.values(persistedConfig.moduleParents).some(
+                (v) => typeof v === 'string' && v.startsWith('group-')
+              )
+              // Only merge if user has customized (has group parents)
+              if (hasGroupParents) {
+                for (const [key, value] of Object.entries(persistedConfig.moduleParents)) {
+                  if (key in moduleParents) {
+                    moduleParents[key as ModuleId] = value as ModuleId | null
+                  }
                 }
               }
+              // Otherwise keep defaults (new grouping structure)
             }
             
             // Module icon colors - merge with defaults
@@ -2759,8 +3054,10 @@ export const usePDMStore = create<PDMState>()(
               }
             }
             
-            // Custom groups - use persisted if available
-            const customGroups = persistedConfig.customGroups || defaults.customGroups
+            // Custom groups - use defaults if persisted is empty (migration from old format)
+            const customGroups = (persistedConfig.customGroups && persistedConfig.customGroups.length > 0) 
+              ? persistedConfig.customGroups 
+              : defaults.customGroups
             
             return { enabledModules, enabledGroups, moduleOrder, dividers, moduleParents, moduleIconColors, customGroups }
           })(),

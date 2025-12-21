@@ -4,38 +4,25 @@ import {
   Plus, 
   Pin, 
   Copy, 
-  FolderOpen,
-  ChevronRight,
-  Layers
+  FolderOpen
 } from 'lucide-react'
-import { usePDMStore, type Tab, type TabGroup } from '../stores/pdmStore'
+import { usePDMStore, type Tab } from '../stores/pdmStore'
 
-// Tab group colors
-const groupColors = [
-  { name: 'Red', value: 'bg-red-500/30 border-red-500' },
-  { name: 'Orange', value: 'bg-orange-500/30 border-orange-500' },
-  { name: 'Yellow', value: 'bg-yellow-500/30 border-yellow-500' },
-  { name: 'Green', value: 'bg-green-500/30 border-green-500' },
-  { name: 'Blue', value: 'bg-blue-500/30 border-blue-500' },
-  { name: 'Purple', value: 'bg-purple-500/30 border-purple-500' },
-  { name: 'Pink', value: 'bg-pink-500/30 border-pink-500' },
-  { name: 'Cyan', value: 'bg-cyan-500/30 border-cyan-500' },
-]
+type DropPosition = 'before' | 'after' | null
 
 interface TabItemProps {
   tab: Tab
+  tabIndex: number
   isActive: boolean
   isOnlyTab: boolean
-  group?: TabGroup
+  isDragging: boolean
   onContextMenu: (e: React.MouseEvent, tab: Tab) => void
   onDragStart: (e: React.DragEvent, tab: Tab) => void
-  onDragOver: (e: React.DragEvent) => void
-  onDrop: (e: React.DragEvent, targetTab: Tab) => void
+  showDropIndicator: DropPosition
 }
 
-function TabItem({ tab, isActive, isOnlyTab, group, onContextMenu, onDragStart, onDragOver, onDrop }: TabItemProps) {
+function TabItem({ tab, tabIndex, isActive, isOnlyTab, isDragging, onContextMenu, onDragStart, showDropIndicator }: TabItemProps) {
   const { setActiveTab, closeTab } = usePDMStore()
-  const [isDragOver, setIsDragOver] = useState(false)
   
   const handleClose = (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -44,36 +31,52 @@ function TabItem({ tab, isActive, isOnlyTab, group, onContextMenu, onDragStart, 
     }
   }
   
-  // Get group color class
-  const groupColorClass = group?.color || ''
-  
   return (
     <div
-      draggable
+      data-tab-index={tabIndex}
+      draggable={true}
       onClick={() => setActiveTab(tab.id)}
       onContextMenu={(e) => onContextMenu(e, tab)}
-      onDragStart={(e) => onDragStart(e, tab)}
-      onDragOver={(e) => {
-        e.preventDefault()
-        setIsDragOver(true)
-        onDragOver(e)
-      }}
-      onDragLeave={() => setIsDragOver(false)}
-      onDrop={(e) => {
-        setIsDragOver(false)
-        onDrop(e, tab)
+      onDragStart={(e) => {
+        e.stopPropagation()
+        onDragStart(e, tab)
       }}
       className={`
-        group relative flex items-center gap-1.5 h-8 px-3 cursor-pointer select-none
-        border-r border-plm-border transition-colors min-w-[100px] max-w-[200px]
+        group relative flex items-center gap-1.5 px-3 cursor-grab active:cursor-grabbing select-none titlebar-no-drag
+        transition-all min-w-[120px] max-w-[220px]
         ${isActive 
-          ? 'bg-plm-bg text-plm-fg border-b-2 border-b-plm-accent' 
-          : 'bg-plm-activitybar text-plm-fg-dim hover:bg-plm-bg-lighter hover:text-plm-fg'
+          ? 'bg-[#3a3a3a] text-plm-fg h-[34px] rounded-t-xl z-10 -mb-px' 
+          : 'bg-plm-bg/50 text-plm-fg-dim hover:bg-plm-bg-lighter hover:text-plm-fg h-[30px] mt-1 mx-0.5 rounded-t-lg'
         }
-        ${isDragOver ? 'bg-plm-accent/20' : ''}
-        ${groupColorClass ? `border-l-2 ${groupColorClass}` : ''}
+        ${isDragging ? 'opacity-50 scale-95' : ''}
       `}
     >
+      {/* Chrome-style interior corner curves for active tab */}
+      {isActive && (
+        <>
+          {/* Left interior curve - uses box-shadow trick */}
+          <div 
+            className="absolute -left-[10px] bottom-0 w-[10px] h-[10px] rounded-br-full bg-transparent"
+            style={{
+              boxShadow: '5px 0 0 0 #3a3a3a',
+            }}
+          />
+          {/* Right interior curve */}
+          <div 
+            className="absolute -right-[10px] bottom-0 w-[10px] h-[10px] rounded-bl-full bg-transparent"
+            style={{
+              boxShadow: '-5px 0 0 0 #3a3a3a',
+            }}
+          />
+        </>
+      )}
+      {/* Drop indicator - shown as vertical bar on left or right edge */}
+      {showDropIndicator === 'before' && (
+        <div className="absolute -left-[2px] top-1 bottom-1 w-1 bg-plm-accent rounded-full z-10" />
+      )}
+      {showDropIndicator === 'after' && (
+        <div className="absolute -right-[2px] top-1 bottom-1 w-1 bg-plm-accent rounded-full z-10" />
+      )}
       {/* Pin indicator */}
       {tab.isPinned && (
         <Pin size={10} className="text-plm-accent flex-shrink-0" />
@@ -108,26 +111,19 @@ interface TabContextMenuProps {
   tab: Tab
   position: { x: number; y: number }
   onClose: () => void
-  tabGroups: TabGroup[]
   tabCount: number
 }
 
-function TabContextMenu({ tab, position, onClose, tabGroups, tabCount }: TabContextMenuProps) {
+function TabContextMenu({ tab, position, onClose, tabCount }: TabContextMenuProps) {
   const {
     closeTab,
     closeOtherTabs,
     pinTab,
     unpinTab,
-    duplicateTab,
-    createTabGroup,
-    addTabToGroup,
-    removeTabFromGroup
+    duplicateTab
   } = usePDMStore()
   
   const menuRef = useRef<HTMLDivElement>(null)
-  const [showGroupSubmenu, setShowGroupSubmenu] = useState(false)
-  const [showNewGroupInput, setShowNewGroupInput] = useState(false)
-  const [newGroupName, setNewGroupName] = useState('')
   
   // Close on click outside
   useEffect(() => {
@@ -151,14 +147,6 @@ function TabContextMenu({ tab, position, onClose, tabGroups, tabCount }: TabCont
   
   const hasOtherTabs = tabCount > 1
   const canClose = hasOtherTabs && !tab.isPinned
-  
-  const handleCreateGroup = () => {
-    if (newGroupName.trim()) {
-      const groupId = createTabGroup(newGroupName.trim(), groupColors[0].value)
-      addTabToGroup(tab.id, groupId)
-      onClose()
-    }
-  }
   
   return (
     <div
@@ -202,80 +190,6 @@ function TabContextMenu({ tab, position, onClose, tabGroups, tabCount }: TabCont
         <Copy size={14} />
         Duplicate Tab
       </button>
-      
-      <div className="h-px bg-plm-border my-1" />
-      
-      {/* Tab groups */}
-      <div 
-        className="relative"
-        onMouseEnter={() => setShowGroupSubmenu(true)}
-        onMouseLeave={() => setShowGroupSubmenu(false)}
-      >
-        <button className="w-full flex items-center justify-between px-3 py-1.5 hover:bg-plm-bg-lighter">
-          <span className="flex items-center gap-2">
-            <Layers size={14} />
-            Add to Group
-          </span>
-          <ChevronRight size={14} />
-        </button>
-        
-        {showGroupSubmenu && (
-          <div className="absolute left-full top-0 ml-1 w-48 bg-plm-bg-light border border-plm-border rounded-lg shadow-xl py-1">
-            {/* Existing groups */}
-            {tabGroups.map(group => (
-              <button
-                key={group.id}
-                onClick={() => { addTabToGroup(tab.id, group.id); onClose() }}
-                className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-plm-bg-lighter"
-              >
-                <div className={`w-3 h-3 rounded ${group.color.split(' ')[0]}`} />
-                {group.name}
-              </button>
-            ))}
-            
-            {tabGroups.length > 0 && <div className="h-px bg-plm-border my-1" />}
-            
-            {/* New group */}
-            {showNewGroupInput ? (
-              <div className="px-2 py-1">
-                <input
-                  type="text"
-                  value={newGroupName}
-                  onChange={(e) => setNewGroupName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') handleCreateGroup()
-                    if (e.key === 'Escape') setShowNewGroupInput(false)
-                  }}
-                  placeholder="Group name..."
-                  className="w-full px-2 py-1 text-sm bg-plm-bg border border-plm-border rounded focus:outline-none focus:border-plm-accent"
-                  autoFocus
-                />
-              </div>
-            ) : (
-              <button
-                onClick={() => setShowNewGroupInput(true)}
-                className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-plm-bg-lighter text-plm-accent"
-              >
-                <Plus size={14} />
-                New Group...
-              </button>
-            )}
-            
-            {/* Remove from group */}
-            {tab.groupId && (
-              <>
-                <div className="h-px bg-plm-border my-1" />
-                <button
-                  onClick={() => { removeTabFromGroup(tab.id); onClose() }}
-                  className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-plm-bg-lighter text-plm-error"
-                >
-                  Remove from Group
-                </button>
-              </>
-            )}
-          </div>
-        )}
-      </div>
     </div>
   )
 }
@@ -284,14 +198,15 @@ export function TabBar() {
   const { 
     tabs, 
     activeTabId, 
-    tabGroups, 
     tabsEnabled,
     addTab,
-    moveTab 
+    moveTab
   } = usePDMStore()
   
+  const tabContainerRef = useRef<HTMLDivElement>(null)
   const [contextMenu, setContextMenu] = useState<{ tab: Tab; position: { x: number; y: number } } | null>(null)
-  const [draggedTab, setDraggedTab] = useState<Tab | null>(null)
+  const [draggedTabId, setDraggedTabId] = useState<string | null>(null)
+  const [dropTarget, setDropTarget] = useState<{ index: number; position: DropPosition } | null>(null)
   
   const handleContextMenu = useCallback((e: React.MouseEvent, tab: Tab) => {
     e.preventDefault()
@@ -299,79 +214,185 @@ export function TabBar() {
   }, [])
   
   const handleDragStart = useCallback((e: React.DragEvent, tab: Tab) => {
-    setDraggedTab(tab)
+    // Set drag data first (required for drag to work in some browsers)
     e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', `tab:${tab.id}`)
+    e.dataTransfer.setData('application/x-tab', tab.id)
+    
+    // Set state after dataTransfer setup
+    setDraggedTabId(tab.id)
+    
+    // Create custom drag image
+    if (e.currentTarget instanceof HTMLElement) {
+      e.dataTransfer.setDragImage(e.currentTarget, e.nativeEvent.offsetX, e.nativeEvent.offsetY)
+    }
   }, [])
   
-  const handleDragOver = useCallback((e: React.DragEvent) => {
+  // Handle drag over the entire tab container to calculate drop position
+  const handleContainerDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault()
     e.dataTransfer.dropEffect = 'move'
+    
+    if (!tabContainerRef.current || !draggedTabId) return
+    
+    const draggedIndex = tabs.findIndex(t => t.id === draggedTabId)
+    if (draggedIndex === -1) return
+    
+    // Find all tab elements
+    const tabElements = tabContainerRef.current.querySelectorAll<HTMLElement>('[data-tab-index]')
+    
+    let targetIndex: number | null = null
+    let position: DropPosition = null
+    
+    for (const tabEl of tabElements) {
+      const rect = tabEl.getBoundingClientRect()
+      const tabIndex = parseInt(tabEl.dataset.tabIndex || '-1', 10)
+      
+      if (tabIndex === -1) continue
+      
+      // Check if mouse is within this tab's horizontal bounds
+      if (e.clientX >= rect.left && e.clientX <= rect.right) {
+        // Use 40% / 60% split to create a stable zone in the middle
+        const leftThreshold = rect.left + rect.width * 0.4
+        const rightThreshold = rect.left + rect.width * 0.6
+        
+        if (e.clientX < leftThreshold) {
+          position = 'before'
+          targetIndex = tabIndex
+        } else if (e.clientX > rightThreshold) {
+          position = 'after'
+          targetIndex = tabIndex
+        } else {
+          // In the middle zone - keep previous position if same tab, otherwise default to 'after'
+          if (dropTarget?.index === tabIndex) {
+            position = dropTarget.position
+            targetIndex = tabIndex
+          } else {
+            position = 'after'
+            targetIndex = tabIndex
+          }
+        }
+        break
+      }
+      
+      // Handle case where mouse is to the left of the first tab
+      if (e.clientX < rect.left && tabIndex === 0) {
+        position = 'before'
+        targetIndex = 0
+        break
+      }
+      
+      // Handle case where mouse is to the right of this tab but not in the next one
+      if (e.clientX > rect.right) {
+        position = 'after'
+        targetIndex = tabIndex
+        // Continue to check next tabs
+      }
+    }
+    
+    if (targetIndex !== null && position !== null) {
+      // Don't show indicator if it would result in no movement
+      const wouldMoveTo = position === 'before' ? targetIndex : targetIndex + 1
+      const adjustedTarget = draggedIndex < wouldMoveTo ? wouldMoveTo - 1 : wouldMoveTo
+      
+      if (draggedIndex === adjustedTarget) {
+        setDropTarget(null)
+        return
+      }
+      
+      setDropTarget({ index: targetIndex, position })
+    }
+  }, [draggedTabId, tabs, dropTarget])
+  
+  const handleContainerDragLeave = useCallback((e: React.DragEvent) => {
+    // Only clear if we're actually leaving the container (not entering a child)
+    const relatedTarget = e.relatedTarget as HTMLElement | null
+    if (!tabContainerRef.current?.contains(relatedTarget)) {
+      setDropTarget(null)
+    }
   }, [])
   
-  const handleDrop = useCallback((e: React.DragEvent, targetTab: Tab) => {
+  const handleContainerDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault()
-    if (!draggedTab || draggedTab.id === targetTab.id) return
     
-    const targetIndex = tabs.findIndex(t => t.id === targetTab.id)
-    moveTab(draggedTab.id, targetIndex)
-    setDraggedTab(null)
-  }, [draggedTab, tabs, moveTab])
+    // Handle tab drop (reordering)
+    if (!draggedTabId || !dropTarget) {
+      setDraggedTabId(null)
+      setDropTarget(null)
+      return
+    }
+    
+    const draggedIndex = tabs.findIndex(t => t.id === draggedTabId)
+    if (draggedIndex === -1) {
+      setDraggedTabId(null)
+      setDropTarget(null)
+      return
+    }
+    
+    // Calculate the new index based on drop position
+    let newIndex = dropTarget.position === 'before' ? dropTarget.index : dropTarget.index + 1
+    
+    // Adjust if dragging from before the target
+    if (draggedIndex < newIndex) {
+      newIndex--
+    }
+    
+    if (draggedIndex !== newIndex) {
+      moveTab(draggedTabId, newIndex)
+    }
+    
+    setDraggedTabId(null)
+    setDropTarget(null)
+  }, [draggedTabId, dropTarget, tabs, moveTab])
   
   const handleNewTabClick = useCallback(() => {
-    // Add a new tab with current folder
     addTab()
   }, [addTab])
+  
+  const handleDragEnd = useCallback(() => {
+    setDraggedTabId(null)
+    setDropTarget(null)
+  }, [])
   
   // Don't render if tabs are disabled
   if (!tabsEnabled) return null
   
-  // Group tabs by groupId for rendering
-  const groupedTabs = tabs.reduce((acc, tab) => {
-    const groupId = tab.groupId || 'ungrouped'
-    if (!acc[groupId]) acc[groupId] = []
-    acc[groupId].push(tab)
-    return acc
-  }, {} as Record<string, Tab[]>)
-  
-  // Render order: ungrouped first, then groups
-  const renderOrder = ['ungrouped', ...tabGroups.map(g => g.id)]
-  
   return (
-    <div className="h-9 bg-plm-activitybar border-b border-plm-border flex items-end overflow-x-auto scrollbar-hidden">
-      {/* Tabs */}
-      <div className="flex items-end h-full">
-        {renderOrder.map(groupId => {
-          const tabsInGroup = groupedTabs[groupId] || []
-          if (tabsInGroup.length === 0) return null
-          
-          const group = tabGroups.find(g => g.id === groupId)
+    <div 
+      className="h-[35px] bg-plm-activitybar flex items-end overflow-x-auto scrollbar-hidden px-1 titlebar-no-drag"
+      onDragEnd={handleDragEnd}
+    >
+      {/* Tabs container - handles all drag events */}
+      <div 
+        ref={tabContainerRef}
+        className="flex items-end h-full titlebar-no-drag"
+        onDragEnter={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+        }}
+        onDragOver={handleContainerDragOver}
+        onDragLeave={handleContainerDragLeave}
+        onDrop={handleContainerDrop}
+      >
+        {tabs.map((tab, tabIndex) => {
+          // Calculate if this tab should show the drop indicator
+          let showDropIndicator: DropPosition = null
+          if (dropTarget?.index === tabIndex) {
+            showDropIndicator = dropTarget.position
+          }
           
           return (
-            <div key={groupId} className="flex items-end h-full">
-              {/* Group label (if grouped) */}
-              {group && (
-                <div 
-                  className={`h-8 px-2 flex items-center text-[10px] font-semibold uppercase tracking-wider border-r border-plm-border ${group.color}`}
-                >
-                  {group.name}
-                </div>
-              )}
-              
-              {/* Tabs in this group */}
-              {tabsInGroup.map(tab => (
-                <TabItem
-                  key={tab.id}
-                  tab={tab}
-                  isActive={tab.id === activeTabId}
-                  isOnlyTab={tabs.length === 1}
-                  group={group}
-                  onContextMenu={handleContextMenu}
-                  onDragStart={handleDragStart}
-                  onDragOver={handleDragOver}
-                  onDrop={handleDrop}
-                />
-              ))}
-            </div>
+            <TabItem
+              key={tab.id}
+              tab={tab}
+              tabIndex={tabIndex}
+              isActive={tab.id === activeTabId}
+              isOnlyTab={tabs.length === 1}
+              isDragging={tab.id === draggedTabId}
+              onContextMenu={handleContextMenu}
+              onDragStart={handleDragStart}
+              showDropIndicator={showDropIndicator}
+            />
           )
         })}
       </div>
@@ -379,7 +400,7 @@ export function TabBar() {
       {/* New tab button */}
       <button
         onClick={handleNewTabClick}
-        className="h-8 w-8 flex items-center justify-center text-plm-fg-dim hover:text-plm-fg hover:bg-plm-bg-lighter transition-colors flex-shrink-0"
+        className="h-7 w-7 mb-0.5 ml-1 flex items-center justify-center text-plm-fg-dim hover:text-plm-fg hover:bg-plm-bg-light rounded transition-colors flex-shrink-0"
         title="New Tab"
       >
         <Plus size={16} />
@@ -388,13 +409,12 @@ export function TabBar() {
       {/* Spacer to push to the right */}
       <div className="flex-1" />
       
-      {/* Context Menu */}
+      {/* Tab Context Menu */}
       {contextMenu && (
         <TabContextMenu
           tab={contextMenu.tab}
           position={contextMenu.position}
           onClose={() => setContextMenu(null)}
-          tabGroups={tabGroups}
           tabCount={tabs.length}
         />
       )}

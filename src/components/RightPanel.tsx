@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react'
-import { usePDMStore, LocalFile } from '../stores/pdmStore'
+import { useState, useEffect, useCallback } from 'react'
+import { usePDMStore, LocalFile, DetailsPanelTab } from '../stores/pdmStore'
 import { formatFileSize, getFileIconType } from '../types/pdm'
+import { DraggableTab, TabDropZone, PanelLocation } from './shared/DraggableTab'
 import { formatDistanceToNow } from 'date-fns'
 import { getFileVersions } from '../lib/supabase'
 import { ContainsTab, WhereUsedTab } from './SolidWorksPanel'
@@ -94,8 +95,28 @@ export function RightPanel() {
     rightPanelTabs,
     setRightPanelTab,
     moveTabToBottom,
+    moveTabToRight,
+    reorderTabsInPanel,
     addToast
   } = usePDMStore()
+  
+  // Handle tab drop from either panel
+  const handleTabDrop = useCallback((tabId: string, fromLocation: PanelLocation, toLocation: PanelLocation) => {
+    if (fromLocation === toLocation) return // No change needed
+    
+    if (toLocation === 'bottom' && fromLocation === 'right') {
+      // Moving from right panel to bottom
+      moveTabToBottom(tabId as DetailsPanelTab)
+    } else if (toLocation === 'right' && fromLocation === 'bottom') {
+      // Moving from bottom panel to right  
+      moveTabToRight(tabId as DetailsPanelTab)
+    }
+  }, [moveTabToBottom, moveTabToRight])
+  
+  // Handle tab reorder within right panel
+  const handleTabReorder = useCallback((tabId: string, newIndex: number) => {
+    reorderTabsInPanel('right', tabId as DetailsPanelTab, newIndex)
+  }, [reorderTabsInPanel])
 
   const selectedFileObjects = getSelectedFileObjects()
   const file = selectedFileObjects.length === 1 ? selectedFileObjects[0] : null
@@ -242,19 +263,29 @@ export function RightPanel() {
       className="bg-plm-panel border-l border-plm-border flex flex-col"
       style={{ width: rightPanelWidth }}
     >
-      {/* Tabs */}
-      <div className="tabs flex-shrink-0 flex items-center justify-between pr-2">
+      {/* Tabs - Droppable zone */}
+      <TabDropZone
+        location="right"
+        onDrop={handleTabDrop}
+        className="tabs flex-shrink-0 flex items-center justify-between pr-2 relative min-h-[32px]"
+        tabCount={rightPanelTabs.length}
+      >
         <div className="flex">
-          {rightPanelTabs.map(tab => (
-            <button
+          {rightPanelTabs.map((tab, index) => (
+            <DraggableTab
               key={tab}
-              className={`tab ${rightPanelTab === tab ? 'active' : ''}`}
+              id={tab}
+              label={tab.charAt(0).toUpperCase() + tab.slice(1)}
+              active={rightPanelTab === tab}
+              location="right"
+              index={index}
               onClick={() => setRightPanelTab(tab)}
               onDoubleClick={() => moveTabToBottom(tab)}
-              title="Double-click to move back to bottom panel"
-            >
-              {tab.charAt(0).toUpperCase() + tab.slice(1)}
-            </button>
+              onDragStart={() => {}}
+              onDragEnd={() => {}}
+              onReorder={handleTabReorder}
+              tooltip="Drag to reorder or move to bottom panel"
+            />
           ))}
         </div>
         <button
@@ -264,7 +295,7 @@ export function RightPanel() {
         >
           <ArrowLeft size={14} />
         </button>
-      </div>
+      </TabDropZone>
 
       {/* Content */}
       <div className="flex-1 overflow-auto p-4">

@@ -1,5 +1,5 @@
 import React from 'react'
-import { Cloud, ArrowDown, ArrowUp, HardDrive, RefreshCw, Plus, Loader2, Lock } from 'lucide-react'
+import { Cloud, ArrowDown, ArrowUp, HardDrive, RefreshCw, Plus, Loader2, Lock, Clock, Check, X } from 'lucide-react'
 import { getInitials } from '../types/pdm'
 
 interface BaseButtonProps {
@@ -209,6 +209,103 @@ export const InlineUploadButton: React.FC<UploadButtonProps> = ({
         </span>
       )}
       <ArrowUp size={12} className={`text-sky-400 overflow-hidden transition-all duration-200 ${forceExpanded ? 'max-w-[1rem]' : 'max-w-0 group-hover/upload:max-w-[1rem]'}`} />
+    </button>
+  )
+}
+
+// ============================================================================
+// STAGE CHECKIN BUTTON - Amber clock icon for offline mode
+// For modified files that should be checked in when back online
+// ============================================================================
+interface StageCheckinButtonProps extends BaseButtonProps {
+  isStaged?: boolean // Whether file is already staged
+  count?: number // For folders - number of files to stage
+  title?: string
+  selectedCount?: number // For multi-select
+  isSelectionHovered?: boolean
+}
+
+export const InlineStageCheckinButton: React.FC<StageCheckinButtonProps> = ({
+  onClick,
+  isStaged,
+  count,
+  title,
+  disabled,
+  isProcessing,
+  selectedCount,
+  isSelectionHovered,
+  onMouseEnter,
+  onMouseLeave
+}) => {
+  const displayCount = selectedCount !== undefined && selectedCount > 1 ? selectedCount : count
+  const showCount = displayCount !== undefined && displayCount > 0
+  
+  const defaultTitle = isStaged
+    ? (selectedCount && selectedCount > 1 
+        ? `${selectedCount} files staged for check-in (click to unstage)`
+        : 'Staged for check-in (click to unstage)')
+    : (selectedCount && selectedCount > 1
+        ? `Stage ${selectedCount} files for check-in when online`
+        : count && count > 0
+          ? `Stage ${count} file${count > 1 ? 's' : ''} for check-in`
+          : 'Stage for check-in when online')
+
+  const forceExpanded = isSelectionHovered
+
+  if (isProcessing) {
+    return (
+      <span className="px-1.5 py-0.5 rounded-md bg-amber-500/20 text-amber-400">
+        <Loader2 size={12} className="animate-spin" />
+      </span>
+    )
+  }
+
+  // If staged, show check mark with green styling, changes to "unstage" on hover
+  if (isStaged) {
+    return (
+      <button
+        className={`group/staged flex items-center px-1.5 py-0.5 rounded-md transition-all duration-200 bg-emerald-500/20 text-emerald-400 hover:bg-red-500/20 hover:text-red-400 ${forceExpanded ? 'gap-1' : 'gap-0 hover:gap-1'}`}
+        onClick={onClick}
+        title={title || defaultTitle}
+        disabled={disabled}
+        onMouseEnter={onMouseEnter}
+        onMouseLeave={onMouseLeave}
+      >
+        <Check size={12} className="transition-colors duration-200 group-hover/staged:hidden" />
+        <X size={12} className="hidden group-hover/staged:block text-red-400" />
+        {showCount && (
+          <span className={`text-[10px] font-medium overflow-hidden transition-all duration-200 ${forceExpanded ? 'max-w-[2rem]' : 'max-w-0 group-hover/staged:max-w-[2rem]'}`}>
+            {displayCount}
+          </span>
+        )}
+        {/* Show "staged" normally, "unstage" on hover */}
+        <span className={`text-[9px] font-medium overflow-hidden transition-all duration-200 group-hover/staged:hidden ${forceExpanded ? 'max-w-[3rem]' : 'max-w-0'}`}>
+          staged
+        </span>
+        <span className={`text-[9px] font-medium text-red-400 overflow-hidden transition-all duration-200 hidden group-hover/staged:block ${forceExpanded ? 'max-w-[3.5rem]' : 'max-w-0 group-hover/staged:max-w-[3.5rem]'}`}>
+          unstage
+        </span>
+      </button>
+    )
+  }
+
+  // Not staged - show clock icon with amber styling
+  return (
+    <button
+      className={`group/stage flex items-center px-1.5 py-0.5 rounded-md transition-all duration-200 bg-white/10 text-plm-fg-muted hover:bg-amber-500/20 hover:text-amber-400 ${forceExpanded ? 'gap-1 bg-amber-500/20 text-amber-400' : 'gap-0 hover:gap-1'}`}
+      onClick={onClick}
+      title={title || defaultTitle}
+      disabled={disabled}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+    >
+      <Clock size={12} className={`transition-colors duration-200 ${forceExpanded ? 'text-amber-400' : 'group-hover/stage:text-amber-400'}`} />
+      {showCount && (
+        <span className={`text-[10px] font-medium text-amber-400 overflow-hidden transition-all duration-200 ${forceExpanded ? 'max-w-[2rem]' : 'max-w-0 group-hover/stage:max-w-[2rem]'}`}>
+          {displayCount}
+        </span>
+      )}
+      <ArrowUp size={12} className={`text-amber-400 overflow-hidden transition-all duration-200 ${forceExpanded ? 'max-w-[1rem]' : 'max-w-0 group-hover/stage:max-w-[1rem]'}`} />
     </button>
   )
 }

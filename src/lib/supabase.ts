@@ -2254,6 +2254,211 @@ export async function checkVaultAccess(
   return { hasAccess: (data?.length || 0) > 0 }
 }
 
+// ============================================
+// Teams & Permissions (Permission checking)
+// ============================================
+
+import type { PermissionAction } from '../types/permissions'
+
+/**
+ * Get all teams a user belongs to
+ */
+export async function getUserTeams(
+  userId: string
+): Promise<{ teams: Array<{ id: string; name: string; color: string; icon: string }> | null; error?: string }> {
+  const client = getSupabaseClient()
+  
+  const { data, error } = await client
+    .from('team_members')
+    .select(`
+      team:teams(id, name, color, icon)
+    `)
+    .eq('user_id', userId)
+  
+  if (error) {
+    return { teams: null, error: error.message }
+  }
+  
+  const teams = (data || [])
+    .map(m => m.team)
+    .filter(Boolean) as Array<{ id: string; name: string; color: string; icon: string }>
+  
+  return { teams }
+}
+
+/**
+ * Get all effective permissions for a user (across all their teams)
+ * Returns a map of resource -> array of actions
+ */
+export async function getUserPermissions(
+  userId: string,
+  userRole?: 'admin' | 'engineer' | 'viewer'
+): Promise<{ permissions: Record<string, PermissionAction[]> | null; error?: string }> {
+  // Admins have full access - return a special flag
+  if (userRole === 'admin') {
+    return { permissions: { __admin__: ['view', 'create', 'edit', 'delete', 'admin'] } }
+  }
+  
+  const client = getSupabaseClient()
+  
+  // Get all team memberships and their permissions
+  const { data, error } = await client
+    .from('team_members')
+    .select(`
+      team_id,
+      team:teams!inner(
+        id,
+        team_permissions(resource, actions)
+      )
+    `)
+    .eq('user_id', userId)
+  
+  if (error) {
+    return { permissions: null, error: error.message }
+  }
+  
+  // Merge permissions from all teams
+  const mergedPermissions: Record<string, Set<PermissionAction>> = {}
+  
+  for (const membership of data || []) {
+    const team = membership.team as any
+    const perms = team?.team_permissions || []
+    
+    for (const perm of perms) {
+      if (!mergedPermissions[perm.resource]) {
+        mergedPermissions[perm.resource] = new Set()
+      }
+      for (const action of perm.actions || []) {
+        mergedPermissions[perm.resource].add(action as PermissionAction)
+      }
+    }
+  }
+  
+  // Convert sets to arrays
+  const permissions: Record<string, PermissionAction[]> = {}
+  for (const [resource, actionSet] of Object.entries(mergedPermissions)) {
+    permissions[resource] = Array.from(actionSet)
+  }
+  
+  return { permissions }
+}
+
+/**
+ * Check if a user has a specific permission on a resource
+ * This is the main function to use for permission checks in the UI
+ */
+export async function checkPermission(
+  userId: string,
+  resource: string,
+  action: PermissionAction,
+  userRole?: 'admin' | 'engineer' | 'viewer'
+): Promise<{ hasPermission: boolean; error?: string }> {
+  // Admins always have full access
+  if (userRole === 'admin') {
+    return { hasPermission: true }
+  }
+  
+  const client = getSupabaseClient()
+  
+  // Check if user has this permission through any of their teams
+  const { data, error } = await client
+    .from('team_members')
+    .select(`
+      team_id,
+      team:teams!inner(
+        team_permissions!inner(resource, actions)
+      )
+    `)
+    .eq('user_id', userId)
+  
+  if (error) {
+    return { hasPermission: false, error: error.message }
+  }
+  
+  // Check if any team has the required permission
+  for (const membership of data || []) {
+    const team = membership.team as any
+    const perms = team?.team_permissions || []
+    
+    for (const perm of perms) {
+      if (perm.resource === resource) {
+        if (perm.actions?.includes(action) || perm.actions?.includes('admin')) {
+          return { hasPermission: true }
+        }
+      }
+    }
+  }
+  
+  return { hasPermission: false }
+}
+
+/**
+ * Check multiple permissions at once (more efficient for bulk checks)
+ */
+export async function checkPermissions(
+  userId: string,
+  checks: Array<{ resource: string; action: PermissionAction }>,
+  userRole?: 'admin' | 'engineer' | 'viewer'
+): Promise<{ results: Record<string, boolean>; error?: string }> {
+  // Admins always have full access
+  if (userRole === 'admin') {
+    const results: Record<string, boolean> = {}
+    for (const check of checks) {
+      results[`${check.resource}:${check.action}`] = true
+    }
+    return { results }
+  }
+  
+  // Get all permissions once
+  const { permissions, error } = await getUserPermissions(userId, userRole)
+  
+  if (error || !permissions) {
+    return { results: {}, error }
+  }
+  
+  // Check each permission
+  const results: Record<string, boolean> = {}
+  for (const check of checks) {
+    const key = `${check.resource}:${check.action}`
+    const resourcePerms = permissions[check.resource] || []
+    results[key] = resourcePerms.includes(check.action) || resourcePerms.includes('admin')
+  }
+  
+  return { results }
+}
+
+/**
+ * Get all teams in an organization
+ */
+export async function getOrgTeams(
+  orgId: string
+): Promise<{ teams: any[] | null; error?: string }> {
+  const client = getSupabaseClient()
+  
+  const { data, error } = await client
+    .from('teams')
+    .select(`
+      *,
+      team_members(count),
+      team_permissions(count)
+    `)
+    .eq('org_id', orgId)
+    .order('name')
+  
+  if (error) {
+    return { teams: null, error: error.message }
+  }
+  
+  // Transform to include counts
+  const teams = (data || []).map(team => ({
+    ...team,
+    member_count: team.team_members?.[0]?.count || 0,
+    permissions_count: team.team_permissions?.[0]?.count || 0
+  }))
+  
+  return { teams }
+}
+
 export async function updateFileMetadata(
   fileId: string,
   userId: string,
@@ -3384,6 +3589,59 @@ export async function requestCheckout(
   }
   
   return { success: true }
+}
+
+/**
+ * Create a custom notification to one or more users
+ */
+export async function createCustomNotification(
+  orgId: string,
+  fromUserId: string,
+  toUserIds: string[],
+  options: {
+    type: string  // notification type
+    category: 'review' | 'change' | 'purchasing' | 'quality' | 'workflow' | 'system'
+    title: string
+    message?: string
+    priority?: 'low' | 'normal' | 'high' | 'urgent'
+    actionType?: 'approve' | 'reject' | 'view' | 'respond'
+    actionUrl?: string
+    fileId?: string
+    ecoId?: string
+    poId?: string
+  }
+): Promise<{ success: boolean; count: number; error?: string }> {
+  const client = getSupabaseClient()
+  
+  // Create notification for each recipient
+  const notifications = toUserIds.map(userId => ({
+    org_id: orgId,
+    user_id: userId,
+    type: options.type,
+    category: options.category,
+    title: options.title,
+    message: options.message || null,
+    priority: options.priority || 'normal',
+    from_user_id: fromUserId,
+    action_type: options.actionType || null,
+    action_url: options.actionUrl || null,
+    file_id: options.fileId || null,
+    eco_id: options.ecoId || null,
+    po_id: options.poId || null,
+    read: false,
+    action_completed: false
+  }))
+  
+  const { data, error } = await client
+    .from('notifications')
+    .insert(notifications)
+    .select()
+  
+  if (error) {
+    return { success: false, count: 0, error: error.message }
+  }
+  
+  return { success: true, count: data?.length || 0 }
 }
 
 /**

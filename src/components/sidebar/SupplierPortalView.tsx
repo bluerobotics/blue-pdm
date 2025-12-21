@@ -252,7 +252,7 @@ export function SupplierPortalView() {
         </div>
         <div className="grid grid-cols-2 gap-2">
           <button 
-            onClick={() => setActiveView('suppliers')}
+            onClick={() => setActiveView('supplier-database')}
             className="flex items-center gap-2 p-2 bg-plm-highlight/50 hover:bg-plm-highlight rounded text-xs text-plm-fg-muted hover:text-plm-fg transition-colors"
           >
             <Building2 size={14} />

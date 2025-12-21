@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react'
-import { usePDMStore, LocalFile } from '../stores/pdmStore'
+import { useState, useEffect, useCallback } from 'react'
+import { usePDMStore, LocalFile, DetailsPanelTab } from '../stores/pdmStore'
 import { formatFileSize, getFileIconType, STATE_INFO } from '../types/pdm'
+import { DraggableTab, TabDropZone, PanelLocation } from './shared/DraggableTab'
 import { format, formatDistanceToNow } from 'date-fns'
 import { getFileVersions, getRecentActivity, updateFileMetadata } from '../lib/supabase'
 import { rollbackToVersion } from '../lib/fileService'
@@ -167,6 +168,9 @@ export function DetailsPanel() {
     setDetailsPanelTab,
     rightPanelTabs,
     moveTabToRight,
+    moveTabToBottom,
+    reorderTabsInPanel,
+    bottomPanelTabOrder,
     user,
     addToast,
     cadPreviewMode,
@@ -211,6 +215,19 @@ export function DetailsPanel() {
   const [cadThumbnail, setCadThumbnail] = useState<string | null>(null)
   const [cadThumbnailLoading, setCadThumbnailLoading] = useState(false)
   const [cadZoom, setCadZoom] = useState(100) // Zoom percentage (100 = fit to pane)
+  
+  // Handle tab drop from either panel
+  const handleTabDrop = useCallback((tabId: string, fromLocation: PanelLocation, toLocation: PanelLocation) => {
+    if (fromLocation === toLocation) return // No change needed
+    
+    if (toLocation === 'bottom' && fromLocation === 'right') {
+      // Moving from right panel to bottom
+      moveTabToBottom(tabId as DetailsPanelTab)
+    } else if (toLocation === 'right' && fromLocation === 'bottom') {
+      // Moving from bottom panel to right  
+      moveTabToRight(tabId as DetailsPanelTab)
+    }
+  }, [moveTabToBottom, moveTabToRight])
   
   // Reset zoom when file changes
   useEffect(() => {
@@ -705,8 +722,24 @@ export function DetailsPanel() {
     { id: 'history', label: 'History' },
   ] as const
   
-  // Filter out tabs that are in the right panel
-  const tabs = allTabs.filter(tab => !rightPanelTabs.includes(tab.id))
+  // Filter out tabs that are in the right panel, then sort by custom order
+  const filteredTabs = allTabs.filter(tab => !rightPanelTabs.includes(tab.id))
+  const tabs = bottomPanelTabOrder.length > 0
+    ? [...filteredTabs].sort((a, b) => {
+        const aIndex = bottomPanelTabOrder.indexOf(a.id as DetailsPanelTab)
+        const bIndex = bottomPanelTabOrder.indexOf(b.id as DetailsPanelTab)
+        // Tabs not in custom order go to end, maintaining their relative order
+        if (aIndex === -1 && bIndex === -1) return 0
+        if (aIndex === -1) return 1
+        if (bIndex === -1) return -1
+        return aIndex - bIndex
+      })
+    : filteredTabs
+  
+  // Handle tab reorder within bottom panel
+  const handleTabReorder = useCallback((tabId: string, newIndex: number) => {
+    reorderTabsInPanel('bottom', tabId as DetailsPanelTab, newIndex)
+  }, [reorderTabsInPanel])
   
   // Auto-switch to datacard tab when selecting a SolidWorks file
   useEffect(() => {
@@ -740,20 +773,30 @@ export function DetailsPanel() {
       className="bg-plm-panel border-t border-plm-border flex flex-col"
       style={{ height: detailsPanelHeight }}
     >
-      {/* Tabs */}
-      <div className="tabs flex-shrink-0">
-        {tabs.map(tab => (
-          <button
+      {/* Tabs - Droppable zone */}
+      <TabDropZone
+        location="bottom"
+        onDrop={handleTabDrop}
+        className="tabs flex-shrink-0 relative min-h-[32px]"
+        tabCount={tabs.length}
+      >
+        {tabs.map((tab, index) => (
+          <DraggableTab
             key={tab.id}
-            className={`tab ${detailsPanelTab === tab.id ? 'active' : ''}`}
+            id={tab.id}
+            label={tab.label}
+            active={detailsPanelTab === tab.id}
+            location="bottom"
+            index={index}
             onClick={() => setDetailsPanelTab(tab.id)}
             onDoubleClick={() => moveTabToRight(tab.id)}
-            title="Double-click to move to right panel"
-          >
-            {tab.label}
-          </button>
+            onDragStart={() => {}}
+            onDragEnd={() => {}}
+            onReorder={handleTabReorder}
+            tooltip="Drag to reorder or move to right panel"
+          />
         ))}
-      </div>
+      </TabDropZone>
 
       {/* Content */}
       <div className="flex-1 overflow-auto p-4">

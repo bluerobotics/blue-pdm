@@ -259,7 +259,8 @@ function CascadingSidebar({ parentRect, itemRect, children, depth, onMouseEnter,
     top: topPosition,
     left: parentRect.right,
     zIndex: 40 + depth,
-    width: isExpanded ? '256px' : '53px',
+    minWidth: isExpanded ? '200px' : '53px',
+    width: isExpanded ? 'fit-content' : '53px',
     maxHeight: maxHeight,
   }
   
@@ -333,6 +334,7 @@ function CascadingSidebar({ parentRect, itemRect, children, depth, onMouseEnter,
               const childTitle = translationKey ? t(translationKey) : child.name
               const isActive = activeView === child.id
               const customIconColor = moduleConfig.moduleIconColors?.[child.id] || null
+              const isComingSoon = !child.implemented
               
               return (
                 <div
@@ -354,14 +356,18 @@ function CascadingSidebar({ parentRect, itemRect, children, depth, onMouseEnter,
                     }`}
                   >
                     {/* Icon */}
-                    <div className="w-[22px] h-[22px] flex items-center justify-center flex-shrink-0">
+                    <div className="w-[22px] h-[22px] flex items-center justify-center flex-shrink-0 relative">
                       {getModuleIcon(child.icon, 22, customIconColor)}
+                      {/* Under Development indicator - orange dot on icon */}
+                      {isComingSoon && (
+                        <div className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-orange-500 rounded-full" title="Under Development" />
+                      )}
                     </div>
                     
                     {/* Title - only show when expanded */}
-                    {isExpanded && (
+                      {isExpanded && (
                       <>
-                        <span className="text-[15px] font-medium whitespace-nowrap overflow-hidden flex-1 text-left">
+                        <span className="text-[15px] font-medium whitespace-nowrap flex-1 text-left pr-2">
                           {childTitle}
                         </span>
                         {hasGrandchildren && (
@@ -520,24 +526,69 @@ function getModuleIcon(iconName: string, size: number = 22, customColor?: string
 
 // Translation keys for module names
 const moduleTranslationKeys: Record<ModuleId, string> = {
+  // Source Files
   'explorer': 'sidebar.explorer',
   'pending': 'sidebar.pending',
-  'search': 'sidebar.search',
-  'workflows': 'sidebar.workflows',
   'history': 'sidebar.history',
+  'workflows': 'sidebar.workflows',
   'trash': 'sidebar.trash',
-  'terminal': 'sidebar.terminal',
-  'eco': 'sidebar.eco',
-  'gsd': 'sidebar.gsd',
-  'ecr': 'sidebar.ecr',
-  'reviews': 'sidebar.reviews',
-  'deviations': 'sidebar.deviations',
+  // Items
+  'items': 'sidebar.items',
+  'boms': 'sidebar.boms',
   'products': 'sidebar.products',
+  // Change Control
+  'ecr': 'sidebar.ecr',
+  'eco': 'sidebar.eco',
+  'notifications': 'sidebar.notifications',
+  'deviations': 'sidebar.deviations',
+  'release-schedule': 'sidebar.releaseSchedule',
   'process': 'sidebar.process',
-  'schedule': 'sidebar.schedule',
-  'suppliers': 'sidebar.suppliers',
+  // Supply Chain - Suppliers
+  'supplier-database': 'sidebar.supplierDatabase',
   'supplier-portal': 'sidebar.supplierPortal',
+  // Supply Chain - Purchasing
+  'purchase-requests': 'sidebar.purchaseRequests',
+  'purchase-orders': 'sidebar.purchaseOrders',
+  'invoices': 'sidebar.invoices',
+  // Supply Chain - Logistics
+  'shipping': 'sidebar.shipping',
+  'receiving': 'sidebar.receiving',
+  // Production
+  'manufacturing-orders': 'sidebar.manufacturingOrders',
+  'travellers': 'sidebar.travellers',
+  'work-instructions': 'sidebar.workInstructions',
+  'production-schedule': 'sidebar.productionSchedule',
+  'routings': 'sidebar.routings',
+  'work-centers': 'sidebar.workCenters',
+  'process-flows': 'sidebar.processFlows',
+  'equipment': 'sidebar.equipment',
+  // Production - Analytics submenu
+  'production-analytics': 'sidebar.productionAnalytics',
+  'yield-tracking': 'sidebar.yieldTracking',
+  'error-codes': 'sidebar.errorCodes',
+  'downtime': 'sidebar.downtime',
+  'oee': 'sidebar.oee',
+  'scrap-tracking': 'sidebar.scrapTracking',
+  // Quality
+  'fai': 'sidebar.fai',
+  'ncr': 'sidebar.ncr',
+  'imr': 'sidebar.imr',
+  'scar': 'sidebar.scar',
+  'capa': 'sidebar.capa',
+  'rma': 'sidebar.rma',
+  'certificates': 'sidebar.certificates',
+  'calibration': 'sidebar.calibration',
+  'quality-templates': 'sidebar.qualityTemplates',
+  // Accounting
+  'accounts-payable': 'sidebar.accountsPayable',
+  'accounts-receivable': 'sidebar.accountsReceivable',
+  'general-ledger': 'sidebar.generalLedger',
+  'cost-tracking': 'sidebar.costTracking',
+  'budgets': 'sidebar.budgets',
+  // Integrations
   'google-drive': 'sidebar.googleDrive',
+  // System
+  'terminal': 'sidebar.terminal',
   'settings': 'sidebar.settings',
 }
 
@@ -775,7 +826,7 @@ export function ActivityBar() {
                       <ActivityItem
                         key={group.id}
                         icon={getModuleIcon(group.icon, 22, group.iconColor)}
-                        view={'explorer' as SidebarView}  // Groups don't navigate directly
+                        view={`group-${group.id}` as SidebarView}  // Groups use fake view ID so they don't match any real view
                         title={group.name}
                         hasChildren={true}
                         children={childModules}
@@ -787,8 +838,8 @@ export function ActivityBar() {
                     const translationKey = moduleTranslationKeys[moduleId]
                     const title = translationKey ? t(translationKey) : module.name
                     
-                    // Special handling for reviews badge
-                    const badge = moduleId === 'reviews' ? totalBadge : undefined
+                    // Special handling for notifications badge
+                    const badge = moduleId === 'notifications' ? totalBadge : undefined
                     
                     // Get visible child modules (using config's moduleParents)
                     const childModules = getChildModules(moduleId, moduleConfig).filter(child => 
@@ -799,13 +850,26 @@ export function ActivityBar() {
                     // Get custom icon color
                     const customIconColor = moduleConfig.moduleIconColors?.[moduleId] || null
                     
+                    // Check if module is coming soon
+                    const isComingSoon = !module.implemented
+                    
                     // Find visible index for this module for divider positioning
                     const visibleIndex = visibleModules.indexOf(moduleId)
+                    
+                    // Create icon with optional coming soon indicator
+                    const iconWithIndicator = (
+                      <div className="relative">
+                        {getModuleIcon(module.icon, 22, customIconColor)}
+                        {isComingSoon && (
+                          <div className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-orange-500 rounded-full" title="Under Development" />
+                        )}
+                      </div>
+                    )
                     
                     return (
                       <div key={moduleId}>
                         <ActivityItem
-                          icon={getModuleIcon(module.icon, 22, customIconColor)}
+                          icon={iconWithIndicator}
                           view={moduleId as SidebarView}
                           title={title}
                           badge={badge}

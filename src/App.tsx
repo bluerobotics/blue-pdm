@@ -18,6 +18,8 @@ import { OnboardingScreen } from './components/OnboardingScreen'
 import { Toast } from './components/Toast'
 import { RightPanel } from './components/RightPanel'
 import { OrphanedCheckoutsContainer } from './components/OrphanedCheckoutDialog'
+import { StagedCheckinConflictDialog } from './components/StagedCheckinConflictDialog'
+import type { StagedCheckin } from './stores/pdmStore'
 import { MissingStorageFilesContainer } from './components/MissingStorageFilesDialog'
 import { GoogleDrivePanel } from './components/GoogleDrivePanel'
 import { ChristmasEffects } from './components/ChristmasEffects'
@@ -237,6 +239,8 @@ function App() {
     addToast,
     apiServerUrl,
     setApiServerUrl,
+    stagedCheckins,
+    unstageCheckin,
   } = usePDMStore()
   
   // Get current vault ID (from activeVaultId or first connected vault)
@@ -253,6 +257,13 @@ function App() {
   // Vault not found dialog state
   const [vaultNotFoundPath, setVaultNotFoundPath] = useState<string | null>(null)
   const [vaultNotFoundName, setVaultNotFoundName] = useState<string | undefined>(undefined)
+  
+  // Staged check-in conflict dialog state
+  const [stagedConflicts, setStagedConflicts] = useState<Array<{
+    staged: StagedCheckin
+    serverVersion: number
+    localPath: string
+  }>>([])
   
   // Listen for settings tab navigation from MenuBar buttons
   useEffect(() => {
@@ -274,40 +285,12 @@ function App() {
     setSupabaseReady(true)
   }, [])
 
-  // Network detection - automatically detect when going offline/online
-  useEffect(() => {
-    const handleOnline = () => {
-      console.log('[Network] Connection restored')
-      // Only show toast if we were in auto-detected offline mode, not manual
-      if (isOfflineMode) {
-        addToast('success', 'Connection restored - you can now sync with the cloud')
-      }
-      // Don't automatically disable offline mode - let user decide when to reconnect
-      // This prevents data loss from auto-sync before user is ready
-    }
-    
-    const handleOffline = () => {
-      console.log('[Network] Connection lost')
-      if (!isOfflineMode) {
-        addToast('warning', 'Network connection lost - switching to offline mode')
-        setOfflineMode(true)
-      }
-    }
-    
-    // Check initial state
-    if (!navigator.onLine && !isOfflineMode) {
-      console.log('[Network] Starting offline')
-      setOfflineMode(true)
-    }
-    
-    window.addEventListener('online', handleOnline)
-    window.addEventListener('offline', handleOffline)
-    
-    return () => {
-      window.removeEventListener('online', handleOnline)
-      window.removeEventListener('offline', handleOffline)
-    }
-  }, [isOfflineMode, setOfflineMode, addToast])
+  // Offline mode is a manual toggle - no automatic switching based on network status
+  // User controls when to work offline and when to go back online
+  // This prevents unexpected syncs and gives user full control over when data is uploaded
+
+  // Track previous offline mode to detect transition (ref updated later in staged check-in effect)
+  const prevOfflineModeRef = useRef(isOfflineMode)
 
   // Initialize auth state (runs in background, doesn't block UI)
   useEffect(() => {
@@ -434,6 +417,15 @@ function App() {
             if (event === 'SIGNED_IN') {
               setStatusMessage(`Welcome, ${session.user.user_metadata?.full_name || session.user.email}!`)
               setTimeout(() => setStatusMessage(''), 3000)
+              
+              // Disable offline mode when user signs in (they're now authenticated)
+              // Use getState() to get current value, not stale closure value
+              const currentOfflineMode = usePDMStore.getState().isOfflineMode
+              if (currentOfflineMode && navigator.onLine) {
+                console.log('[Auth] Disabling offline mode after sign-in')
+                setOfflineMode(false)
+                addToast('success', 'Back online')
+              }
             }
             
             // Load organization (setOrganization will clear isConnecting)
@@ -1211,6 +1203,113 @@ function App() {
     }
   }, [vaultPath, organization, isOfflineMode, currentVaultId, setFiles, setIsLoading, setStatusMessage, setFilesLoaded])
 
+  // Process staged check-ins when going back online
+  const processStagedCheckins = useCallback(async () => {
+    if (stagedCheckins.length === 0 || !organization || !user || !vaultPath) {
+      return
+    }
+    
+    console.log('[StagedCheckins] Processing', stagedCheckins.length, 'staged check-ins')
+    
+    // Get current files to find the staged ones
+    const { files } = usePDMStore.getState()
+    
+    // Collect conflicts for dialog
+    const conflicts: Array<{
+      staged: StagedCheckin
+      serverVersion: number
+      localPath: string
+    }> = []
+    
+    let successCount = 0
+    
+    for (const staged of stagedCheckins) {
+      const file = files.find(f => f.relativePath === staged.relativePath)
+      if (!file) {
+        console.warn('[StagedCheckins] File not found:', staged.relativePath)
+        unstageCheckin(staged.relativePath)
+        continue
+      }
+      
+      // Check for conflict: server version changed since we staged
+      const serverVersionChanged = staged.serverVersion !== undefined && 
+        file.pdmData?.version !== undefined && 
+        file.pdmData.version > staged.serverVersion
+      
+      if (serverVersionChanged) {
+        // Conflict detected - add to conflicts list for dialog
+        console.log('[StagedCheckins] Conflict detected for:', staged.fileName, {
+          stagedVersion: staged.serverVersion,
+          currentVersion: file.pdmData?.version
+        })
+        conflicts.push({
+          staged,
+          serverVersion: file.pdmData?.version || 0,
+          localPath: file.path
+        })
+        continue
+      }
+      
+      try {
+        // For new files, use sync (first check-in)
+        // For existing files, use checkout + checkin
+        if (!file.pdmData) {
+          // New file - first check-in
+          await executeCommand('sync', { files: [file] }, { silent: true })
+        } else {
+          // Existing file - checkout then checkin
+          await executeCommand('checkout', { files: [file] }, { silent: true })
+          await executeCommand('checkin', { files: [file], comment: staged.comment || 'Offline changes' }, { silent: true })
+        }
+        
+        // Remove from staged
+        unstageCheckin(staged.relativePath)
+        successCount++
+        console.log('[StagedCheckins] Successfully processed:', staged.fileName)
+      } catch (err) {
+        console.error('[StagedCheckins] Failed to process:', staged.fileName, err)
+        addToast('error', `Failed to check in "${staged.fileName}": ${err instanceof Error ? err.message : 'Unknown error'}`)
+      }
+    }
+    
+    // Show success message for processed files
+    if (successCount > 0) {
+      addToast('success', `Successfully checked in ${successCount} staged file${successCount > 1 ? 's' : ''}`)
+    }
+    
+    // Show conflict dialog if there are conflicts
+    if (conflicts.length > 0) {
+      setStagedConflicts(conflicts)
+    }
+    
+    // Refresh files after processing
+    loadFiles(true)
+  }, [stagedCheckins, organization, user, vaultPath, addToast, unstageCheckin, loadFiles])
+  
+  // Handle staged check-ins when going back online
+  useEffect(() => {
+    const wasOffline = prevOfflineModeRef.current
+    const isNowOnline = !isOfflineMode
+    
+    // Update ref for next render
+    prevOfflineModeRef.current = isOfflineMode
+    
+    // Only process when transitioning from offline to online
+    if (wasOffline && isNowOnline && stagedCheckins.length > 0) {
+      console.log('[StagedCheckins] Going online with', stagedCheckins.length, 'staged check-ins')
+      
+      // Show notification about staged check-ins
+      addToast(
+        'info',
+        `Processing ${stagedCheckins.length} staged file${stagedCheckins.length > 1 ? 's' : ''} for check-in...`,
+        8000
+      )
+      
+      // Process staged check-ins in the background
+      processStagedCheckins()
+    }
+  }, [isOfflineMode, stagedCheckins.length, addToast, processStagedCheckins])
+
   // Auto-download trigger when settings are toggled ON
   // This effect runs the download logic immediately when the user enables auto-download
   const autoDownloadCloudFiles = usePDMStore(s => s.autoDownloadCloudFiles)
@@ -1519,7 +1618,8 @@ function App() {
     
     // Create a key to track what we've loaded for
     // Include vaultPath so switching vaults triggers a new load
-    const loadKey = `${vaultPath}:${currentVaultId || 'none'}:${organization?.id || 'none'}`
+    // Include isOfflineMode so going online/offline triggers a fresh load
+    const loadKey = `${vaultPath}:${currentVaultId || 'none'}:${organization?.id || 'none'}:${isOfflineMode ? 'offline' : 'online'}`
     
     console.log('[LoadEffect] loadKey:', loadKey, 'lastLoadKey:', lastLoadKey.current)
     
@@ -2149,10 +2249,14 @@ function App() {
     
     const cleanups: (() => void)[] = []
     
-    // Update available - show modal
+    // Update available - show modal (always update to latest version)
     cleanups.push(
       window.electronAPI.onUpdateAvailable((info) => {
         console.log('[Update] Update available:', info.version)
+        // Reset download state when switching to a new update version
+        setUpdateDownloading(false)
+        setUpdateDownloaded(false)
+        setUpdateProgress(null)
         setUpdateAvailable(info)
         setShowUpdateModal(true)
       })
@@ -2253,6 +2357,12 @@ function App() {
             logKeyboard('Ctrl+`', 'Switch to terminal')
             setActiveView('terminal')
             break
+          case 'k':  // Ctrl+K or Cmd+K to focus search
+            e.preventDefault()
+            logKeyboard('Ctrl+K', 'Focus search')
+            // Dispatch custom event for search component to listen
+            window.dispatchEvent(new CustomEvent('focus-search'))
+            break
         }
       }
       
@@ -2337,8 +2447,8 @@ function App() {
 
         {/* Main Content */}
         <div className={`flex-1 flex flex-col overflow-hidden min-w-0 ${isResizingSidebar || isResizingRightPanel ? 'pointer-events-none' : ''}`}>
-          {/* Tab bar (browser-like tabs) - only shown when tabs are enabled */}
-          {!showWelcome && <TabBar />}
+          {/* Tab bar (browser-like tabs) - only shown when tabs are enabled and in file explorer view */}
+          {!showWelcome && activeView === 'explorer' && <TabBar />}
           
           {showWelcome ? (
             <WelcomeScreen 
@@ -2402,6 +2512,15 @@ function App() {
       
       {/* Orphaned Checkouts Dialog */}
       <OrphanedCheckoutsContainer onRefresh={loadFiles} />
+      
+      {/* Staged Check-in Conflict Dialog */}
+      {stagedConflicts.length > 0 && (
+        <StagedCheckinConflictDialog
+          conflicts={stagedConflicts}
+          onClose={() => setStagedConflicts([])}
+          onRefresh={loadFiles}
+        />
+      )}
       
       {/* Missing Storage Files Dialog */}
       <MissingStorageFilesContainer onRefresh={loadFiles} />

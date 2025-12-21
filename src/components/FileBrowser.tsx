@@ -3,8 +3,6 @@ import { registerModule, unregisterModule } from '@/lib/telemetry'
 import { 
   ChevronUp, 
   ChevronDown,
-  ChevronRight,
-  ChevronLeft,
   FolderOpen,
   Folder,
   FolderPlus,
@@ -14,7 +12,6 @@ import {
   Layers,
   RefreshCw,
   Upload,
-  Home,
   Cloud,
   CloudOff,
   HardDrive,
@@ -92,6 +89,7 @@ import {
 } from './InlineActionButtons'
 // Use command system for PDM operations
 import { executeCommand } from '../lib/commands'
+import { CrumbBar } from './CrumbBar'
 import { getSyncedFilesFromSelection } from '../lib/commands/types'
 import { format } from 'date-fns'
 import { useTranslation } from '../lib/i18n'
@@ -971,7 +969,6 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
     toggleSort,
     isLoading,
     filesLoaded,
-    isRefreshing,
     vaultPath,
     setStatusMessage,
     user,
@@ -1020,8 +1017,6 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
     hideSolidworksTempFiles,
     keybindings,
     tabsEnabled,
-    setTabsEnabled,
-    addTab,
     activeTabId,
     updateTabFolder
   } = usePDMStore()
@@ -1077,6 +1072,12 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
     contextFiles: LocalFile[]
   } | null>(null)
   const [undoStack, setUndoStack] = useState<Array<{ type: 'delete'; file: LocalFile; originalPath: string }>>([])
+  
+  // Navigation history for back/forward
+  const [navigationHistory, setNavigationHistory] = useState<string[]>([''])
+  const [historyIndex, setHistoryIndex] = useState(0)
+  const isNavigatingRef = useRef(false) // Prevent adding to history when using back/forward
+  
   const [columnContextMenu, setColumnContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [draggingColumn, setDraggingColumn] = useState<string | null>(null)
   
@@ -1715,6 +1716,16 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
     logFileAction('Navigate to folder', folderPath)
     setCurrentFolder(folderPath)
     
+    // Add to navigation history (unless we're going back/forward)
+    if (!isNavigatingRef.current) {
+      setNavigationHistory(prev => {
+        // Remove any forward history and add new path
+        const newHistory = [...prev.slice(0, historyIndex + 1), folderPath]
+        return newHistory
+      })
+      setHistoryIndex(prev => prev + 1)
+    }
+    
     // Sync with active tab when tabs are enabled
     if (tabsEnabled && activeTabId) {
       updateTabFolder(activeTabId, folderPath)
@@ -1743,11 +1754,53 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
   // Navigate to root
   const navigateToRoot = () => {
     setCurrentFolder('')
+    
+    // Add to navigation history (unless we're going back/forward)
+    if (!isNavigatingRef.current) {
+      setNavigationHistory(prev => {
+        const newHistory = [...prev.slice(0, historyIndex + 1), '']
+        return newHistory
+      })
+      setHistoryIndex(prev => prev + 1)
+    }
+    
     // Sync with active tab when tabs are enabled
     if (tabsEnabled && activeTabId) {
       updateTabFolder(activeTabId, '')
     }
   }
+  
+  // Go back in navigation history
+  const navigateBack = () => {
+    if (historyIndex > 0) {
+      isNavigatingRef.current = true
+      const newIndex = historyIndex - 1
+      setHistoryIndex(newIndex)
+      setCurrentFolder(navigationHistory[newIndex])
+      if (tabsEnabled && activeTabId) {
+        updateTabFolder(activeTabId, navigationHistory[newIndex])
+      }
+      isNavigatingRef.current = false
+    }
+  }
+  
+  // Go forward in navigation history
+  const navigateForward = () => {
+    if (historyIndex < navigationHistory.length - 1) {
+      isNavigatingRef.current = true
+      const newIndex = historyIndex + 1
+      setHistoryIndex(newIndex)
+      setCurrentFolder(navigationHistory[newIndex])
+      if (tabsEnabled && activeTabId) {
+        updateTabFolder(activeTabId, navigationHistory[newIndex])
+      }
+      isNavigatingRef.current = false
+    }
+  }
+  
+  // Check if can navigate back/forward
+  const canGoBack = historyIndex > 0
+  const canGoForward = historyIndex < navigationHistory.length - 1
 
   const handleColumnResize = useCallback((e: React.MouseEvent, columnId: string) => {
     e.preventDefault()
@@ -4528,62 +4581,35 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
         </div>
       )}
 
-      {/* Toolbar with breadcrumb */}
-      <div className="h-10 bg-plm-bg-light border-b border-plm-border flex items-center px-2 flex-shrink-0 gap-2">
-        {/* Navigation buttons */}
-        <button
-          onClick={navigateUp}
-          disabled={currentPath === ''}
-          className="btn btn-ghost btn-sm p-1"
-          title="Go up"
-        >
-          <ChevronLeft size={18} />
-        </button>
-
+      {/* Toolbar with breadcrumb - Chrome-style lighter bar */}
+      <div className="h-12 bg-[#3a3a3a] border-b border-plm-border flex items-center px-3 flex-shrink-0 gap-2">
         {/* Breadcrumb / Search indicator */}
-        <div className="flex items-center gap-1 flex-1 min-w-0 text-sm">
-          {isSearching ? (
-            <div className="flex items-center gap-2 text-plm-fg-dim">
-              <Search size={14} className="text-plm-accent" />
-              <span>
-                {searchType === 'files' ? 'Files' : searchType === 'folders' ? 'Folders' : 'Results'} for "<span className="text-plm-fg font-medium">{searchQuery}</span>"
-              </span>
-              <span className="text-plm-fg-muted">({sortedFiles.length} matches)</span>
-            </div>
-          ) : (
-            <>
-              <button
-                onClick={navigateToRoot}
-                className="flex items-center gap-1.5 text-plm-fg-dim hover:text-plm-fg transition-colors px-1"
-                title="Go to vault root"
-              >
-                <Home size={14} />
-                <span>{displayVaultName}</span>
-              </button>
-              {currentPath && currentPath.split('/').map((part, i, arr) => {
-                const pathUpToHere = arr.slice(0, i + 1).join('/')
-                return (
-                  <div key={pathUpToHere} className="flex items-center gap-1">
-                    <ChevronRight size={14} className="text-plm-fg-muted" />
-                    <button
-                      onClick={() => navigateToFolder(pathUpToHere)}
-                      className={`px-1 truncate ${
-                        i === arr.length - 1 
-                          ? 'text-plm-fg font-medium' 
-                          : 'text-plm-fg-dim hover:text-plm-fg'
-                      } transition-colors`}
-                    >
-                      {part}
-                    </button>
-                  </div>
-                )
-              })}
-            </>
-          )}
-        </div>
+        {isSearching ? (
+          <div className="flex items-center gap-2 flex-1 min-w-0 text-sm text-plm-fg-dim">
+            <Search size={14} className="text-plm-accent" />
+            <span>
+              {searchType === 'files' ? 'Files' : searchType === 'folders' ? 'Folders' : 'Results'} for "<span className="text-plm-fg font-medium">{searchQuery}</span>"
+            </span>
+            <span className="text-plm-fg-muted">({sortedFiles.length} matches)</span>
+          </div>
+        ) : (
+          <CrumbBar
+            currentPath={currentPath}
+            vaultPath={vaultPath || ''}
+            vaultName={displayVaultName}
+            onNavigate={navigateToFolder}
+            onNavigateRoot={navigateToRoot}
+            onNavigateUp={navigateUp}
+            onBack={navigateBack}
+            onForward={navigateForward}
+            canGoBack={canGoBack}
+            canGoForward={canGoForward}
+            onRefresh={() => onRefresh()}
+          />
+        )}
         
-        {/* Path actions */}
-        <div className="flex items-center gap-1 border-l border-plm-border pl-2">
+        {/* Path actions - right side of crumb bar */}
+        <div className="flex items-center gap-0.5">
           <button
             onClick={() => {
               const fullPath = currentPath 
@@ -4592,10 +4618,10 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
               navigator.clipboard.writeText(fullPath)
               addToast('success', 'Path copied to clipboard')
             }}
-            className="btn btn-ghost btn-sm p-1"
+            className="p-1.5 rounded-md text-plm-fg-muted hover:text-plm-fg hover:bg-black/20 transition-colors"
             title="Copy current path"
           >
-            <Copy size={14} />
+            <Copy size={16} />
           </button>
           <button
             onClick={() => {
@@ -4606,20 +4632,12 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                 window.electronAPI.openInExplorer(fullPath)
               }
             }}
-            className="btn btn-ghost btn-sm p-1"
+            className="p-1.5 rounded-md text-plm-fg-muted hover:text-plm-fg hover:bg-black/20 transition-colors"
             title={platform === 'darwin' ? 'Reveal in Finder' : 'Open in Explorer'}
           >
-            <ExternalLink size={14} />
+            <ExternalLink size={16} />
           </button>
         </div>
-
-        {/* File count */}
-        <span className="text-xs text-plm-fg-muted px-2">
-          {selectedFiles.length > 0 
-            ? `${selectedFiles.length} selected`
-            : `${sortedFiles.length} items`
-          }
-        </span>
 
         {/* Actions */}
         <div className="flex items-center gap-1">
@@ -4659,37 +4677,6 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
               </div>
             )}
           </div>
-          <button
-            onClick={() => onRefresh()}
-            disabled={isLoading || isRefreshing}
-            className="btn btn-ghost btn-sm p-1"
-            title="Refresh (F5)"
-          >
-            <RefreshCw size={14} className={isRefreshing ? 'animate-spin' : ''} />
-          </button>
-          
-          {/* Separator */}
-          <div className="w-px h-5 bg-plm-border mx-1" />
-          
-          {/* Tab toggle */}
-          <button
-            onClick={() => setTabsEnabled(!tabsEnabled)}
-            className={`btn btn-ghost btn-sm p-1 ${tabsEnabled ? 'bg-plm-accent/20 text-plm-accent' : ''}`}
-            title={tabsEnabled ? 'Hide tabs' : 'Show tabs (workspace tabs)'}
-          >
-            <Layers size={14} />
-          </button>
-          
-          {/* New tab button (only when tabs enabled) */}
-          {tabsEnabled && (
-            <button
-              onClick={() => addTab()}
-              className="btn btn-ghost btn-sm p-1"
-              title="New tab"
-            >
-              <Plus size={14} />
-            </button>
-          )}
           
           {/* Separator */}
           <div className="w-px h-5 bg-plm-border mx-1" />

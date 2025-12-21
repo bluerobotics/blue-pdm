@@ -28,9 +28,12 @@ import {
   X,
   ChevronRight,
   Palette,
-  Pencil
+  Pencil,
+  Users,
+  ExternalLink
 } from 'lucide-react'
 import { usePDMStore } from '../../stores/pdmStore'
+import { supabase } from '../../lib/supabase'
 import {
   MODULE_GROUPS,
   MODULES,
@@ -392,6 +395,9 @@ function OrderListItemComponent({
   const currentParent = currentParentId ? MODULES.find(m => m.id === currentParentId) : null
   const childCount = getChildModules(moduleId, moduleConfig).length
   
+  // Check if this module is locked to a system group (cannot be dragged away)
+  const isLockedToGroup = currentParentId?.startsWith('group-') || false
+  
   // Get custom icon color
   const customIconColor = moduleConfig.moduleIconColors?.[moduleId] || null
   
@@ -403,17 +409,24 @@ function OrderListItemComponent({
   const descendants = getDescendants(moduleId)
   const availableParents = MODULES.filter(m => !descendants.includes(m.id))
   
+  // Non-draggable events for locked modules
+  const lockedDragEvents = {
+    draggable: false,
+  }
+  
   return (
     <div className="relative">
-      {showDropBefore && (
+      {showDropBefore && !isLockedToGroup && (
         <div className="absolute -top-1 left-0 right-0 h-0.5 bg-plm-accent z-10">
           <div className="absolute -left-1 -top-1 w-2.5 h-2.5 rounded-full bg-plm-accent" />
           <div className="absolute -right-1 -top-1 w-2.5 h-2.5 rounded-full bg-plm-accent" />
         </div>
       )}
       <div
-        {...handleDragEvents}
-        className={`flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-all cursor-move ${
+        {...(isLockedToGroup ? lockedDragEvents : handleDragEvents)}
+        className={`flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-all ${
+          isLockedToGroup ? 'cursor-default' : 'cursor-move'
+        } ${
           isDragging 
             ? 'opacity-50 border-plm-accent bg-plm-accent/10' 
             : isEnabled && isVisible
@@ -423,7 +436,12 @@ function OrderListItemComponent({
           : 'border-plm-border/50 bg-plm-bg-secondary'
       } ${currentParentId ? 'ml-6 border-l-2 border-l-plm-accent/30' : ''}`}
     >
-      <GripVertical size={14} className="text-plm-fg-muted flex-shrink-0 pointer-events-none" />
+      {/* Only show drag handle if not locked to a group */}
+      {isLockedToGroup ? (
+        <div className="w-[14px] flex-shrink-0" /> 
+      ) : (
+        <GripVertical size={14} className="text-plm-fg-muted flex-shrink-0 pointer-events-none" />
+      )}
       
       {/* Icon with custom color support */}
       <div 
@@ -447,6 +465,11 @@ function OrderListItemComponent({
           <span className={`text-sm ${isVisible ? 'text-plm-fg' : 'text-plm-fg-muted'}`}>
             {module.name}
           </span>
+          {!module.implemented && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-400 font-medium">
+              Under Development
+            </span>
+          )}
           {module.required && (
             <span title="Required when group enabled">
               <Lock size={10} className="text-plm-fg-dim" />
@@ -654,7 +677,7 @@ function OrderListItemComponent({
         </span>
       </button>
       </div>
-      {showDropAfter && (
+      {showDropAfter && !isLockedToGroup && (
         <div className="absolute -bottom-1 left-0 right-0 h-0.5 bg-plm-accent z-10">
           <div className="absolute -left-1 -top-1 w-2.5 h-2.5 rounded-full bg-plm-accent" />
           <div className="absolute -right-1 -top-1 w-2.5 h-2.5 rounded-full bg-plm-accent" />
@@ -662,6 +685,16 @@ function OrderListItemComponent({
       )}
     </div>
   )
+}
+
+// Team type for module defaults display
+interface TeamWithModules {
+  id: string
+  name: string
+  color: string
+  icon: string
+  module_defaults: Record<string, unknown> | null
+  member_count: number
 }
 
 export function ModulesSettings() {
@@ -677,7 +710,9 @@ export function ModulesSettings() {
     resetModulesToDefaults,
     loadOrgModuleDefaults,
     saveOrgModuleDefaults,
-    getEffectiveRole
+    getEffectiveRole,
+    organization,
+    setActiveView
   } = usePDMStore()
   
   const [dragIndex, setDragIndex] = useState<number | null>(null)
@@ -688,7 +723,52 @@ export function ModulesSettings() {
   const [showGroupEditor, setShowGroupEditor] = useState(false)
   const [editingGroup, setEditingGroup] = useState<{ id: string; name: string; icon: string; iconColor: string | null } | null>(null)
   
+  // Teams with module defaults
+  const [teamsWithModules, setTeamsWithModules] = useState<TeamWithModules[]>([])
+  const [_teamsLoading, setTeamsLoading] = useState(false)
+  
   const isAdmin = getEffectiveRole() === 'admin'
+  
+  // Load teams with module defaults
+  useEffect(() => {
+    if (organization?.id) {
+      loadTeamsWithModules()
+    }
+  }, [organization?.id])
+  
+  const loadTeamsWithModules = async () => {
+    if (!organization?.id) return
+    
+    setTeamsLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from('teams')
+        .select(`
+          id,
+          name,
+          color,
+          icon,
+          module_defaults,
+          team_members(count)
+        `)
+        .eq('org_id', organization.id)
+        .not('module_defaults', 'is', null)
+        .order('name')
+      
+      if (error) throw error
+      
+      const teamsWithCounts = (data || []).map((team: any) => ({
+        ...team,
+        member_count: team.team_members?.[0]?.count || 0
+      }))
+      
+      setTeamsWithModules(teamsWithCounts)
+    } catch (err) {
+      console.error('Failed to load teams with modules:', err)
+    } finally {
+      setTeamsLoading(false)
+    }
+  }
   
   // Build combined list for display (including custom groups)
   const combinedList = useMemo(() => {
@@ -993,6 +1073,10 @@ export function ModulesSettings() {
             <ChevronRight size={10} />
             <span>Has sub-items / Set parent</span>
           </div>
+          <div className="flex items-center gap-1.5">
+            <div className="w-2 h-2 bg-orange-500 rounded-full" />
+            <span>Under Development</span>
+          </div>
         </div>
       </section>
       
@@ -1007,6 +1091,60 @@ export function ModulesSettings() {
           </p>
         </div>
       </section>
+      
+      {/* Teams with Module Defaults */}
+      {teamsWithModules.length > 0 && (
+        <section className="pb-4">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm text-plm-fg-muted uppercase tracking-wide font-medium flex items-center gap-2">
+              <Users size={14} />
+              Teams with Custom Module Defaults
+            </h2>
+            <button
+              onClick={() => setActiveView('settings')}
+              className="text-xs text-plm-accent hover:text-plm-accent/80 flex items-center gap-1"
+            >
+              Manage in Teams Settings
+              <ExternalLink size={10} />
+            </button>
+          </div>
+          
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {teamsWithModules.map(team => {
+              const IconComponent = (LucideIcons as any)[team.icon] || Users
+              const defaults = team.module_defaults as { enabled_modules?: Record<string, boolean> } | null
+              const enabledCount = defaults?.enabled_modules 
+                ? Object.values(defaults.enabled_modules).filter(Boolean).length 
+                : 0
+              
+              return (
+                <div
+                  key={team.id}
+                  className="flex items-center gap-3 p-3 bg-plm-bg rounded-lg border border-plm-border hover:border-plm-accent/30 transition-colors"
+                >
+                  <div
+                    className="p-2 rounded-lg"
+                    style={{ backgroundColor: `${team.color}20`, color: team.color }}
+                  >
+                    <IconComponent size={18} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-plm-fg truncate">{team.name}</div>
+                    <div className="text-xs text-plm-fg-muted">
+                      {enabledCount} modules • {team.member_count} member{team.member_count !== 1 ? 's' : ''}
+                    </div>
+                  </div>
+                  <div className="w-2 h-2 rounded-full bg-green-500" title="Has custom module defaults" />
+                </div>
+              )
+            })}
+          </div>
+          
+          <p className="text-xs text-plm-fg-dim mt-3">
+            Team members inherit these module defaults instead of organization defaults.
+          </p>
+        </section>
+      )}
       
       {/* Group Editor Modal */}
       {showGroupEditor && (

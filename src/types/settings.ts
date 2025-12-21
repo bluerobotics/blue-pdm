@@ -7,6 +7,8 @@ export type SettingsTab =
   | 'modules'
   | 'vaults'
   | 'members'
+  | 'teams'
+  | 'team-members'
   | 'company-profile' 
   | 'serialization'
   | 'rfq' 

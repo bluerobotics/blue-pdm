@@ -30,7 +30,7 @@ const settingsSections: SettingsSection[] = [
     category: 'Organization',
     items: [
       { id: 'vaults', label: 'Vaults' },
-      { id: 'members', label: 'Members' },
+      { id: 'team-members', label: 'Members & Teams' },
       { id: 'company-profile', label: 'Company Profile' },
       { id: 'serialization', label: 'Serialization' },
       { id: 'metadata-columns', label: 'File Metadata' },

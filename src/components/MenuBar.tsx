@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { registerModule, unregisterModule } from '@/lib/telemetry'
-import { LogOut, ChevronDown, Building2, Search, File, Folder, LayoutGrid, Database, ZoomIn, Minus, Plus, RotateCcw, Monitor, Laptop, Loader2, Settings, WifiOff, PanelLeft, PanelBottom, PanelRight, SlidersHorizontal, Gauge, Users, Activity, User, Layers } from 'lucide-react'
+import { LogOut, ChevronDown, Building2, Search, Database, ZoomIn, Minus, Plus, RotateCcw, Monitor, Laptop, Loader2, Settings, WifiOff, Wifi, PanelLeft, PanelBottom, PanelRight, SlidersHorizontal, Gauge, Users, Activity, User, Layers } from 'lucide-react'
 import { usePDMStore } from '../stores/pdmStore'
+import { CommandSearch } from './CommandSearch'
 import { signInWithGoogle, signOut, isSupabaseConfigured, getActiveSessions, endRemoteSession, UserSession, supabase } from '../lib/supabase'
 import { getInitials } from '../types/pdm'
 import { logAuth } from '../lib/userActionLogger'
@@ -74,10 +75,6 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
     setUser, 
     setOrganization, 
     addToast, 
-    setSearchQuery, 
-    searchQuery, 
-    searchType, 
-    setSearchType,
     connectedVaults,
     activeVaultId,
     switchVault,
@@ -107,7 +104,6 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
   const [showUserMenu, setShowUserMenu] = useState(false)
   const [showVaultDropdown, setShowVaultDropdown] = useState(false)
   const [showZoomDropdown, setShowZoomDropdown] = useState(false)
-  const [showSearchTypeDropdown, setShowSearchTypeDropdown] = useState(false)
   const [showTopbarConfigDropdown, setShowTopbarConfigDropdown] = useState(false)
   const [orgLogoUrl, setOrgLogoUrl] = useState<string | null>(null)
   const [zoomFactor, setZoomFactor] = useState(1)
@@ -116,21 +112,17 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
   const [signingOutSessionId, setSigningOutSessionId] = useState<string | null>(null)
   const vaultDropdownRef = useRef<HTMLDivElement>(null)
   const zoomDropdownRef = useRef<HTMLDivElement>(null)
-  const searchTypeDropdownRef = useRef<HTMLDivElement>(null)
   const topbarConfigRef = useRef<HTMLDivElement>(null)
   const [titleBarPadding, setTitleBarPadding] = useState(140) // Default fallback
   const [platform, setPlatform] = useState<string>('win32') // Default to Windows
-  const [localSearch, setLocalSearch] = useState(searchQuery || '')
   const [menuBarWidth, setMenuBarWidth] = useState(1200)
   const menuRef = useRef<HTMLDivElement>(null)
-  const searchInputRef = useRef<HTMLInputElement>(null)
   const menuBarRef = useRef<HTMLDivElement>(null)
   
   // Responsive breakpoints for progressive collapse (in order of priority)
   // Elements condense before hiding to maximize space efficiency
   const cpuCondensed = menuBarWidth < 1100  // CPU: full -> single dot
   const zoomCondensed = menuBarWidth < 1000  // Zoom: percentage -> icon only
-  const searchCondensed = menuBarWidth < 900  // Search type: buttons -> dropdown
   const showUserNameByWidth = menuBarWidth > 800
   const showUserNameFinal = showUserNameByWidth && topbarConfig.showUserName  // Both width and config must allow it
   const showVaultName = menuBarWidth > 700
@@ -149,18 +141,15 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
       if (zoomDropdownRef.current && !zoomDropdownRef.current.contains(e.target as Node)) {
         setShowZoomDropdown(false)
       }
-      if (searchTypeDropdownRef.current && !searchTypeDropdownRef.current.contains(e.target as Node)) {
-        setShowSearchTypeDropdown(false)
-      }
       if (topbarConfigRef.current && !topbarConfigRef.current.contains(e.target as Node)) {
         setShowTopbarConfigDropdown(false)
       }
     }
-    if (showUserMenu || showVaultDropdown || showZoomDropdown || showSearchTypeDropdown || showTopbarConfigDropdown) {
+    if (showUserMenu || showVaultDropdown || showZoomDropdown || showTopbarConfigDropdown) {
       document.addEventListener('mousedown', handleClickOutside)
     }
     return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [showUserMenu, showVaultDropdown, showZoomDropdown, showSearchTypeDropdown, showTopbarConfigDropdown])
+  }, [showUserMenu, showVaultDropdown, showZoomDropdown, showTopbarConfigDropdown])
 
   useEffect(() => {
     if (window.electronAPI) {
@@ -472,122 +461,8 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
       {/* Center - Search bar (flexible, gets squeezed between left and right) */}
       <div className={`flex-1 min-w-0 flex items-center justify-center px-2`}>
         {!minimal && topbarConfig.showSearch && (
-          <div className={`flex items-center gap-1 w-full ${searchMaxWidth} titlebar-no-drag`}>
-            {/* Search type toggle - condenses to dropdown when narrow */}
-            {searchCondensed ? (
-              <div className="relative" ref={searchTypeDropdownRef}>
-                <button
-                  onClick={() => setShowSearchTypeDropdown(!showSearchTypeDropdown)}
-                  className="flex items-center justify-center w-7 h-7 rounded-md bg-plm-bg border border-plm-border text-plm-fg-muted hover:text-plm-fg transition-colors"
-                  title={`Search ${searchType}`}
-                >
-                  {searchType === 'all' && <LayoutGrid size={14} />}
-                  {searchType === 'folders' && <Folder size={14} />}
-                  {searchType === 'files' && <File size={14} />}
-                </button>
-                {showSearchTypeDropdown && (
-                  <div className="absolute top-full left-0 mt-1 bg-plm-bg border border-plm-border rounded-lg shadow-lg py-1 z-50 min-w-[120px]">
-                    <button
-                      onClick={() => { setSearchType('all'); setShowSearchTypeDropdown(false) }}
-                      className={`w-full px-3 py-1.5 text-xs text-left flex items-center gap-2 hover:bg-plm-bg-lighter ${
-                        searchType === 'all' ? 'text-plm-accent' : 'text-plm-fg'
-                      }`}
-                    >
-                      <LayoutGrid size={12} />
-                      All
-                    </button>
-                    <button
-                      onClick={() => { setSearchType('folders'); setShowSearchTypeDropdown(false) }}
-                      className={`w-full px-3 py-1.5 text-xs text-left flex items-center gap-2 hover:bg-plm-bg-lighter ${
-                        searchType === 'folders' ? 'text-plm-accent' : 'text-plm-fg'
-                      }`}
-                    >
-                      <Folder size={12} />
-                      Folders
-                    </button>
-                    <button
-                      onClick={() => { setSearchType('files'); setShowSearchTypeDropdown(false) }}
-                      className={`w-full px-3 py-1.5 text-xs text-left flex items-center gap-2 hover:bg-plm-bg-lighter ${
-                        searchType === 'files' ? 'text-plm-accent' : 'text-plm-fg'
-                      }`}
-                    >
-                      <File size={12} />
-                      Files
-                    </button>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="flex items-center bg-plm-bg border border-plm-border rounded-md h-7">
-                <button
-                  onClick={() => setSearchType('all')}
-                  className={`px-2 h-full flex items-center gap-1 text-xs rounded-l-md transition-colors ${
-                    searchType === 'all' 
-                      ? 'bg-plm-accent/20 text-plm-accent' 
-                      : 'text-plm-fg-muted hover:text-plm-fg'
-                  }`}
-                  title="Search all"
-                >
-                  <LayoutGrid size={12} />
-                </button>
-                <button
-                  onClick={() => setSearchType('folders')}
-                  className={`px-2 h-full flex items-center gap-1 text-xs border-l border-plm-border transition-colors ${
-                    searchType === 'folders' 
-                      ? 'bg-plm-accent/20 text-plm-accent' 
-                      : 'text-plm-fg-muted hover:text-plm-fg'
-                  }`}
-                  title="Search folders"
-                >
-                  <Folder size={12} />
-                </button>
-                <button
-                  onClick={() => setSearchType('files')}
-                  className={`px-2 h-full flex items-center gap-1 text-xs border-l border-plm-border rounded-r-md transition-colors ${
-                    searchType === 'files' 
-                      ? 'bg-plm-accent/20 text-plm-accent' 
-                      : 'text-plm-fg-muted hover:text-plm-fg'
-                  }`}
-                  title="Search files"
-                >
-                  <File size={12} />
-                </button>
-              </div>
-            )}
-            
-            {/* Search input */}
-            <div className="relative flex-1">
-              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-plm-fg-muted" />
-              <input
-                ref={searchInputRef}
-                type="text"
-                placeholder={searchType === 'all' ? 'Search...' : `Search ${searchType}...`}
-                value={localSearch}
-                onChange={(e) => {
-                  setLocalSearch(e.target.value)
-                  setSearchQuery(e.target.value)
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Escape') {
-                    setLocalSearch('')
-                    setSearchQuery('')
-                    searchInputRef.current?.blur()
-                  }
-                }}
-                className="w-full h-7 pl-9 pr-8 bg-plm-bg border border-plm-border rounded-md text-sm text-plm-fg placeholder:text-plm-fg-muted focus:outline-none focus:border-plm-accent focus:ring-1 focus:ring-plm-accent/50 transition-colors"
-              />
-              {localSearch && (
-                <button
-                  onClick={() => {
-                    setLocalSearch('')
-                    setSearchQuery('')
-                  }}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-plm-fg-muted hover:text-plm-fg p-0.5"
-                >
-                  <span className="text-xs">✕</span>
-                </button>
-              )}
-            </div>
+          <div className={`w-full ${searchMaxWidth} titlebar-no-drag`}>
+            <CommandSearch maxWidth={searchMaxWidth} />
           </div>
         )}
       </div>
@@ -691,21 +566,23 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
           </>
         )}
         
-        {/* Offline Mode Indicator */}
+        {/* Offline Mode Indicator - click to toggle back online */}
         {isOfflineMode && !minimal && (
           <>
             <div className="w-px h-4 bg-plm-border mx-1" />
             <button
               onClick={() => {
-                if (navigator.onLine) {
-                  setOfflineMode(false)
-                  addToast('success', 'Back online')
-                } else {
-                  addToast('warning', 'No network connection available')
+                // Require sign-in before going online
+                if (!user) {
+                  handleSignIn()
+                  return
                 }
+                
+                setOfflineMode(false)
+                addToast('success', 'Back online - syncing with cloud')
               }}
               className="flex items-center gap-1.5 px-2 py-1 rounded bg-plm-warning/10 hover:bg-plm-warning/20 transition-colors"
-              title={navigator.onLine ? 'Click to go back online' : 'No network connection'}
+              title={!user ? 'Sign in to go back online' : 'Click to go back online'}
             >
               <WifiOff size={14} className="text-plm-warning" />
               <span className="text-xs text-plm-warning font-medium">Offline</span>
@@ -910,7 +787,7 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
             <button 
               onClick={() => setShowUserMenu(!showUserMenu)}
               className={`flex items-center rounded hover:bg-plm-bg-lighter transition-colors ${
-                showUserNameFinal ? 'gap-2 px-2 py-1' : 'justify-center w-6 h-6'
+                showUserNameFinal ? 'gap-2 px-2 py-1' : 'justify-center w-7 h-7'
               }`}
               title={user.full_name || user.email}
             >
@@ -919,7 +796,7 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
                   <img 
                     src={user.avatar_url} 
                     alt={user.full_name || user.email}
-                    className={showUserNameFinal ? 'w-6 h-6 rounded-full' : 'w-5 h-5 rounded-full'}
+                    className={showUserNameFinal ? 'w-7 h-7 rounded-full' : 'w-6 h-6 rounded-full'}
                     onError={(e) => {
                       const target = e.target as HTMLImageElement
                       target.style.display = 'none'
@@ -927,14 +804,14 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
                     }}
                   />
                   <div className={`rounded-full bg-plm-accent flex items-center justify-center text-white font-semibold hidden ${
-                    showUserNameFinal ? 'w-6 h-6 text-xs' : 'w-5 h-5 text-[10px]'
+                    showUserNameFinal ? 'w-7 h-7 text-xs' : 'w-6 h-6 text-[10px]'
                   }`}>
                     {getUserInitial(user)}
                   </div>
                 </>
               ) : (
                 <div className={`rounded-full bg-plm-accent flex items-center justify-center text-white font-semibold ${
-                  showUserNameFinal ? 'w-6 h-6 text-xs' : 'w-5 h-5 text-[10px]'
+                  showUserNameFinal ? 'w-7 h-7 text-xs' : 'w-6 h-6 text-[10px]'
                 }`}>
                   {getUserInitial(user)}
                 </div>
@@ -1001,6 +878,28 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
                   >
                     <Settings size={14} />
                     Settings
+                  </button>
+                  
+                  {/* Offline mode toggle */}
+                  <button 
+                    onClick={() => {
+                      setShowUserMenu(false)
+                      if (isOfflineMode) {
+                        setOfflineMode(false)
+                        addToast('success', 'Back online - syncing with cloud')
+                      } else {
+                        setOfflineMode(true)
+                        addToast('info', 'Switched to offline mode')
+                      }
+                    }}
+                    className={`w-full flex items-center gap-3 px-4 py-2 text-sm transition-colors ${
+                      isOfflineMode 
+                        ? 'text-plm-success hover:bg-plm-success/10' 
+                        : 'text-plm-fg-muted hover:bg-plm-bg-lighter'
+                    }`}
+                  >
+                    {isOfflineMode ? <Wifi size={14} /> : <WifiOff size={14} />}
+                    {isOfflineMode ? 'Go Online' : 'Go Offline'}
                   </button>
                 </div>
 

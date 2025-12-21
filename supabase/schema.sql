@@ -1,6 +1,36 @@
+-- =====================================================================
 -- BluePLM Database Schema (Supabase Storage Edition)
--- This schema is IDEMPOTENT - safe to run multiple times on the same database.
+-- =====================================================================
+-- 
+-- IDEMPOTENCY GUARANTEE: This schema is SAFE to run multiple times.
+-- Re-running will NOT delete or modify existing data.
+-- 
 -- Run this in your Supabase SQL editor to set up or update the database.
+--
+-- SAFETY PATTERNS USED:
+-- ✅ CREATE TABLE IF NOT EXISTS     - Tables won't be recreated
+-- ✅ CREATE INDEX IF NOT EXISTS     - Indexes won't be duplicated
+-- ✅ CREATE OR REPLACE FUNCTION     - Functions safely updated
+-- ✅ CREATE OR REPLACE VIEW         - Views safely updated
+-- ✅ DROP TRIGGER IF EXISTS + CREATE - Triggers safely replaced
+-- ✅ DROP POLICY IF EXISTS + CREATE  - RLS policies safely replaced
+-- ✅ ENUMs wrapped in EXCEPTION handlers - Types won't error
+-- ✅ INSERT ... ON CONFLICT          - User sync won't duplicate
+-- ✅ ALTER PUBLICATION with EXCEPTION - Realtime additions safe
+--
+-- WHAT THIS SCHEMA WILL NOT DO:
+-- ❌ DELETE any existing data (except cleanup_old_trash() which is manual)
+-- ❌ DROP any tables or columns
+-- ❌ TRUNCATE any tables
+-- ❌ Modify existing rows (except avatar_url fix for NULL values)
+--
+-- KNOWN LIMITATIONS:
+-- ⚠️ Adding new ENUM values requires a separate ALTER TYPE statement
+-- ⚠️ Adding new columns to existing tables requires ALTER TABLE ADD COLUMN
+-- ⚠️ Both of the above should be wrapped in exception handlers when added
+--
+-- LAST REVIEWED: 2024-12 for idempotency and vault safety
+-- =====================================================================
 
 -- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -120,6 +150,25 @@ CREATE TABLE IF NOT EXISTS organizations (
   }'::jsonb
 );
 
+-- MIGRATIONS: Add columns that may be missing from existing organizations tables
+DO $$ BEGIN ALTER TABLE organizations ADD COLUMN google_drive_client_id TEXT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE organizations ADD COLUMN google_drive_client_secret TEXT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE organizations ADD COLUMN google_drive_enabled BOOLEAN DEFAULT FALSE; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE organizations ADD COLUMN logo_url TEXT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE organizations ADD COLUMN logo_storage_path TEXT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE organizations ADD COLUMN address_line1 TEXT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE organizations ADD COLUMN address_line2 TEXT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE organizations ADD COLUMN city TEXT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE organizations ADD COLUMN state TEXT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE organizations ADD COLUMN postal_code TEXT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE organizations ADD COLUMN country TEXT DEFAULT 'USA'; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE organizations ADD COLUMN phone TEXT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE organizations ADD COLUMN website TEXT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE organizations ADD COLUMN contact_email TEXT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE organizations ADD COLUMN rfq_settings JSONB DEFAULT '{"default_payment_terms": "Net 30", "default_incoterms": "FOB", "default_valid_days": 30, "show_company_logo": true, "show_revision_column": true, "show_material_column": true, "show_finish_column": true, "show_notes_column": true, "terms_and_conditions": "", "footer_text": ""}'::jsonb; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE organizations ADD COLUMN module_defaults JSONB DEFAULT NULL; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE organizations ADD COLUMN serialization_settings JSONB DEFAULT '{"enabled": true, "prefix": "PN-", "suffix": "", "padding_digits": 5, "letter_count": 0, "current_counter": 0, "use_letters_before_numbers": false, "letter_prefix": "", "keepout_zones": [], "auto_apply_extensions": []}'::jsonb; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+
 -- Index for email domain lookup
 CREATE INDEX IF NOT EXISTS idx_organizations_email_domains ON organizations USING GIN (email_domains);
 
@@ -176,6 +225,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS org_address_updated ON organization_addresses;
 CREATE TRIGGER org_address_updated
   BEFORE UPDATE ON organization_addresses
   FOR EACH ROW
@@ -197,6 +247,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS ensure_single_default ON organization_addresses;
 CREATE TRIGGER ensure_single_default
   BEFORE INSERT OR UPDATE ON organization_addresses
   FOR EACH ROW
@@ -294,6 +345,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS auto_set_user_org_id ON users;
 CREATE TRIGGER auto_set_user_org_id
   BEFORE INSERT OR UPDATE ON users
   FOR EACH ROW
@@ -450,6 +502,13 @@ CREATE TABLE IF NOT EXISTS files (
   deleted_by UUID REFERENCES users(id)  -- Who deleted the file
 );
 
+-- MIGRATIONS: Add columns that may be missing from existing files tables
+DO $$ BEGIN ALTER TABLE files ADD COLUMN eco_tags TEXT[] DEFAULT '{}'; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE files ADD COLUMN checked_out_by_machine_id TEXT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE files ADD COLUMN checked_out_by_machine_name TEXT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE files ADD COLUMN deleted_at TIMESTAMPTZ; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE files ADD COLUMN deleted_by UUID REFERENCES users(id); EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+
 -- Partial unique index: only one active (non-deleted) file per path per vault
 -- This allows soft-deleted files with the same path to exist in trash
 CREATE UNIQUE INDEX IF NOT EXISTS idx_files_vault_path_unique_active 
@@ -474,14 +533,20 @@ CREATE INDEX IF NOT EXISTS idx_files_active ON files(vault_id, file_path) WHERE 
 CREATE INDEX IF NOT EXISTS idx_files_eco_tags ON files USING GIN (eco_tags);
 
 -- Full text search index (includes ECO tags)
-CREATE INDEX IF NOT EXISTS idx_files_search ON files USING GIN (
-  to_tsvector('english', 
-    coalesce(file_name, '') || ' ' || 
-    coalesce(part_number, '') || ' ' || 
-    coalesce(description, '') || ' ' ||
-    coalesce(array_to_string(eco_tags, ' '), '')
-  )
-);
+-- Note: This may fail on some PostgreSQL configs where to_tsvector isn't IMMUTABLE
+-- The app can still do full-text search, it just won't be indexed
+DO $$ BEGIN
+  CREATE INDEX idx_files_search ON files USING GIN (
+    to_tsvector('simple'::regconfig, 
+      coalesce(file_name, '') || ' ' || 
+      coalesce(part_number, '') || ' ' || 
+      coalesce(description, '') || ' ' ||
+      coalesce(array_to_string(eco_tags, ' '), '')
+    )
+  );
+EXCEPTION WHEN OTHERS THEN 
+  RAISE NOTICE 'Could not create idx_files_search: %', SQLERRM;
+END $$;
 
 -- ===========================================
 -- FILE VERSIONS (Complete history)
@@ -946,25 +1011,25 @@ CREATE TRIGGER log_file_changes
 -- Storage policies for the 'vault' bucket
 -- These allow authenticated users to access files in their organization's folder
 
-DROP POLICY IF EXISTS "Authenticated users can upload to vault" ON storage;
+DROP POLICY IF EXISTS "Authenticated users can upload to vault" ON storage.objects;
 CREATE POLICY "Authenticated users can upload to vault"
   ON storage.objects FOR INSERT
 TO authenticated
 WITH CHECK (bucket_id = 'vault');
 
-DROP POLICY IF EXISTS "Authenticated users can read from vault" ON storage;
+DROP POLICY IF EXISTS "Authenticated users can read from vault" ON storage.objects;
 CREATE POLICY "Authenticated users can read from vault"
   ON storage.objects FOR SELECT
 TO authenticated
 USING (bucket_id = 'vault');
 
-DROP POLICY IF EXISTS "Authenticated users can update vault files" ON storage;
+DROP POLICY IF EXISTS "Authenticated users can update vault files" ON storage.objects;
 CREATE POLICY "Authenticated users can update vault files"
   ON storage.objects FOR UPDATE
 TO authenticated
 USING (bucket_id = 'vault');
 
-DROP POLICY IF EXISTS "Authenticated users can delete from vault" ON storage;
+DROP POLICY IF EXISTS "Authenticated users can delete from vault" ON storage.objects;
 CREATE POLICY "Authenticated users can delete from vault"
   ON storage.objects FOR DELETE
 TO authenticated
@@ -1014,6 +1079,7 @@ END $$;
 -- Safe to run multiple times (uses ON CONFLICT DO NOTHING).
 
 -- Note: Google OAuth stores avatar as 'picture', not 'avatar_url'
+-- IDEMPOTENT: Uses ON CONFLICT to handle both id and email conflicts
 INSERT INTO users (id, email, full_name, avatar_url, org_id)
 SELECT 
   au.id,
@@ -1024,6 +1090,7 @@ SELECT
 FROM auth.users au
 LEFT JOIN organizations o ON split_part(au.email, '@', 2) = ANY(o.email_domains)
 WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id = au.id)
+  AND NOT EXISTS (SELECT 1 FROM users u WHERE u.email = au.email)
 ON CONFLICT (id) DO NOTHING;
 
 -- ===========================================
@@ -1727,13 +1794,54 @@ END $$;
 -- Notification type enum
 DO $$ BEGIN
   CREATE TYPE notification_type AS ENUM (
+    -- File Reviews
     'review_request',
     'review_approved',
     'review_rejected',
     'review_comment',
+    -- Change Management (ECO/ECR)
+    'eco_submitted',
+    'eco_approved',
+    'eco_rejected',
+    'eco_comment',
+    'ecr_submitted',
+    'ecr_approved',
+    'ecr_rejected',
+    -- Purchasing
+    'po_approval_request',
+    'po_approved',
+    'po_rejected',
+    'supplier_approval_request',
+    'supplier_approved',
+    'supplier_rejected',
+    'rfq_response_received',
+    -- Quality
+    'ncr_created',
+    'ncr_assigned',
+    'ncr_resolved',
+    'capa_created',
+    'capa_assigned',
+    'capa_due_soon',
+    'capa_overdue',
+    'fai_submitted',
+    'fai_approved',
+    'calibration_due',
+    'calibration_overdue',
+    -- Workflow
+    'workflow_state_change',
+    'workflow_approval_request',
+    'workflow_approved',
+    'workflow_rejected',
+    -- General
     'mention',
     'file_updated',
-    'checkout_request'
+    'file_checked_in',
+    'checkout_request',
+    'comment_added',
+    'task_assigned',
+    'task_due_soon',
+    'task_overdue',
+    'system_alert'
   );
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
@@ -1803,27 +1911,57 @@ CREATE TABLE IF NOT EXISTS notifications (
   
   -- Notification content
   type notification_type NOT NULL,
+  category TEXT,  -- 'review', 'change', 'purchasing', 'quality', 'workflow', 'system'
   title TEXT NOT NULL,
   message TEXT,
+  priority TEXT DEFAULT 'normal',  -- 'low', 'normal', 'high', 'urgent'
   
   -- Related entities
   review_id UUID REFERENCES reviews(id) ON DELETE CASCADE,
   file_id UUID REFERENCES files(id) ON DELETE SET NULL,
   from_user_id UUID REFERENCES users(id) ON DELETE SET NULL,  -- Who triggered the notification
   
+  -- Additional entity references for different notification types
+  eco_id UUID,  -- For ECO/ECR notifications
+  po_id UUID,   -- For purchase order notifications
+  ncr_id UUID,  -- For NCR notifications
+  capa_id UUID, -- For CAPA notifications
+  
+  -- Action metadata
+  action_url TEXT,           -- Deep link to the relevant page/item
+  action_type TEXT,          -- 'approve', 'reject', 'view', 'respond'
+  action_completed BOOLEAN DEFAULT false,
+  action_completed_at TIMESTAMPTZ,
+  
   -- Read status
   read BOOLEAN DEFAULT false,
   read_at TIMESTAMPTZ,
   
   -- Timestamps
-  created_at TIMESTAMPTZ DEFAULT NOW()
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  expires_at TIMESTAMPTZ     -- Optional expiration for time-sensitive notifications
 );
+
+-- MIGRATIONS: Add columns that may be missing from existing notifications tables
+DO $$ BEGIN ALTER TABLE notifications ADD COLUMN category TEXT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE notifications ADD COLUMN priority TEXT DEFAULT 'normal'; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE notifications ADD COLUMN eco_id UUID; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE notifications ADD COLUMN po_id UUID; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE notifications ADD COLUMN ncr_id UUID; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE notifications ADD COLUMN capa_id UUID; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE notifications ADD COLUMN action_url TEXT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE notifications ADD COLUMN action_type TEXT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE notifications ADD COLUMN action_completed BOOLEAN DEFAULT false; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE notifications ADD COLUMN action_completed_at TIMESTAMPTZ; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE notifications ADD COLUMN expires_at TIMESTAMPTZ; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
 
 CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_org_id ON notifications(org_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications(read);
 CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notifications_type ON notifications(type);
+CREATE INDEX IF NOT EXISTS idx_notifications_category ON notifications(category);
+CREATE INDEX IF NOT EXISTS idx_notifications_priority ON notifications(priority);
 
 -- Reviews RLS
 ALTER TABLE reviews ENABLE ROW LEVEL SECURITY;
@@ -2880,13 +3018,18 @@ CREATE INDEX IF NOT EXISTS idx_suppliers_is_active ON suppliers(is_active);
 CREATE INDEX IF NOT EXISTS idx_suppliers_erp_id ON suppliers(erp_id) WHERE erp_id IS NOT NULL;
 
 -- Full text search on suppliers
-CREATE INDEX IF NOT EXISTS idx_suppliers_search ON suppliers USING GIN (
-  to_tsvector('english', 
-    coalesce(name, '') || ' ' || 
-    coalesce(code, '') || ' ' || 
-    coalesce(notes, '')
-  )
-);
+-- Note: This may fail on some PostgreSQL configs where to_tsvector isn't IMMUTABLE
+DO $$ BEGIN
+  CREATE INDEX idx_suppliers_search ON suppliers USING GIN (
+    to_tsvector('simple'::regconfig, 
+      coalesce(name, '') || ' ' || 
+      coalesce(code, '') || ' ' || 
+      coalesce(notes, '')
+    )
+  );
+EXCEPTION WHEN OTHERS THEN 
+  RAISE NOTICE 'Could not create idx_suppliers_search: %', SQLERRM;
+END $$;
 
 -- ===========================================
 -- PART_SUPPLIERS (Junction table with pricing)
@@ -4347,22 +4490,25 @@ CREATE OR REPLACE FUNCTION set_org_module_defaults(
   p_enabled_modules JSONB,
   p_enabled_groups JSONB,
   p_module_order JSONB,
-  p_dividers JSONB
+  p_dividers JSONB,
+  p_module_parents JSONB DEFAULT NULL,
+  p_module_icon_colors JSONB DEFAULT NULL,
+  p_custom_groups JSONB DEFAULT NULL
 )
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
 AS $$
 DECLARE
-  user_role TEXT;
+  v_user_role user_role;
 BEGIN
   -- Check if user is admin of the organization
-  SELECT role INTO user_role
-  FROM organization_members
-  WHERE organization_id = p_org_id
-    AND user_id = auth.uid();
+  SELECT role INTO v_user_role
+  FROM users
+  WHERE id = auth.uid()
+    AND org_id = p_org_id;
   
-  IF user_role != 'admin' THEN
+  IF v_user_role IS NULL OR v_user_role != 'admin' THEN
     RAISE EXCEPTION 'Only admins can set organization module defaults';
   END IF;
   
@@ -4372,7 +4518,10 @@ BEGIN
     'enabled_modules', p_enabled_modules,
     'enabled_groups', p_enabled_groups,
     'module_order', p_module_order,
-    'dividers', p_dividers
+    'dividers', p_dividers,
+    'module_parents', COALESCE(p_module_parents, '{}'::jsonb),
+    'module_icon_colors', COALESCE(p_module_icon_colors, '{}'::jsonb),
+    'custom_groups', COALESCE(p_custom_groups, '[]'::jsonb)
   )
   WHERE id = p_org_id;
   
@@ -4381,7 +4530,7 @@ END;
 $$;
 
 GRANT EXECUTE ON FUNCTION get_org_module_defaults(UUID) TO authenticated;
-GRANT EXECUTE ON FUNCTION set_org_module_defaults(UUID, JSONB, JSONB, JSONB, JSONB) TO authenticated;
+GRANT EXECUTE ON FUNCTION set_org_module_defaults(UUID, JSONB, JSONB, JSONB, JSONB, JSONB, JSONB, JSONB) TO authenticated;
 
 -- ===========================================
 -- COLUMN DEFAULTS
@@ -4757,6 +4906,7 @@ AS $$
     AND p_event_type = ANY(events);
 $$;
 
+DROP TRIGGER IF EXISTS webhooks_updated_at ON webhooks;
 CREATE TRIGGER webhooks_updated_at
   BEFORE UPDATE ON webhooks
   FOR EACH ROW
@@ -4918,6 +5068,796 @@ COMMENT ON COLUMN admin_recovery_codes.code_hash IS 'SHA-256 hash of the recover
 COMMENT ON FUNCTION use_admin_recovery_code IS 'Validates a recovery code and elevates the calling user to admin.';
 
 -- ===========================================
+-- TEAMS AND PERMISSIONS SYSTEM
+-- ===========================================
+-- Teams are groups of users for permission management.
+-- Permissions are flexible, per-resource access controls assigned to teams.
+
+-- Teams table
+CREATE TABLE IF NOT EXISTS teams (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  
+  -- Team identity
+  name TEXT NOT NULL,
+  description TEXT,
+  color TEXT DEFAULT '#3b82f6',        -- Hex color for visual identification
+  icon TEXT DEFAULT 'Users',           -- Lucide icon name
+  
+  -- Hierarchy (optional - for nested teams)
+  parent_team_id UUID REFERENCES teams(id) ON DELETE SET NULL,
+  
+  -- Metadata
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  created_by UUID REFERENCES users(id),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_by UUID REFERENCES users(id),
+  
+  -- Settings
+  is_default BOOLEAN DEFAULT false,    -- Auto-assign new users to this team
+  is_system BOOLEAN DEFAULT false,     -- System-managed team (e.g., "All Users")
+  
+  -- Module configuration defaults for team members
+  -- Structure: { enabled_modules: Record<string, boolean>, enabled_groups: Record<string, boolean>, module_order: string[], dividers: SectionDivider[], module_parents: Record<string, string|null>, module_icon_colors: Record<string, string|null>, custom_groups: CustomGroup[] }
+  -- When set, team members will inherit these defaults instead of org defaults
+  module_defaults JSONB DEFAULT NULL,
+  
+  UNIQUE(org_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_teams_org_id ON teams(org_id);
+CREATE INDEX IF NOT EXISTS idx_teams_parent ON teams(parent_team_id);
+
+-- Team members junction table
+CREATE TABLE IF NOT EXISTS team_members (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  
+  -- Role within the team (for team-level management)
+  is_team_admin BOOLEAN DEFAULT false, -- Can manage team membership
+  
+  -- Metadata
+  added_at TIMESTAMPTZ DEFAULT NOW(),
+  added_by UUID REFERENCES users(id),
+  
+  UNIQUE(team_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_team_members_team_id ON team_members(team_id);
+CREATE INDEX IF NOT EXISTS idx_team_members_user_id ON team_members(user_id);
+
+-- Add module_defaults column to teams (for existing databases)
+DO $$ BEGIN
+  ALTER TABLE teams ADD COLUMN module_defaults JSONB DEFAULT NULL;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+-- Permission action enum
+DO $$ BEGIN
+  CREATE TYPE permission_action AS ENUM ('view', 'create', 'edit', 'delete', 'admin');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+-- Permission resource types
+-- Resources can be: module IDs, 'system.*' for system features, or custom identifiers
+-- Examples:
+--   'module:explorer' - Explorer module access
+--   'module:accounting' - Accounting module (group) access
+--   'system:users' - User management
+--   'system:teams' - Team management
+--   'system:org-settings' - Organization settings
+--   'system:backups' - Backup management
+--   'system:webhooks' - Webhook management
+--   'system:workflows' - Workflow template management
+--   'vault:<vault_id>' - Specific vault access
+
+-- Team permissions table
+CREATE TABLE IF NOT EXISTS team_permissions (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  
+  -- Resource identification (flexible string-based)
+  resource TEXT NOT NULL,              -- e.g., 'module:explorer', 'system:users', 'vault:uuid'
+  
+  -- Permissions granted
+  actions permission_action[] DEFAULT '{}',
+  
+  -- Metadata
+  granted_at TIMESTAMPTZ DEFAULT NOW(),
+  granted_by UUID REFERENCES users(id),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_by UUID REFERENCES users(id),
+  
+  -- Prevent duplicate resource permissions per team
+  UNIQUE(team_id, resource)
+);
+
+CREATE INDEX IF NOT EXISTS idx_team_permissions_team_id ON team_permissions(team_id);
+CREATE INDEX IF NOT EXISTS idx_team_permissions_resource ON team_permissions(resource);
+
+-- Permission presets (templates for common permission sets)
+CREATE TABLE IF NOT EXISTS permission_presets (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  
+  -- Preset identity
+  name TEXT NOT NULL,                  -- e.g., "Engineer Full Access", "Accounting Only"
+  description TEXT,
+  color TEXT DEFAULT '#6366f1',
+  icon TEXT DEFAULT 'Shield',
+  
+  -- Preset permissions (stored as JSONB for flexibility)
+  -- Format: { "resource": ["action1", "action2"], ... }
+  permissions JSONB DEFAULT '{}',
+  
+  -- Metadata
+  is_system BOOLEAN DEFAULT false,     -- Built-in preset
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  created_by UUID REFERENCES users(id),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_by UUID REFERENCES users(id),
+  
+  UNIQUE(org_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_permission_presets_org_id ON permission_presets(org_id);
+
+-- RLS for teams
+ALTER TABLE teams ENABLE ROW LEVEL SECURITY;
+ALTER TABLE team_members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE team_permissions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE permission_presets ENABLE ROW LEVEL SECURITY;
+
+-- Teams policies
+DROP POLICY IF EXISTS "Users can view org teams" ON teams;
+CREATE POLICY "Users can view org teams"
+  ON teams FOR SELECT
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+DROP POLICY IF EXISTS "Admins can create teams" ON teams;
+CREATE POLICY "Admins can create teams"
+  ON teams FOR INSERT
+  WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'));
+
+DROP POLICY IF EXISTS "Admins can update teams" ON teams;
+CREATE POLICY "Admins can update teams"
+  ON teams FOR UPDATE
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'));
+
+DROP POLICY IF EXISTS "Admins can delete teams" ON teams;
+CREATE POLICY "Admins can delete teams"
+  ON teams FOR DELETE
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin') AND NOT is_system);
+
+-- Team members policies
+DROP POLICY IF EXISTS "Users can view team members" ON team_members;
+CREATE POLICY "Users can view team members"
+  ON team_members FOR SELECT
+  USING (team_id IN (SELECT id FROM teams WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid())));
+
+DROP POLICY IF EXISTS "Admins can manage team members" ON team_members;
+CREATE POLICY "Admins can manage team members"
+  ON team_members FOR ALL
+  USING (team_id IN (SELECT id FROM teams WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin')));
+
+-- Team permissions policies
+DROP POLICY IF EXISTS "Users can view team permissions" ON team_permissions;
+CREATE POLICY "Users can view team permissions"
+  ON team_permissions FOR SELECT
+  USING (team_id IN (SELECT id FROM teams WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid())));
+
+DROP POLICY IF EXISTS "Admins can manage team permissions" ON team_permissions;
+CREATE POLICY "Admins can manage team permissions"
+  ON team_permissions FOR ALL
+  USING (team_id IN (SELECT id FROM teams WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin')));
+
+-- Permission presets policies
+DROP POLICY IF EXISTS "Users can view permission presets" ON permission_presets;
+CREATE POLICY "Users can view permission presets"
+  ON permission_presets FOR SELECT
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+DROP POLICY IF EXISTS "Admins can manage permission presets" ON permission_presets;
+CREATE POLICY "Admins can manage permission presets"
+  ON permission_presets FOR ALL
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'));
+
+-- Function to get effective permissions for a user
+CREATE OR REPLACE FUNCTION get_user_permissions(p_user_id UUID)
+RETURNS TABLE (
+  resource TEXT,
+  actions permission_action[]
+) AS $$
+BEGIN
+  RETURN QUERY
+  SELECT 
+    tp.resource,
+    array_agg(DISTINCT a) AS actions
+  FROM team_members tm
+  JOIN team_permissions tp ON tm.team_id = tp.team_id
+  CROSS JOIN unnest(tp.actions) AS a
+  WHERE tm.user_id = p_user_id
+  GROUP BY tp.resource;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Function to check if user has specific permission
+CREATE OR REPLACE FUNCTION user_has_permission(
+  p_user_id UUID,
+  p_resource TEXT,
+  p_action permission_action
+) RETURNS BOOLEAN AS $$
+DECLARE
+  v_has_permission BOOLEAN := false;
+  v_user_role user_role;
+BEGIN
+  -- Get user's role
+  SELECT role INTO v_user_role FROM users WHERE id = p_user_id;
+  
+  -- Admins always have full access (fallback)
+  IF v_user_role = 'admin' THEN
+    RETURN true;
+  END IF;
+  
+  -- Check team-based permissions
+  SELECT EXISTS(
+    SELECT 1
+    FROM team_members tm
+    JOIN team_permissions tp ON tm.team_id = tp.team_id
+    WHERE tm.user_id = p_user_id
+      AND tp.resource = p_resource
+      AND p_action = ANY(tp.actions)
+  ) INTO v_has_permission;
+  
+  RETURN v_has_permission;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Grant execute permissions
+GRANT EXECUTE ON FUNCTION get_user_permissions TO authenticated;
+GRANT EXECUTE ON FUNCTION user_has_permission TO authenticated;
+
+-- Enable realtime for teams
+ALTER TABLE teams REPLICA IDENTITY FULL;
+ALTER TABLE team_members REPLICA IDENTITY FULL;
+ALTER TABLE team_permissions REPLICA IDENTITY FULL;
+ALTER TABLE permission_presets REPLICA IDENTITY FULL;
+
+-- Add teams to realtime publication
+DO $$
+BEGIN
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE teams; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE team_members; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE team_permissions; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE permission_presets; EXCEPTION WHEN duplicate_object THEN NULL; END;
+END $$;
+
+COMMENT ON TABLE teams IS 'Teams are groups of users for permission management.';
+COMMENT ON TABLE team_members IS 'Junction table linking users to teams.';
+COMMENT ON TABLE team_permissions IS 'Permissions granted to teams for specific resources.';
+COMMENT ON TABLE permission_presets IS 'Templates for common permission configurations.';
+COMMENT ON FUNCTION get_user_permissions IS 'Returns all effective permissions for a user across all their teams.';
+COMMENT ON FUNCTION user_has_permission IS 'Checks if a user has a specific permission on a resource.';
+
+-- ===========================================
+-- TEAM MODULE DEFAULTS
+-- ===========================================
+-- Allows setting default module configuration per team.
+-- Team members will inherit these defaults instead of org defaults when set.
+
+-- Function to get team module defaults
+CREATE OR REPLACE FUNCTION get_team_module_defaults(p_team_id UUID)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  result JSONB;
+BEGIN
+  SELECT module_defaults INTO result
+  FROM teams
+  WHERE id = p_team_id;
+  
+  RETURN result;
+END;
+$$;
+
+-- Function to set team module defaults (admin or team admin only)
+CREATE OR REPLACE FUNCTION set_team_module_defaults(
+  p_team_id UUID,
+  p_enabled_modules JSONB,
+  p_enabled_groups JSONB,
+  p_module_order JSONB,
+  p_dividers JSONB,
+  p_module_parents JSONB DEFAULT NULL,
+  p_module_icon_colors JSONB DEFAULT NULL,
+  p_custom_groups JSONB DEFAULT NULL
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_user_role user_role;
+  v_is_team_admin BOOLEAN;
+  v_org_id UUID;
+BEGIN
+  -- Get the team's org_id
+  SELECT org_id INTO v_org_id FROM teams WHERE id = p_team_id;
+  
+  IF v_org_id IS NULL THEN
+    RAISE EXCEPTION 'Team not found';
+  END IF;
+  
+  -- Check if user is org admin
+  SELECT role INTO v_user_role
+  FROM users
+  WHERE id = auth.uid() AND org_id = v_org_id;
+  
+  -- Check if user is team admin
+  SELECT is_team_admin INTO v_is_team_admin
+  FROM team_members
+  WHERE team_id = p_team_id AND user_id = auth.uid();
+  
+  IF v_user_role != 'admin' AND (v_is_team_admin IS NULL OR NOT v_is_team_admin) THEN
+    RAISE EXCEPTION 'Only organization admins or team admins can set team module defaults';
+  END IF;
+  
+  -- Update the module defaults
+  UPDATE teams
+  SET 
+    module_defaults = jsonb_build_object(
+      'enabled_modules', p_enabled_modules,
+      'enabled_groups', p_enabled_groups,
+      'module_order', p_module_order,
+      'dividers', p_dividers,
+      'module_parents', COALESCE(p_module_parents, '{}'::jsonb),
+      'module_icon_colors', COALESCE(p_module_icon_colors, '{}'::jsonb),
+      'custom_groups', COALESCE(p_custom_groups, '[]'::jsonb)
+    ),
+    updated_at = NOW(),
+    updated_by = auth.uid()
+  WHERE id = p_team_id;
+  
+  RETURN TRUE;
+END;
+$$;
+
+-- Function to clear team module defaults (revert to org/system defaults)
+CREATE OR REPLACE FUNCTION clear_team_module_defaults(p_team_id UUID)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_user_role user_role;
+  v_is_team_admin BOOLEAN;
+  v_org_id UUID;
+BEGIN
+  -- Get the team's org_id
+  SELECT org_id INTO v_org_id FROM teams WHERE id = p_team_id;
+  
+  IF v_org_id IS NULL THEN
+    RAISE EXCEPTION 'Team not found';
+  END IF;
+  
+  -- Check if user is org admin
+  SELECT role INTO v_user_role
+  FROM users
+  WHERE id = auth.uid() AND org_id = v_org_id;
+  
+  -- Check if user is team admin
+  SELECT is_team_admin INTO v_is_team_admin
+  FROM team_members
+  WHERE team_id = p_team_id AND user_id = auth.uid();
+  
+  IF v_user_role != 'admin' AND (v_is_team_admin IS NULL OR NOT v_is_team_admin) THEN
+    RAISE EXCEPTION 'Only organization admins or team admins can clear team module defaults';
+  END IF;
+  
+  -- Clear the module defaults
+  UPDATE teams
+  SET 
+    module_defaults = NULL,
+    updated_at = NOW(),
+    updated_by = auth.uid()
+  WHERE id = p_team_id;
+  
+  RETURN TRUE;
+END;
+$$;
+
+-- Function to get effective module defaults for a user
+-- Priority: User's primary team defaults > Organization defaults > NULL (use app defaults)
+CREATE OR REPLACE FUNCTION get_user_module_defaults(p_user_id UUID DEFAULT NULL)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_user_id UUID;
+  v_org_id UUID;
+  v_team_defaults JSONB;
+  v_org_defaults JSONB;
+BEGIN
+  -- Use current user if not specified
+  v_user_id := COALESCE(p_user_id, auth.uid());
+  
+  -- Get user's org
+  SELECT org_id INTO v_org_id FROM users WHERE id = v_user_id;
+  
+  IF v_org_id IS NULL THEN
+    RETURN NULL;
+  END IF;
+  
+  -- Check teams the user belongs to (prioritize teams with module_defaults set)
+  -- Use the first team that has module_defaults configured
+  SELECT t.module_defaults INTO v_team_defaults
+  FROM team_members tm
+  JOIN teams t ON t.id = tm.team_id
+  WHERE tm.user_id = v_user_id
+    AND t.module_defaults IS NOT NULL
+  ORDER BY tm.added_at ASC  -- Oldest membership = primary team
+  LIMIT 1;
+  
+  -- If team has defaults, return those
+  IF v_team_defaults IS NOT NULL THEN
+    RETURN v_team_defaults;
+  END IF;
+  
+  -- Otherwise, check org defaults
+  SELECT module_defaults INTO v_org_defaults
+  FROM organizations
+  WHERE id = v_org_id;
+  
+  -- Return org defaults (may be NULL, which means use app defaults)
+  RETURN v_org_defaults;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION get_team_module_defaults(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION set_team_module_defaults(UUID, JSONB, JSONB, JSONB, JSONB, JSONB, JSONB, JSONB) TO authenticated;
+GRANT EXECUTE ON FUNCTION clear_team_module_defaults(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION get_user_module_defaults(UUID) TO authenticated;
+
+COMMENT ON FUNCTION get_team_module_defaults IS 'Returns module defaults configured for a specific team.';
+COMMENT ON FUNCTION set_team_module_defaults IS 'Sets module defaults for a team. Only org admins or team admins can call this.';
+COMMENT ON FUNCTION clear_team_module_defaults IS 'Clears module defaults for a team, reverting members to org/app defaults.';
+COMMENT ON FUNCTION get_user_module_defaults IS 'Returns effective module defaults for a user (team > org > NULL).';
+
+-- ===========================================
+-- TEAM VAULT ACCESS (Team-level vault permissions)
+-- ===========================================
+-- Allows assigning vault access to entire teams rather than individual users
+
+CREATE TABLE IF NOT EXISTS team_vault_access (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  vault_id UUID NOT NULL REFERENCES vaults(id) ON DELETE CASCADE,
+  granted_by UUID REFERENCES users(id),
+  granted_at TIMESTAMPTZ DEFAULT NOW(),
+  
+  UNIQUE(team_id, vault_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_team_vault_access_team_id ON team_vault_access(team_id);
+CREATE INDEX IF NOT EXISTS idx_team_vault_access_vault_id ON team_vault_access(vault_id);
+
+-- RLS for team_vault_access
+ALTER TABLE team_vault_access ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can view team vault access" ON team_vault_access;
+CREATE POLICY "Users can view team vault access"
+  ON team_vault_access FOR SELECT
+  USING (team_id IN (SELECT id FROM teams WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid())));
+
+DROP POLICY IF EXISTS "Admins can manage team vault access" ON team_vault_access;
+CREATE POLICY "Admins can manage team vault access"
+  ON team_vault_access FOR ALL
+  USING (team_id IN (SELECT id FROM teams WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin')));
+
+-- ===========================================
+-- USER PERMISSIONS (Individual user permissions)
+-- ===========================================
+-- For users not in any team, or for additional individual permissions
+
+CREATE TABLE IF NOT EXISTS user_permissions (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  
+  -- Resource identification (flexible string-based, same as team_permissions)
+  resource TEXT NOT NULL,              -- e.g., 'module:explorer', 'system:users', 'vault:uuid'
+  
+  -- Permissions granted
+  actions permission_action[] DEFAULT '{}',
+  
+  -- Metadata
+  granted_at TIMESTAMPTZ DEFAULT NOW(),
+  granted_by UUID REFERENCES users(id),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_by UUID REFERENCES users(id),
+  
+  -- Prevent duplicate resource permissions per user
+  UNIQUE(user_id, resource)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_permissions_user_id ON user_permissions(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_permissions_resource ON user_permissions(resource);
+
+-- RLS for user_permissions
+ALTER TABLE user_permissions ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can view their own permissions" ON user_permissions;
+CREATE POLICY "Users can view their own permissions"
+  ON user_permissions FOR SELECT
+  USING (user_id = auth.uid() OR 
+         user_id IN (SELECT id FROM users WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid())));
+
+DROP POLICY IF EXISTS "Admins can manage user permissions" ON user_permissions;
+CREATE POLICY "Admins can manage user permissions"
+  ON user_permissions FOR ALL
+  USING (user_id IN (SELECT id FROM users WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin')));
+
+-- Update get_user_permissions to include both team and individual permissions
+CREATE OR REPLACE FUNCTION get_user_permissions(p_user_id UUID)
+RETURNS TABLE (
+  resource TEXT,
+  actions permission_action[]
+) AS $$
+BEGIN
+  RETURN QUERY
+  WITH team_perms AS (
+    -- Team-based permissions
+    SELECT 
+      tp.resource,
+      unnest(tp.actions) AS action
+    FROM team_members tm
+    JOIN team_permissions tp ON tm.team_id = tp.team_id
+    WHERE tm.user_id = p_user_id
+  ),
+  user_perms AS (
+    -- Individual user permissions
+    SELECT 
+      up.resource,
+      unnest(up.actions) AS action
+    FROM user_permissions up
+    WHERE up.user_id = p_user_id
+  ),
+  combined AS (
+    SELECT resource, action FROM team_perms
+    UNION
+    SELECT resource, action FROM user_perms
+  )
+  SELECT 
+    c.resource,
+    array_agg(DISTINCT c.action) AS actions
+  FROM combined c
+  GROUP BY c.resource;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Update user_has_permission to check both team and individual permissions
+CREATE OR REPLACE FUNCTION user_has_permission(
+  p_user_id UUID,
+  p_resource TEXT,
+  p_action permission_action
+) RETURNS BOOLEAN AS $$
+DECLARE
+  v_has_permission BOOLEAN := false;
+  v_user_role user_role;
+BEGIN
+  -- Get user's role
+  SELECT role INTO v_user_role FROM users WHERE id = p_user_id;
+  
+  -- Admins always have full access (fallback)
+  IF v_user_role = 'admin' THEN
+    RETURN true;
+  END IF;
+  
+  -- Check team-based permissions
+  SELECT EXISTS(
+    SELECT 1
+    FROM team_members tm
+    JOIN team_permissions tp ON tm.team_id = tp.team_id
+    WHERE tm.user_id = p_user_id
+      AND tp.resource = p_resource
+      AND p_action = ANY(tp.actions)
+  ) INTO v_has_permission;
+  
+  IF v_has_permission THEN
+    RETURN true;
+  END IF;
+  
+  -- Check individual user permissions
+  SELECT EXISTS(
+    SELECT 1
+    FROM user_permissions up
+    WHERE up.user_id = p_user_id
+      AND up.resource = p_resource
+      AND p_action = ANY(up.actions)
+  ) INTO v_has_permission;
+  
+  RETURN v_has_permission;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Function to get user's effective vault access (from teams + individual)
+CREATE OR REPLACE FUNCTION get_user_vault_access(p_user_id UUID)
+RETURNS TABLE (vault_id UUID) AS $$
+BEGIN
+  RETURN QUERY
+  -- Team-based vault access
+  SELECT DISTINCT tva.vault_id
+  FROM team_vault_access tva
+  JOIN team_members tm ON tm.team_id = tva.team_id
+  WHERE tm.user_id = p_user_id
+  UNION
+  -- Individual vault access
+  SELECT va.vault_id
+  FROM vault_access va
+  WHERE va.user_id = p_user_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION get_user_vault_access TO authenticated;
+
+-- Enable realtime for new tables
+ALTER TABLE team_vault_access REPLICA IDENTITY FULL;
+ALTER TABLE user_permissions REPLICA IDENTITY FULL;
+
+DO $$
+BEGIN
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE team_vault_access; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE user_permissions; EXCEPTION WHEN duplicate_object THEN NULL; END;
+END $$;
+
+COMMENT ON TABLE team_vault_access IS 'Team-level vault access permissions. Empty = all vaults.';
+COMMENT ON TABLE user_permissions IS 'Individual user permissions for users not in teams or with additional permissions. Permissions are additive with team permissions.';
+COMMENT ON FUNCTION get_user_vault_access IS 'Returns vault IDs a user can access (from teams + individual). Empty result = user has access to ALL vaults in their org (no restrictions).';
+
+-- ===========================================
+-- PENDING ORG MEMBERS (Pre-created user accounts)
+-- ===========================================
+-- Allows admins to create user accounts before the user logs in.
+-- When a user signs up/logs in with a matching email, these settings are applied.
+
+CREATE TABLE IF NOT EXISTS pending_org_members (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  
+  -- User identity (email is the key)
+  email TEXT NOT NULL,
+  full_name TEXT,
+  role user_role DEFAULT 'engineer',
+  
+  -- Pre-assigned teams (will be added on first login)
+  team_ids UUID[] DEFAULT '{}',
+  
+  -- Metadata
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  created_by UUID REFERENCES users(id),
+  notes TEXT,  -- Admin notes about this user
+  
+  -- Status
+  claimed_at TIMESTAMPTZ,  -- When the user actually signed up
+  claimed_by UUID REFERENCES users(id),  -- The actual user ID after signup
+  
+  UNIQUE(org_id, email)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_org_members_org_id ON pending_org_members(org_id);
+CREATE INDEX IF NOT EXISTS idx_pending_org_members_email ON pending_org_members(email);
+
+-- RLS for pending_org_members
+ALTER TABLE pending_org_members ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can view pending members in their org" ON pending_org_members;
+CREATE POLICY "Users can view pending members in their org"
+  ON pending_org_members FOR SELECT
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+DROP POLICY IF EXISTS "Admins can manage pending members" ON pending_org_members;
+CREATE POLICY "Admins can manage pending members"
+  ON pending_org_members FOR ALL
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'));
+
+-- Function to claim pending membership on user creation/login
+CREATE OR REPLACE FUNCTION claim_pending_membership()
+RETURNS TRIGGER AS $$
+DECLARE
+  pending RECORD;
+  team_id UUID;
+BEGIN
+  -- Find any pending membership for this email
+  SELECT * INTO pending
+  FROM pending_org_members
+  WHERE email = NEW.email
+    AND claimed_at IS NULL
+  LIMIT 1;
+  
+  IF FOUND THEN
+    -- Set the user's org and role from pending membership
+    NEW.org_id := pending.org_id;
+    NEW.role := pending.role;
+    IF pending.full_name IS NOT NULL AND NEW.full_name IS NULL THEN
+      NEW.full_name := pending.full_name;
+    END IF;
+    
+    -- Mark as claimed (we'll add team memberships after insert)
+    UPDATE pending_org_members
+    SET claimed_at = NOW(), claimed_by = NEW.id
+    WHERE id = pending.id;
+  END IF;
+  
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Trigger to claim pending membership before user insert
+DROP TRIGGER IF EXISTS claim_pending_membership_trigger ON users;
+CREATE TRIGGER claim_pending_membership_trigger
+  BEFORE INSERT ON users
+  FOR EACH ROW
+  EXECUTE FUNCTION claim_pending_membership();
+
+-- Function to add team memberships after user is created (called separately)
+CREATE OR REPLACE FUNCTION apply_pending_team_memberships(p_user_id UUID)
+RETURNS void AS $$
+DECLARE
+  pending RECORD;
+  team_id UUID;
+BEGIN
+  -- Find the claimed pending membership
+  SELECT * INTO pending
+  FROM pending_org_members
+  WHERE claimed_by = p_user_id
+  LIMIT 1;
+  
+  IF FOUND AND pending.team_ids IS NOT NULL THEN
+    -- Add user to each pre-assigned team
+    FOREACH team_id IN ARRAY pending.team_ids
+    LOOP
+      INSERT INTO team_members (team_id, user_id, added_by)
+      VALUES (team_id, p_user_id, pending.created_by)
+      ON CONFLICT (team_id, user_id) DO NOTHING;
+    END LOOP;
+  END IF;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION apply_pending_team_memberships TO authenticated;
+
+-- Trigger to apply team memberships after user is created
+CREATE OR REPLACE FUNCTION apply_pending_team_memberships_trigger()
+RETURNS TRIGGER AS $$
+BEGIN
+  -- Apply team memberships for the newly created user
+  PERFORM apply_pending_team_memberships(NEW.id);
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS apply_pending_team_memberships_trigger ON users;
+CREATE TRIGGER apply_pending_team_memberships_trigger
+  AFTER INSERT ON users
+  FOR EACH ROW
+  EXECUTE FUNCTION apply_pending_team_memberships_trigger();
+
+-- Enable realtime
+ALTER TABLE pending_org_members REPLICA IDENTITY FULL;
+
+DO $$
+BEGIN
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE pending_org_members; EXCEPTION WHEN duplicate_object THEN NULL; END;
+END $$;
+
+COMMENT ON TABLE pending_org_members IS 'Pre-created user accounts. When a user signs up with a matching email, they are automatically assigned to the org and teams.';
+COMMENT ON FUNCTION claim_pending_membership IS 'Automatically claims pending membership when a user signs up with a matching email.';
+COMMENT ON FUNCTION apply_pending_team_memberships IS 'Applies pre-assigned team memberships after user creation.';
+COMMENT ON FUNCTION apply_pending_team_memberships_trigger IS 'Trigger function that automatically applies pending team memberships after user insert.';
+
+-- ===========================================
 -- DEVIATIONS SYSTEM
 -- ===========================================
 -- Deviations document approved departures from specifications,
@@ -5036,3 +5976,109 @@ ALTER TABLE deviations REPLICA IDENTITY FULL;
 
 COMMENT ON TABLE deviations IS 'Deviations document approved departures from specifications for files/parts.';
 COMMENT ON TABLE file_deviations IS 'Links files to deviations, optionally with specific version/revision scope.';
+
+-- =====================================================================
+-- REALTIME: ALL ADMIN & SETTINGS TABLES
+-- =====================================================================
+-- Ensure all admin-managed tables sync in realtime across all clients
+
+-- Enable REPLICA IDENTITY FULL for all admin tables
+ALTER TABLE vaults REPLICA IDENTITY FULL;
+ALTER TABLE vault_access REPLICA IDENTITY FULL;
+ALTER TABLE users REPLICA IDENTITY FULL;
+ALTER TABLE user_sessions REPLICA IDENTITY FULL;
+ALTER TABLE backup_config REPLICA IDENTITY FULL;
+ALTER TABLE backup_machines REPLICA IDENTITY FULL;
+ALTER TABLE workflow_templates REPLICA IDENTITY FULL;
+ALTER TABLE workflow_states REPLICA IDENTITY FULL;
+ALTER TABLE workflow_transitions REPLICA IDENTITY FULL;
+ALTER TABLE workflow_gates REPLICA IDENTITY FULL;
+ALTER TABLE workflow_gate_reviewers REPLICA IDENTITY FULL;
+ALTER TABLE reviews REPLICA IDENTITY FULL;
+ALTER TABLE notifications REPLICA IDENTITY FULL;
+ALTER TABLE ecos REPLICA IDENTITY FULL;
+ALTER TABLE suppliers REPLICA IDENTITY FULL;
+ALTER TABLE webhooks REPLICA IDENTITY FULL;
+ALTER TABLE organization_integrations REPLICA IDENTITY FULL;
+ALTER TABLE odoo_saved_configs REPLICA IDENTITY FULL;
+ALTER TABLE woocommerce_saved_configs REPLICA IDENTITY FULL;
+ALTER TABLE file_metadata_columns REPLICA IDENTITY FULL;
+
+-- Add all admin tables to realtime publication
+DO $$
+BEGIN
+  -- Core admin tables
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE vaults; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE vault_access; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE users; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE user_sessions; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  
+  -- Backup system
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE backup_config; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE backup_machines; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  
+  -- Workflow system
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE workflow_templates; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE workflow_states; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE workflow_transitions; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE workflow_gates; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE workflow_gate_reviewers; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  
+  -- Reviews & Notifications
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE reviews; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE notifications; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  
+  -- ECOs & Deviations
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE ecos; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE deviations; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  
+  -- Suppliers
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE suppliers; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  
+  -- Webhooks & Integrations
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE webhooks; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE organization_integrations; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE odoo_saved_configs; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE woocommerce_saved_configs; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  
+  -- Custom metadata
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE file_metadata_columns; EXCEPTION WHEN duplicate_object THEN NULL; END;
+END $$;
+
+-- =====================================================================
+-- MIGRATION TEMPLATES (for future changes)
+-- =====================================================================
+-- Copy and uncomment these patterns when adding new schema elements.
+-- All patterns are idempotent and safe to run multiple times.
+--
+-- TEMPLATE: Add new ENUM value
+-- --------------------------------------------------------------------
+-- DO $$ BEGIN
+--   ALTER TYPE your_enum_type ADD VALUE IF NOT EXISTS 'new_value';
+-- EXCEPTION WHEN duplicate_object THEN NULL;
+-- END $$;
+--
+-- TEMPLATE: Add new column to existing table
+-- --------------------------------------------------------------------
+-- DO $$ BEGIN
+--   ALTER TABLE your_table ADD COLUMN new_column TEXT DEFAULT 'default_value';
+-- EXCEPTION WHEN duplicate_column THEN NULL;
+-- END $$;
+--
+-- TEMPLATE: Rename column (CAUTION: not fully idempotent)
+-- --------------------------------------------------------------------
+-- DO $$ BEGIN
+--   ALTER TABLE your_table RENAME COLUMN old_name TO new_name;
+-- EXCEPTION WHEN undefined_column THEN NULL;  -- old column doesn't exist
+-- END $$;
+--
+-- TEMPLATE: Add constraint if not exists
+-- --------------------------------------------------------------------
+-- DO $$ BEGIN
+--   ALTER TABLE your_table ADD CONSTRAINT your_constraint CHECK (condition);
+-- EXCEPTION WHEN duplicate_object THEN NULL;
+-- END $$;
+--
+-- ===================================================================== 
+-- END OF SCHEMA
+-- =====================================================================
