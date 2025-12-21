@@ -2,6 +2,15 @@
 
 All notable changes to BluePLM will be documented in this file.
 
+## [2.14.1] - 2025-12-20
+
+### Fixed
+- **Light mode**: Tab bar and crumb bar now use proper light backgrounds instead of dark
+- **Christmas theme**: Tab bar now displays correctly with festive green gradient styling
+- **All themes**: Tab bar and crumb bar styling now properly adapts to each theme (Halloween, Kenneth, Deep Blue)
+
+---
+
 ## [2.14.0] - 2025-12-20
 
 ### Added
