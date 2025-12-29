@@ -4,6 +4,29 @@
 export interface Database {
   public: {
     Tables: {
+      schema_version: {
+        Row: {
+          id: number
+          version: number
+          description: string | null
+          applied_at: string
+          applied_by: string | null
+        }
+        Insert: {
+          id?: number
+          version: number
+          description?: string | null
+          applied_at?: string
+          applied_by?: string | null
+        }
+        Update: {
+          id?: number
+          version?: number
+          description?: string | null
+          applied_at?: string
+          applied_by?: string | null
+        }
+      }
       organizations: {
         Row: {
           id: string
@@ -587,6 +610,8 @@ export interface Database {
         Row: {
           id: string
           workflow_id: string
+          state_type: 'state' | 'gate'
+          shape: 'rectangle' | 'diamond' | 'hexagon' | 'ellipse'
           name: string
           label: string | null
           description: string | null
@@ -595,18 +620,23 @@ export interface Database {
           border_color: string | null
           border_opacity: number | null
           border_thickness: number | null
+          corner_radius: number | null
           icon: string
           position_x: number
           position_y: number
           is_editable: boolean
           requires_checkout: boolean
           auto_increment_revision: boolean
+          gate_config: Record<string, unknown> | null
+          required_workflow_roles: string[]
           sort_order: number
           created_at: string
         }
         Insert: {
           id?: string
           workflow_id: string
+          state_type?: 'state' | 'gate'
+          shape?: 'rectangle' | 'diamond' | 'hexagon' | 'ellipse'
           name: string
           label?: string | null
           description?: string | null
@@ -615,18 +645,23 @@ export interface Database {
           border_color?: string | null
           border_opacity?: number | null
           border_thickness?: number | null
+          corner_radius?: number | null
           icon?: string
           position_x?: number
           position_y?: number
           is_editable?: boolean
           requires_checkout?: boolean
           auto_increment_revision?: boolean
+          gate_config?: Record<string, unknown> | null
+          required_workflow_roles?: string[]
           sort_order?: number
           created_at?: string
         }
         Update: {
           id?: string
           workflow_id?: string
+          state_type?: 'state' | 'gate'
+          shape?: 'rectangle' | 'diamond' | 'hexagon' | 'ellipse'
           name?: string
           label?: string | null
           description?: string | null
@@ -635,12 +670,15 @@ export interface Database {
           border_color?: string | null
           border_opacity?: number | null
           border_thickness?: number | null
+          corner_radius?: number | null
           icon?: string
           position_x?: number
           position_y?: number
           is_editable?: boolean
           requires_checkout?: boolean
           auto_increment_revision?: boolean
+          gate_config?: Record<string, unknown> | null
+          required_workflow_roles?: string[]
           sort_order?: number
           created_at?: string
         }
@@ -737,29 +775,99 @@ export interface Database {
         Row: {
           id: string
           gate_id: string
-          reviewer_type: 'user' | 'role' | 'group' | 'file_owner' | 'checkout_user'
+          reviewer_type: 'user' | 'role' | 'group' | 'file_owner' | 'checkout_user' | 'workflow_role'
           user_id: string | null
           role: 'admin' | 'engineer' | 'viewer' | null
           group_name: string | null
+          workflow_role_id: string | null
           created_at: string
         }
         Insert: {
           id?: string
           gate_id: string
-          reviewer_type: 'user' | 'role' | 'group' | 'file_owner' | 'checkout_user'
+          reviewer_type: 'user' | 'role' | 'group' | 'file_owner' | 'checkout_user' | 'workflow_role'
           user_id?: string | null
           role?: 'admin' | 'engineer' | 'viewer' | null
           group_name?: string | null
+          workflow_role_id?: string | null
           created_at?: string
         }
         Update: {
           id?: string
           gate_id?: string
-          reviewer_type?: 'user' | 'role' | 'group' | 'file_owner' | 'checkout_user'
+          reviewer_type?: 'user' | 'role' | 'group' | 'file_owner' | 'checkout_user' | 'workflow_role'
           user_id?: string | null
           role?: 'admin' | 'engineer' | 'viewer' | null
           group_name?: string | null
+          workflow_role_id?: string | null
           created_at?: string
+        }
+      }
+      workflow_roles: {
+        Row: {
+          id: string
+          org_id: string
+          name: string
+          description: string | null
+          color: string
+          icon: string
+          is_active: boolean
+          sort_order: number
+          created_at: string
+          created_by: string | null
+          updated_at: string
+          updated_by: string | null
+        }
+        Insert: {
+          id?: string
+          org_id: string
+          name: string
+          description?: string | null
+          color?: string
+          icon?: string
+          is_active?: boolean
+          sort_order?: number
+          created_at?: string
+          created_by?: string | null
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Update: {
+          id?: string
+          org_id?: string
+          name?: string
+          description?: string | null
+          color?: string
+          icon?: string
+          is_active?: boolean
+          sort_order?: number
+          created_at?: string
+          created_by?: string | null
+          updated_at?: string
+          updated_by?: string | null
+        }
+      }
+      user_workflow_roles: {
+        Row: {
+          id: string
+          user_id: string
+          workflow_role_id: string
+          assigned_at: string
+          assigned_by: string | null
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          workflow_role_id: string
+          assigned_at?: string
+          assigned_by?: string | null
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          workflow_role_id?: string
+          assigned_at?: string
+          assigned_by?: string | null
         }
       }
       file_workflow_assignments: {
@@ -1701,7 +1809,7 @@ export interface Database {
       notification_type: 'review_request' | 'review_approved' | 'review_rejected' | 'review_comment' | 'mention' | 'file_updated' | 'checkout_request'
       gate_type: 'approval' | 'checklist' | 'condition' | 'notification'
       approval_mode: 'any' | 'all' | 'sequential'
-      reviewer_type: 'user' | 'role' | 'group' | 'file_owner' | 'checkout_user'
+      reviewer_type: 'user' | 'role' | 'group' | 'file_owner' | 'checkout_user' | 'workflow_role'
       transition_line_style: 'solid' | 'dashed' | 'dotted'
       supplier_auth_method: 'email' | 'phone' | 'wechat'
       supplier_invitation_status: 'pending' | 'accepted' | 'expired' | 'cancelled'

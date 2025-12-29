@@ -49,7 +49,8 @@ import {
   AlignVerticalJustifyCenter,
   AlignHorizontalJustifyCenter,
   Download,
-  Upload
+  Upload,
+  Pin
 } from 'lucide-react'
 import { usePDMStore } from '../../stores/pdmStore'
 import { supabase } from '../../lib/supabase'
@@ -95,6 +96,19 @@ const ICON_MAP: Record<string, React.ComponentType<{ size?: number; className?: 
   'list-checks': ListChecks,
 }
 
+// Helper to lighten a hex color
+const lightenColor = (hex: string, amount: number): string => {
+  const r = parseInt(hex.slice(1, 3), 16)
+  const g = parseInt(hex.slice(3, 5), 16)
+  const b = parseInt(hex.slice(5, 7), 16)
+  
+  const newR = Math.min(255, Math.round(r + (255 - r) * amount))
+  const newG = Math.min(255, Math.round(g + (255 - g) * amount))
+  const newB = Math.min(255, Math.round(b + (255 - b) * amount))
+  
+  return `#${newR.toString(16).padStart(2, '0')}${newG.toString(16).padStart(2, '0')}${newB.toString(16).padStart(2, '0')}`
+}
+
 export function WorkflowsView() {
   const { organization, user, addToast, getEffectiveRole } = usePDMStore()
   const [workflows, setWorkflows] = useState<WorkflowTemplate[]>([])
@@ -118,6 +132,7 @@ export function WorkflowsView() {
   const [selectedTransitionId, setSelectedTransitionId] = useState<string | null>(null)
   const [isCreatingTransition, setIsCreatingTransition] = useState(false)
   const [transitionStartId, setTransitionStartId] = useState<string | null>(null)
+  const [isDraggingToCreateTransition, setIsDraggingToCreateTransition] = useState(false) // Track drag-to-connect from handle
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 })
   
   // Dragging state
@@ -125,6 +140,8 @@ export function WorkflowsView() {
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 })
   const hasDraggedRef = useRef(false) // Track if actual dragging occurred (vs just click)
   const dragStartPosRef = useRef<{ x: number; y: number } | null>(null) // Initial click position for threshold check
+  const justCompletedTransitionRef = useRef(false) // Track if we just completed ANY transition (click or drag)
+  const transitionCompletedAtRef = useRef<number>(0) // Timestamp of last transition completion
   const DRAG_THRESHOLD = 5 // Pixels of movement before drag starts
   
   // Dragging transition endpoint
@@ -153,6 +170,9 @@ export function WorkflowsView() {
   const [hoverNodeId, setHoverNodeId] = useState<string | null>(null)
   const [hoveredTransitionId, setHoveredTransitionId] = useState<string | null>(null)
   
+  // Pinned transition labels - stores absolute canvas position (label stays fixed, doesn't follow line)
+  const [pinnedLabelPositions, setPinnedLabelPositions] = useState<Record<string, { x: number; y: number }>>({})
+  
   // Hover state for control points (for highlight effect)
   const [hoveredWaypoint, setHoveredWaypoint] = useState<{ transitionId: string; index: number } | null>(null)
   
@@ -167,13 +187,16 @@ export function WorkflowsView() {
   // Dragging curve control point (waypoint handle)
   const [draggingCurveControl, setDraggingCurveControl] = useState<string | null>(null) // transitionId
   const [draggingWaypointIndex, setDraggingWaypointIndex] = useState<number | null>(null) // which waypoint index
+  const [draggingWaypointAxis, setDraggingWaypointAxis] = useState<'x' | 'y' | null>(null) // axis constraint for elbow paths
   // Store waypoints per transition (array of points the curve passes through)
   const [waypoints, setWaypoints] = useState<Record<string, Array<{ x: number; y: number }>>>({})
   // Temp position while dragging curve control
   const [tempCurvePos, setTempCurvePos] = useState<{ x: number; y: number } | null>(null)
-  const waypointDragStartRef = useRef<{ x: number; y: number } | null>(null) // Track start pos for drag threshold
   const waypointHasDraggedRef = useRef(false) // Track if actual dragging occurred
   const justFinishedWaypointDragRef = useRef(false) // Track if we just finished a waypoint drag (to prevent deselection)
+  const justFinishedLabelDragRef = useRef(false) // Track if we just finished a label drag (to prevent deselection)
+  const handleCanvasMouseUpRef = useRef<() => void>(() => {}) // Ref to always point to latest mouseup handler
+  const mouseUpProcessingRef = useRef(false) // Guard to prevent double mouseup processing
   
   // Dragging label position
   const [draggingLabel, setDraggingLabel] = useState<string | null>(null) // transitionId
@@ -201,6 +224,21 @@ export function WorkflowsView() {
     vertical: number | null    // X coordinate for vertical alignment guide
     horizontal: number | null  // Y coordinate for horizontal alignment guide
   }>({ vertical: null, horizontal: null })
+  
+  // Undo/Redo history
+  type HistoryEntry = {
+    type: 'state_add' | 'state_delete' | 'state_move' | 'transition_add' | 'transition_delete'
+    data: any
+  }
+  const [undoStack, setUndoStack] = useState<HistoryEntry[]>([])
+  const [redoStack, setRedoStack] = useState<HistoryEntry[]>([])
+  const MAX_HISTORY = 50
+  
+  // Clipboard for copy/paste
+  const [clipboard, setClipboard] = useState<{
+    type: 'state' | 'transition'
+    data: any
+  } | null>(null)
   
   // LocalStorage key for visual customizations
   const getStorageKey = (workflowId: string) => `workflow-visual-${workflowId}`
@@ -263,8 +301,10 @@ export function WorkflowsView() {
   const [contextMenu, setContextMenu] = useState<{
     x: number
     y: number
-    type: 'state' | 'transition'
+    type: 'state' | 'transition' | 'canvas'
     targetId: string
+    canvasX?: number  // Canvas position for adding new state
+    canvasY?: number
   } | null>(null)
   
   // Waypoint context menu (for adding/deleting control points on lines)
@@ -284,9 +324,355 @@ export function WorkflowsView() {
     setIsAdmin(effectiveRole === 'admin')
   }, [effectiveRole])
   
-  // Handle ESC key to cancel connect mode or creating transition
+  // Push to undo stack helper
+  const pushToUndo = useCallback((entry: HistoryEntry) => {
+    setUndoStack(prev => {
+      const newStack = [...prev, entry]
+      if (newStack.length > MAX_HISTORY) newStack.shift()
+      return newStack
+    })
+    setRedoStack([]) // Clear redo when new action is performed
+  }, [])
+  
+  // Undo function
+  const handleUndo = useCallback(async () => {
+    if (undoStack.length === 0 || !isAdmin) return
+    
+    const entry = undoStack[undoStack.length - 1]
+    setUndoStack(prev => prev.slice(0, -1))
+    
+    try {
+      switch (entry.type) {
+        case 'state_delete':
+          // Re-add the deleted state
+          const { data: restoredState, error: stateError } = await supabase
+            .from('workflow_states')
+            .insert(entry.data.state)
+            .select()
+            .single()
+          if (stateError) throw stateError
+          setStates(prev => [...prev, restoredState])
+          setRedoStack(prev => [...prev, { type: 'state_add', data: { state: restoredState } }])
+          addToast('success', 'Undo: State restored')
+          break
+          
+        case 'state_add':
+          // Delete the added state
+          await supabase.from('workflow_states').delete().eq('id', entry.data.state.id)
+          setStates(prev => prev.filter(s => s.id !== entry.data.state.id))
+          setRedoStack(prev => [...prev, { type: 'state_delete', data: entry.data }])
+          addToast('success', 'Undo: State removed')
+          break
+          
+        case 'transition_delete':
+          // Re-add the deleted transition
+          const { data: restoredTrans, error: transError } = await supabase
+            .from('workflow_transitions')
+            .insert(entry.data.transition)
+            .select()
+            .single()
+          if (transError) throw transError
+          setTransitions(prev => [...prev, restoredTrans])
+          setRedoStack(prev => [...prev, { type: 'transition_add', data: { transition: restoredTrans } }])
+          addToast('success', 'Undo: Transition restored')
+          break
+          
+        case 'transition_add':
+          // Delete the added transition
+          await supabase.from('workflow_transitions').delete().eq('id', entry.data.transition.id)
+          setTransitions(prev => prev.filter(t => t.id !== entry.data.transition.id))
+          setRedoStack(prev => [...prev, { type: 'transition_delete', data: entry.data }])
+          addToast('success', 'Undo: Transition removed')
+          break
+          
+        case 'state_move':
+          // Move state back to original position
+          await supabase
+            .from('workflow_states')
+            .update({ position_x: entry.data.oldX, position_y: entry.data.oldY })
+            .eq('id', entry.data.stateId)
+          setStates(prev => prev.map(s => 
+            s.id === entry.data.stateId 
+              ? { ...s, position_x: entry.data.oldX, position_y: entry.data.oldY }
+              : s
+          ))
+          setRedoStack(prev => [...prev, { 
+            type: 'state_move', 
+            data: { stateId: entry.data.stateId, oldX: entry.data.newX, oldY: entry.data.newY, newX: entry.data.oldX, newY: entry.data.oldY }
+          }])
+          addToast('success', 'Undo: State moved back')
+          break
+      }
+    } catch (err) {
+      console.error('Undo failed:', err)
+      addToast('error', 'Undo failed')
+    }
+  }, [undoStack, isAdmin, addToast])
+  
+  // Redo function
+  const handleRedo = useCallback(async () => {
+    if (redoStack.length === 0 || !isAdmin) return
+    
+    const entry = redoStack[redoStack.length - 1]
+    setRedoStack(prev => prev.slice(0, -1))
+    
+    try {
+      switch (entry.type) {
+        case 'state_add':
+          const { data: readdedState, error: stateError } = await supabase
+            .from('workflow_states')
+            .insert(entry.data.state)
+            .select()
+            .single()
+          if (stateError) throw stateError
+          setStates(prev => [...prev, readdedState])
+          setUndoStack(prev => [...prev, { type: 'state_delete', data: { state: readdedState } }])
+          break
+          
+        case 'state_delete':
+          await supabase.from('workflow_states').delete().eq('id', entry.data.state.id)
+          setStates(prev => prev.filter(s => s.id !== entry.data.state.id))
+          setUndoStack(prev => [...prev, { type: 'state_add', data: entry.data }])
+          break
+          
+        case 'transition_add':
+          const { data: readdedTrans, error: transError } = await supabase
+            .from('workflow_transitions')
+            .insert(entry.data.transition)
+            .select()
+            .single()
+          if (transError) throw transError
+          setTransitions(prev => [...prev, readdedTrans])
+          setUndoStack(prev => [...prev, { type: 'transition_delete', data: { transition: readdedTrans } }])
+          break
+          
+        case 'transition_delete':
+          await supabase.from('workflow_transitions').delete().eq('id', entry.data.transition.id)
+          setTransitions(prev => prev.filter(t => t.id !== entry.data.transition.id))
+          setUndoStack(prev => [...prev, { type: 'transition_add', data: entry.data }])
+          break
+          
+        case 'state_move':
+          await supabase
+            .from('workflow_states')
+            .update({ position_x: entry.data.newX, position_y: entry.data.newY })
+            .eq('id', entry.data.stateId)
+          setStates(prev => prev.map(s => 
+            s.id === entry.data.stateId 
+              ? { ...s, position_x: entry.data.newX, position_y: entry.data.newY }
+              : s
+          ))
+          setUndoStack(prev => [...prev, { 
+            type: 'state_move', 
+            data: { stateId: entry.data.stateId, oldX: entry.data.newX, oldY: entry.data.newY, newX: entry.data.oldX, newY: entry.data.oldY }
+          }])
+          break
+      }
+    } catch (err) {
+      console.error('Redo failed:', err)
+      addToast('error', 'Redo failed')
+    }
+  }, [redoStack, isAdmin, addToast])
+  
+  // Copy selected item
+  const handleCopy = useCallback(() => {
+    if (selectedStateId) {
+      const state = states.find(s => s.id === selectedStateId)
+      if (state) {
+        setClipboard({ type: 'state', data: state })
+        addToast('success', 'State copied')
+      }
+    } else if (selectedTransitionId) {
+      const transition = transitions.find(t => t.id === selectedTransitionId)
+      if (transition) {
+        setClipboard({ type: 'transition', data: transition })
+        addToast('success', 'Transition copied')
+      }
+    }
+  }, [selectedStateId, selectedTransitionId, states, transitions, addToast])
+  
+  // Cut selected item (copy + delete)
+  const handleCut = useCallback(async () => {
+    if (!isAdmin) return
+    
+    if (selectedStateId) {
+      const state = states.find(s => s.id === selectedStateId)
+      if (state) {
+        // Check for transitions first
+        const hasTransitions = transitions.some(
+          t => t.from_state_id === selectedStateId || t.to_state_id === selectedStateId
+        )
+        if (hasTransitions) {
+          addToast('error', 'Remove all transitions first')
+          return
+        }
+        setClipboard({ type: 'state', data: state })
+        // Delete the state
+        try {
+          await supabase.from('workflow_states').delete().eq('id', selectedStateId)
+          setStates(prev => prev.filter(s => s.id !== selectedStateId))
+          pushToUndo({ type: 'state_delete', data: { state } })
+          setSelectedStateId(null)
+          setFloatingToolbar(null)
+          addToast('success', 'State cut')
+        } catch (err) {
+          console.error('Cut failed:', err)
+          addToast('error', 'Cut failed')
+        }
+      }
+    } else if (selectedTransitionId) {
+      const transition = transitions.find(t => t.id === selectedTransitionId)
+      if (transition) {
+        setClipboard({ type: 'transition', data: transition })
+        // Delete the transition
+        try {
+          await supabase.from('workflow_transitions').delete().eq('id', selectedTransitionId)
+          setTransitions(prev => prev.filter(t => t.id !== selectedTransitionId))
+          pushToUndo({ type: 'transition_delete', data: { transition } })
+          setSelectedTransitionId(null)
+          setFloatingToolbar(null)
+          addToast('success', 'Transition cut')
+        } catch (err) {
+          console.error('Cut failed:', err)
+          addToast('error', 'Cut failed')
+        }
+      }
+    }
+  }, [isAdmin, selectedStateId, selectedTransitionId, states, transitions, addToast, pushToUndo])
+  
+  // Paste from clipboard
+  const handlePaste = useCallback(async () => {
+    if (!clipboard || !isAdmin || !selectedWorkflow) return
+    
+    try {
+      if (clipboard.type === 'state') {
+        // Create a new state with offset position
+        const newState: Partial<WorkflowState> = {
+          ...clipboard.data,
+          id: undefined,
+          workflow_id: selectedWorkflow.id,
+          position_x: clipboard.data.position_x + 50,
+          position_y: clipboard.data.position_y + 50,
+          name: `${clipboard.data.name} (copy)`,
+        }
+        delete (newState as any).created_at
+        delete (newState as any).updated_at
+        
+        const { data, error } = await supabase
+          .from('workflow_states')
+          .insert(newState)
+          .select()
+          .single()
+        
+        if (error) throw error
+        
+        setStates(prev => [...prev, data])
+        pushToUndo({ type: 'state_add', data: { state: data } })
+        setSelectedStateId(data.id)
+        addToast('success', 'State pasted')
+      } else if (clipboard.type === 'transition') {
+        // Can only paste transition if both states exist
+        const fromExists = states.some(s => s.id === clipboard.data.from_state_id)
+        const toExists = states.some(s => s.id === clipboard.data.to_state_id)
+        
+        if (!fromExists || !toExists) {
+          addToast('error', 'Cannot paste: source or target state not found')
+          return
+        }
+        
+        // Check if transition already exists
+        const exists = transitions.some(
+          t => t.from_state_id === clipboard.data.from_state_id && 
+               t.to_state_id === clipboard.data.to_state_id
+        )
+        if (exists) {
+          addToast('error', 'Transition already exists')
+          return
+        }
+        
+        const newTransition: Partial<WorkflowTransition> = {
+          ...clipboard.data,
+          id: undefined,
+          workflow_id: selectedWorkflow.id,
+          name: `${clipboard.data.name} (copy)`,
+        }
+        delete (newTransition as any).created_at
+        delete (newTransition as any).updated_at
+        
+        const { data, error } = await supabase
+          .from('workflow_transitions')
+          .insert(newTransition)
+          .select()
+          .single()
+        
+        if (error) throw error
+        
+        setTransitions(prev => [...prev, data])
+        pushToUndo({ type: 'transition_add', data: { transition: data } })
+        setSelectedTransitionId(data.id)
+        addToast('success', 'Transition pasted')
+      }
+    } catch (err) {
+      console.error('Paste failed:', err)
+      addToast('error', 'Paste failed')
+    }
+  }, [clipboard, isAdmin, selectedWorkflow, states, transitions, addToast, pushToUndo])
+  
+  // Delete selected item
+  const handleDeleteSelected = useCallback(async () => {
+    if (!isAdmin) return
+    
+    if (selectedStateId) {
+      const state = states.find(s => s.id === selectedStateId)
+      if (!state) return
+      
+      // Check for transitions first
+      const hasTransitions = transitions.some(
+        t => t.from_state_id === selectedStateId || t.to_state_id === selectedStateId
+      )
+      if (hasTransitions) {
+        addToast('error', 'Remove all transitions first')
+        return
+      }
+      
+      try {
+        await supabase.from('workflow_states').delete().eq('id', selectedStateId)
+        setStates(prev => prev.filter(s => s.id !== selectedStateId))
+        pushToUndo({ type: 'state_delete', data: { state } })
+        setSelectedStateId(null)
+        setFloatingToolbar(null)
+        addToast('success', 'State deleted')
+      } catch (err) {
+        console.error('Delete failed:', err)
+        addToast('error', 'Delete failed')
+      }
+    } else if (selectedTransitionId) {
+      const transition = transitions.find(t => t.id === selectedTransitionId)
+      if (!transition) return
+      
+      try {
+        await supabase.from('workflow_transitions').delete().eq('id', selectedTransitionId)
+        setTransitions(prev => prev.filter(t => t.id !== selectedTransitionId))
+        pushToUndo({ type: 'transition_delete', data: { transition } })
+        setSelectedTransitionId(null)
+        setFloatingToolbar(null)
+        addToast('success', 'Transition deleted')
+      } catch (err) {
+        console.error('Delete failed:', err)
+        addToast('error', 'Delete failed')
+      }
+    }
+  }, [isAdmin, selectedStateId, selectedTransitionId, states, transitions, addToast, pushToUndo])
+  
+  // Handle keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't handle if user is typing in an input
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        return
+      }
+      
+      // Escape - cancel connect mode or creating transition
       if (e.key === 'Escape') {
         if (isCreatingTransition) {
           setIsCreatingTransition(false)
@@ -295,12 +681,80 @@ export function WorkflowsView() {
         if (canvasMode === 'connect') {
           setCanvasMode('select')
         }
+        return
+      }
+      
+      // Delete or Backspace - delete selected item
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        // Don't delete if a modal is open
+        if (showEditState || showEditTransition) return
+        handleDeleteSelected()
+        e.preventDefault()
+        return
+      }
+      
+      // Ctrl/Cmd + Z - Undo
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        handleUndo()
+        e.preventDefault()
+        return
+      }
+      
+      // Ctrl/Cmd + Y or Ctrl/Cmd + Shift + Z - Redo
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey) || (e.key === 'Z' && e.shiftKey))) {
+        handleRedo()
+        e.preventDefault()
+        return
+      }
+      
+      // Ctrl/Cmd + C - Copy
+      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+        handleCopy()
+        e.preventDefault()
+        return
+      }
+      
+      // Ctrl/Cmd + X - Cut
+      if ((e.ctrlKey || e.metaKey) && e.key === 'x') {
+        handleCut()
+        e.preventDefault()
+        return
+      }
+      
+      // Ctrl/Cmd + V - Paste
+      if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+        handlePaste()
+        e.preventDefault()
+        return
       }
     }
     
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [isCreatingTransition, canvasMode])
+  }, [isCreatingTransition, canvasMode, showEditState, showEditTransition, handleDeleteSelected, handleUndo, handleRedo, handleCopy, handleCut, handlePaste])
+  
+  // Global mouseup listener to catch mouse releases outside the canvas during drags
+  // Note: Does NOT include isDraggingToCreateTransition - that flow handles its own mouseup via state box
+  useEffect(() => {
+    const isAnyDragActive = draggingStateId || draggingCurveControl || draggingTransitionEndpoint || 
+                           draggingLabel || resizingState || isDragging
+    
+    // Don't attach global listener if dragging to create transition - that has its own handlers
+    if (!isAnyDragActive) return
+    
+    const handleGlobalMouseUp = () => {
+      // Skip if we're creating a transition - don't interfere with that flow
+      if (isDraggingToCreateTransition || isCreatingTransition) return
+      
+      // Call the canvas mouseup handler via ref to get the latest version
+      // This ensures waypoint positions, state positions, etc. are saved
+      handleCanvasMouseUpRef.current()
+    }
+    
+    // Attach to document so we catch releases anywhere
+    document.addEventListener('mouseup', handleGlobalMouseUp)
+    return () => document.removeEventListener('mouseup', handleGlobalMouseUp)
+  }, [draggingStateId, draggingCurveControl, draggingTransitionEndpoint, draggingLabel, resizingState, isDragging, isDraggingToCreateTransition, isCreatingTransition])
   
   // Load workflows
   useEffect(() => {
@@ -384,10 +838,40 @@ export function WorkflowsView() {
         setGates(gatesByTransition)
       }
       
-      // Apply canvas config
-      if (workflow.canvas_config) {
-        setZoom(workflow.canvas_config.zoom || 1)
-        setPan({ x: workflow.canvas_config.panX || 0, y: workflow.canvas_config.panY || 0 })
+      // Apply canvas config - center on content by default
+      const zoomLevel = workflow.canvas_config?.zoom || 1
+      setZoom(zoomLevel)
+      
+      // Center view on content (states) instead of origin
+      if (statesData && statesData.length > 0) {
+        // Calculate bounding box of all states
+        const minX = Math.min(...statesData.map(s => s.position_x))
+        const maxX = Math.max(...statesData.map(s => s.position_x))
+        const minY = Math.min(...statesData.map(s => s.position_y))
+        const maxY = Math.max(...statesData.map(s => s.position_y))
+        
+        // Calculate center of content
+        const contentCenterX = (minX + maxX) / 2
+        const contentCenterY = (minY + maxY) / 2
+        
+        // Get canvas dimensions (use a reasonable default if not yet rendered)
+        const canvasWidth = canvasRef.current?.clientWidth || 800
+        const canvasHeight = canvasRef.current?.clientHeight || 600
+        
+        // Calculate pan to center content in viewport
+        // Pan formula: content should appear at center of viewport
+        // viewportCenter = contentCenter * zoom + pan
+        // pan = viewportCenter - contentCenter * zoom
+        const panX = (canvasWidth / 2) - (contentCenterX * zoomLevel)
+        const panY = (canvasHeight / 2) - (contentCenterY * zoomLevel)
+        
+        setPan({ x: panX, y: panY })
+      } else {
+        // No states - use saved config or default to origin
+        setPan({ 
+          x: workflow.canvas_config?.panX || 0, 
+          y: workflow.canvas_config?.panY || 0 
+        })
       }
     } catch (err) {
       console.error('Failed to load workflow details:', err)
@@ -431,6 +915,8 @@ export function WorkflowsView() {
     
     const newState: Partial<WorkflowState> = {
       workflow_id: selectedWorkflow.id,
+      state_type: 'state',
+      shape: 'rectangle',
       name: 'New State',
       label: 'New State',
       description: '',
@@ -657,7 +1143,8 @@ export function WorkflowsView() {
         .update({ position_x: Math.round(x), position_y: Math.round(y) })
         .eq('id', stateId)
       
-      setStates(states.map(s => 
+      // Use functional updater to avoid stale closure issues
+      setStates(prev => prev.map(s => 
         s.id === stateId ? { ...s, position_x: Math.round(x), position_y: Math.round(y) } : s
       ))
     } catch (err) {
@@ -705,6 +1192,10 @@ export function WorkflowsView() {
   const completeTransition = async (toStateId: string) => {
     if (!selectedWorkflow || !transitionStartId || !isAdmin) return
     
+    // Mark immediately that we're completing a transition to prevent subsequent events
+    justCompletedTransitionRef.current = true
+    transitionCompletedAtRef.current = Date.now()
+    
     // Don't allow self-transitions
     if (transitionStartId === toStateId) {
       setIsCreatingTransition(false)
@@ -742,8 +1233,8 @@ export function WorkflowsView() {
       
       if (error) throw error
       
-      const newTransitions = [...transitions, data]
-      setTransitions(newTransitions)
+      // Use functional updater to avoid stale closure issues
+      setTransitions(prev => [...prev, data])
       setSelectedTransitionId(data.id)
       setEditingTransition(data)
       setShowEditTransition(true)
@@ -766,6 +1257,8 @@ export function WorkflowsView() {
     
     setIsCreatingTransition(false)
     setTransitionStartId(null)
+    setIsDraggingToCreateTransition(false)
+    setHoveredStateId(null)
   }
   
   // Delete transition
@@ -787,8 +1280,8 @@ export function WorkflowsView() {
     }
   }
   
-  // Add gate to transition
-  const addGate = async (transitionId: string) => {
+  // Add gate to transition (approval requirement on a transition line)
+  const addTransitionGate = async (transitionId: string) => {
     if (!isAdmin) return
     
     try {
@@ -828,6 +1321,8 @@ export function WorkflowsView() {
   const cancelConnectMode = useCallback(() => {
     setIsCreatingTransition(false)
     setTransitionStartId(null)
+    setIsDraggingToCreateTransition(false)
+    setHoveredStateId(null)
   }, [])
   
   // Snap position to grid
@@ -999,8 +1494,6 @@ export function WorkflowsView() {
           : transition.from_state_id
         
         let hoveredState: WorkflowState | null = null
-        const BOX_WIDTH = 120
-        const BOX_HEIGHT = 60
         const SNAP_PADDING = 15 // Only snap when within 15px of the box edge
         
         for (const state of states) {
@@ -1008,8 +1501,9 @@ export function WorkflowsView() {
           if (state.id === otherEndStateId) continue
           
           // Check if mouse is inside or very close to the box boundary
-          const hw = BOX_WIDTH / 2 + SNAP_PADDING
-          const hh = BOX_HEIGHT / 2 + SNAP_PADDING
+          const dims = stateDimensions[state.id] || { width: DEFAULT_STATE_WIDTH, height: DEFAULT_STATE_HEIGHT }
+          const hw = dims.width / 2 + SNAP_PADDING
+          const hh = dims.height / 2 + SNAP_PADDING
           
           const inX = mouseX >= state.position_x - hw && mouseX <= state.position_x + hw
           const inY = mouseY >= state.position_y - hh && mouseY <= state.position_y + hh
@@ -1024,15 +1518,44 @@ export function WorkflowsView() {
       }
     }
     
-    // Handle curve control dragging (with threshold to allow double-click)
-    if (draggingCurveControl && waypointDragStartRef.current) {
-      const dx = e.clientX - waypointDragStartRef.current.x
-      const dy = e.clientY - waypointDragStartRef.current.y
-      const distance = Math.sqrt(dx * dx + dy * dy)
+    // Handle creating transition - find state if mouse is over/near box for snapping
+    if (isCreatingTransition && transitionStartId) {
+      let hoveredState: WorkflowState | null = null
+      const SNAP_PADDING = 15 // Only snap when within 15px of the box edge
       
-      // Only start actual dragging after exceeding threshold
-      if (distance >= DRAG_THRESHOLD) {
-        waypointHasDraggedRef.current = true
+      for (const state of states) {
+        // Don't snap to the starting state (would make a self-loop)
+        if (state.id === transitionStartId) continue
+        
+        // Check if mouse is inside or very close to the box boundary
+        const dims = stateDimensions[state.id] || { width: DEFAULT_STATE_WIDTH, height: DEFAULT_STATE_HEIGHT }
+        const hw = dims.width / 2 + SNAP_PADDING
+        const hh = dims.height / 2 + SNAP_PADDING
+        
+        const inX = mouseX >= state.position_x - hw && mouseX <= state.position_x + hw
+        const inY = mouseY >= state.position_y - hh && mouseY <= state.position_y + hh
+        
+        if (inX && inY) {
+          hoveredState = state
+          break // Take the first match
+        }
+      }
+      
+      setHoveredStateId(hoveredState?.id || null)
+    }
+    
+    // Handle curve control dragging (no threshold - moves immediately)
+    if (draggingCurveControl && draggingWaypointIndex !== null) {
+      waypointHasDraggedRef.current = true
+      // Apply axis constraint for elbow paths
+      if (draggingWaypointAxis === 'x') {
+        // Only X can change (vertical segment)
+        setTempCurvePos(prev => prev ? { x: mouseX, y: prev.y } : { x: mouseX, y: mouseY })
+      } else if (draggingWaypointAxis === 'y') {
+        // Only Y can change (horizontal segment)
+        setTempCurvePos(prev => prev ? { x: prev.x, y: mouseY } : { x: mouseX, y: mouseY })
+      } else {
+        // No constraint (spline paths)
         setTempCurvePos({ x: mouseX, y: mouseY })
       }
     }
@@ -1083,6 +1606,12 @@ export function WorkflowsView() {
   }
   
   const handleCanvasMouseUp = async () => {
+    // Guard to prevent double processing (canvas onMouseUp + global listener)
+    if (mouseUpProcessingRef.current) return
+    mouseUpProcessingRef.current = true
+    // Reset the guard after a short delay (use microtask to ensure all events in this cycle are blocked)
+    queueMicrotask(() => { mouseUpProcessingRef.current = false })
+    
     // Clear alignment guides when drag ends
     setAlignmentGuides({ vertical: null, horizontal: null })
     
@@ -1102,6 +1631,17 @@ export function WorkflowsView() {
       }
       setDraggingStateId(null)
       dragStartPosRef.current = null
+    }
+    
+    // Handle drag-to-create transition drop (only if dropped in empty space - state boxes handle their own mouseup)
+    if (isDraggingToCreateTransition && isCreatingTransition && transitionStartId) {
+      // If not hovering a valid state, just reset (dropped in empty space)
+      // The state box's onMouseUp handles completion when dropped on a valid target
+      if (!hoveredStateId || hoveredStateId === transitionStartId) {
+        // Dropped in empty space or on source state - just reset drag state, keep transition mode active
+        setIsDraggingToCreateTransition(false)
+        setHoveredStateId(null)
+      }
     }
     
     // Handle transition endpoint drop
@@ -1129,8 +1669,8 @@ export function WorkflowsView() {
               .update(updates)
               .eq('id', transition.id)
             
-            // Update local state
-            setTransitions(transitions.map(t => 
+            // Update local state (use functional updater to avoid stale closure)
+            setTransitions(prev => prev.map(t => 
               t.id === transition.id ? { ...t, ...updates } : t
             ))
             
@@ -1196,21 +1736,64 @@ export function WorkflowsView() {
     // Handle waypoint drop - save the waypoint position (only if actual dragging occurred)
     if (draggingCurveControl && draggingWaypointIndex !== null) {
       const transitionId = draggingCurveControl
+      const transition = transitions.find(t => t.id === transitionId)
+      const pathType = transition?.line_path_type || 'spline'
       
       // Only save position if actual dragging occurred (threshold was exceeded)
       if (waypointHasDraggedRef.current && tempCurvePos) {
-        // Update the specific waypoint at the dragged index
-        setWaypoints(prev => {
-          const transitionWaypoints = [...(prev[transitionId] || [])]
-          transitionWaypoints[draggingWaypointIndex] = { x: tempCurvePos.x, y: tempCurvePos.y }
-          return {
-            ...prev,
-            [transitionId]: transitionWaypoints
+        // For elbow paths, update the waypoint based on segment position
+        if (pathType === 'elbow') {
+          // Get the segment info from the transition
+          const elbowHandles = (transition as any)?._elbowHandles || []
+          // Find the handle by waypointIndex, not array index
+          const handle = elbowHandles.find((h: any) => h.waypointIndex === draggingWaypointIndex)
+          
+          if (handle) {
+            // For elbow paths, each adjustable segment is controlled by a waypoint
+            // The waypoint stores the position for that segment
+            setWaypoints(prev => {
+              const transitionWaypoints = [...(prev[transitionId] || [])]
+              
+              // Ensure we have enough waypoints
+              while (transitionWaypoints.length <= draggingWaypointIndex) {
+                // Default position - will be overwritten
+                transitionWaypoints.push({ x: tempCurvePos.x, y: tempCurvePos.y })
+              }
+              
+              // Update the waypoint - only update the axis that matters for this segment
+              if (handle.isVertical) {
+                // Vertical segment - X position matters (drag left/right)
+                transitionWaypoints[draggingWaypointIndex] = { 
+                  x: tempCurvePos.x, 
+                  y: transitionWaypoints[draggingWaypointIndex]?.y || tempCurvePos.y 
+                }
+              } else {
+                // Horizontal segment - Y position matters (drag up/down)
+                transitionWaypoints[draggingWaypointIndex] = { 
+                  x: transitionWaypoints[draggingWaypointIndex]?.x || tempCurvePos.x, 
+                  y: tempCurvePos.y 
+                }
+              }
+              
+              return {
+                ...prev,
+                [transitionId]: transitionWaypoints
+              }
+            })
           }
-        })
+        } else {
+          // For spline paths, update the specific waypoint at the dragged index
+          setWaypoints(prev => {
+            const transitionWaypoints = [...(prev[transitionId] || [])]
+            transitionWaypoints[draggingWaypointIndex] = { x: tempCurvePos.x, y: tempCurvePos.y }
+            return {
+              ...prev,
+              [transitionId]: transitionWaypoints
+            }
+          })
+        }
         
-        // Re-show toolbar after waypoint drag ends
-        const transition = transitions.find(t => t.id === transitionId)
+        // Re-show toolbar after waypoint drag ends (reuse transition from above)
         if (transition) {
           const fromState = states.find(s => s.id === transition.from_state_id)
           const toState = states.find(s => s.id === transition.to_state_id)
@@ -1240,8 +1823,8 @@ export function WorkflowsView() {
       // Reset drag tracking
       setDraggingCurveControl(null)
       setDraggingWaypointIndex(null)
+      setDraggingWaypointAxis(null)
       setTempCurvePos(null)
-      waypointDragStartRef.current = null
       waypointHasDraggedRef.current = false
       // Mark that we just finished a waypoint drag to prevent deselection in handleCanvasClick
       justFinishedWaypointDragRef.current = true
@@ -1251,27 +1834,56 @@ export function WorkflowsView() {
     if (draggingLabel && tempLabelPos) {
       const transition = transitions.find(t => t.id === draggingLabel)
       if (transition) {
-        const fromState = states.find(s => s.id === transition.from_state_id)
-        const toState = states.find(s => s.id === transition.to_state_id)
-        if (fromState && toState) {
-          // Calculate the default label position (curve midpoint)
-          const startPoint = getClosestPointOnBox(fromState.position_x, fromState.position_y, toState.position_x, toState.position_y)
-          const endPoint = getClosestPointOnBox(toState.position_x, toState.position_y, fromState.position_x, fromState.position_y)
-          const lineMidX = (startPoint.x + endPoint.x) / 2
-          const lineMidY = (startPoint.y + endPoint.y) / 2
-          
-          // Save offset from the line midpoint
-          setLabelOffsets(prev => ({
+        const isPinned = !!pinnedLabelPositions[draggingLabel]
+        
+        if (isPinned) {
+          // Pinned label: save absolute position
+          setPinnedLabelPositions(prev => ({
             ...prev,
-            [draggingLabel]: {
-              x: tempLabelPos.x - lineMidX,
-              y: tempLabelPos.y - lineMidY
-            }
+            [draggingLabel]: { x: tempLabelPos.x, y: tempLabelPos.y }
           }))
+        } else {
+          // Not pinned: save offset from line midpoint
+          const fromState = states.find(s => s.id === transition.from_state_id)
+          const toState = states.find(s => s.id === transition.to_state_id)
+          if (fromState && toState) {
+            // Get custom dimensions for each state (must match rendering logic)
+            const fromDims = stateDimensions[fromState.id] || { width: DEFAULT_STATE_WIDTH, height: DEFAULT_STATE_HEIGHT }
+            const toDims = stateDimensions[toState.id] || { width: DEFAULT_STATE_WIDTH, height: DEFAULT_STATE_HEIGHT }
+            
+            // Check for stored edge positions (must match rendering logic)
+            const storedStartPos = edgePositions[`${transition.id}-start`]
+            const storedEndPos = edgePositions[`${transition.id}-end`]
+            
+            // Calculate connection points the same way as rendering
+            const defaultStartPoint = getClosestPointOnBox(fromState.position_x, fromState.position_y, toState.position_x, toState.position_y, fromDims.width, fromDims.height)
+            const defaultEndPoint = getClosestPointOnBox(toState.position_x, toState.position_y, fromState.position_x, fromState.position_y, toDims.width, toDims.height)
+            
+            const startPoint = storedStartPos 
+              ? getPointFromEdgePosition(fromState.position_x, fromState.position_y, storedStartPos, fromDims.width, fromDims.height)
+              : defaultStartPoint
+            const endPoint = storedEndPos
+              ? getPointFromEdgePosition(toState.position_x, toState.position_y, storedEndPos, toDims.width, toDims.height)
+              : defaultEndPoint
+            
+            const lineMidX = (startPoint.x + endPoint.x) / 2
+            const lineMidY = (startPoint.y + endPoint.y) / 2
+            
+            // Save offset from the line midpoint
+            setLabelOffsets(prev => ({
+              ...prev,
+              [draggingLabel]: {
+                x: tempLabelPos.x - lineMidX,
+                y: tempLabelPos.y - lineMidY
+              }
+            }))
+          }
         }
       }
       setDraggingLabel(null)
       setTempLabelPos(null)
+      // Mark that we just finished a label drag to prevent deselection in handleCanvasClick
+      justFinishedLabelDragRef.current = true
     }
     
     // Handle resize completion
@@ -1293,6 +1905,11 @@ export function WorkflowsView() {
     setIsDragging(false)
   }
   
+  // Keep the ref updated to the latest handler for global mouseup
+  useEffect(() => {
+    handleCanvasMouseUpRef.current = handleCanvasMouseUp
+  })
+  
   const handleCanvasClick = (e: React.MouseEvent) => {
     // Don't process click if we were dragging a state
     if (draggingStateId) return
@@ -1300,6 +1917,12 @@ export function WorkflowsView() {
     // Don't deselect if we just finished dragging a waypoint
     if (justFinishedWaypointDragRef.current) {
       justFinishedWaypointDragRef.current = false
+      return
+    }
+    
+    // Don't deselect if we just finished dragging a label
+    if (justFinishedLabelDragRef.current) {
+      justFinishedLabelDragRef.current = false
       return
     }
     
@@ -1368,10 +1991,12 @@ export function WorkflowsView() {
     const isTransitionStart = transitionStartId === state.id
     const isDraggingThis = draggingStateId === state.id
     const isResizingThis = resizingState?.stateId === state.id
-    const isSnapTarget = hoveredStateId === state.id && draggingTransitionEndpoint !== null
+    // Show snap target when dragging transition endpoint OR when creating a new transition
+    const isSnapTarget = hoveredStateId === state.id && (draggingTransitionEndpoint !== null || (isCreatingTransition && transitionStartId !== state.id))
     const isHovered = hoverNodeId === state.id
-    // Only show connection points when selected or in connect mode (not on hover)
-    const showConnectionPoints = isAdmin && (isSelected || canvasMode === 'connect')
+    // Show connection points when selected, in connect mode, or when dragging to create a transition (on potential targets)
+    const isPotentialTransitionTarget = isCreatingTransition && transitionStartId !== state.id
+    const showConnectionPoints = isAdmin && (isSelected || canvasMode === 'connect' || isPotentialTransitionTarget)
     const showResizeHandles = isAdmin && isSelected && canvasMode === 'select'
     const textColor = getContrastColor(state.color)
     
@@ -1408,7 +2033,10 @@ export function WorkflowsView() {
       <g
         key={state.id}
         transform={`translate(${state.position_x}, ${state.position_y})`}
-        style={{ cursor: isDraggingThis ? 'grabbing' : isResizingThis ? 'grabbing' : (isAdmin && canvasMode === 'select' ? 'grab' : 'pointer') }}
+        style={{ 
+          cursor: isDraggingThis ? 'grabbing' : isResizingThis ? 'grabbing' : (isAdmin && canvasMode === 'select' ? 'grab' : 'pointer'),
+          pointerEvents: 'auto'
+        }}
         onMouseEnter={() => {
           if (!draggingStateId && !draggingTransitionEndpoint && !resizingState) {
             setHoverNodeId(state.id)
@@ -1425,10 +2053,33 @@ export function WorkflowsView() {
             startDraggingState(state.id, e)
           }
         }}
+        onMouseUp={(e) => {
+          // Handle drag-to-create transition completion directly on the target state
+          if (isDraggingToCreateTransition && isCreatingTransition && transitionStartId && transitionStartId !== state.id) {
+            e.stopPropagation()
+            completeTransition(state.id)
+            // These are set in completeTransition too, but set again for safety
+            justCompletedTransitionRef.current = true
+            transitionCompletedAtRef.current = Date.now()
+            setIsDraggingToCreateTransition(false)
+            setHoveredStateId(null)
+          }
+        }}
         onClick={(e) => {
           e.stopPropagation()
           // Don't process click if we just finished dragging (actual movement occurred)
           if (hasDraggedRef.current) return
+          
+          // Don't process click if we just completed a transition (within 500ms)
+          const timeSinceTransition = Date.now() - transitionCompletedAtRef.current
+          if (justCompletedTransitionRef.current || timeSinceTransition < 500) {
+            // Clear after a delay to allow double-click to also see the flag
+            setTimeout(() => { justCompletedTransitionRef.current = false }, 500)
+            return
+          }
+          
+          // Don't process click if we're still in creating transition mode via drag (handles click after drag)
+          if (isDraggingToCreateTransition) return
           
           if (isCreatingTransition) {
             completeTransition(state.id)
@@ -1446,6 +2097,15 @@ export function WorkflowsView() {
         }}
         onDoubleClick={(e) => {
           e.stopPropagation()
+          // Don't open edit dialog if we just completed a transition (within 500ms)
+          const timeSinceTransition = Date.now() - transitionCompletedAtRef.current
+          if (justCompletedTransitionRef.current || timeSinceTransition < 500) {
+            setTimeout(() => { justCompletedTransitionRef.current = false }, 500)
+            return
+          }
+          // Don't open edit dialog while creating transitions
+          if (isCreatingTransition || isDraggingToCreateTransition) return
+          
           if (isAdmin) {
             setEditingState(state)
             setShowEditState(true)
@@ -1465,20 +2125,32 @@ export function WorkflowsView() {
           })
         }}
       >
-        {/* Selection glow / drag glow / snap target glow */}
-        {(isSelected || isTransitionStart || isDraggingThis || isSnapTarget) && (
-          <rect
-            x={-hw - 4}
-            y={-hh - 4}
-            width={dims.width + 8}
-            height={dims.height + 8}
-            rx="12"
-            fill={isSnapTarget ? 'rgba(96, 165, 250, 0.2)' : 'none'}
-            stroke={isSnapTarget ? '#60a5fa' : isDraggingThis ? '#60a5fa' : isSelected ? '#fff' : '#22c55e'}
-            strokeWidth={isSnapTarget ? 3 : 2}
-            opacity={isSnapTarget ? 1 : isDraggingThis ? 0.8 : 0.6}
-            strokeDasharray={isDraggingThis ? '4,2' : 'none'}
-          />
+        {/* Drag glow / snap target glow / transition start glow (no selection glow - handles indicate selection) */}
+        {(isTransitionStart || isDraggingThis || isSnapTarget) && (
+          state.shape === 'diamond' ? (
+            <polygon
+              points={`0,${-hh - 4} ${hw + 4},0 0,${hh + 4} ${-hw - 4},0`}
+              fill={isSnapTarget ? 'rgba(96, 165, 250, 0.2)' : 'none'}
+              stroke={isSnapTarget ? '#60a5fa' : isDraggingThis ? '#60a5fa' : '#22c55e'}
+              strokeWidth={isSnapTarget ? 3 : 2}
+              opacity={isSnapTarget ? 1 : isDraggingThis ? 0.8 : 0.6}
+              strokeDasharray={isDraggingThis ? '4,2' : 'none'}
+              strokeLinejoin="round"
+            />
+          ) : (
+            <rect
+              x={-hw - 4}
+              y={-hh - 4}
+              width={dims.width + 8}
+              height={dims.height + 8}
+              rx={(state.corner_radius ?? 8) + 4}
+              fill={isSnapTarget ? 'rgba(96, 165, 250, 0.2)' : 'none'}
+              stroke={isSnapTarget ? '#60a5fa' : isDraggingThis ? '#60a5fa' : '#22c55e'}
+              strokeWidth={isSnapTarget ? 3 : 2}
+              opacity={isSnapTarget ? 1 : isDraggingThis ? 0.8 : 0.6}
+              strokeDasharray={isDraggingThis ? '4,2' : 'none'}
+            />
+          )
         )}
         
         {/* Snap target indicator */}
@@ -1498,33 +2170,51 @@ export function WorkflowsView() {
         
         {/* Drop shadow when dragging */}
         {isDraggingThis && (
-          <rect
-            x={-hw + 4}
-            y={-hh + 4}
-            width={dims.width}
-            height={dims.height}
-            rx="8"
-            fill="rgba(0,0,0,0.3)"
-            transform="translate(4, 4)"
-          />
+          state.shape === 'diamond' ? (
+            <polygon
+              points={`0,${-hh} ${hw},0 0,${hh} ${-hw},0`}
+              fill="rgba(0,0,0,0.3)"
+              transform="translate(4, 4)"
+            />
+          ) : (
+            <rect
+              x={-hw + 4}
+              y={-hh + 4}
+              width={dims.width}
+              height={dims.height}
+              rx={state.corner_radius ?? 8}
+              fill="rgba(0,0,0,0.3)"
+              transform="translate(4, 4)"
+            />
+          )
         )}
         
-        {/* Hover glow effect - subtle brightness increase */}
+        {/* Hover glow effect - brightness increase */}
         {isHovered && !isSelected && !isDraggingThis && (
-          <rect
-            x={-hw - 2}
-            y={-hh - 2}
-            width={dims.width + 4}
-            height={dims.height + 4}
-            rx="10"
-            fill="none"
-            stroke="rgba(255, 255, 255, 0.15)"
-            strokeWidth="2"
-            className="pointer-events-none"
-            style={{ 
-              transition: 'opacity 0.15s ease-out',
-            }}
-          />
+          state.shape === 'diamond' ? (
+            <polygon
+              points={`0,${-hh - 2} ${hw + 2},0 0,${hh + 2} ${-hw - 2},0`}
+              fill="none"
+              stroke="rgba(255, 255, 255, 0.5)"
+              strokeWidth="2"
+              strokeLinejoin="round"
+              className="pointer-events-none"
+              style={{ transition: 'opacity 0.15s ease-out' }}
+            />
+          ) : (
+            <rect
+              x={-hw - 2}
+              y={-hh - 2}
+              width={dims.width + 4}
+              height={dims.height + 4}
+              rx={(state.corner_radius ?? 8) + 2}
+              fill="none"
+              stroke="rgba(255, 255, 255, 0.5)"
+              strokeWidth="2"
+              className="pointer-events-none"
+              style={{ transition: 'opacity 0.15s ease-out' }}
+            />
+          )
         )}
         
         {/* Node background */}
@@ -1551,30 +2241,77 @@ export function WorkflowsView() {
           if (isDraggingThis) {
             strokeColor = '#60a5fa'
             strokeWidth = 2
-          } else if (isSelected) {
-            strokeColor = '#fff'
-            strokeWidth = 2
           } else if (isTransitionStart) {
             strokeColor = '#22c55e'
             strokeWidth = 2
           } else {
+            // Normal border (same for selected and unselected - toolbar/handles indicate selection)
             strokeColor = hexToRgba(borderColor, borderOpacity)
             strokeWidth = borderThickness
           }
           
-          return (
-            <rect
-              x={-hw}
-              y={-hh}
-              width={dims.width}
-              height={dims.height}
-              rx="8"
-              fill={hexToRgba(state.color, fillOpacity)}
-              stroke={strokeColor}
-              strokeWidth={strokeWidth}
-              style={{ transition: 'fill 0.15s ease-out' }}
-            />
-          )
+          const fillColor = hexToRgba(state.color, fillOpacity)
+          const shape = state.shape || 'rectangle'
+          
+          // Render different shapes based on state.shape
+          switch (shape) {
+            case 'diamond':
+              // Diamond shape - rotated square, good for decision/approval gates
+              return (
+                <polygon
+                  points={`0,${-hh} ${hw},0 0,${hh} ${-hw},0`}
+                  fill={fillColor}
+                  stroke={strokeColor}
+                  strokeWidth={strokeWidth}
+                  strokeLinejoin="round"
+                  style={{ transition: 'fill 0.15s ease-out' }}
+                />
+              )
+            case 'hexagon':
+              // Hexagon shape - 6-sided polygon
+              const hexW = hw * 0.866 // cos(30°) for proper proportions
+              return (
+                <polygon
+                  points={`${-hw * 0.5},${-hh} ${hw * 0.5},${-hh} ${hw},0 ${hw * 0.5},${hh} ${-hw * 0.5},${hh} ${-hw},0`}
+                  fill={fillColor}
+                  stroke={strokeColor}
+                  strokeWidth={strokeWidth}
+                  strokeLinejoin="round"
+                  style={{ transition: 'fill 0.15s ease-out' }}
+                />
+              )
+            case 'ellipse':
+              // Ellipse/oval shape
+              return (
+                <ellipse
+                  cx={0}
+                  cy={0}
+                  rx={hw}
+                  ry={hh}
+                  fill={fillColor}
+                  stroke={strokeColor}
+                  strokeWidth={strokeWidth}
+                  style={{ transition: 'fill 0.15s ease-out' }}
+                />
+              )
+            case 'rectangle':
+            default:
+              // Default rectangle shape
+              const cornerRadius = state.corner_radius ?? 8
+              return (
+                <rect
+                  x={-hw}
+                  y={-hh}
+                  width={dims.width}
+                  height={dims.height}
+                  rx={cornerRadius}
+                  fill={fillColor}
+                  stroke={strokeColor}
+                  strokeWidth={strokeWidth}
+                  style={{ transition: 'fill 0.15s ease-out' }}
+                />
+              )
+          }
         })()}
         
         {/* Label */}
@@ -1600,7 +2337,10 @@ export function WorkflowsView() {
           opacity="0.7"
           className="select-none pointer-events-none"
         >
-          {state.is_editable ? '✎ Editable' : '🔒 Locked'}
+          {state.state_type === 'gate' 
+            ? `⛨ ${(state.gate_config as any)?.gate_type === 'checklist' ? 'Checklist' : 'Approval'}`
+            : state.is_editable ? '✎ Editable' : '🔒 Locked'
+          }
         </text>
         
         {/* Resize handles - appear when selected */}
@@ -1720,12 +2460,28 @@ export function WorkflowsView() {
               stroke="#fff"
               strokeWidth="1.5"
               className="cursor-crosshair"
-              style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.3))' }}
-              onClick={(e) => {
+              style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.3))', pointerEvents: 'all' }}
+              onMouseDown={(e) => {
                 e.stopPropagation()
                 if (!isCreatingTransition) {
                   startTransition(state.id)
-                } else if (transitionStartId !== state.id) {
+                  setIsDraggingToCreateTransition(true)
+                }
+              }}
+              onMouseUp={(e) => {
+                // Handle drag-to-create transition completion on connection point
+                if (isDraggingToCreateTransition && isCreatingTransition && transitionStartId && transitionStartId !== state.id) {
+                  e.stopPropagation()
+                  completeTransition(state.id)
+                  justCompletedTransitionRef.current = true
+                  transitionCompletedAtRef.current = Date.now()
+                  setIsDraggingToCreateTransition(false)
+                  setHoveredStateId(null)
+                }
+              }}
+              onClick={(e) => {
+                e.stopPropagation()
+                if (isCreatingTransition && transitionStartId !== state.id) {
                   completeTransition(state.id)
                 }
               }}
@@ -1739,12 +2495,28 @@ export function WorkflowsView() {
               stroke="#fff"
               strokeWidth="1.5"
               className="cursor-crosshair"
-              style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.3))' }}
-              onClick={(e) => {
+              style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.3))', pointerEvents: 'all' }}
+              onMouseDown={(e) => {
                 e.stopPropagation()
                 if (!isCreatingTransition) {
                   startTransition(state.id)
-                } else if (transitionStartId !== state.id) {
+                  setIsDraggingToCreateTransition(true)
+                }
+              }}
+              onMouseUp={(e) => {
+                // Handle drag-to-create transition completion on connection point
+                if (isDraggingToCreateTransition && isCreatingTransition && transitionStartId && transitionStartId !== state.id) {
+                  e.stopPropagation()
+                  completeTransition(state.id)
+                  justCompletedTransitionRef.current = true
+                  transitionCompletedAtRef.current = Date.now()
+                  setIsDraggingToCreateTransition(false)
+                  setHoveredStateId(null)
+                }
+              }}
+              onClick={(e) => {
+                e.stopPropagation()
+                if (isCreatingTransition && transitionStartId !== state.id) {
                   completeTransition(state.id)
                 }
               }}
@@ -1758,12 +2530,28 @@ export function WorkflowsView() {
               stroke="#fff"
               strokeWidth="1.5"
               className="cursor-crosshair"
-              style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.3))' }}
-              onClick={(e) => {
+              style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.3))', pointerEvents: 'all' }}
+              onMouseDown={(e) => {
                 e.stopPropagation()
                 if (!isCreatingTransition) {
                   startTransition(state.id)
-                } else if (transitionStartId !== state.id) {
+                  setIsDraggingToCreateTransition(true)
+                }
+              }}
+              onMouseUp={(e) => {
+                // Handle drag-to-create transition completion on connection point
+                if (isDraggingToCreateTransition && isCreatingTransition && transitionStartId && transitionStartId !== state.id) {
+                  e.stopPropagation()
+                  completeTransition(state.id)
+                  justCompletedTransitionRef.current = true
+                  transitionCompletedAtRef.current = Date.now()
+                  setIsDraggingToCreateTransition(false)
+                  setHoveredStateId(null)
+                }
+              }}
+              onClick={(e) => {
+                e.stopPropagation()
+                if (isCreatingTransition && transitionStartId !== state.id) {
                   completeTransition(state.id)
                 }
               }}
@@ -1777,12 +2565,28 @@ export function WorkflowsView() {
               stroke="#fff"
               strokeWidth="1.5"
               className="cursor-crosshair"
-              style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.3))' }}
-              onClick={(e) => {
+              style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.3))', pointerEvents: 'all' }}
+              onMouseDown={(e) => {
                 e.stopPropagation()
                 if (!isCreatingTransition) {
                   startTransition(state.id)
-                } else if (transitionStartId !== state.id) {
+                  setIsDraggingToCreateTransition(true)
+                }
+              }}
+              onMouseUp={(e) => {
+                // Handle drag-to-create transition completion on connection point
+                if (isDraggingToCreateTransition && isCreatingTransition && transitionStartId && transitionStartId !== state.id) {
+                  e.stopPropagation()
+                  completeTransition(state.id)
+                  justCompletedTransitionRef.current = true
+                  transitionCompletedAtRef.current = Date.now()
+                  setIsDraggingToCreateTransition(false)
+                  setHoveredStateId(null)
+                }
+              }}
+              onClick={(e) => {
+                e.stopPropagation()
+                if (isCreatingTransition && transitionStartId !== state.id) {
                   completeTransition(state.id)
                 }
               }}
@@ -1901,139 +2705,194 @@ export function WorkflowsView() {
   }
   
   // Generate a smooth SVG path through multiple waypoints with perpendicular box exits
+  // Uses cubic bezier curves with straight perpendicular segments at box edges
   const generateSplinePath = (
     start: { x: number; y: number; edge?: 'left' | 'right' | 'top' | 'bottom' },
     waypointsList: Array<{ x: number; y: number }>,
     end: { x: number; y: number; edge?: 'left' | 'right' | 'top' | 'bottom' }
   ): string => {
-    // Calculate perpendicular clearance distance (how far to extend before curving)
-    const dist = Math.hypot(end.x - start.x, end.y - start.y)
-    const clearance = Math.min(40, dist * 0.25) // At least 40px or 25% of distance
+    // Straight segment length at start/end for clean perpendicular lines
+    const STRAIGHT_LENGTH = 20
     
-    // Create phantom control points for perpendicular exits
-    const startDir = start.edge ? getPerpendicularDirection(start.edge) : { x: 0, y: 0 }
-    const endDir = end.edge ? getPerpendicularDirection(end.edge) : { x: 0, y: 0 }
+    // Get perpendicular directions for start and end
+    const startDir = start.edge ? getPerpendicularDirection(start.edge) : null
+    const endDir = end.edge ? getPerpendicularDirection(end.edge) : null
     
-    // Phantom points that force perpendicularity
-    const startPhantom = start.edge 
-      ? { x: start.x + startDir.x * clearance, y: start.y + startDir.y * clearance }
+    // Calculate the "stub" points - ends of the perpendicular straight segments
+    const startStub = startDir 
+      ? { x: start.x + startDir.x * STRAIGHT_LENGTH, y: start.y + startDir.y * STRAIGHT_LENGTH }
       : null
-    const endPhantom = end.edge
-      ? { x: end.x + endDir.x * clearance, y: end.y + endDir.y * clearance }
+    const endStub = endDir
+      ? { x: end.x + endDir.x * STRAIGHT_LENGTH, y: end.y + endDir.y * STRAIGHT_LENGTH }
       : null
     
-    // Build the full point list with phantom points
-    const points: Array<{ x: number; y: number }> = [start]
-    if (startPhantom) points.push(startPhantom)
-    points.push(...waypointsList)
-    if (endPhantom) points.push(endPhantom)
-    points.push(end)
+    // Calculate control point distance for the curved middle section
+    const curveStart = startStub || start
+    const curveEnd = endStub || end
+    const curveDist = Math.hypot(curveEnd.x - curveStart.x, curveEnd.y - curveStart.y)
+    const controlDist = Math.max(20, Math.min(50, curveDist * 0.35))
     
-    if (points.length === 2) {
-      // Just start and end, no phantoms - straight line
-      return `M ${start.x} ${start.y} L ${end.x} ${end.y}`
-    }
-    
-    if (points.length === 3) {
-      // One control point (either phantom or waypoint)
-      const cp = points[1]
-      return `M ${start.x} ${start.y} Q ${cp.x} ${cp.y} ${end.x} ${end.y}`
-    }
-    
-    if (points.length === 4) {
-      // Two control points - use cubic bezier
-      const cp1 = points[1]
-      const cp2 = points[2]
-      return `M ${start.x} ${start.y} C ${cp1.x} ${cp1.y} ${cp2.x} ${cp2.y} ${end.x} ${end.y}`
-    }
-    
-    // Multiple points - use Catmull-Rom spline converted to cubic Bezier
-    const tension = 0.5
-    
-    let path = `M ${points[0].x} ${points[0].y}`
-    
-    for (let i = 0; i < points.length - 1; i++) {
-      const p0 = points[Math.max(0, i - 1)]
-      const p1 = points[i]
-      const p2 = points[i + 1]
-      const p3 = points[Math.min(points.length - 1, i + 2)]
+    // No waypoints
+    if (waypointsList.length === 0) {
+      let path = `M ${start.x} ${start.y}`
       
-      // Convert Catmull-Rom segment to cubic Bezier control points
-      const cp1x = p1.x + (p2.x - p0.x) * tension / 3
-      const cp1y = p1.y + (p2.y - p0.y) * tension / 3
-      const cp2x = p2.x - (p3.x - p1.x) * tension / 3
-      const cp2y = p2.y - (p3.y - p1.y) * tension / 3
+      // Straight segment from start (perpendicular)
+      if (startStub) {
+        path += ` L ${startStub.x} ${startStub.y}`
+      }
       
-      path += ` C ${cp1x} ${cp1y} ${cp2x} ${cp2y} ${p2.x} ${p2.y}`
+      // Curved section from stub to stub (or start to end if no stubs)
+      const p1 = startStub || start
+      const p2 = endStub || end
+      
+      if (startDir && endDir) {
+        // Both have edges - create a smooth S-curve between stubs
+        const cp1 = {
+          x: p1.x + (startDir?.x || 0) * controlDist,
+          y: p1.y + (startDir?.y || 0) * controlDist
+        }
+        const cp2 = {
+          x: p2.x + (endDir?.x || 0) * controlDist,
+          y: p2.y + (endDir?.y || 0) * controlDist
+        }
+        path += ` C ${cp1.x} ${cp1.y} ${cp2.x} ${cp2.y} ${p2.x} ${p2.y}`
+      } else {
+        // Simple line between stubs
+        path += ` L ${p2.x} ${p2.y}`
+      }
+      
+      // Straight segment to end (perpendicular)
+      if (endStub) {
+        path += ` L ${end.x} ${end.y}`
+      }
+      
+      return path
+    }
+    
+    // With waypoints - build path through all points
+    let path = `M ${start.x} ${start.y}`
+    
+    // Straight segment from start (perpendicular)
+    if (startStub) {
+      path += ` L ${startStub.x} ${startStub.y}`
+    }
+    
+    // Build the curved section through waypoints
+    const curvePoints = [startStub || start, ...waypointsList, endStub || end]
+    
+    for (let i = 0; i < curvePoints.length - 1; i++) {
+      const p1 = curvePoints[i]
+      const p2 = curvePoints[i + 1]
+      const segmentDist = Math.hypot(p2.x - p1.x, p2.y - p1.y)
+      const segmentControlDist = Math.max(15, segmentDist * 0.35)
+      
+      let cp1: { x: number; y: number }
+      let cp2: { x: number; y: number }
+      
+      // First control point
+      if (i === 0 && startDir) {
+        // Continue in the perpendicular direction from start
+        cp1 = {
+          x: p1.x + startDir.x * segmentControlDist,
+          y: p1.y + startDir.y * segmentControlDist
+        }
+      } else {
+        // Tangent based on surrounding points
+        const prev = i > 0 ? curvePoints[i - 1] : p1
+        const tangentX = p2.x - prev.x
+        const tangentY = p2.y - prev.y
+        const tangentLen = Math.hypot(tangentX, tangentY) || 1
+        cp1 = {
+          x: p1.x + (tangentX / tangentLen) * segmentControlDist,
+          y: p1.y + (tangentY / tangentLen) * segmentControlDist
+        }
+      }
+      
+      // Second control point
+      if (i === curvePoints.length - 2 && endDir) {
+        // Approach from the perpendicular direction to end
+        cp2 = {
+          x: p2.x + endDir.x * segmentControlDist,
+          y: p2.y + endDir.y * segmentControlDist
+        }
+      } else {
+        // Tangent based on surrounding points
+        const next = i < curvePoints.length - 2 ? curvePoints[i + 2] : p2
+        const tangentX = next.x - p1.x
+        const tangentY = next.y - p1.y
+        const tangentLen = Math.hypot(tangentX, tangentY) || 1
+        cp2 = {
+          x: p2.x - (tangentX / tangentLen) * segmentControlDist,
+          y: p2.y - (tangentY / tangentLen) * segmentControlDist
+        }
+      }
+      
+      path += ` C ${cp1.x} ${cp1.y} ${cp2.x} ${cp2.y} ${p2.x} ${p2.y}`
+    }
+    
+    // Straight segment to end (perpendicular)
+    if (endStub) {
+      path += ` L ${end.x} ${end.y}`
     }
     
     return path
   }
   
   // Get a point on the spline at parameter t (0-1) for placing labels/gates
+  // This approximates the position along the path including straight stubs
   const getPointOnSpline = (
-    start: { x: number; y: number },
+    start: { x: number; y: number; edge?: 'left' | 'right' | 'top' | 'bottom' },
     waypointsList: Array<{ x: number; y: number }>,
-    end: { x: number; y: number },
+    end: { x: number; y: number; edge?: 'left' | 'right' | 'top' | 'bottom' },
     t: number = 0.5
   ): { x: number; y: number } => {
-    const points = [start, ...waypointsList, end]
+    const STRAIGHT_LENGTH = 20
     
-    if (points.length === 2) {
-      // No waypoints - use same default curve as generateSplinePath
-      const dx = end.x - start.x
-      const dy = end.y - start.y
-      const dist = Math.hypot(dx, dy)
-      
-      if (dist === 0) {
-        return { x: start.x, y: start.y }
-      }
-      
-      // Same perpendicular offset as in generateSplinePath
-      const curveAmount = dist * 0.15
-      const perpX = -dy / dist
-      const perpY = dx / dist
-      
-      // Midpoint with perpendicular offset (this is the curve midpoint)
-      const midX = (start.x + end.x) / 2 + perpX * curveAmount
-      const midY = (start.y + end.y) / 2 + perpY * curveAmount
-      
-      // Calculate control point from midpoint
-      const cp = getControlPointFromMidpoint(start.x, start.y, midX, midY, end.x, end.y)
-      
-      // Quadratic bezier at t
-      const mt = 1 - t
-      return {
-        x: mt * mt * start.x + 2 * mt * t * cp.x + t * t * end.x,
-        y: mt * mt * start.y + 2 * mt * t * cp.y + t * t * end.y
-      }
+    // Get perpendicular directions
+    const startDir = start.edge ? getPerpendicularDirection(start.edge) : null
+    const endDir = end.edge ? getPerpendicularDirection(end.edge) : null
+    
+    const startStub = startDir 
+      ? { x: start.x + startDir.x * STRAIGHT_LENGTH, y: start.y + startDir.y * STRAIGHT_LENGTH }
+      : null
+    const endStub = endDir
+      ? { x: end.x + endDir.x * STRAIGHT_LENGTH, y: end.y + endDir.y * STRAIGHT_LENGTH }
+      : null
+    
+    // Build all the points the path goes through
+    const allPoints: Array<{ x: number; y: number }> = [start]
+    if (startStub) allPoints.push(startStub)
+    allPoints.push(...waypointsList)
+    if (endStub) allPoints.push(endStub)
+    allPoints.push(end)
+    
+    // Calculate total approximate path length
+    let totalLength = 0
+    const segmentLengths: number[] = []
+    for (let i = 0; i < allPoints.length - 1; i++) {
+      const len = Math.hypot(allPoints[i + 1].x - allPoints[i].x, allPoints[i + 1].y - allPoints[i].y)
+      segmentLengths.push(len)
+      totalLength += len
     }
     
-    if (points.length === 3) {
-      // Quadratic bezier at t
-      const wp = waypointsList[0]
-      const cp = getControlPointFromMidpoint(start.x, start.y, wp.x, wp.y, end.x, end.y)
-      const mt = 1 - t
-      return {
-        x: mt * mt * start.x + 2 * mt * t * cp.x + t * t * end.x,
-        y: mt * mt * start.y + 2 * mt * t * cp.y + t * t * end.y
+    // Find which segment t falls in
+    const targetLength = t * totalLength
+    let accumulatedLength = 0
+    
+    for (let i = 0; i < segmentLengths.length; i++) {
+      if (accumulatedLength + segmentLengths[i] >= targetLength) {
+        // t falls in this segment
+        const segmentProgress = (targetLength - accumulatedLength) / segmentLengths[i]
+        return {
+          x: allPoints[i].x + segmentProgress * (allPoints[i + 1].x - allPoints[i].x),
+          y: allPoints[i].y + segmentProgress * (allPoints[i + 1].y - allPoints[i].y)
+        }
       }
+      accumulatedLength += segmentLengths[i]
     }
     
-    // For multiple waypoints, approximate by finding the segment and interpolating
-    const totalSegments = points.length - 1
-    const segmentT = t * totalSegments
-    const segmentIndex = Math.min(Math.floor(segmentT), totalSegments - 1)
-    const localT = segmentT - segmentIndex
-    
-    const p1 = points[segmentIndex]
-    const p2 = points[segmentIndex + 1]
-    
-    // Simple linear interpolation within segment for approximation
-    return {
-      x: p1.x + localT * (p2.x - p1.x),
-      y: p1.y + localT * (p2.y - p1.y)
-    }
+    // Fallback to end point
+    return { x: end.x, y: end.y }
   }
   
   // Find the closest point on the path to insert a new waypoint
@@ -2272,11 +3131,13 @@ export function WorkflowsView() {
     let effectiveWaypoints: Array<{ x: number; y: number }> = [...storedWaypoints]
     
     if (isDraggingThisCurve && tempCurvePos && draggingWaypointIndex !== null) {
-      // Update the waypoint being dragged
+      // Update the waypoint being dragged - extend array if needed (for new waypoints)
       effectiveWaypoints = [...storedWaypoints]
-      if (draggingWaypointIndex < effectiveWaypoints.length) {
-        effectiveWaypoints[draggingWaypointIndex] = { x: tempCurvePos.x, y: tempCurvePos.y }
+      // Ensure array is long enough
+      while (effectiveWaypoints.length <= draggingWaypointIndex) {
+        effectiveWaypoints.push({ x: tempCurvePos.x, y: tempCurvePos.y })
       }
+      effectiveWaypoints[draggingWaypointIndex] = { x: tempCurvePos.x, y: tempCurvePos.y }
     }
     
     // Generate path based on path type setting
@@ -2292,91 +3153,186 @@ export function WorkflowsView() {
       pathD = `M ${startX} ${startY} L ${endX} ${endY}`
       curveMid = { x: (startX + endX) / 2, y: (startY + endY) / 2 }
     } else if (pathType === 'elbow') {
-      // Orthogonal elbow path - always exits perpendicular to start edge, enters perpendicular to end edge
-      // Uses the edge information from the connection points
+      // Orthogonal elbow path - supports multiple waypoints like Miro
+      // Each waypoint is a corner point where the path can turn
       const startEdge = startPoint.edge
       const endEdge = endPoint.edge
       
       // Minimum distance to travel before turning (clearance from box)
       const TURN_OFFSET = 30
       
-      // Build path segments based on exit/entry directions
-      const segments: Array<{ x: number; y: number }> = [{ x: startX, y: startY }]
-      
-      // Determine exit direction and first waypoint
+      // Determine exit point and direction
       let exitX = startX
       let exitY = startY
+      const exitHorizontal = startEdge === 'left' || startEdge === 'right'
       
-      if (startEdge === 'right') {
-        exitX = startX + TURN_OFFSET
-        exitY = startY
-      } else if (startEdge === 'left') {
-        exitX = startX - TURN_OFFSET
-        exitY = startY
-      } else if (startEdge === 'top') {
-        exitX = startX
-        exitY = startY - TURN_OFFSET
-      } else if (startEdge === 'bottom') {
-        exitX = startX
-        exitY = startY + TURN_OFFSET
-      }
+      if (startEdge === 'right') exitX = startX + TURN_OFFSET
+      else if (startEdge === 'left') exitX = startX - TURN_OFFSET
+      else if (startEdge === 'top') exitY = startY - TURN_OFFSET
+      else if (startEdge === 'bottom') exitY = startY + TURN_OFFSET
       
-      // Determine entry direction and approach point
+      // Determine entry point and direction
       let entryX = endX
       let entryY = endY
-      
-      if (endEdge === 'right') {
-        entryX = endX + TURN_OFFSET
-        entryY = endY
-      } else if (endEdge === 'left') {
-        entryX = endX - TURN_OFFSET
-        entryY = endY
-      } else if (endEdge === 'top') {
-        entryX = endX
-        entryY = endY - TURN_OFFSET
-      } else if (endEdge === 'bottom') {
-        entryX = endX
-        entryY = endY + TURN_OFFSET
-      }
-      
-      // Add exit point
-      segments.push({ x: exitX, y: exitY })
-      
-      // Connect exit to entry with orthogonal segments
-      // Determine if we need 1 or 2 intermediate turns
-      const exitHorizontal = startEdge === 'left' || startEdge === 'right'
       const entryHorizontal = endEdge === 'left' || endEdge === 'right'
       
+      if (endEdge === 'right') entryX = endX + TURN_OFFSET
+      else if (endEdge === 'left') entryX = endX - TURN_OFFSET
+      else if (endEdge === 'top') entryY = endY - TURN_OFFSET
+      else if (endEdge === 'bottom') entryY = endY + TURN_OFFSET
+      
+      // Build path segments
+      // For elbow paths, waypoints store SEGMENT POSITIONS (not corner positions)
+      // - For vertical segments: waypoint.x is the X position of the segment
+      // - For horizontal segments: waypoint.y is the Y position of the segment
+      const segments: Array<{ x: number; y: number }> = [{ x: startX, y: startY }]
+      segments.push({ x: exitX, y: exitY })
+      
+      // Determine the segment structure based on exit/entry directions
       if (exitHorizontal && entryHorizontal) {
-        // Both horizontal - need vertical connector in middle
-        const midX = (exitX + entryX) / 2
-        segments.push({ x: midX, y: exitY })
-        segments.push({ x: midX, y: entryY })
+        // Both horizontal - need vertical segment(s) in middle
+        // Each waypoint controls a vertical segment's X position
+        if (effectiveWaypoints.length === 0) {
+          // Default: single vertical segment at midpoint
+          const midX = (exitX + entryX) / 2
+          segments.push({ x: midX, y: exitY })
+          segments.push({ x: midX, y: entryY })
+        } else {
+          // Use waypoint X values for vertical segments
+          let currentY = exitY
+          for (let i = 0; i < effectiveWaypoints.length; i++) {
+            const segX = effectiveWaypoints[i].x
+            segments.push({ x: segX, y: currentY })
+            // Alternate Y position for next segment
+            currentY = (i % 2 === 0) ? entryY : exitY
+            segments.push({ x: segX, y: currentY })
+          }
+          // Make sure we end at entry Y
+          const lastPt = segments[segments.length - 1]
+          if (lastPt.y !== entryY) {
+            const finalX = effectiveWaypoints.length > 0 
+              ? effectiveWaypoints[effectiveWaypoints.length - 1].x 
+              : (exitX + entryX) / 2
+            segments.push({ x: finalX, y: entryY })
+          }
+        }
       } else if (!exitHorizontal && !entryHorizontal) {
-        // Both vertical - need horizontal connector in middle
-        const midY = (exitY + entryY) / 2
-        segments.push({ x: exitX, y: midY })
-        segments.push({ x: entryX, y: midY })
-      } else if (exitHorizontal && !entryHorizontal) {
-        // Exit horizontal, entry vertical - one corner
-        segments.push({ x: entryX, y: exitY })
+        // Both vertical - need horizontal segment(s) in middle
+        // Each waypoint controls a horizontal segment's Y position
+        if (effectiveWaypoints.length === 0) {
+          // Default: single horizontal segment at midpoint
+          const midY = (exitY + entryY) / 2
+          segments.push({ x: exitX, y: midY })
+          segments.push({ x: entryX, y: midY })
+        } else {
+          // Use waypoint Y values for horizontal segments
+          let currentX = exitX
+          for (let i = 0; i < effectiveWaypoints.length; i++) {
+            const segY = effectiveWaypoints[i].y
+            segments.push({ x: currentX, y: segY })
+            // Alternate X position for next segment
+            currentX = (i % 2 === 0) ? entryX : exitX
+            segments.push({ x: currentX, y: segY })
+          }
+          // Make sure we end at entry X
+          const lastPt = segments[segments.length - 1]
+          if (lastPt.x !== entryX) {
+            const finalY = effectiveWaypoints.length > 0 
+              ? effectiveWaypoints[effectiveWaypoints.length - 1].y 
+              : (exitY + entryY) / 2
+            segments.push({ x: entryX, y: finalY })
+          }
+        }
+      } else if (exitHorizontal) {
+        // Exit horizontal, entry vertical - need corner(s)
+        if (effectiveWaypoints.length === 0) {
+          // Default: corner at (entryX, exitY)
+          segments.push({ x: entryX, y: exitY })
+        } else {
+          // Waypoint controls corner position
+          const wp = effectiveWaypoints[0]
+          segments.push({ x: wp.x, y: exitY })
+          segments.push({ x: wp.x, y: wp.y })
+          if (wp.x !== entryX) {
+            segments.push({ x: entryX, y: wp.y })
+          }
+        }
       } else {
-        // Exit vertical, entry horizontal - one corner
-        segments.push({ x: exitX, y: entryY })
+        // Exit vertical, entry horizontal - need corner(s)
+        if (effectiveWaypoints.length === 0) {
+          // Default: corner at (exitX, entryY)
+          segments.push({ x: exitX, y: entryY })
+        } else {
+          // Waypoint controls corner position
+          const wp = effectiveWaypoints[0]
+          segments.push({ x: exitX, y: wp.y })
+          segments.push({ x: wp.x, y: wp.y })
+          if (wp.y !== entryY) {
+            segments.push({ x: wp.x, y: entryY })
+          }
+        }
       }
       
-      // Add approach point and end
       segments.push({ x: entryX, y: entryY })
       segments.push({ x: endX, y: endY })
       
+      // Remove duplicate consecutive points
+      const cleanedSegments = segments.filter((p, i) => 
+        i === 0 || p.x !== segments[i - 1].x || p.y !== segments[i - 1].y
+      )
+      
       // Build path string
-      pathD = segments.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ')
+      pathD = cleanedSegments.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ')
+      
+      // Calculate handles at segment MIDPOINTS for ADJUSTABLE segments only (like Miro)
+      // For H-to-H: vertical segments are adjustable (drag left/right)
+      // For V-to-V: horizontal segments are adjustable (drag up/down)
+      // For mixed: show handle on the corner segment
+      const elbowHandlePositions: Array<{ x: number; y: number; isVertical: boolean; segmentIndex: number; waypointIndex: number }> = []
+      
+      // Determine which segment type is adjustable based on path configuration
+      const adjustableSegmentType: 'vertical' | 'horizontal' | 'both' = 
+        (exitHorizontal && entryHorizontal) ? 'vertical' :
+        (!exitHorizontal && !entryHorizontal) ? 'horizontal' : 'both'
+      
+      // Track waypoint index for each handle
+      let waypointIdx = 0
+      
+      for (let i = 1; i < cleanedSegments.length - 2; i++) {
+        const p1 = cleanedSegments[i]
+        const p2 = cleanedSegments[i + 1]
+        
+        // Determine if segment is vertical (same X) or horizontal (same Y)
+        const isVerticalSegment = Math.abs(p1.x - p2.x) < 1
+        const isHorizontalSegment = Math.abs(p1.y - p2.y) < 1
+        
+        // Only show handle if this is an adjustable segment
+        const shouldShowHandle = 
+          (adjustableSegmentType === 'vertical' && isVerticalSegment) ||
+          (adjustableSegmentType === 'horizontal' && isHorizontalSegment) ||
+          adjustableSegmentType === 'both'
+        
+        if (shouldShowHandle) {
+          elbowHandlePositions.push({
+            x: (p1.x + p2.x) / 2,
+            y: (p1.y + p2.y) / 2,
+            isVertical: isVerticalSegment,
+            segmentIndex: i,
+            waypointIndex: waypointIdx
+          })
+          waypointIdx++
+        }
+      }
+      
+      // Store handles with segment info for rendering
+      ;(transition as any)._elbowHandles = elbowHandlePositions
+      ;(transition as any)._elbowSegments = cleanedSegments
       
       // Calculate midpoint for label positioning (middle segment)
-      const midIdx = Math.floor(segments.length / 2)
+      const midIdx = Math.floor(cleanedSegments.length / 2)
       curveMid = {
-        x: (segments[midIdx - 1].x + segments[midIdx].x) / 2,
-        y: (segments[midIdx - 1].y + segments[midIdx].y) / 2
+        x: (cleanedSegments[Math.max(0, midIdx - 1)].x + cleanedSegments[midIdx].x) / 2,
+        y: (cleanedSegments[Math.max(0, midIdx - 1)].y + cleanedSegments[midIdx].y) / 2
       }
     } else {
       // Spline (curved) - use existing spline function with waypoints
@@ -2386,14 +3342,20 @@ export function WorkflowsView() {
     const curveMidX = curveMid.x
     const curveMidY = curveMid.y
     
-    // Label position - can be dragged separately
+    // Label position - can be dragged separately or pinned to absolute position
     const storedLabelOffset = labelOffsets[transition.id]
+    const pinnedPosition = pinnedLabelPositions[transition.id]
     let labelX: number, labelY: number
     
     if (isDraggingThisLabel && tempLabelPos) {
       labelX = tempLabelPos.x
       labelY = tempLabelPos.y
+    } else if (pinnedPosition) {
+      // Pinned: use absolute position (doesn't follow line)
+      labelX = pinnedPosition.x
+      labelY = pinnedPosition.y
     } else if (storedLabelOffset) {
+      // Not pinned but has offset: follow line with offset
       labelX = lineMidX + storedLabelOffset.x
       labelY = lineMidY + storedLabelOffset.y
     } else {
@@ -2407,7 +3369,7 @@ export function WorkflowsView() {
     const gateY = curveMidY + 15
     
     return (
-      <g key={transition.id}>
+      <g key={transition.id} style={{ pointerEvents: 'auto' }}>
         {/* Clickable wider path for selection */}
         <path
           d={pathD}
@@ -2438,23 +3400,55 @@ export function WorkflowsView() {
                 const clickX = (e.clientX - rect.left - pan.x) / zoom
                 const clickY = (e.clientY - rect.top - pan.y) / zoom
                 
-                // Find where to insert the new waypoint
                 const currentWaypoints = waypoints[transition.id] || []
-                const insertIndex = findInsertionIndex(
-                  currentWaypoints,
-                  { x: startX, y: startY },
-                  { x: endX, y: endY },
-                  { x: clickX, y: clickY }
-                )
                 
-                // Insert new waypoint at click position
-                const newWaypoints = [...currentWaypoints]
-                newWaypoints.splice(insertIndex, 0, { x: clickX, y: clickY })
-                
-                setWaypoints(prev => ({
-                  ...prev,
-                  [transition.id]: newWaypoints
-                }))
+                if (pathType === 'elbow') {
+                  // For elbow paths, determine path configuration and add appropriate waypoint
+                  // H-to-H: waypoints control vertical segments (store X value)
+                  // V-to-V: waypoints control horizontal segments (store Y value)
+                  // Mixed: waypoints control corners (store both X and Y)
+                  const startEdge = startPoint?.edge
+                  const endEdge = endPoint?.edge
+                  const exitHorizontal = startEdge === 'left' || startEdge === 'right'
+                  const entryHorizontal = endEdge === 'left' || endEdge === 'right'
+                  
+                  // Create waypoint based on path configuration
+                  const newWaypoint = { x: clickX, y: clickY }
+                  
+                  // For H-to-H paths, sort waypoints by X
+                  // For V-to-V paths, sort waypoints by Y
+                  const newWaypoints = [...currentWaypoints, newWaypoint]
+                  
+                  if (exitHorizontal && entryHorizontal) {
+                    // H-to-H: sort by X position
+                    newWaypoints.sort((a, b) => a.x - b.x)
+                  } else if (!exitHorizontal && !entryHorizontal) {
+                    // V-to-V: sort by Y position
+                    newWaypoints.sort((a, b) => a.y - b.y)
+                  }
+                  // For mixed paths, order doesn't matter (single waypoint corner)
+                  
+                  setWaypoints(prev => ({
+                    ...prev,
+                    [transition.id]: newWaypoints
+                  }))
+                } else {
+                  // For spline paths, use standard insertion
+                  const insertIndex = findInsertionIndex(
+                    currentWaypoints,
+                    { x: startX, y: startY },
+                    { x: endX, y: endY },
+                    { x: clickX, y: clickY }
+                  )
+                  
+                  const newWaypoints = [...currentWaypoints]
+                  newWaypoints.splice(insertIndex, 0, { x: clickX, y: clickY })
+                  
+                  setWaypoints(prev => ({
+                    ...prev,
+                    [transition.id]: newWaypoints
+                  }))
+                }
                 
                 addToast('info', 'Control point added')
               }
@@ -2487,8 +3481,10 @@ export function WorkflowsView() {
         
         {/* Visible path */}
         {(() => {
-          // Just change color when selected, no weight change or background highlight
-          const lineColor = isDraggingThisTransition ? '#60a5fa' : isSelected ? '#60a5fa' : transition.line_color || '#6b7280'
+          const isHoveredLine = hoveredTransitionId === transition.id
+          // Lighten color slightly on hover for subtle effect
+          const baseColor = transition.line_color || '#6b7280'
+          const lineColor = isDraggingThisTransition ? '#60a5fa' : isSelected ? '#60a5fa' : isHoveredLine ? lightenColor(baseColor, 0.35) : baseColor
           const strokeWidth = transition.line_thickness || 2
           const arrowHead = transition.line_arrow_head || 'end'
           
@@ -2502,6 +3498,14 @@ export function WorkflowsView() {
             }
             if (arrowHead === 'start' || arrowHead === 'both') {
               markerStart = 'url(#arrowhead-start-selected)'
+            }
+          } else if (isHoveredLine) {
+            // Use hover markers
+            if (arrowHead === 'end' || arrowHead === 'both') {
+              markerEnd = `url(#arrowhead-hover-${transition.id})`
+            }
+            if (arrowHead === 'start' || arrowHead === 'both') {
+              markerStart = `url(#arrowhead-start-hover-${transition.id})`
             }
           } else {
             if (arrowHead === 'end' || arrowHead === 'both') {
@@ -2522,15 +3526,25 @@ export function WorkflowsView() {
               markerStart={markerStart}
               markerEnd={markerEnd}
               className="pointer-events-none"
+              style={{ transition: 'stroke 0.15s ease-out' }}
             />
           )
         })()}
         
         {/* Handles are rendered in a separate layer above states */}
         
-        {/* Transition label - positioned near the curve (hidden when selected since handles layer shows it) */}
+        {/* Transition label - always visible (hidden when selected since handles layer shows it) */}
         {transition.name && !isDraggingThisTransition && !isSelected && (
-          <g transform={`translate(${labelX}, ${labelY})`}>
+          <g 
+            transform={`translate(${labelX}, ${labelY})`}
+            className="cursor-pointer"
+            style={{ pointerEvents: 'all' }}
+            onClick={(e) => {
+              e.stopPropagation()
+              setSelectedTransitionId(transition.id)
+              setSelectedStateId(null)
+            }}
+          >
             <rect
               x={-(transition.name.length * 3.5 + 8)}
               y="-10"
@@ -2597,15 +3611,60 @@ export function WorkflowsView() {
     const fromState = states.find(s => s.id === transitionStartId)
     if (!fromState) return null
     
-    // Find nearest point on source box edge to the mouse
-    const startPoint = getNearestPointOnBoxEdge(
-      fromState.position_x, fromState.position_y,
-      mousePos.x, mousePos.y
-    )
+    // Determine end point - snap to hovered state edge or use mouse position
+    let endX = mousePos.x
+    let endY = mousePos.y
+    
+    if (hoveredStateId && hoveredStateId !== transitionStartId) {
+      const hoverState = states.find(s => s.id === hoveredStateId)
+      if (hoverState) {
+        const hoverDims = stateDimensions[hoverState.id] || { width: DEFAULT_STATE_WIDTH, height: DEFAULT_STATE_HEIGHT }
+        // Snap end point to nearest of 4 handle positions
+        const hw = hoverDims.width / 2
+        const hh = hoverDims.height / 2
+        const handlePositions = [
+          { x: hoverState.position_x + hw, y: hoverState.position_y, edge: 'right' as const },
+          { x: hoverState.position_x - hw, y: hoverState.position_y, edge: 'left' as const },
+          { x: hoverState.position_x, y: hoverState.position_y - hh, edge: 'top' as const },
+          { x: hoverState.position_x, y: hoverState.position_y + hh, edge: 'bottom' as const },
+        ]
+        let nearestHandle = handlePositions[0]
+        let minDist = Infinity
+        for (const hp of handlePositions) {
+          const dist = Math.hypot(hp.x - mousePos.x, hp.y - mousePos.y)
+          if (dist < minDist) {
+            minDist = dist
+            nearestHandle = hp
+          }
+        }
+        endX = nearestHandle.x
+        endY = nearestHandle.y
+      }
+    }
+    
+    // Snap start point to nearest of 4 handle positions on source box
+    const fromDims = stateDimensions[fromState.id] || { width: DEFAULT_STATE_WIDTH, height: DEFAULT_STATE_HEIGHT }
+    const fhw = fromDims.width / 2
+    const fhh = fromDims.height / 2
+    const fromHandlePositions = [
+      { x: fromState.position_x + fhw, y: fromState.position_y, edge: 'right' as const },
+      { x: fromState.position_x - fhw, y: fromState.position_y, edge: 'left' as const },
+      { x: fromState.position_x, y: fromState.position_y - fhh, edge: 'top' as const },
+      { x: fromState.position_x, y: fromState.position_y + fhh, edge: 'bottom' as const },
+    ]
+    let startPoint = fromHandlePositions[0]
+    let minStartDist = Infinity
+    for (const hp of fromHandlePositions) {
+      const dist = Math.hypot(hp.x - endX, hp.y - endY)
+      if (dist < minStartDist) {
+        minStartDist = dist
+        startPoint = hp
+      }
+    }
     
     // Calculate midpoint for curved path
-    const midX = (startPoint.x + mousePos.x) / 2
-    const midY = (startPoint.y + mousePos.y) / 2
+    const midX = (startPoint.x + endX) / 2
+    const midY = (startPoint.y + endY) / 2
     const curveOffset = 30
     
     // Curve the line slightly
@@ -2617,7 +3676,7 @@ export function WorkflowsView() {
       controlY = midY
     }
     
-    const pathD = `M ${startPoint.x} ${startPoint.y} Q ${controlX} ${controlY} ${mousePos.x} ${mousePos.y}`
+    const pathD = `M ${startPoint.x} ${startPoint.y} Q ${controlX} ${controlY} ${endX} ${endY}`
     
     return (
       <path
@@ -2678,9 +3737,9 @@ export function WorkflowsView() {
       // Calculate curve midpoint for label positioning
       const curveMid = pathType === 'spline' 
         ? getPointOnSpline(
-            { x: startPoint.x, y: startPoint.y },
+            { x: startPoint.x, y: startPoint.y, edge: startPoint.edge },
             transitionWaypoints,
-            { x: endPoint.x, y: endPoint.y },
+            { x: endPoint.x, y: endPoint.y, edge: endPoint.edge },
             0.5
           )
         : { x: lineMidX, y: lineMidY }
@@ -2726,21 +3785,53 @@ export function WorkflowsView() {
             <title>Drag to reconnect start</title>
           </g>
           
-          {/* Waypoint handles - one for each waypoint (always shown when selected) */}
-          {transitionWaypoints.map((waypoint, index) => {
-            const isDraggingThisWaypoint = draggingCurveControl === transition.id && draggingWaypointIndex === index
-            const wpX = isDraggingThisWaypoint && tempCurvePos ? tempCurvePos.x : waypoint.x
-            const wpY = isDraggingThisWaypoint && tempCurvePos ? tempCurvePos.y : waypoint.y
-            const isActiveForPathType = pathType === 'spline'
-            const lineColor = transition.line_color || '#6b7280'
-            const isHovered = hoveredWaypoint?.transitionId === transition.id && hoveredWaypoint?.index === index
+          {/* Waypoint handles - show at segment midpoints for elbow paths */}
+          {(pathType === 'elbow' ? 
+            // For elbow paths: show handles at segment MIDPOINTS (dynamically centered)
+            ((transition as any)._elbowHandles || []).map((handle: { x: number; y: number; isVertical: boolean; segmentIndex: number; waypointIndex: number }, index: number) => {
+              // Use waypointIndex for drag tracking, not array index
+              const waypointIdx = handle.waypointIndex
+              const isDraggingThisWaypoint = draggingCurveControl === transition.id && draggingWaypointIndex === waypointIdx
+              // Handle position - for elbow, handles stay at segment midpoints
+              // During drag, the segment moves which changes the midpoint
+              let wpX = handle.x
+              let wpY = handle.y
+              
+              if (isDraggingThisWaypoint && tempCurvePos) {
+                // During drag, show handle at the dragged position (constrained to axis)
+                if (handle.isVertical) {
+                  // Vertical segment - only X changes, Y stays at midpoint
+                  wpX = tempCurvePos.x
+                } else {
+                  // Horizontal segment - only Y changes, X stays at midpoint
+                  wpY = tempCurvePos.y
+                }
+              }
+              
+              const isActiveForPathType = true
+              const isHovered = hoveredWaypoint?.transitionId === transition.id && hoveredWaypoint?.index === waypointIdx
+              // Cursor based on segment direction - perpendicular to segment
+              const cursor = handle.isVertical ? 'ew-resize' : 'ns-resize'
+              
+              return { wpX, wpY, index: waypointIdx, isDraggingThisWaypoint, isActiveForPathType, isHovered, isVertical: handle.isVertical, freeMove: false, cursor, segmentIndex: handle.segmentIndex }
+            })
+            : 
+            // For spline paths: show handles at stored waypoint positions
+            transitionWaypoints.map((waypoint, index) => {
+              const isDraggingThisWaypoint = draggingCurveControl === transition.id && draggingWaypointIndex === index
+              const wpX = isDraggingThisWaypoint && tempCurvePos ? tempCurvePos.x : waypoint.x
+              const wpY = isDraggingThisWaypoint && tempCurvePos ? tempCurvePos.y : waypoint.y
+              const isActiveForPathType = true
+              const isHovered = hoveredWaypoint?.transitionId === transition.id && hoveredWaypoint?.index === index
+              return { wpX, wpY, index, isDraggingThisWaypoint, isActiveForPathType, isHovered, isVertical: false, freeMove: true, cursor: 'move' }
+            })
+          ).map(({ wpX, wpY, index, isDraggingThisWaypoint, isActiveForPathType, isHovered, isVertical, freeMove, cursor }) => {
             
             return (
               <g
                 key={`waypoint-${index}`}
                 transform={`translate(${wpX}, ${wpY})`}
-                className="cursor-move"
-                style={{ pointerEvents: 'all', opacity: isActiveForPathType ? 1 : 0.5 }}
+                style={{ pointerEvents: 'all', opacity: isActiveForPathType ? 1 : 0.5, cursor }}
                 onMouseEnter={() => setHoveredWaypoint({ transitionId: transition.id, index })}
                 onMouseLeave={() => setHoveredWaypoint(null)}
                 onMouseDown={(e) => {
@@ -2750,8 +3841,12 @@ export function WorkflowsView() {
                   setWaypointContextMenu(null) // Close waypoint menu if open
                   setDraggingCurveControl(transition.id)
                   setDraggingWaypointIndex(index)
+                  // For elbow paths, set axis constraint (unless it's a freeMove corner)
+                  const axisConstraint = (pathType === 'elbow' && !freeMove) 
+                    ? (isVertical ? 'x' : 'y') 
+                    : null
+                  setDraggingWaypointAxis(axisConstraint)
                   setTempCurvePos({ x: wpX, y: wpY })
-                  waypointDragStartRef.current = { x: e.clientX, y: e.clientY }
                   waypointHasDraggedRef.current = false
                 }}
                 onDoubleClick={(e) => {
@@ -2793,16 +3888,16 @@ export function WorkflowsView() {
                   <circle
                     r="9"
                     fill="none"
-                    stroke={lineColor}
+                    stroke="#60a5fa"
                     strokeWidth="2"
-                    opacity="0.3"
+                    opacity="0.4"
                   />
                 )}
-                {/* White circle with line color border */}
+                {/* White circle with blue border */}
                 <circle
                   r="5"
-                  fill={isDraggingThisWaypoint ? lineColor : (isHovered ? '#f0f0f0' : '#ffffff')}
-                  stroke={isActiveForPathType ? lineColor : '#888'}
+                  fill={isDraggingThisWaypoint ? '#60a5fa' : (isHovered ? '#f0f0f0' : '#ffffff')}
+                  stroke={isActiveForPathType ? '#60a5fa' : '#888'}
                   strokeWidth={isHovered || isDraggingThisWaypoint ? 2.5 : 2}
                   strokeDasharray={isActiveForPathType ? undefined : '2,2'}
                   style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.3))' }}
@@ -2810,15 +3905,15 @@ export function WorkflowsView() {
                 <title>
                   {isActiveForPathType 
                     ? `Drag to adjust • Double-click or right-click to remove`
-                    : `Control point (inactive - only used for spline paths)`
+                    : `Control point (inactive - used for spline and elbow paths)`
                   }
                 </title>
               </g>
             )
           })}
           
-          {/* Show "add waypoint" hint when no waypoints exist (spline mode only) */}
-          {pathType === 'spline' && transitionWaypoints.length === 0 && (
+          {/* Show "add waypoint" hint when no waypoints exist (spline and elbow modes) */}
+          {(pathType === 'spline' || pathType === 'elbow') && transitionWaypoints.length === 0 && (
             <g
               transform={`translate(${curveMidX}, ${curveMidY})`}
               className="pointer-events-none"
@@ -2835,53 +3930,132 @@ export function WorkflowsView() {
           )}
           
           {/* Label as draggable handle - the label itself is the handle */}
-          {transition.name && (
-            <g
-              transform={`translate(${actualLabelX}, ${actualLabelY})`}
-              className="cursor-move"
-              style={{ pointerEvents: 'all' }}
-              onMouseDown={(e) => {
-                e.stopPropagation()
-                e.preventDefault()
-                setDraggingLabel(transition.id)
-                setTempLabelPos({ x: actualLabelX, y: actualLabelY })
-              }}
-              onDoubleClick={(e) => {
-                e.stopPropagation()
-                // Reset label position
-                setLabelOffsets(prev => {
-                  const next = { ...prev }
-                  delete next[transition.id]
-                  return next
-                })
-                addToast('info', 'Label position reset')
-              }}
-            >
-              {/* Label background - this is the draggable element */}
-              <rect
-                x={-(transition.name.length * 3.5 + 8)}
-                y="-10"
-                width={transition.name.length * 7 + 16}
-                height="18"
-                rx="4"
-                fill="rgba(31, 41, 55, 0.95)"
-                stroke={isDraggingThisLabel ? '#60a5fa' : 'rgba(96, 165, 250, 0.6)'}
-                strokeWidth={isDraggingThisLabel ? 2 : 1}
-                style={{ filter: 'drop-shadow(0 1px 3px rgba(0,0,0,0.3))' }}
-              />
-              <text
-                x="0"
-                y="3"
-                textAnchor="middle"
-                fontSize="10"
-                fill="#d1d5db"
-                className="select-none pointer-events-none"
+          {transition.name && (() => {
+            const isPinned = !!pinnedLabelPositions[transition.id]
+            const textWidth = transition.name.length * 7
+            const pinAreaWidth = 18 // Width for pin icon area
+            const padding = 8
+            const totalWidth = textWidth + padding * 2 + pinAreaWidth
+            const labelStartX = -totalWidth / 2
+            const textCenterX = labelStartX + padding + textWidth / 2
+            const pinCenterX = labelStartX + textWidth + padding * 1.5 + pinAreaWidth / 2
+            
+            return (
+              <g
+                transform={`translate(${actualLabelX}, ${actualLabelY})`}
+                style={{ pointerEvents: 'all' }}
               >
-                {transition.name}
-              </text>
-              <title>Drag to move label (double-click to reset)</title>
-            </g>
-          )}
+                {/* Label background - extended to include pin area */}
+                <rect
+                  x={labelStartX}
+                  y="-10"
+                  width={totalWidth}
+                  height="18"
+                  rx="4"
+                  fill="rgba(31, 41, 55, 0.95)"
+                  stroke={isDraggingThisLabel ? '#60a5fa' : isPinned ? 'rgba(96, 165, 250, 0.8)' : 'rgba(96, 165, 250, 0.6)'}
+                  strokeWidth={isDraggingThisLabel ? 2 : isPinned ? 1.5 : 1}
+                  style={{ filter: 'drop-shadow(0 1px 3px rgba(0,0,0,0.3))' }}
+                  className="cursor-move"
+                  onMouseDown={(e) => {
+                    e.stopPropagation()
+                    e.preventDefault()
+                    setDraggingLabel(transition.id)
+                    setTempLabelPos({ x: actualLabelX, y: actualLabelY })
+                    // Select the transition when starting to drag its label
+                    setSelectedTransitionId(transition.id)
+                    setSelectedStateId(null)
+                  }}
+                  onDoubleClick={(e) => {
+                    e.stopPropagation()
+                    // Reset both offset and pinned position
+                    setLabelOffsets(prev => {
+                      const next = { ...prev }
+                      delete next[transition.id]
+                      return next
+                    })
+                    setPinnedLabelPositions(prev => {
+                      const next = { ...prev }
+                      delete next[transition.id]
+                      return next
+                    })
+                    addToast('info', 'Label position reset')
+                  }}
+                />
+                
+                {/* Subtle divider between text and pin */}
+                <line
+                  x1={pinCenterX - pinAreaWidth / 2 - 1}
+                  y1="-6"
+                  x2={pinCenterX - pinAreaWidth / 2 - 1}
+                  y2="6"
+                  stroke="rgba(75, 85, 99, 0.4)"
+                  strokeWidth="1"
+                />
+                
+                {/* Label text */}
+                <text
+                  x={textCenterX}
+                  y="3"
+                  textAnchor="middle"
+                  fontSize="10"
+                  fill="#d1d5db"
+                  className="select-none pointer-events-none"
+                >
+                  {transition.name}
+                </text>
+                
+                {/* Pin icon - inside the label on the right */}
+                <g
+                  transform={`translate(${pinCenterX}, 0)`}
+                  className="cursor-pointer"
+                  style={{ pointerEvents: 'all' }}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    if (isPinned) {
+                      // Unpin: remove absolute position, label will follow line again
+                      setPinnedLabelPositions(prev => {
+                        const next = { ...prev }
+                        delete next[transition.id]
+                        return next
+                      })
+                    } else {
+                      // Pin: save current absolute position
+                      setPinnedLabelPositions(prev => ({
+                        ...prev,
+                        [transition.id]: { x: actualLabelX, y: actualLabelY }
+                      }))
+                    }
+                  }}
+                >
+                  {/* Hover highlight area */}
+                  <rect
+                    x="-7"
+                    y="-7"
+                    width="14"
+                    height="14"
+                    rx="2"
+                    fill={isPinned ? 'rgba(96, 165, 250, 0.3)' : 'transparent'}
+                    className="hover:fill-[rgba(96,165,250,0.2)]"
+                  />
+                  {/* Pin icon */}
+                  <g transform="translate(-5, -5) scale(0.42)">
+                    <path 
+                      d="M12 17v5M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6a1 1 0 0 1 1-1h.5a.5.5 0 0 0 0-1h-9a.5.5 0 0 0 0 1H8a1 1 0 0 1 1 1z"
+                      fill="none"
+                      stroke={isPinned ? '#60a5fa' : '#9ca3af'}
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </g>
+                  <title>{isPinned ? 'Unpin (label will follow line)' : 'Pin label to canvas (won\'t follow line)'}</title>
+                </g>
+                
+                <title>Drag to move label (double-click to reset)</title>
+              </g>
+            )
+          })()}
           
           {/* End handle - small sleek circle with arrow indicator */}
           <g
@@ -3040,10 +4214,26 @@ export function WorkflowsView() {
           <button
             onClick={() => {
               setZoom(1)
-              setPan({ x: 0, y: 0 })
+              // Center on content instead of origin
+              if (states.length > 0) {
+                const minX = Math.min(...states.map(s => s.position_x))
+                const maxX = Math.max(...states.map(s => s.position_x))
+                const minY = Math.min(...states.map(s => s.position_y))
+                const maxY = Math.max(...states.map(s => s.position_y))
+                const contentCenterX = (minX + maxX) / 2
+                const contentCenterY = (minY + maxY) / 2
+                const canvasWidth = canvasRef.current?.clientWidth || 800
+                const canvasHeight = canvasRef.current?.clientHeight || 600
+                setPan({ 
+                  x: (canvasWidth / 2) - contentCenterX, 
+                  y: (canvasHeight / 2) - contentCenterY 
+                })
+              } else {
+                setPan({ x: 0, y: 0 })
+              }
             }}
             className="p-1.5 hover:bg-plm-bg rounded text-xs"
-            title="Reset view"
+            title="Center on content"
           >
             1:1
           </button>
@@ -3171,14 +4361,35 @@ export function WorkflowsView() {
           
           <div className="w-px h-4 bg-plm-border mx-1" />
           
+          {/* Workflow Roles link */}
           {isAdmin && (
             <button
-              onClick={addState}
-              className="flex items-center gap-1 px-2 py-1 bg-plm-accent hover:bg-plm-accent-hover rounded text-white text-xs"
+              onClick={() => {
+                // Navigate to workflow roles settings
+                const { setActiveView } = usePDMStore.getState()
+                setActiveView('settings')
+                window.dispatchEvent(new CustomEvent('navigate-settings-tab', { detail: 'workflow-roles' }))
+              }}
+              className="flex items-center gap-1 px-2 py-1 hover:bg-plm-bg rounded text-xs text-plm-fg-muted hover:text-plm-fg"
+              title="Manage workflow roles (approval authorities)"
             >
-              <Plus size={12} />
-              Add State
+              <BadgeCheck size={12} />
+              Roles
             </button>
+          )}
+          
+          <div className="w-px h-4 bg-plm-border mx-1" />
+          
+          {isAdmin && (
+            <>
+              <button
+                onClick={addState}
+                className="flex items-center gap-1 px-2 py-1 bg-plm-accent hover:bg-plm-accent-hover rounded text-white text-xs"
+              >
+                <Plus size={12} />
+                Add State
+              </button>
+            </>
           )}
           </>
         )}
@@ -3193,11 +4404,9 @@ export function WorkflowsView() {
           onMouseMove={handleCanvasMouseMove}
           onMouseUp={handleCanvasMouseUp}
           onMouseLeave={() => {
-            handleCanvasMouseUp()
-            // Cancel dragging if mouse leaves canvas
-            if (draggingStateId) {
-              setDraggingStateId(null)
-            }
+            // Don't call handleCanvasMouseUp here - the global mouseup listener handles
+            // mouse releases outside the canvas. Calling it here causes double-fire issues.
+            // Only cancel transition endpoint drag on mouse leave (not state drag)
             if (draggingTransitionEndpoint) {
               setDraggingTransitionEndpoint(null)
               setHoveredStateId(null)
@@ -3205,6 +4414,28 @@ export function WorkflowsView() {
           }}
           onClick={handleCanvasClick}
           onWheel={handleWheel}
+          onContextMenu={(e) => {
+            e.preventDefault()
+            
+            // Only show canvas context menu for admins
+            if (!isAdmin || !selectedWorkflow) return
+            
+            // Calculate canvas position from screen position
+            const rect = canvasRef.current?.getBoundingClientRect()
+            if (!rect) return
+            
+            const canvasX = (e.clientX - rect.left - pan.x) / zoom
+            const canvasY = (e.clientY - rect.top - pan.y) / zoom
+            
+            setContextMenu({
+              x: e.clientX,
+              y: e.clientY,
+              type: 'canvas',
+              targetId: '',
+              canvasX,
+              canvasY
+            })
+          }}
           style={{ 
             cursor: draggingStateId || draggingTransitionEndpoint
               ? 'grabbing'
@@ -3257,7 +4488,9 @@ export function WorkflowsView() {
             className="absolute inset-0 w-full h-full"
             style={{ 
               transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-              transformOrigin: '0 0'
+              transformOrigin: '0 0',
+              overflow: 'visible',
+              pointerEvents: 'none'
             }}
           >
             {/* Definitions */}
@@ -3333,11 +4566,13 @@ export function WorkflowsView() {
                 <polygon points="0 0, 10 3.5, 0 7" fill="#22c55e" />
               </marker>
               
-              {/* Generate color-specific markers for each transition */}
+              {/* Generate color-specific markers for each transition (normal + hover) */}
               {transitions.map(t => {
                 const color = t.line_color || '#6b7280'
+                const hoverColor = lightenColor(color, 0.35)
                 return (
                   <g key={`markers-${t.id}`}>
+                    {/* Normal markers */}
                     <marker
                       id={`arrowhead-${t.id}`}
                       markerWidth="10"
@@ -3358,13 +4593,41 @@ export function WorkflowsView() {
                     >
                       <polygon points="10 0, 0 3.5, 10 7" fill={color} />
                     </marker>
+                    {/* Hover markers */}
+                    <marker
+                      id={`arrowhead-hover-${t.id}`}
+                      markerWidth="10"
+                      markerHeight="7"
+                      refX="9"
+                      refY="3.5"
+                      orient="auto"
+                    >
+                      <polygon points="0 0, 10 3.5, 0 7" fill={hoverColor} />
+                    </marker>
+                    <marker
+                      id={`arrowhead-start-hover-${t.id}`}
+                      markerWidth="10"
+                      markerHeight="7"
+                      refX="1"
+                      refY="3.5"
+                      orient="auto"
+                    >
+                      <polygon points="10 0, 0 3.5, 10 7" fill={hoverColor} />
+                    </marker>
                   </g>
                 )
               })}
             </defs>
             
-            {/* Grid background */}
-            <rect width="2000" height="2000" x="-500" y="-500" fill="url(#grid)" />
+            {/* Grid background - large enough to feel infinite */}
+            <rect 
+              width="100000" 
+              height="100000" 
+              x="-50000" 
+              y="-50000" 
+              fill="url(#grid)" 
+              style={{ pointerEvents: 'none' }}
+            />
             
             {/* Alignment guide lines */}
             {alignmentGuides.vertical !== null && (
@@ -3444,7 +4707,7 @@ export function WorkflowsView() {
                 setEditingState(state)
                 setShowEditState(true)
               }
-            } else {
+            } else if (contextMenu.type === 'transition') {
               const transition = transitions.find(t => t.id === contextMenu.targetId)
               if (transition) {
                 setEditingTransition(transition)
@@ -3456,14 +4719,14 @@ export function WorkflowsView() {
           onDelete={() => {
             if (contextMenu.type === 'state') {
               deleteState(contextMenu.targetId)
-            } else {
+            } else if (contextMenu.type === 'transition') {
               deleteTransition(contextMenu.targetId)
             }
             setContextMenu(null)
           }}
           onAddGate={() => {
             if (contextMenu.type === 'transition') {
-              addGate(contextMenu.targetId)
+              addTransitionGate(contextMenu.targetId)
             }
             setContextMenu(null)
           }}
@@ -3475,6 +4738,51 @@ export function WorkflowsView() {
                 return next
               })
               addToast('info', 'Control points reset')
+            }
+            setContextMenu(null)
+          }}
+          onAddState={async () => {
+            if (contextMenu.type === 'canvas' && contextMenu.canvasX !== undefined && contextMenu.canvasY !== undefined) {
+              // Snap position to grid if enabled
+              let posX = contextMenu.canvasX
+              let posY = contextMenu.canvasY
+              if (snapSettings.snapToGrid) {
+                posX = Math.round(posX / snapSettings.gridSize) * snapSettings.gridSize
+                posY = Math.round(posY / snapSettings.gridSize) * snapSettings.gridSize
+              }
+              
+              const newState: Partial<WorkflowState> = {
+                workflow_id: selectedWorkflow?.id,
+                name: `State ${states.length + 1}`,
+                label: `State ${states.length + 1}`,
+                description: '',
+                color: '#6B7280',
+                icon: 'circle',
+                position_x: Math.round(posX),
+                position_y: Math.round(posY),
+                is_editable: true,
+                requires_checkout: true,
+                auto_increment_revision: false,
+                sort_order: states.length,
+              }
+              
+              try {
+                const { data, error } = await supabase
+                  .from('workflow_states')
+                  .insert(newState)
+                  .select()
+                  .single()
+                
+                if (error) throw error
+                
+                setStates([...states, data])
+                setSelectedStateId(data.id)
+                setEditingState(data)
+                setShowEditState(true)
+              } catch (err) {
+                console.error('Failed to add state:', err)
+                addToast('error', 'Failed to add state')
+              }
             }
             setContextMenu(null)
           }}
@@ -3628,8 +4936,8 @@ export function WorkflowsView() {
                 setTransitions(transitions.map(t => 
                   t.id === floatingToolbar.targetId ? { ...t, line_path_type: pathType } : t
                 ))
-                // When switching TO spline, ensure there's at least one waypoint
-                if (pathType === 'spline') {
+                // When switching TO spline or elbow, ensure there's at least one waypoint for control
+                if (pathType === 'spline' || pathType === 'elbow') {
                   const existingWaypoints = waypoints[floatingToolbar.targetId]
                   if (!existingWaypoints || existingWaypoints.length === 0) {
                     // Create a default waypoint at the midpoint
@@ -3639,7 +4947,10 @@ export function WorkflowsView() {
                       const toState = states.find(s => s.id === transition.to_state_id)
                       if (fromState && toState) {
                         const midX = (fromState.position_x + toState.position_x) / 2
-                        const midY = (fromState.position_y + toState.position_y) / 2 - 40 // Offset up for curve
+                        // For spline, offset up for curve; for elbow, stay at midpoint
+                        const midY = pathType === 'spline' 
+                          ? (fromState.position_y + toState.position_y) / 2 - 40 
+                          : (fromState.position_y + toState.position_y) / 2
                         setWaypoints(prev => ({
                           ...prev,
                           [floatingToolbar.targetId]: [{ x: midX, y: midY }]
@@ -3648,8 +4959,8 @@ export function WorkflowsView() {
                     }
                   }
                 }
-                // Note: We preserve waypoints when switching away from spline
-                // so user can switch back and still have their curve adjustments
+                // Note: We preserve waypoints when switching between modes
+                // so user can switch back and still have their adjustments
               } catch (err) {
                 console.error('Failed to update path type:', err)
               }
@@ -3745,6 +5056,36 @@ export function WorkflowsView() {
               }
             }
           }}
+          onCornerRadiusChange={async (radius: number) => {
+            if (floatingToolbar.type === 'state') {
+              try {
+                await supabase
+                  .from('workflow_states')
+                  .update({ corner_radius: radius })
+                  .eq('id', floatingToolbar.targetId)
+                setStates(states.map(s => 
+                  s.id === floatingToolbar.targetId ? { ...s, corner_radius: radius } : s
+                ))
+              } catch (err) {
+                console.error('Failed to update corner radius:', err)
+              }
+            }
+          }}
+          onShapeChange={async (shape: 'rectangle' | 'diamond' | 'hexagon' | 'ellipse') => {
+            if (floatingToolbar.type === 'state') {
+              try {
+                await supabase
+                  .from('workflow_states')
+                  .update({ shape })
+                  .eq('id', floatingToolbar.targetId)
+                setStates(states.map(s => 
+                  s.id === floatingToolbar.targetId ? { ...s, shape } : s
+                ))
+              } catch (err) {
+                console.error('Failed to update shape:', err)
+              }
+            }
+          }}
           onEdit={() => {
             if (floatingToolbar.type === 'state') {
               const state = states.find(s => s.id === floatingToolbar.targetId)
@@ -3805,7 +5146,7 @@ export function WorkflowsView() {
           }}
           onAddGate={() => {
             if (floatingToolbar.type === 'transition') {
-              addGate(floatingToolbar.targetId)
+              addTransitionGate(floatingToolbar.targetId)
             }
             setFloatingToolbar(null)
           }}
@@ -3962,7 +5303,7 @@ export function WorkflowsView() {
 interface WorkflowContextMenuProps {
   x: number
   y: number
-  type: 'state' | 'transition'
+  type: 'state' | 'transition' | 'canvas'
   isAdmin: boolean
   targetState?: WorkflowState
   targetTransition?: WorkflowTransition
@@ -3973,6 +5314,7 @@ interface WorkflowContextMenuProps {
   onDelete: () => void
   onAddGate: () => void
   onResetWaypoints?: () => void
+  onAddState?: () => void
   onClose: () => void
 }
 
@@ -3990,6 +5332,7 @@ function WorkflowContextMenu({
   onDelete, 
   onAddGate,
   onResetWaypoints,
+  onAddState,
   onClose 
 }: WorkflowContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null)
@@ -4018,7 +5361,7 @@ function WorkflowContextMenu({
   }, [onClose])
   
   // Adjust position to keep menu on screen
-  const [adjustedPos, setAdjustedPos] = useState({ x, y })
+  const [adjustedPos, setAdjustedPos] = useState<{ x: number; y: number } | null>(null)
   
   useEffect(() => {
     if (menuRef.current) {
@@ -4043,59 +5386,65 @@ function WorkflowContextMenu({
   return (
     <div
       ref={menuRef}
-      className="fixed bg-plm-sidebar border border-plm-border rounded-lg shadow-xl py-1 min-w-[200px] z-50"
-      style={{ left: adjustedPos.x, top: adjustedPos.y }}
+      className={`fixed bg-plm-sidebar border border-plm-border rounded-lg shadow-xl py-1 min-w-[200px] z-50 transition-opacity duration-75 ${
+        adjustedPos ? 'opacity-100' : 'opacity-0'
+      }`}
+      style={{ left: adjustedPos?.x ?? x, top: adjustedPos?.y ?? y }}
     >
-      {/* Header showing what's selected */}
-      <div className="px-3 py-2 border-b border-plm-border">
-        {type === 'state' && targetState && (
-          <div className="flex items-center gap-2">
-            <div 
-              className="w-4 h-4 rounded flex items-center justify-center"
-              style={{ backgroundColor: targetState.color }}
-            />
-            <span className="text-sm font-medium">{targetState.label || targetState.name}</span>
-            <span className="text-xs text-plm-fg-muted">({targetState.is_editable ? 'Editable' : 'Locked'})</span>
-          </div>
-        )}
-        {type === 'transition' && targetTransition && (
-          <div>
-            <div className="text-sm font-medium mb-1">{targetTransition.name || 'Unnamed transition'}</div>
-            <div className="flex items-center gap-1.5 text-xs text-plm-fg-muted">
-              <span className="px-1.5 py-0.5 rounded" style={{ backgroundColor: (fromState?.color || '#666') + '40' }}>
-                {fromState?.name || '?'}
-              </span>
-              <ArrowRight size={10} />
-              <span className="px-1.5 py-0.5 rounded" style={{ backgroundColor: (toState?.color || '#666') + '40' }}>
-                {toState?.name || '?'}
-              </span>
+      {/* Header showing what's selected (hidden for canvas) */}
+      {type !== 'canvas' && (
+        <div className="px-3 py-2 border-b border-plm-border">
+          {type === 'state' && targetState && (
+            <div className="flex items-center gap-2">
+              <div 
+                className="w-4 h-4 rounded flex items-center justify-center"
+                style={{ backgroundColor: targetState.color }}
+              />
+              <span className="text-sm font-medium">{targetState.label || targetState.name}</span>
+              <span className="text-xs text-plm-fg-muted">({targetState.is_editable ? 'Editable' : 'Locked'})</span>
             </div>
-            {gates.length > 0 && (
-              <div className="mt-1 text-xs text-amber-400">
-                {gates.length} gate{gates.length > 1 ? 's' : ''}
+          )}
+          {type === 'transition' && targetTransition && (
+            <div>
+              <div className="text-sm font-medium mb-1">{targetTransition.name || 'Unnamed transition'}</div>
+              <div className="flex items-center gap-1.5 text-xs text-plm-fg-muted">
+                <span className="px-1.5 py-0.5 rounded" style={{ backgroundColor: (fromState?.color || '#666') + '40' }}>
+                  {fromState?.name || '?'}
+                </span>
+                <ArrowRight size={10} />
+                <span className="px-1.5 py-0.5 rounded" style={{ backgroundColor: (toState?.color || '#666') + '40' }}>
+                  {toState?.name || '?'}
+                </span>
               </div>
-            )}
-          </div>
-        )}
-      </div>
+              {gates.length > 0 && (
+                <div className="mt-1 text-xs text-amber-400">
+                  {gates.length} gate{gates.length > 1 ? 's' : ''}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       
       {/* Menu items */}
       <div className="py-1">
-        <button
-          onClick={onEdit}
-          className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left hover:bg-plm-highlight transition-colors"
-        >
-          <Edit3 size={14} />
-          Edit {type === 'state' ? 'State' : 'Transition'}...
-        </button>
-        
-        {type === 'transition' && isAdmin && (
+        {type === 'canvas' && isAdmin && onAddState && (
           <button
-            onClick={onAddGate}
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left hover:bg-plm-highlight transition-colors text-amber-400"
+            onClick={onAddState}
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left hover:bg-plm-highlight transition-colors"
           >
             <Plus size={14} />
-            Add Gate...
+            New State
+          </button>
+        )}
+        
+        {type !== 'canvas' && (
+          <button
+            onClick={onEdit}
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left hover:bg-plm-highlight transition-colors"
+          >
+            <Edit3 size={14} />
+            Edit {type === 'state' ? 'State' : 'Transition'}...
           </button>
         )}
         
@@ -4109,7 +5458,7 @@ function WorkflowContextMenu({
           </button>
         )}
         
-        {isAdmin && (
+        {isAdmin && type !== 'canvas' && (
           <>
             <div className="my-1 border-t border-plm-border" />
             <button
@@ -4122,6 +5471,115 @@ function WorkflowContextMenu({
           </>
         )}
       </div>
+    </div>
+  )
+}
+
+// ============================================
+// Tick Slider Component
+// ============================================
+
+interface TickSliderProps {
+  value: number
+  min: number
+  max: number
+  step: number
+  snapPoints: number[]
+  onChange: (value: number) => void
+}
+
+function TickSlider({ value, min, max, step, snapPoints, onChange }: TickSliderProps) {
+  const sliderRef = useRef<HTMLDivElement>(null)
+  const [isDragging, setIsDragging] = useState(false)
+  
+  // Calculate position percentage
+  const getPercent = (val: number) => ((val - min) / (max - min)) * 100
+  
+  // Snap to nearest point if within threshold
+  const snapThreshold = ((max - min) / snapPoints.length) * 0.3
+  const getSnappedValue = (val: number) => {
+    for (const point of snapPoints) {
+      if (Math.abs(val - point) <= snapThreshold) {
+        return point
+      }
+    }
+    return val
+  }
+  
+  const handleMove = (clientX: number) => {
+    if (!sliderRef.current) return
+    const rect = sliderRef.current.getBoundingClientRect()
+    const percent = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
+    const rawValue = min + percent * (max - min)
+    const snappedValue = getSnappedValue(rawValue)
+    const steppedValue = Math.round(snappedValue / step) * step
+    const clampedValue = Math.max(min, Math.min(max, steppedValue))
+    onChange(clampedValue)
+  }
+  
+  const handleMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault()
+    setIsDragging(true)
+    handleMove(e.clientX)
+  }
+  
+  useEffect(() => {
+    if (!isDragging) return
+    
+    const handleMouseMove = (e: MouseEvent) => {
+      handleMove(e.clientX)
+    }
+    
+    const handleMouseUp = () => {
+      setIsDragging(false)
+    }
+    
+    document.addEventListener('mousemove', handleMouseMove)
+    document.addEventListener('mouseup', handleMouseUp)
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove)
+      document.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [isDragging])
+  
+  return (
+    <div 
+      ref={sliderRef}
+      className="relative h-6 cursor-pointer select-none"
+      onMouseDown={handleMouseDown}
+    >
+      {/* Track background */}
+      <div className="absolute top-1/2 left-0 right-0 h-1 -translate-y-1/2 bg-plm-border rounded-full" />
+      
+      {/* Filled track */}
+      <div 
+        className="absolute top-1/2 left-0 h-1 -translate-y-1/2 bg-plm-accent rounded-full"
+        style={{ width: `${getPercent(value)}%` }}
+      />
+      
+      {/* Tick marks */}
+      {snapPoints.map((point) => {
+        const percent = getPercent(point)
+        const isActive = value >= point
+        const isAtValue = Math.abs(value - point) < step
+        return (
+          <div
+            key={point}
+            className={`absolute top-1/2 w-1.5 h-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full transition-colors ${
+              isAtValue ? 'bg-plm-fg scale-125' : isActive ? 'bg-plm-accent' : 'bg-plm-fg-muted/40'
+            }`}
+            style={{ left: `${percent}%` }}
+          />
+        )
+      })}
+      
+      {/* Thumb */}
+      <div
+        className={`absolute top-1/2 w-4 h-4 -translate-x-1/2 -translate-y-1/2 bg-plm-fg rounded-full shadow-lg border-2 border-plm-accent transition-transform ${
+          isDragging ? 'scale-125' : 'hover:scale-110'
+        }`}
+        style={{ left: `${getPercent(value)}%` }}
+      />
     </div>
   )
 }
@@ -4183,6 +5641,8 @@ interface FloatingToolbarProps {
   onBorderColorChange?: (color: string | null) => void
   onBorderOpacityChange?: (opacity: number) => void
   onBorderThicknessChange?: (thickness: number) => void
+  onCornerRadiusChange?: (radius: number) => void
+  onShapeChange?: (shape: 'rectangle' | 'diamond' | 'hexagon' | 'ellipse') => void
   onEdit: () => void
   onDuplicate: () => void
   onDelete: () => void
@@ -4206,6 +5666,8 @@ function FloatingToolbar({
   onBorderColorChange,
   onBorderOpacityChange,
   onBorderThicknessChange,
+  onCornerRadiusChange,
+  onShapeChange,
   onEdit,
   onDuplicate,
   onDelete,
@@ -4215,12 +5677,12 @@ function FloatingToolbar({
   const toolbarRef = useRef<HTMLDivElement>(null)
   const [showColorPicker, setShowColorPicker] = useState(false)
   const [showBorderColorPicker, setShowBorderColorPicker] = useState(false)
-  const [showLineStyles, setShowLineStyles] = useState(false)
   const [showPathTypes, setShowPathTypes] = useState(false)
   const [showArrowHeads, setShowArrowHeads] = useState(false)
   const [showThickness, setShowThickness] = useState(false)
   const [showBoxStyles, setShowBoxStyles] = useState(false)
-  const [adjustedPos, setAdjustedPos] = useState({ x, y })
+  const [showShapePicker, setShowShapePicker] = useState(false)
+  const [adjustedPos, setAdjustedPos] = useState<{ x: number; y: number } | null>(null)
   const [savedColors, setSavedColorsState] = useState<string[]>(getSavedColors)
   const [customColor, setCustomColor] = useState('#6b7280')
   const [customBorderColor, setCustomBorderColor] = useState('#6b7280')
@@ -4229,11 +5691,11 @@ function FloatingToolbar({
   const closeAllDropdowns = () => {
     setShowColorPicker(false)
     setShowBorderColorPicker(false)
-    setShowLineStyles(false)
     setShowPathTypes(false)
     setShowArrowHeads(false)
     setShowThickness(false)
     setShowBoxStyles(false)
+    setShowShapePicker(false)
   }
   
   // Save a color to saved colors
@@ -4261,6 +5723,7 @@ function FloatingToolbar({
   const currentBorderColor = targetState?.border_color || null
   const currentBorderOpacity = targetState?.border_opacity ?? 1
   const currentStateBorderThickness = targetState?.border_thickness ?? 2
+  const currentCornerRadius = targetState?.corner_radius ?? 8
   
   // Current line style
   const currentLineStyle = targetTransition?.line_style || 'solid'
@@ -4314,11 +5777,13 @@ function FloatingToolbar({
   return (
     <div
       ref={toolbarRef}
-      className="fixed z-50 flex flex-col items-center gap-1"
-      style={{ left: adjustedPos.x, top: adjustedPos.y }}
+      className={`fixed z-50 flex flex-col items-center gap-1 transition-opacity duration-75 ${
+        adjustedPos ? 'opacity-100' : 'opacity-0'
+      }`}
+      style={{ left: adjustedPos?.x ?? x, top: adjustedPos?.y ?? y }}
     >
       {/* Main horizontal toolbar */}
-      <div className="flex items-center gap-0.5 bg-[#1e1e2e] rounded-lg shadow-2xl border border-[#313244] p-1">
+      <div className="flex items-center gap-0.5 bg-plm-sidebar rounded-lg shadow-2xl border border-plm-border p-1">
         {/* Color button */}
         <div className="relative">
           <button
@@ -4327,11 +5792,11 @@ function FloatingToolbar({
               setShowColorPicker(!showColorPicker)
               setCustomColor(currentColor)
             }}
-            className="flex items-center justify-center w-8 h-8 rounded hover:bg-[#313244] transition-colors"
+            className="flex items-center justify-center w-8 h-8 rounded hover:bg-plm-highlight transition-colors"
             title={type === 'state' ? 'Fill color' : 'Line color'}
           >
             <div 
-              className="w-5 h-5 rounded border-2 border-white/30"
+              className="w-5 h-5 rounded border-2 border-plm-fg/30"
               style={{ backgroundColor: currentColor }}
             />
           </button>
@@ -4339,12 +5804,12 @@ function FloatingToolbar({
           {/* Enhanced color picker dropdown */}
           {showColorPicker && (
             <div 
-              className="absolute top-full left-0 mt-1 p-3 bg-[#1e1e2e] rounded-lg shadow-xl border border-[#313244] min-w-[200px] z-50"
+              className="absolute top-full left-0 mt-1 p-2 bg-plm-sidebar rounded-lg shadow-xl border border-plm-border z-50"
               onClick={(e) => e.stopPropagation()}
             >
-              {/* Preset colors */}
-              <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-2">Colors</div>
-              <div className="grid grid-cols-4 gap-1.5 mb-3">
+              {/* Preset colors - dense grid */}
+              <div className="text-[10px] uppercase tracking-wide text-plm-fg-muted mb-2">Colors</div>
+              <div className="grid grid-cols-5 gap-1.5 mb-3">
                 {TOOLBAR_COLORS.map((color) => (
                   <button
                     key={color}
@@ -4352,8 +5817,8 @@ function FloatingToolbar({
                       onColorChange(color)
                       closeAllDropdowns()
                     }}
-                    className={`w-7 h-7 rounded-md border-2 transition-all hover:scale-110 ${
-                      currentColor === color ? 'border-white ring-2 ring-white/30' : 'border-transparent hover:border-white/30'
+                    className={`w-5 h-5 rounded transition-transform hover:scale-105 ${
+                      currentColor === color ? 'ring-2 ring-plm-fg ring-offset-1 ring-offset-plm-sidebar' : ''
                     }`}
                     style={{ backgroundColor: color }}
                   />
@@ -4363,8 +5828,8 @@ function FloatingToolbar({
               {/* Saved colors */}
               {savedColors.length > 0 && (
                 <>
-                  <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-2">Saved</div>
-                  <div className="grid grid-cols-4 gap-1.5 mb-3">
+                  <div className="text-[10px] uppercase tracking-wide text-plm-fg-muted mb-2">Saved</div>
+                  <div className="grid grid-cols-5 gap-1.5 mb-3">
                     {savedColors.map((color) => (
                       <button
                         key={color}
@@ -4376,8 +5841,8 @@ function FloatingToolbar({
                           e.preventDefault()
                           removeSavedColor(color, e)
                         }}
-                        className={`relative w-7 h-7 rounded-md border-2 transition-all hover:scale-110 group ${
-                          currentColor === color ? 'border-white ring-2 ring-white/30' : 'border-transparent hover:border-white/30'
+                        className={`relative w-5 h-5 rounded transition-transform hover:scale-105 group ${
+                          currentColor === color ? 'ring-2 ring-plm-fg ring-offset-1 ring-offset-plm-sidebar' : ''
                         }`}
                         style={{ backgroundColor: color }}
                         title="Right-click to remove"
@@ -4390,13 +5855,13 @@ function FloatingToolbar({
               )}
               
               {/* Custom color */}
-              <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-2">Custom</div>
-              <div className="flex items-center gap-2">
+              <div className="text-[10px] uppercase tracking-wide text-plm-fg-muted mb-1.5">Custom</div>
+              <div className="flex items-center gap-1.5">
                 <input
                   type="color"
                   value={customColor}
                   onChange={(e) => setCustomColor(e.target.value)}
-                  className="w-8 h-8 rounded cursor-pointer border border-[#313244] bg-transparent"
+                  className="w-7 h-7 rounded cursor-pointer border border-plm-border bg-transparent"
                 />
                 <input
                   type="text"
@@ -4407,7 +5872,7 @@ function FloatingToolbar({
                       setCustomColor(val)
                     }
                   }}
-                  className="flex-1 px-2 py-1.5 text-xs bg-[#313244] border border-[#414156] rounded font-mono text-gray-200"
+                  className="flex-1 px-2 py-1 text-xs bg-plm-bg border border-plm-border rounded font-mono text-plm-fg"
                   placeholder="#000000"
                 />
                 <button
@@ -4415,7 +5880,7 @@ function FloatingToolbar({
                     onColorChange(customColor)
                     closeAllDropdowns()
                   }}
-                  className="px-2 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-500 transition-colors"
+                  className="px-2 py-1 text-xs bg-plm-accent text-white rounded hover:bg-plm-accent/80 transition-colors"
                 >
                   Apply
                 </button>
@@ -4424,10 +5889,10 @@ function FloatingToolbar({
               {/* Save color button */}
               <button
                 onClick={() => saveColor(customColor)}
-                className="mt-2 w-full px-2 py-1.5 text-xs text-gray-400 hover:text-white hover:bg-[#313244] rounded flex items-center justify-center gap-1 transition-colors"
+                className="mt-1.5 w-full px-2 py-1 text-xs text-plm-fg-muted hover:text-plm-fg hover:bg-plm-highlight rounded flex items-center justify-center gap-1 transition-colors"
               >
                 <Plus size={12} />
-                Save current color
+                Save color
               </button>
             </div>
           )}
@@ -4437,7 +5902,7 @@ function FloatingToolbar({
         {type === 'transition' && (
           <>
             {/* Divider */}
-            <div className="w-px h-5 bg-[#313244] mx-0.5" />
+            <div className="w-px h-5 bg-plm-border mx-0.5" />
             
             {/* Path type (straight/spline/elbow) */}
             {onPathTypeChange && (
@@ -4447,10 +5912,10 @@ function FloatingToolbar({
                     closeAllDropdowns()
                     setShowPathTypes(!showPathTypes)
                   }}
-                  className="flex items-center justify-center w-8 h-8 rounded hover:bg-[#313244] transition-colors"
+                  className="flex items-center justify-center w-8 h-8 rounded hover:bg-plm-highlight transition-colors"
                   title="Line path type"
                 >
-                  <svg width="18" height="18" viewBox="0 0 18 18" className="text-gray-300">
+                  <svg width="18" height="18" viewBox="0 0 18 18" className="text-plm-fg-muted">
                     {currentPathType === 'straight' && (
                       <line x1="2" y1="14" x2="16" y2="4" stroke="currentColor" strokeWidth="2" />
                     )}
@@ -4464,7 +5929,7 @@ function FloatingToolbar({
                 </button>
                 
                 {showPathTypes && (
-                  <div className="absolute top-full left-0 mt-1 p-1 bg-[#1e1e2e] rounded-lg shadow-xl border border-[#313244] flex flex-col gap-0.5 min-w-[130px]">
+                  <div className="absolute top-full left-0 mt-1 p-1 bg-plm-sidebar rounded-lg shadow-xl border border-plm-border flex flex-col gap-0.5 min-w-[130px]">
                     {(['straight', 'spline', 'elbow'] as TransitionPathType[]).map((pathType) => (
                       <button
                         key={pathType}
@@ -4472,8 +5937,8 @@ function FloatingToolbar({
                           onPathTypeChange(pathType)
                           closeAllDropdowns()
                         }}
-                        className={`flex items-center gap-2 px-3 py-1.5 rounded text-sm hover:bg-[#313244] transition-colors ${
-                          currentPathType === pathType ? 'bg-[#313244] text-white' : 'text-gray-400'
+                        className={`flex items-center gap-2 px-3 py-1.5 rounded text-sm hover:bg-plm-highlight transition-colors ${
+                          currentPathType === pathType ? 'bg-plm-highlight text-plm-fg' : 'text-plm-fg-muted'
                         }`}
                       >
                         <svg width="24" height="16" viewBox="0 0 24 16">
@@ -4495,61 +5960,7 @@ function FloatingToolbar({
               </div>
             )}
             
-            {/* Line style (solid/dashed/dotted) */}
-            {onLineStyleChange && (
-              <div className="relative">
-                <button
-                  onClick={() => {
-                    closeAllDropdowns()
-                    setShowLineStyles(!showLineStyles)
-                  }}
-                  className="flex items-center justify-center w-8 h-8 rounded hover:bg-[#313244] transition-colors"
-                  title="Line style"
-                >
-                  <svg width="18" height="18" viewBox="0 0 18 18" className="text-gray-300">
-                    {currentLineStyle === 'solid' && (
-                      <line x1="2" y1="9" x2="16" y2="9" stroke="currentColor" strokeWidth="2" />
-                    )}
-                    {currentLineStyle === 'dashed' && (
-                      <line x1="2" y1="9" x2="16" y2="9" stroke="currentColor" strokeWidth="2" strokeDasharray="4,2" />
-                    )}
-                    {currentLineStyle === 'dotted' && (
-                      <line x1="2" y1="9" x2="16" y2="9" stroke="currentColor" strokeWidth="2" strokeDasharray="1,3" strokeLinecap="round" />
-                    )}
-                  </svg>
-                </button>
-                
-                {showLineStyles && (
-                  <div className="absolute top-full left-0 mt-1 p-1 bg-[#1e1e2e] rounded-lg shadow-xl border border-[#313244] flex flex-col gap-0.5 min-w-[110px]">
-                    {(['solid', 'dashed', 'dotted'] as TransitionLineStyle[]).map((style) => (
-                      <button
-                        key={style}
-                        onClick={() => {
-                          onLineStyleChange(style)
-                          closeAllDropdowns()
-                        }}
-                        className={`flex items-center gap-2 px-3 py-1.5 rounded text-sm hover:bg-[#313244] transition-colors ${
-                          currentLineStyle === style ? 'bg-[#313244] text-white' : 'text-gray-400'
-                        }`}
-                      >
-                        <svg width="24" height="8" viewBox="0 0 24 8">
-                          <line 
-                            x1="0" y1="4" x2="24" y2="4" 
-                            stroke="currentColor" 
-                            strokeWidth="2"
-                            strokeDasharray={style === 'dashed' ? '4,2' : style === 'dotted' ? '1,3' : 'none'}
-                            strokeLinecap={style === 'dotted' ? 'round' : 'butt'}
-                          />
-                        </svg>
-                        <span className="capitalize">{style}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-            
-            {/* Line thickness */}
+            {/* Line settings (thickness + style) */}
             {onThicknessChange && (
               <div className="relative">
                 <button
@@ -4557,39 +5968,77 @@ function FloatingToolbar({
                     closeAllDropdowns()
                     setShowThickness(!showThickness)
                   }}
-                  className="flex items-center justify-center w-8 h-8 rounded hover:bg-[#313244] transition-colors"
-                  title="Line thickness"
+                  className="flex items-center justify-center w-8 h-8 rounded hover:bg-plm-highlight transition-colors"
+                  title="Line settings"
                 >
-                  <svg width="18" height="18" viewBox="0 0 18 18" className="text-gray-300">
-                    <line x1="2" y1="9" x2="16" y2="9" stroke="currentColor" strokeWidth={currentThickness} />
+                  <svg width="18" height="18" viewBox="0 0 18 18" className="text-plm-fg-muted">
+                    <line 
+                      x1="2" y1="9" x2="16" y2="9" 
+                      stroke="currentColor" 
+                      strokeWidth={currentThickness}
+                      strokeDasharray={currentLineStyle === 'dashed' ? '4,2' : currentLineStyle === 'dotted' ? '1,3' : 'none'}
+                      strokeLinecap={currentLineStyle === 'dotted' ? 'round' : 'butt'}
+                    />
                   </svg>
                 </button>
                 
                 {showThickness && (
-                  <div className="absolute top-full left-0 mt-1 p-1 bg-[#1e1e2e] rounded-lg shadow-xl border border-[#313244] flex flex-col gap-0.5 min-w-[90px]">
-                    {([1, 2, 3, 4, 6] as TransitionLineThickness[]).map((thickness) => (
-                      <button
-                        key={thickness}
-                        onClick={() => {
-                          onThicknessChange(thickness)
-                          closeAllDropdowns()
-                        }}
-                        className={`flex items-center gap-2 px-3 py-1.5 rounded text-sm hover:bg-[#313244] transition-colors ${
-                          currentThickness === thickness ? 'bg-[#313244] text-white' : 'text-gray-400'
-                        }`}
-                      >
-                        <svg width="24" height="12" viewBox="0 0 24 12">
-                          <line x1="0" y1="6" x2="24" y2="6" stroke="currentColor" strokeWidth={thickness} />
-                        </svg>
-                        <span>{thickness}px</span>
-                      </button>
-                    ))}
+                  <div 
+                    className="absolute top-full left-0 mt-1 p-3 bg-plm-sidebar rounded-lg shadow-xl border border-plm-border min-w-[180px]"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {/* Thickness slider */}
+                    <div className="mb-4">
+                      <div className="text-[10px] uppercase tracking-wide text-plm-fg-muted mb-2 flex items-center justify-between">
+                        <span>Thickness</span>
+                        <span className="text-plm-fg-muted">{currentThickness}px</span>
+                      </div>
+                      <TickSlider
+                        value={currentThickness}
+                        min={1}
+                        max={6}
+                        step={1}
+                        snapPoints={[1, 2, 3, 4, 5, 6]}
+                        onChange={(val) => onThicknessChange(val as TransitionLineThickness)}
+                      />
+                    </div>
+                    
+                    {/* Line style */}
+                    {onLineStyleChange && (
+                      <div>
+                        <div className="text-[10px] uppercase tracking-wide text-plm-fg-muted mb-2">Style</div>
+                        <div className="flex gap-1">
+                          {(['solid', 'dashed', 'dotted'] as TransitionLineStyle[]).map((style) => (
+                            <button
+                              key={style}
+                              onClick={() => onLineStyleChange(style)}
+                              className={`flex-1 py-2 rounded flex items-center justify-center transition-colors ${
+                                currentLineStyle === style 
+                                  ? 'bg-plm-highlight' 
+                                  : 'bg-plm-bg hover:bg-plm-highlight'
+                              }`}
+                              title={style}
+                            >
+                              <svg width="32" height="8" viewBox="0 0 32 8" className="text-plm-fg">
+                                <line 
+                                  x1="2" y1="4" x2="30" y2="4" 
+                                  stroke="currentColor" 
+                                  strokeWidth="2"
+                                  strokeDasharray={style === 'dashed' ? '6,3' : style === 'dotted' ? '2,4' : 'none'}
+                                  strokeLinecap={style === 'dotted' ? 'round' : 'butt'}
+                                />
+                              </svg>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
             )}
             
-            {/* Arrow head position */}
+            {/* Arrow direction - visual toggle buttons */}
             {onArrowHeadChange && (
               <div className="relative">
                 <button
@@ -4597,10 +6046,10 @@ function FloatingToolbar({
                     closeAllDropdowns()
                     setShowArrowHeads(!showArrowHeads)
                   }}
-                  className="flex items-center justify-center w-8 h-8 rounded hover:bg-[#313244] transition-colors"
-                  title="Arrow head"
+                  className="flex items-center justify-center w-8 h-8 rounded hover:bg-plm-highlight transition-colors"
+                  title="Arrow direction"
                 >
-                  <svg width="18" height="18" viewBox="0 0 18 18" className="text-gray-300">
+                  <svg width="18" height="18" viewBox="0 0 18 18" className="text-plm-fg-muted">
                     <defs>
                       <marker id="toolbar-arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
                         <polygon points="0 0, 6 3, 0 6" fill="currentColor" />
@@ -4626,33 +6075,62 @@ function FloatingToolbar({
                 </button>
                 
                 {showArrowHeads && (
-                  <div className="absolute top-full right-0 mt-1 p-1 bg-[#1e1e2e] rounded-lg shadow-xl border border-[#313244] flex flex-col gap-0.5 min-w-[110px]">
-                    {([
-                      { value: 'end', label: 'End →' },
-                      { value: 'start', label: '← Start' },
-                      { value: 'both', label: '← Both →' },
-                      { value: 'none', label: 'None —' }
-                    ] as { value: TransitionArrowHead; label: string }[]).map(({ value, label }) => (
-                      <button
-                        key={value}
-                        onClick={() => {
-                          onArrowHeadChange(value)
-                          closeAllDropdowns()
-                        }}
-                        className={`flex items-center gap-2 px-3 py-1.5 rounded text-sm hover:bg-[#313244] transition-colors ${
-                          currentArrowHead === value ? 'bg-[#313244] text-white' : 'text-gray-400'
-                        }`}
-                      >
-                        <span>{label}</span>
-                      </button>
-                    ))}
+                  <div 
+                    className="absolute top-full right-0 mt-1 p-2 bg-plm-sidebar rounded-lg shadow-xl border border-plm-border"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div className="text-[10px] uppercase tracking-wide text-plm-fg-muted mb-2">Arrow</div>
+                    <div className="flex gap-1">
+                      {([
+                        { value: 'end' as TransitionArrowHead, tooltip: 'Arrow at end' },
+                        { value: 'start' as TransitionArrowHead, tooltip: 'Arrow at start' },
+                        { value: 'both' as TransitionArrowHead, tooltip: 'Arrows at both ends' },
+                        { value: 'none' as TransitionArrowHead, tooltip: 'No arrows' }
+                      ]).map(({ value, tooltip }) => (
+                        <button
+                          key={value}
+                          onClick={() => onArrowHeadChange(value)}
+                          className={`w-10 h-8 rounded flex items-center justify-center transition-colors ${
+                            currentArrowHead === value 
+                              ? 'bg-plm-highlight' 
+                              : 'bg-plm-bg hover:bg-plm-highlight'
+                          }`}
+                          title={tooltip}
+                        >
+                          <svg width="28" height="12" viewBox="0 0 28 12" className="text-plm-fg">
+                            {value === 'end' && (
+                              <>
+                                <line x1="2" y1="6" x2="20" y2="6" stroke="currentColor" strokeWidth="2" />
+                                <polygon points="26,6 20,2 20,10" fill="currentColor" />
+                              </>
+                            )}
+                            {value === 'start' && (
+                              <>
+                                <line x1="8" y1="6" x2="26" y2="6" stroke="currentColor" strokeWidth="2" />
+                                <polygon points="2,6 8,2 8,10" fill="currentColor" />
+                              </>
+                            )}
+                            {value === 'both' && (
+                              <>
+                                <line x1="8" y1="6" x2="20" y2="6" stroke="currentColor" strokeWidth="2" />
+                                <polygon points="2,6 8,2 8,10" fill="currentColor" />
+                                <polygon points="26,6 20,2 20,10" fill="currentColor" />
+                              </>
+                            )}
+                            {value === 'none' && (
+                              <line x1="2" y1="6" x2="26" y2="6" stroke="currentColor" strokeWidth="2" />
+                            )}
+                          </svg>
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
             )}
             
             {/* Divider */}
-            <div className="w-px h-5 bg-[#313244] mx-0.5" />
+            <div className="w-px h-5 bg-plm-border mx-0.5" />
           </>
         )}
         
@@ -4660,7 +6138,7 @@ function FloatingToolbar({
         {type === 'state' && (
           <>
             {/* Divider */}
-            <div className="w-px h-5 bg-[#313244] mx-0.5" />
+            <div className="w-px h-5 bg-plm-border mx-0.5" />
             
             {/* Box styling button */}
             <div className="relative">
@@ -4670,10 +6148,10 @@ function FloatingToolbar({
                   setShowBoxStyles(!showBoxStyles)
                   setCustomBorderColor(currentBorderColor || currentColor)
                 }}
-                className="flex items-center justify-center w-8 h-8 rounded hover:bg-[#313244] transition-colors"
+                className="flex items-center justify-center w-8 h-8 rounded hover:bg-plm-highlight transition-colors"
                 title="Box styling"
               >
-                <svg width="18" height="18" viewBox="0 0 18 18" className="text-gray-300">
+                <svg width="18" height="18" viewBox="0 0 18 18" className="text-plm-fg-muted">
                   <rect x="2" y="2" width="14" height="14" rx="2" fill="none" stroke="currentColor" strokeWidth="2" />
                 </svg>
               </button>
@@ -4681,131 +6159,215 @@ function FloatingToolbar({
               {/* Box styling dropdown */}
               {showBoxStyles && (
                 <div 
-                  className="absolute top-full left-0 mt-1 p-3 bg-[#1e1e2e] rounded-lg shadow-xl border border-[#313244] min-w-[240px] z-50"
+                  className="absolute top-full left-0 mt-1 p-3 bg-plm-sidebar rounded-lg shadow-xl border border-plm-border z-50 w-[200px]"
                   onClick={(e) => e.stopPropagation()}
                 >
+                  {/* Fill Color */}
+                  <div className="mb-4">
+                    <div className="text-[10px] uppercase tracking-wide text-plm-fg-muted mb-2">Fill Color</div>
+                    <div className="grid grid-cols-7 gap-1">
+                      {/* No fill button */}
+                      <button
+                        onClick={() => onFillOpacityChange?.(0)}
+                        className={`w-5 h-5 rounded flex items-center justify-center transition-colors border ${
+                          currentFillOpacity === 0 
+                            ? 'border-plm-fg bg-plm-bg' 
+                            : 'border-plm-border bg-plm-bg hover:bg-plm-highlight'
+                        }`}
+                        title="No fill"
+                      >
+                        <svg width="10" height="10" viewBox="0 0 12 12" className="text-plm-fg-muted">
+                          <line x1="2" y1="2" x2="10" y2="10" stroke="currentColor" strokeWidth="1.5" />
+                          <rect x="1" y="1" width="10" height="10" rx="1" fill="none" stroke="currentColor" strokeWidth="1" />
+                        </svg>
+                      </button>
+                      {/* Color presets */}
+                      {TOOLBAR_COLORS.slice(0, 13).map((color) => (
+                        <button
+                          key={color}
+                          onClick={() => {
+                            onColorChange(color)
+                            if (currentFillOpacity === 0) onFillOpacityChange?.(1)
+                          }}
+                          className={`w-5 h-5 rounded transition-transform hover:scale-105 ${
+                            currentColor === color && currentFillOpacity > 0 ? 'ring-2 ring-plm-fg ring-offset-1 ring-offset-plm-sidebar' : ''
+                          }`}
+                          style={{ backgroundColor: color }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                  
                   {/* Fill Opacity */}
                   <div className="mb-4">
-                    <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-2 flex items-center justify-between">
+                    <div className="text-[10px] uppercase tracking-wide text-plm-fg-muted mb-2 flex items-center justify-between">
                       <span>Fill Opacity</span>
-                      <span className="text-gray-400">{Math.round(currentFillOpacity * 100)}%</span>
+                      <span className="text-plm-fg-muted">{Math.round(currentFillOpacity * 100)}%</span>
                     </div>
-                    <input
-                      type="range"
-                      min="0"
-                      max="100"
+                    <TickSlider
                       value={currentFillOpacity * 100}
-                      onChange={(e) => onFillOpacityChange?.(Number(e.target.value) / 100)}
-                      className="w-full h-2 bg-[#313244] rounded-lg appearance-none cursor-pointer accent-blue-500"
+                      min={0}
+                      max={100}
+                      step={1}
+                      snapPoints={[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]}
+                      onChange={(val) => onFillOpacityChange?.(val / 100)}
                     />
                   </div>
                   
                   {/* Border Color */}
                   <div className="mb-4">
-                    <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-2">Border Color</div>
-                    <div className="flex items-center gap-2 mb-2">
+                    <div className="text-[10px] uppercase tracking-wide text-plm-fg-muted mb-2">Border Color</div>
+                    <div className="grid grid-cols-7 gap-1">
+                      {/* No border / same as fill button */}
                       <button
-                        onClick={() => onBorderColorChange?.(null)}
-                        className={`flex-1 px-2 py-1.5 text-xs rounded transition-colors ${
+                        onClick={() => {
+                          onBorderColorChange?.(null)
+                          setShowBorderColorPicker(false)
+                        }}
+                        className={`w-5 h-5 rounded flex items-center justify-center transition-colors border ${
                           currentBorderColor === null 
-                            ? 'bg-blue-600 text-white' 
-                            : 'bg-[#313244] text-gray-400 hover:bg-[#414156]'
+                            ? 'border-plm-fg bg-plm-bg' 
+                            : 'border-plm-border bg-plm-bg hover:bg-plm-highlight'
                         }`}
+                        title="Same as fill"
                       >
-                        Same as fill
+                        <svg width="10" height="10" viewBox="0 0 12 12" className="text-plm-fg-muted">
+                          <rect x="1" y="1" width="10" height="10" rx="1" fill="none" stroke="currentColor" strokeWidth="1" strokeDasharray="2,2" />
+                        </svg>
                       </button>
-                      <button
-                        onClick={() => setShowBorderColorPicker(!showBorderColorPicker)}
-                        className={`flex items-center gap-2 px-2 py-1.5 text-xs rounded transition-colors ${
-                          currentBorderColor !== null 
-                            ? 'bg-blue-600 text-white' 
-                            : 'bg-[#313244] text-gray-400 hover:bg-[#414156]'
-                        }`}
-                      >
-                        <div 
-                          className="w-4 h-4 rounded border border-white/30"
-                          style={{ backgroundColor: currentBorderColor || currentColor }}
+                      {/* Color presets */}
+                      {TOOLBAR_COLORS.slice(0, 13).map((color) => (
+                        <button
+                          key={color}
+                          onClick={() => {
+                            onBorderColorChange?.(color)
+                            setCustomBorderColor(color)
+                          }}
+                          className={`w-5 h-5 rounded transition-transform hover:scale-105 ${
+                            currentBorderColor === color ? 'ring-2 ring-plm-fg ring-offset-1 ring-offset-plm-sidebar' : ''
+                          }`}
+                          style={{ backgroundColor: color }}
                         />
-                        Custom
-                      </button>
+                      ))}
                     </div>
-                    
-                    {/* Border color picker (inline) */}
-                    {showBorderColorPicker && currentBorderColor !== null && (
-                      <div className="mt-2 p-2 bg-[#252536] rounded-lg">
-                        <div className="grid grid-cols-5 gap-1 mb-2">
-                          {TOOLBAR_COLORS.slice(0, 10).map((color) => (
-                            <button
-                              key={color}
-                              onClick={() => onBorderColorChange?.(color)}
-                              className={`w-6 h-6 rounded border-2 transition-all hover:scale-110 ${
-                                currentBorderColor === color ? 'border-white' : 'border-transparent'
-                              }`}
-                              style={{ backgroundColor: color }}
-                            />
-                          ))}
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <input
-                            type="color"
-                            value={customBorderColor}
-                            onChange={(e) => {
-                              setCustomBorderColor(e.target.value)
-                              onBorderColorChange?.(e.target.value)
-                            }}
-                            className="w-6 h-6 rounded cursor-pointer border border-[#313244] bg-transparent"
-                          />
-                          <input
-                            type="text"
-                            value={customBorderColor}
-                            onChange={(e) => {
-                              const val = e.target.value
-                              if (/^#[0-9A-Fa-f]{0,6}$/.test(val)) {
-                                setCustomBorderColor(val)
-                                if (val.length === 7) onBorderColorChange?.(val)
-                              }
-                            }}
-                            className="flex-1 px-2 py-1 text-xs bg-[#313244] border border-[#414156] rounded font-mono text-gray-200"
-                          />
-                        </div>
-                      </div>
-                    )}
                   </div>
                   
                   {/* Border Opacity */}
                   <div className="mb-4">
-                    <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-2 flex items-center justify-between">
+                    <div className="text-[10px] uppercase tracking-wide text-plm-fg-muted mb-2 flex items-center justify-between">
                       <span>Border Opacity</span>
-                      <span className="text-gray-400">{Math.round(currentBorderOpacity * 100)}%</span>
+                      <span className="text-plm-fg-muted">{Math.round(currentBorderOpacity * 100)}%</span>
                     </div>
-                    <input
-                      type="range"
-                      min="0"
-                      max="100"
+                    <TickSlider
                       value={currentBorderOpacity * 100}
-                      onChange={(e) => onBorderOpacityChange?.(Number(e.target.value) / 100)}
-                      className="w-full h-2 bg-[#313244] rounded-lg appearance-none cursor-pointer accent-blue-500"
+                      min={0}
+                      max={100}
+                      step={1}
+                      snapPoints={[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]}
+                      onChange={(val) => onBorderOpacityChange?.(val / 100)}
                     />
                   </div>
                   
                   {/* Border Thickness */}
-                  <div>
-                    <div className="text-[10px] uppercase tracking-wide text-gray-500 mb-2">Border Thickness</div>
-                    <div className="flex gap-1">
-                      {[1, 2, 3, 4, 6].map((thickness) => (
-                        <button
-                          key={thickness}
-                          onClick={() => onBorderThicknessChange?.(thickness)}
-                          className={`flex-1 py-1.5 rounded text-xs transition-colors ${
-                            currentStateBorderThickness === thickness 
-                              ? 'bg-blue-600 text-white' 
-                              : 'bg-[#313244] text-gray-400 hover:bg-[#414156]'
-                          }`}
-                        >
-                          {thickness}px
-                        </button>
-                      ))}
+                  <div className="mb-4">
+                    <div className="text-[10px] uppercase tracking-wide text-plm-fg-muted mb-2 flex items-center justify-between">
+                      <span>Border Thickness</span>
+                      <span className="text-plm-fg-muted">{currentStateBorderThickness}px</span>
                     </div>
+                    <TickSlider
+                      value={currentStateBorderThickness}
+                      min={1}
+                      max={6}
+                      step={1}
+                      snapPoints={[1, 2, 3, 4, 5, 6]}
+                      onChange={(val) => onBorderThicknessChange?.(val)}
+                    />
+                  </div>
+                  
+                  {/* Corner Radius - only for rectangle */}
+                  {(targetState?.shape === 'rectangle' || !targetState?.shape) && (
+                    <div className="mb-4">
+                      <div className="text-[10px] uppercase tracking-wide text-plm-fg-muted mb-2 flex items-center justify-between">
+                        <span>Corner Radius</span>
+                        <span className="text-plm-fg-muted">{currentCornerRadius}px</span>
+                      </div>
+                      <TickSlider
+                        value={currentCornerRadius}
+                        min={0}
+                        max={24}
+                        step={1}
+                        snapPoints={[0, 4, 8, 12, 16, 20, 24]}
+                        onChange={(val) => onCornerRadiusChange?.(val)}
+                      />
+                    </div>
+                  )}
+                  
+                  {/* Shape */}
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wide text-plm-fg-muted mb-2">Shape</div>
+                    <div className="flex gap-1">
+                      {/* Rectangle */}
+                      <button
+                        onClick={() => onShapeChange?.('rectangle')}
+                        className={`w-8 h-8 rounded flex items-center justify-center transition-colors border ${
+                          (targetState?.shape || 'rectangle') === 'rectangle'
+                            ? 'border-plm-fg bg-plm-highlight'
+                            : 'border-plm-border bg-plm-bg hover:bg-plm-highlight'
+                        }`}
+                        title="Rectangle"
+                      >
+                        <svg width="16" height="16" viewBox="0 0 16 16" className="text-plm-fg">
+                          <rect x="2" y="4" width="12" height="8" rx="2" fill="none" stroke="currentColor" strokeWidth="1.5" />
+                        </svg>
+                      </button>
+                      {/* Diamond */}
+                      <button
+                        onClick={() => onShapeChange?.('diamond')}
+                        className={`w-8 h-8 rounded flex items-center justify-center transition-colors border ${
+                          targetState?.shape === 'diamond'
+                            ? 'border-plm-fg bg-plm-highlight'
+                            : 'border-plm-border bg-plm-bg hover:bg-plm-highlight'
+                        }`}
+                        title="Diamond (for approval gates)"
+                      >
+                        <svg width="16" height="16" viewBox="0 0 16 16" className="text-plm-fg">
+                          <polygon points="8,2 14,8 8,14 2,8" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+                        </svg>
+                      </button>
+                      {/* Hexagon */}
+                      <button
+                        onClick={() => onShapeChange?.('hexagon')}
+                        className={`w-8 h-8 rounded flex items-center justify-center transition-colors border ${
+                          targetState?.shape === 'hexagon'
+                            ? 'border-plm-fg bg-plm-highlight'
+                            : 'border-plm-border bg-plm-bg hover:bg-plm-highlight'
+                        }`}
+                        title="Hexagon"
+                      >
+                        <svg width="16" height="16" viewBox="0 0 16 16" className="text-plm-fg">
+                          <polygon points="4,2 12,2 15,8 12,14 4,14 1,8" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+                        </svg>
+                      </button>
+                      {/* Ellipse */}
+                      <button
+                        onClick={() => onShapeChange?.('ellipse')}
+                        className={`w-8 h-8 rounded flex items-center justify-center transition-colors border ${
+                          targetState?.shape === 'ellipse'
+                            ? 'border-plm-fg bg-plm-highlight'
+                            : 'border-plm-border bg-plm-bg hover:bg-plm-highlight'
+                        }`}
+                        title="Ellipse"
+                      >
+                        <svg width="16" height="16" viewBox="0 0 16 16" className="text-plm-fg">
+                          <ellipse cx="8" cy="8" rx="6" ry="4" fill="none" stroke="currentColor" strokeWidth="1.5" />
+                        </svg>
+                      </button>
+                    </div>
+                    {targetState?.state_type === 'gate' && (
+                      <div className="text-[9px] text-plm-fg-muted mt-1.5">
+                        ⛨ This is an approval gate
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -4816,7 +6378,7 @@ function FloatingToolbar({
         {/* Edit button */}
         <button
           onClick={onEdit}
-          className="flex items-center justify-center w-8 h-8 rounded hover:bg-[#313244] transition-colors text-gray-300 hover:text-white"
+          className="flex items-center justify-center w-8 h-8 rounded hover:bg-plm-highlight transition-colors text-plm-fg-muted hover:text-plm-fg"
           title={`Edit ${type}`}
         >
           <Edit3 size={16} />
@@ -4826,32 +6388,23 @@ function FloatingToolbar({
         {type === 'state' && isAdmin && (
           <button
             onClick={onDuplicate}
-            className="flex items-center justify-center w-8 h-8 rounded hover:bg-[#313244] transition-colors text-gray-300 hover:text-white"
+            className="flex items-center justify-center w-8 h-8 rounded hover:bg-plm-highlight transition-colors text-plm-fg-muted hover:text-plm-fg"
             title="Duplicate"
           >
             <Copy size={16} />
           </button>
         )}
         
-        {/* Add gate button (transitions only) */}
-        {type === 'transition' && isAdmin && onAddGate && (
-          <button
-            onClick={onAddGate}
-            className="flex items-center justify-center w-8 h-8 rounded hover:bg-[#313244] transition-colors text-amber-400 hover:text-amber-300"
-            title="Add gate"
-          >
-            <Plus size={16} />
-          </button>
-        )}
+        {/* Gate creation now uses Add Gate button in toolbar - gates are first-class states */}
         
         {/* Divider */}
-        <div className="w-px h-5 bg-[#313244] mx-0.5" />
+        <div className="w-px h-5 bg-plm-border mx-0.5" />
         
         {/* More options / Delete */}
         {isAdmin && (
           <button
             onClick={onDelete}
-            className="flex items-center justify-center w-8 h-8 rounded hover:bg-red-500/20 transition-colors text-gray-400 hover:text-red-400"
+            className="flex items-center justify-center w-8 h-8 rounded hover:bg-plm-error/20 transition-colors text-plm-fg-muted hover:text-plm-error"
             title={`Delete ${type}`}
           >
             <Trash2 size={16} />
@@ -4860,7 +6413,7 @@ function FloatingToolbar({
       </div>
       
       {/* Connection hint arrow pointing down to object */}
-      <div className="w-0 h-0 border-l-[6px] border-r-[6px] border-t-[6px] border-l-transparent border-r-transparent border-t-[#313244]" />
+      <div className="w-0 h-0 border-l-[6px] border-r-[6px] border-t-[6px] border-l-transparent border-r-transparent border-t-plm-border" />
     </div>
   )
 }
@@ -5007,15 +6560,60 @@ interface EditStateDialogProps {
   onSave: (updates: Partial<WorkflowState>) => void
 }
 
+interface WorkflowRoleBasic {
+  id: string
+  name: string
+  color: string
+  icon: string
+}
+
 function EditStateDialog({ state, onClose, onSave }: EditStateDialogProps) {
+  const { organization } = usePDMStore()
   const [name, setName] = useState(state.name)
   const [label, setLabel] = useState(state.label || '')
   const [description, setDescription] = useState(state.description || '')
   const [color, setColor] = useState(state.color)
   const [icon, setIcon] = useState(state.icon)
   const [isEditable, setIsEditable] = useState(state.is_editable)
-  const [requiresCheckout, setRequiresCheckout] = useState(state.requires_checkout)
+  // requires_checkout is now auto-set to match is_editable (simplified UX)
   const [autoRev, setAutoRev] = useState(state.auto_increment_revision)
+  const [requiredRoles, setRequiredRoles] = useState<string[]>(state.required_workflow_roles || [])
+  
+  // Load workflow roles
+  const [workflowRoles, setWorkflowRoles] = useState<WorkflowRoleBasic[]>([])
+  const [loadingRoles, setLoadingRoles] = useState(true)
+  
+  useEffect(() => {
+    const loadRoles = async () => {
+      if (!organization) return
+      try {
+        const { data, error } = await supabase
+          .from('workflow_roles')
+          .select('id, name, color, icon')
+          .eq('org_id', organization.id)
+          .eq('is_active', true)
+          .order('sort_order')
+          .order('name')
+        
+        if (!error && data) {
+          setWorkflowRoles(data)
+        }
+      } catch (err) {
+        console.error('Failed to load workflow roles:', err)
+      } finally {
+        setLoadingRoles(false)
+      }
+    }
+    loadRoles()
+  }, [organization])
+  
+  const toggleRequiredRole = (roleId: string) => {
+    if (requiredRoles.includes(roleId)) {
+      setRequiredRoles(requiredRoles.filter(id => id !== roleId))
+    } else {
+      setRequiredRoles([...requiredRoles, roleId])
+    }
+  }
   
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
@@ -5086,6 +6684,61 @@ function EditStateDialog({ state, onClose, onSave }: EditStateDialogProps) {
             </div>
           </div>
           
+          {/* Required Workflow Roles */}
+          <div>
+            <label className="block text-xs text-plm-fg-muted mb-1">
+              Required Roles to Enter State
+              <span className="text-plm-fg-muted/60 ml-1">(optional)</span>
+            </label>
+            {loadingRoles ? (
+              <div className="text-xs text-plm-fg-muted py-2">Loading roles...</div>
+            ) : workflowRoles.length === 0 ? (
+              <div className="text-xs text-plm-fg-muted py-2 bg-plm-bg rounded p-2">
+                No workflow roles defined.{' '}
+                <button
+                  onClick={() => {
+                    const { setActiveView } = usePDMStore.getState()
+                    setActiveView('settings')
+                    window.dispatchEvent(new CustomEvent('navigate-settings-tab', { detail: 'workflow-roles' }))
+                    onClose()
+                  }}
+                  className="text-plm-accent hover:underline"
+                >
+                  Create roles in Settings
+                </button>
+              </div>
+            ) : (
+              <div className="flex flex-wrap gap-1.5 p-2 bg-plm-bg rounded border border-plm-border max-h-24 overflow-y-auto">
+                {workflowRoles.map(role => (
+                  <button
+                    key={role.id}
+                    onClick={() => toggleRequiredRole(role.id)}
+                    className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs transition-colors ${
+                      requiredRoles.includes(role.id)
+                        ? 'ring-1 ring-plm-accent'
+                        : 'hover:bg-plm-highlight'
+                    }`}
+                    style={{
+                      backgroundColor: requiredRoles.includes(role.id) ? role.color + '30' : undefined
+                    }}
+                    title={requiredRoles.includes(role.id) ? 'Click to remove requirement' : 'Click to require this role'}
+                  >
+                    <BadgeCheck size={12} style={{ color: role.color }} />
+                    <span>{role.name}</span>
+                    {requiredRoles.includes(role.id) && (
+                      <CheckCircle size={10} className="text-plm-success" />
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+            {requiredRoles.length > 0 && (
+              <p className="text-[10px] text-plm-fg-muted mt-1">
+                Users must have {requiredRoles.length === 1 ? 'this role' : 'any of these roles'} to enter this state
+              </p>
+            )}
+          </div>
+          
           <div className="space-y-2">
             <label className="flex items-center gap-2 cursor-pointer">
               <input
@@ -5096,15 +6749,7 @@ function EditStateDialog({ state, onClose, onSave }: EditStateDialogProps) {
               />
               <span className="text-sm">Files can be edited in this state</span>
             </label>
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={requiresCheckout}
-                onChange={(e) => setRequiresCheckout(e.target.checked)}
-                className="rounded"
-              />
-              <span className="text-sm">Require checkout to edit</span>
-            </label>
+            {/* requires_checkout is now auto-set to match is_editable */}
             <label className="flex items-center gap-2 cursor-pointer">
               <input
                 type="checkbox"
@@ -5132,8 +6777,9 @@ function EditStateDialog({ state, onClose, onSave }: EditStateDialogProps) {
               color,
               icon,
               is_editable: isEditable,
-              requires_checkout: requiresCheckout,
+              requires_checkout: isEditable, // Auto-set: editable states require checkout
               auto_increment_revision: autoRev,
+              required_workflow_roles: requiredRoles,
             })}
             className="px-3 py-1.5 text-sm bg-plm-accent hover:bg-plm-accent-hover text-white rounded"
             disabled={!name.trim()}
@@ -5153,10 +6799,40 @@ interface EditTransitionDialogProps {
 }
 
 function EditTransitionDialog({ transition, onClose, onSave }: EditTransitionDialogProps) {
+  const { organization } = usePDMStore()
   const [name, setName] = useState(transition.name || '')
   const [description, setDescription] = useState(transition.description || '')
   const [lineStyle, setLineStyle] = useState(transition.line_style)
   const [allowedRoles, setAllowedRoles] = useState<UserRole[]>(transition.allowed_roles)
+  const [allowedWorkflowRoles, setAllowedWorkflowRoles] = useState<string[]>(transition.allowed_workflow_roles || [])
+  
+  // Load workflow roles
+  const [workflowRoles, setWorkflowRoles] = useState<WorkflowRoleBasic[]>([])
+  const [loadingRoles, setLoadingRoles] = useState(true)
+  
+  useEffect(() => {
+    const loadRoles = async () => {
+      if (!organization) return
+      try {
+        const { data, error } = await supabase
+          .from('workflow_roles')
+          .select('id, name, color, icon')
+          .eq('org_id', organization.id)
+          .eq('is_active', true)
+          .order('sort_order')
+          .order('name')
+        
+        if (!error && data) {
+          setWorkflowRoles(data)
+        }
+      } catch (err) {
+        console.error('Failed to load workflow roles:', err)
+      } finally {
+        setLoadingRoles(false)
+      }
+    }
+    loadRoles()
+  }, [organization])
   
   const toggleRole = (role: UserRole) => {
     if (allowedRoles.includes(role)) {
@@ -5166,9 +6842,17 @@ function EditTransitionDialog({ transition, onClose, onSave }: EditTransitionDia
     }
   }
   
+  const toggleWorkflowRole = (roleId: string) => {
+    if (allowedWorkflowRoles.includes(roleId)) {
+      setAllowedWorkflowRoles(allowedWorkflowRoles.filter(id => id !== roleId))
+    } else {
+      setAllowedWorkflowRoles([...allowedWorkflowRoles, roleId])
+    }
+  }
+  
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-plm-sidebar rounded-lg shadow-xl w-96 p-4">
+      <div className="bg-plm-sidebar rounded-lg shadow-xl w-[420px] max-h-[80vh] overflow-auto p-4">
         <h3 className="font-semibold mb-4">Edit Transition</h3>
         
         <div className="space-y-3">
@@ -5210,7 +6894,7 @@ function EditTransitionDialog({ transition, onClose, onSave }: EditTransitionDia
           </div>
           
           <div>
-            <label className="block text-xs text-plm-fg-muted mb-1">Allowed Roles</label>
+            <label className="block text-xs text-plm-fg-muted mb-1">Allowed System Roles</label>
             <div className="flex gap-2">
               {(['admin', 'engineer', 'viewer'] as UserRole[]).map(role => (
                 <label key={role} className="flex items-center gap-1.5 cursor-pointer">
@@ -5224,6 +6908,61 @@ function EditTransitionDialog({ transition, onClose, onSave }: EditTransitionDia
                 </label>
               ))}
             </div>
+          </div>
+          
+          {/* Workflow Roles */}
+          <div>
+            <label className="block text-xs text-plm-fg-muted mb-1">
+              Allowed Workflow Roles
+              <span className="text-plm-fg-muted/60 ml-1">(optional)</span>
+            </label>
+            {loadingRoles ? (
+              <div className="text-xs text-plm-fg-muted py-2">Loading roles...</div>
+            ) : workflowRoles.length === 0 ? (
+              <div className="text-xs text-plm-fg-muted py-2 bg-plm-bg rounded p-2">
+                No workflow roles defined.{' '}
+                <button
+                  onClick={() => {
+                    const { setActiveView } = usePDMStore.getState()
+                    setActiveView('settings')
+                    window.dispatchEvent(new CustomEvent('navigate-settings-tab', { detail: 'workflow-roles' }))
+                    onClose()
+                  }}
+                  className="text-plm-accent hover:underline"
+                >
+                  Create roles in Settings
+                </button>
+              </div>
+            ) : (
+              <div className="flex flex-wrap gap-1.5 p-2 bg-plm-bg rounded border border-plm-border max-h-24 overflow-y-auto">
+                {workflowRoles.map(role => (
+                  <button
+                    key={role.id}
+                    onClick={() => toggleWorkflowRole(role.id)}
+                    className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs transition-colors ${
+                      allowedWorkflowRoles.includes(role.id)
+                        ? 'ring-1 ring-plm-accent'
+                        : 'hover:bg-plm-highlight'
+                    }`}
+                    style={{
+                      backgroundColor: allowedWorkflowRoles.includes(role.id) ? role.color + '30' : undefined
+                    }}
+                    title={allowedWorkflowRoles.includes(role.id) ? 'Click to remove' : 'Click to allow this role'}
+                  >
+                    <BadgeCheck size={12} style={{ color: role.color }} />
+                    <span>{role.name}</span>
+                    {allowedWorkflowRoles.includes(role.id) && (
+                      <CheckCircle size={10} className="text-plm-success" />
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+            {allowedWorkflowRoles.length > 0 && (
+              <p className="text-[10px] text-plm-fg-muted mt-1">
+                Users with {allowedWorkflowRoles.length === 1 ? 'this workflow role' : 'any of these workflow roles'} can execute this transition
+              </p>
+            )}
           </div>
         </div>
         
@@ -5240,6 +6979,7 @@ function EditTransitionDialog({ transition, onClose, onSave }: EditTransitionDia
               description: description || null,
               line_style: lineStyle,
               allowed_roles: allowedRoles,
+              allowed_workflow_roles: allowedWorkflowRoles,
             })}
             className="px-3 py-1.5 text-sm bg-plm-accent hover:bg-plm-accent-hover text-white rounded"
           >

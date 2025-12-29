@@ -36,6 +36,59 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- ===========================================
+-- SCHEMA VERSION TRACKING
+-- ===========================================
+-- This table tracks the database schema version to detect mismatches
+-- between the app and database. When releasing app updates that require
+-- schema changes, increment the version number.
+--
+-- Version history:
+--   1 = Initial schema version tracking (v2.15.0)
+-- ===========================================
+
+CREATE TABLE IF NOT EXISTS schema_version (
+  id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1), -- Only allow single row
+  version INTEGER NOT NULL DEFAULT 1,
+  description TEXT,
+  applied_at TIMESTAMPTZ DEFAULT NOW(),
+  applied_by TEXT -- Could be 'migration' or admin email
+);
+
+-- Insert initial version if table is empty
+INSERT INTO schema_version (id, version, description, applied_at, applied_by)
+VALUES (1, 1, 'Initial schema version tracking', NOW(), 'migration')
+ON CONFLICT (id) DO NOTHING;
+
+-- Function to update schema version (for use in migrations)
+CREATE OR REPLACE FUNCTION update_schema_version(
+  new_version INTEGER,
+  new_description TEXT DEFAULT NULL
+) RETURNS VOID AS $$
+BEGIN
+  UPDATE schema_version
+  SET version = new_version,
+      description = COALESCE(new_description, description),
+      applied_at = NOW(),
+      applied_by = 'migration'
+  WHERE id = 1;
+END;
+$$ LANGUAGE plpgsql;
+
+-- RLS: Everyone can read schema version (needed for app compatibility check)
+ALTER TABLE schema_version ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Anyone can read schema version" ON schema_version;
+CREATE POLICY "Anyone can read schema version"
+  ON schema_version FOR SELECT
+  USING (true);
+
+-- Only service_role can update (via migrations)
+DROP POLICY IF EXISTS "Service role can update schema version" ON schema_version;
+CREATE POLICY "Service role can update schema version"
+  ON schema_version FOR UPDATE
+  USING (auth.role() = 'service_role');
+
+-- ===========================================
 -- ENUMS (idempotent - wrapped in exception handlers)
 -- ===========================================
 
@@ -2053,6 +2106,18 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
+-- State type enum (regular state vs gate/approval state)
+DO $$ BEGIN
+  CREATE TYPE state_type AS ENUM ('state', 'gate');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+-- State shape enum (visual representation)
+DO $$ BEGIN
+  CREATE TYPE state_shape AS ENUM ('rectangle', 'diamond', 'hexagon', 'ellipse');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
 -- Workflow templates (org-wide workflow definitions)
 CREATE TABLE IF NOT EXISTS workflow_templates (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -2082,6 +2147,10 @@ CREATE TABLE IF NOT EXISTS workflow_states (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   workflow_id UUID NOT NULL REFERENCES workflow_templates(id) ON DELETE CASCADE,
   
+  -- State identity
+  state_type state_type DEFAULT 'state',   -- 'state' (regular) or 'gate' (approval point)
+  shape state_shape DEFAULT 'rectangle',   -- Visual shape: rectangle, diamond, hexagon, ellipse
+  
   name TEXT NOT NULL,
   label TEXT,                              -- Display label (defaults to name)
   description TEXT,
@@ -2090,6 +2159,7 @@ CREATE TABLE IF NOT EXISTS workflow_states (
   border_color TEXT,                       -- Border color (null = same as fill)
   border_opacity DECIMAL(3,2) DEFAULT 1.0, -- Border opacity (0.0-1.0)
   border_thickness INTEGER DEFAULT 2,       -- Border thickness in px (1-6)
+  corner_radius INTEGER DEFAULT 8,          -- Corner radius in px (0-24, rectangles only)
   icon TEXT DEFAULT 'circle',              -- Icon name for visual display
   
   -- Position on canvas
@@ -2101,6 +2171,9 @@ CREATE TABLE IF NOT EXISTS workflow_states (
   requires_checkout BOOLEAN DEFAULT true,  -- Must checkout to edit?
   auto_increment_revision BOOLEAN DEFAULT false,  -- Auto-bump revision on transition
   
+  -- Gate-specific configuration (only used when state_type = 'gate')
+  gate_config JSONB DEFAULT '{}'::jsonb,   -- {gate_type, required_approvals, approval_mode, checklist_items, allowed_reviewers, etc.}
+  
   sort_order INTEGER DEFAULT 0,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -2110,6 +2183,12 @@ DO $$ BEGIN ALTER TABLE workflow_states ADD COLUMN fill_opacity DECIMAL(3,2) DEF
 DO $$ BEGIN ALTER TABLE workflow_states ADD COLUMN border_color TEXT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE workflow_states ADD COLUMN border_opacity DECIMAL(3,2) DEFAULT 1.0; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE workflow_states ADD COLUMN border_thickness INTEGER DEFAULT 2; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+
+-- MIGRATIONS: Add state_type, shape, and gate_config columns to workflow_states
+DO $$ BEGIN ALTER TABLE workflow_states ADD COLUMN state_type state_type DEFAULT 'state'; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE workflow_states ADD COLUMN shape state_shape DEFAULT 'rectangle'; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE workflow_states ADD COLUMN gate_config JSONB DEFAULT '{}'::jsonb; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE workflow_states ADD COLUMN corner_radius INTEGER DEFAULT 8; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
 
 CREATE INDEX IF NOT EXISTS idx_workflow_states_workflow_id ON workflow_states(workflow_id);
 
@@ -2133,6 +2212,7 @@ CREATE TABLE IF NOT EXISTS workflow_transitions (
   
   -- Permissions
   allowed_roles user_role[] DEFAULT '{admin,engineer}'::user_role[],
+  allowed_workflow_roles UUID[] DEFAULT '{}',  -- Workflow roles that can execute this transition
   
   -- Auto-transition conditions (optional)
   auto_conditions JSONB,
@@ -6055,6 +6135,1563 @@ BEGIN
   -- Custom metadata
   BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE file_metadata_columns; EXCEPTION WHEN duplicate_object THEN NULL; END;
 END $$;
+
+-- =====================================================================
+-- WORKFLOW ROLES (Org-defined approval roles)
+-- =====================================================================
+-- Workflow roles allow organizations to define custom approval roles
+-- like "Design Lead", "QA Manager", "Release Manager", etc.
+-- These are separate from system roles (admin/engineer/viewer).
+
+-- Workflow roles table (org-defined roles for approvals)
+CREATE TABLE IF NOT EXISTS workflow_roles (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT,
+  color TEXT DEFAULT '#6B7280',          -- Color for visual identification
+  icon TEXT DEFAULT 'badge-check',       -- Icon name
+  is_active BOOLEAN DEFAULT true,        -- Can be disabled without deletion
+  sort_order INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  created_by UUID REFERENCES users(id),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_by UUID REFERENCES users(id),
+  UNIQUE(org_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_roles_org_id ON workflow_roles(org_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_roles_name ON workflow_roles(org_id, name);
+
+-- User workflow role assignments (junction table)
+CREATE TABLE IF NOT EXISTS user_workflow_roles (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  workflow_role_id UUID NOT NULL REFERENCES workflow_roles(id) ON DELETE CASCADE,
+  assigned_at TIMESTAMPTZ DEFAULT NOW(),
+  assigned_by UUID REFERENCES users(id),
+  UNIQUE(user_id, workflow_role_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_workflow_roles_user_id ON user_workflow_roles(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_workflow_roles_role_id ON user_workflow_roles(workflow_role_id);
+
+-- Add 'workflow_role' to reviewer_type enum (for gate reviewers)
+DO $$ BEGIN
+  ALTER TYPE reviewer_type ADD VALUE IF NOT EXISTS 'workflow_role';
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+-- Add workflow_role_id column to workflow_gate_reviewers
+DO $$ BEGIN
+  ALTER TABLE workflow_gate_reviewers ADD COLUMN workflow_role_id UUID REFERENCES workflow_roles(id) ON DELETE CASCADE;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+-- Add required_workflow_roles to workflow_states (roles required to enter state)
+DO $$ BEGIN
+  ALTER TABLE workflow_states ADD COLUMN required_workflow_roles UUID[] DEFAULT '{}';
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+-- Comment on new columns
+COMMENT ON COLUMN workflow_gate_reviewers.workflow_role_id IS 'For workflow_role reviewer type - which workflow role can approve';
+COMMENT ON COLUMN workflow_states.required_workflow_roles IS 'Array of workflow_role IDs required to enter/be in this state. Empty = no role requirement.';
+
+-- RLS for workflow_roles
+ALTER TABLE workflow_roles ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can view org workflow roles" ON workflow_roles;
+CREATE POLICY "Users can view org workflow roles"
+  ON workflow_roles FOR SELECT
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+DROP POLICY IF EXISTS "Admins can manage workflow roles" ON workflow_roles;
+CREATE POLICY "Admins can manage workflow roles"
+  ON workflow_roles FOR ALL
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'));
+
+-- RLS for user_workflow_roles
+ALTER TABLE user_workflow_roles ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can view workflow role assignments in their org" ON user_workflow_roles;
+CREATE POLICY "Users can view workflow role assignments in their org"
+  ON user_workflow_roles FOR SELECT
+  USING (
+    user_id IN (SELECT id FROM users WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid()))
+  );
+
+DROP POLICY IF EXISTS "Admins can manage workflow role assignments" ON user_workflow_roles;
+CREATE POLICY "Admins can manage workflow role assignments"
+  ON user_workflow_roles FOR ALL
+  USING (
+    user_id IN (SELECT id FROM users WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'))
+  );
+
+-- Realtime for workflow roles
+ALTER TABLE workflow_roles REPLICA IDENTITY FULL;
+ALTER TABLE user_workflow_roles REPLICA IDENTITY FULL;
+
+DO $$
+BEGIN
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE workflow_roles; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE user_workflow_roles; EXCEPTION WHEN duplicate_object THEN NULL; END;
+END $$;
+
+COMMENT ON TABLE workflow_roles IS 'Organization-defined workflow roles for approvals (e.g., Design Lead, QA Manager, Release Manager).';
+COMMENT ON TABLE user_workflow_roles IS 'Junction table assigning workflow roles to users.';
+
+-- =====================================================================
+-- ADVANCED WORKFLOW FEATURES
+-- =====================================================================
+-- State permissions (per-state read/write/delete/transition permissions)
+-- Transition conditions (file path, variables, revision, category)
+-- Transition actions (increment revision, set variable, notifications, tasks)
+-- Revision schemes (numeric, alpha, alphanumeric, custom)
+-- Automatic transitions (timer-based, condition-based)
+-- File conversion tasks (PDF, STEP, eDrawings)
+-- =====================================================================
+
+-- ===========================================
+-- NEW ENUMS
+-- ===========================================
+
+-- State permission type enum (what can be done to files in a state)
+DO $$ BEGIN
+  CREATE TYPE state_permission_type AS ENUM (
+    'read_file',           -- View file contents
+    'write_file',          -- Check out and edit file
+    'delete_file',         -- Delete file
+    'add_file',            -- Add new files to this state
+    'rename_file',         -- Rename files in this state
+    'change_state',        -- Transition file out of this state
+    'edit_metadata'        -- Edit file card/properties
+  );
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+-- Condition type enum (types of transition conditions)
+DO $$ BEGIN
+  CREATE TYPE condition_type AS ENUM (
+    'file_path',           -- File is in specific folder or has specific extension
+    'file_extension',      -- File has specific extension
+    'variable',            -- Variable/metadata condition
+    'revision',            -- Revision condition
+    'category',            -- File category condition
+    'checkout_status',     -- File checked out/in status
+    'user_role',           -- User has specific role
+    'workflow_role',       -- User has specific workflow role
+    'file_owner',          -- User is file owner
+    'custom_sql'           -- Custom SQL condition
+  );
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+-- Action type enum (types of transition actions)
+DO $$ BEGIN
+  CREATE TYPE action_type AS ENUM (
+    'increment_revision',   -- Increment revision number
+    'set_variable',         -- Set a variable/metadata value
+    'clear_variable',       -- Clear a variable value
+    'send_notification',    -- Send notification to users
+    'execute_task',         -- Execute a workflow task (file conversion, etc.)
+    'set_file_permission',  -- Set file read-only status
+    'copy_file',            -- Copy file to another location
+    'run_script'            -- Run custom script
+  );
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+-- Revision scheme type enum
+DO $$ BEGIN
+  CREATE TYPE revision_scheme_type AS ENUM (
+    'numeric',             -- 1, 2, 3, 4...
+    'alpha_upper',         -- A, B, C, D... (after Z: AA, AB...)
+    'alpha_lower',         -- a, b, c, d...
+    'alphanumeric',        -- A.1, A.2, B.1, B.2 (major.minor)
+    'custom'               -- Custom pattern
+  );
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+-- Auto-transition trigger type enum
+DO $$ BEGIN
+  CREATE TYPE auto_trigger_type AS ENUM (
+    'timer',               -- After N hours in state
+    'condition_met',       -- When all conditions are met
+    'all_approvals',       -- When all required approvals are obtained
+    'schedule'             -- At specific time/date
+  );
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+-- Task type enum (workflow automation tasks)
+DO $$ BEGIN
+  CREATE TYPE workflow_task_type AS ENUM (
+    'convert_pdf',         -- Convert to PDF
+    'convert_step',        -- Convert to STEP
+    'convert_iges',        -- Convert to IGES
+    'convert_edrawings',   -- Convert to eDrawings
+    'convert_dxf',         -- Convert to DXF
+    'custom_export',       -- Custom export format
+    'run_script',          -- Run custom script
+    'webhook'              -- Call external webhook
+  );
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+-- Notification recipient type enum
+DO $$ BEGIN
+  CREATE TYPE notification_recipient_type AS ENUM (
+    'user',                -- Specific user
+    'role',                -- All users with role (admin/engineer/viewer)
+    'workflow_role',       -- All users with workflow role
+    'file_owner',          -- Owner of the file
+    'file_creator',        -- Original creator of file
+    'checkout_user',       -- User who has file checked out
+    'previous_state_user', -- User who transitioned file to current state
+    'all_org'              -- All organization members
+  );
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+-- ===========================================
+-- REVISION SCHEMES
+-- ===========================================
+
+-- Revision schemes define how revision numbers are formatted and incremented
+CREATE TABLE IF NOT EXISTS revision_schemes (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  
+  name TEXT NOT NULL,
+  description TEXT,
+  scheme_type revision_scheme_type NOT NULL DEFAULT 'numeric',
+  
+  -- For numeric: start value and increment
+  start_value INTEGER DEFAULT 1,
+  increment_by INTEGER DEFAULT 1,
+  
+  -- For alphanumeric: major/minor separators
+  major_minor_separator TEXT DEFAULT '.',  -- e.g., "A.1" uses "."
+  minor_scheme_type revision_scheme_type DEFAULT 'numeric',  -- What comes after separator
+  
+  -- For custom: pattern with placeholders
+  -- {MAJOR} = major revision, {MINOR} = minor, {DATE} = date, {COUNT} = sequential count
+  custom_pattern TEXT,
+  
+  -- Prefix/suffix
+  prefix TEXT DEFAULT '',                   -- e.g., "Rev " to get "Rev 1", "Rev 2"
+  suffix TEXT DEFAULT '',
+  
+  -- Zero padding
+  zero_padding INTEGER DEFAULT 0,           -- 0 = no padding, 2 = "01", 3 = "001"
+  
+  is_default BOOLEAN DEFAULT false,
+  is_active BOOLEAN DEFAULT true,
+  
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  created_by UUID REFERENCES users(id),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_revision_schemes_org_id ON revision_schemes(org_id);
+CREATE INDEX IF NOT EXISTS idx_revision_schemes_is_default ON revision_schemes(is_default);
+
+-- ===========================================
+-- WORKFLOW STATE PERMISSIONS
+-- ===========================================
+
+-- State permissions define what users/roles can do with files in each state
+CREATE TABLE IF NOT EXISTS workflow_state_permissions (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  state_id UUID NOT NULL REFERENCES workflow_states(id) ON DELETE CASCADE,
+  
+  -- Who this permission applies to
+  permission_for TEXT NOT NULL,             -- 'user', 'role', 'workflow_role', 'all'
+  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+  role user_role,                           -- For role-based permissions
+  workflow_role_id UUID REFERENCES workflow_roles(id) ON DELETE CASCADE,
+  
+  -- What permissions are granted
+  can_read BOOLEAN DEFAULT true,            -- Read file contents
+  can_write BOOLEAN DEFAULT false,          -- Check out and edit
+  can_delete BOOLEAN DEFAULT false,         -- Delete file
+  can_add BOOLEAN DEFAULT false,            -- Add new files
+  can_rename BOOLEAN DEFAULT false,         -- Rename files
+  can_change_state BOOLEAN DEFAULT false,   -- Use transitions from this state
+  can_edit_metadata BOOLEAN DEFAULT false,  -- Edit file properties/card
+  
+  -- Comments in history
+  comment_required_on_change BOOLEAN DEFAULT false,
+  
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  
+  -- Prevent duplicate permissions for same target
+  UNIQUE(state_id, permission_for, user_id, role, workflow_role_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_state_permissions_state_id ON workflow_state_permissions(state_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_state_permissions_user_id ON workflow_state_permissions(user_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_state_permissions_role ON workflow_state_permissions(role);
+CREATE INDEX IF NOT EXISTS idx_workflow_state_permissions_workflow_role_id ON workflow_state_permissions(workflow_role_id);
+
+-- ===========================================
+-- WORKFLOW TRANSITION CONDITIONS
+-- ===========================================
+
+-- Conditions that must be met before a transition can be executed
+CREATE TABLE IF NOT EXISTS workflow_transition_conditions (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  transition_id UUID NOT NULL REFERENCES workflow_transitions(id) ON DELETE CASCADE,
+  
+  name TEXT NOT NULL,
+  description TEXT,
+  condition_type condition_type NOT NULL,
+  
+  -- Condition configuration (varies by type)
+  -- For file_path: { "folder_path": "/Engineering/Released", "include_subfolders": true }
+  -- For file_extension: { "extensions": [".sldprt", ".sldasm", ".slddrw"] }
+  -- For variable: { "variable_name": "Approved By", "operator": "is_not_empty" }
+  -- For revision: { "operator": ">=", "value": "A" }
+  -- For category: { "category_id": "uuid" }
+  -- For checkout_status: { "must_be_checked_in": true }
+  -- For user_role/workflow_role: { "roles": ["admin", "engineer"] }
+  -- For custom_sql: { "sql": "SELECT 1 FROM ... WHERE ..." }
+  config JSONB NOT NULL DEFAULT '{}'::jsonb,
+  
+  -- Operator for comparison conditions
+  -- 'equals', 'not_equals', 'contains', 'not_contains', 'starts_with', 'ends_with',
+  -- 'is_empty', 'is_not_empty', '>', '<', '>=', '<=', 'in', 'not_in', 'matches_regex'
+  operator TEXT,
+  
+  -- Value to compare against (can be static value or variable reference)
+  compare_value TEXT,
+  
+  -- Is this condition required or optional?
+  is_required BOOLEAN DEFAULT true,
+  
+  -- Order of evaluation
+  sort_order INTEGER DEFAULT 0,
+  
+  -- Error message to show when condition fails
+  error_message TEXT,
+  
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_transition_conditions_transition_id ON workflow_transition_conditions(transition_id);
+
+-- ===========================================
+-- WORKFLOW TRANSITION ACTIONS
+-- ===========================================
+
+-- Actions that execute when a transition occurs
+CREATE TABLE IF NOT EXISTS workflow_transition_actions (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  transition_id UUID NOT NULL REFERENCES workflow_transitions(id) ON DELETE CASCADE,
+  
+  name TEXT NOT NULL,
+  description TEXT,
+  action_type action_type NOT NULL,
+  
+  -- When to execute: 'before' or 'after' state change
+  execute_when TEXT DEFAULT 'after',
+  
+  -- Action configuration (varies by type)
+  -- For increment_revision: { "scheme_id": "uuid", "increment_type": "major|minor" }
+  -- For set_variable: { "variable_name": "State Changed Date", "value": "{NOW}", "value_type": "date" }
+  -- For clear_variable: { "variable_name": "Approved By" }
+  -- For send_notification: handled by workflow_transition_notifications table
+  -- For execute_task: { "task_id": "uuid" }
+  -- For set_file_permission: { "read_only": true }
+  -- For copy_file: { "destination_path": "/Archive/{FILE_NAME}", "overwrite": false }
+  -- For run_script: { "script_id": "uuid", "parameters": {} }
+  config JSONB NOT NULL DEFAULT '{}'::jsonb,
+  
+  -- For revision increment
+  revision_scheme_id UUID REFERENCES revision_schemes(id) ON DELETE SET NULL,
+  increment_type TEXT DEFAULT 'major',      -- 'major' or 'minor' (for alphanumeric)
+  
+  -- For variable actions
+  variable_name TEXT,
+  variable_value TEXT,                      -- Can use placeholders: {NOW}, {USER}, {FILE_NAME}, etc.
+  
+  -- Order of execution
+  sort_order INTEGER DEFAULT 0,
+  
+  -- Continue even if this action fails?
+  continue_on_error BOOLEAN DEFAULT false,
+  
+  is_enabled BOOLEAN DEFAULT true,
+  
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_transition_actions_transition_id ON workflow_transition_actions(transition_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_transition_actions_action_type ON workflow_transition_actions(action_type);
+
+-- ===========================================
+-- WORKFLOW TRANSITION NOTIFICATIONS
+-- ===========================================
+
+-- Notifications to send when a transition occurs
+CREATE TABLE IF NOT EXISTS workflow_transition_notifications (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  transition_id UUID NOT NULL REFERENCES workflow_transitions(id) ON DELETE CASCADE,
+  
+  name TEXT NOT NULL,
+  
+  -- Who to notify
+  recipient_type notification_recipient_type NOT NULL,
+  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+  role user_role,
+  workflow_role_id UUID REFERENCES workflow_roles(id) ON DELETE CASCADE,
+  
+  -- Notification content
+  subject TEXT,                             -- Email subject (can use placeholders)
+  message TEXT,                             -- Notification message (can use placeholders)
+  
+  -- Placeholders available:
+  -- {FILE_NAME}, {FILE_PATH}, {FROM_STATE}, {TO_STATE}, {TRANSITION_NAME},
+  -- {USER_NAME}, {USER_EMAIL}, {REVISION}, {DATE}, {TIME}, {COMMENT}
+  
+  -- Notification channels
+  send_email BOOLEAN DEFAULT true,
+  send_in_app BOOLEAN DEFAULT true,
+  
+  -- Priority
+  priority TEXT DEFAULT 'normal',           -- 'low', 'normal', 'high', 'urgent'
+  
+  is_enabled BOOLEAN DEFAULT true,
+  
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_transition_notifications_transition_id ON workflow_transition_notifications(transition_id);
+
+-- ===========================================
+-- WORKFLOW TRANSITION APPROVALS
+-- ===========================================
+
+-- Approval requirements for transitions (replaces gates on transitions)
+CREATE TABLE IF NOT EXISTS workflow_transition_approvals (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  transition_id UUID NOT NULL REFERENCES workflow_transitions(id) ON DELETE CASCADE,
+  
+  name TEXT NOT NULL,
+  description TEXT,
+  
+  -- Approval settings
+  required_count INTEGER DEFAULT 1,          -- Number of approvals needed
+  approval_mode approval_mode DEFAULT 'any', -- any, all, sequential
+  
+  -- Timeout
+  timeout_hours INTEGER,                     -- Auto-reject after N hours (NULL = no timeout)
+  timeout_action TEXT DEFAULT 'reject',      -- 'reject', 'escalate', 'auto_approve'
+  
+  -- Checklist requirements (optional)
+  checklist_items JSONB DEFAULT '[]'::jsonb, -- [{id, label, required}]
+  
+  -- Comment requirements
+  comment_required BOOLEAN DEFAULT false,
+  
+  -- Can be skipped by
+  can_skip_roles user_role[] DEFAULT '{}'::user_role[],
+  can_skip_workflow_roles UUID[] DEFAULT '{}',
+  
+  sort_order INTEGER DEFAULT 0,
+  is_enabled BOOLEAN DEFAULT true,
+  
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_transition_approvals_transition_id ON workflow_transition_approvals(transition_id);
+
+-- Approval reviewers (who can approve)
+CREATE TABLE IF NOT EXISTS workflow_approval_reviewers (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  approval_id UUID NOT NULL REFERENCES workflow_transition_approvals(id) ON DELETE CASCADE,
+  
+  reviewer_type notification_recipient_type NOT NULL,
+  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+  role user_role,
+  workflow_role_id UUID REFERENCES workflow_roles(id) ON DELETE CASCADE,
+  
+  -- Order for sequential approval mode
+  sequence_order INTEGER DEFAULT 0,
+  
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_approval_reviewers_approval_id ON workflow_approval_reviewers(approval_id);
+
+-- ===========================================
+-- WORKFLOW AUTOMATIC TRANSITIONS
+-- ===========================================
+
+-- Automatic transition triggers (timer, conditions, etc.)
+CREATE TABLE IF NOT EXISTS workflow_auto_transitions (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  transition_id UUID NOT NULL REFERENCES workflow_transitions(id) ON DELETE CASCADE,
+  
+  name TEXT NOT NULL,
+  description TEXT,
+  
+  trigger_type auto_trigger_type NOT NULL,
+  
+  -- For timer trigger: hours in state before auto-transition
+  timer_hours INTEGER,
+  
+  -- For schedule trigger: cron expression or specific datetime
+  schedule_cron TEXT,                        -- e.g., "0 0 * * 1" for every Monday at midnight
+  schedule_datetime TIMESTAMPTZ,             -- Specific date/time for one-time trigger
+  
+  -- Conditions that must also be met (references workflow_transition_conditions)
+  required_conditions UUID[] DEFAULT '{}',
+  
+  -- What to do if conditions aren't met
+  fallback_action TEXT DEFAULT 'wait',       -- 'wait', 'reject', 'notify'
+  
+  is_enabled BOOLEAN DEFAULT true,
+  
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_auto_transitions_transition_id ON workflow_auto_transitions(transition_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_auto_transitions_trigger_type ON workflow_auto_transitions(trigger_type);
+
+-- ===========================================
+-- WORKFLOW TASKS (File Conversions & Automations)
+-- ===========================================
+
+-- Workflow tasks that can be executed on transitions
+CREATE TABLE IF NOT EXISTS workflow_tasks (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  
+  name TEXT NOT NULL,
+  description TEXT,
+  task_type workflow_task_type NOT NULL,
+  
+  -- Task configuration
+  -- For convert_pdf: { "include_annotations": true, "pages": "all", "dpi": 300 }
+  -- For convert_step: { "version": "AP214", "include_colors": true }
+  -- For convert_iges: { "surfaces_only": false }
+  -- For convert_edrawings: { "version": 2024 }
+  -- For convert_dxf: { "version": "R2018", "include_dimensions": true }
+  -- For custom_export: { "format": "...", "options": {} }
+  -- For run_script: { "script_path": "...", "parameters": {} }
+  -- For webhook: { "url": "...", "method": "POST", "headers": {}, "body_template": "" }
+  config JSONB NOT NULL DEFAULT '{}'::jsonb,
+  
+  -- Output configuration
+  output_folder TEXT DEFAULT '{SOURCE_FOLDER}',  -- Where to save output
+  output_filename TEXT DEFAULT '{FILE_NAME}',    -- Output filename pattern
+  output_extension TEXT,                          -- Override extension
+  
+  -- Execution settings
+  run_as_background BOOLEAN DEFAULT true,        -- Run asynchronously
+  timeout_seconds INTEGER DEFAULT 300,           -- Max execution time
+  retry_on_failure BOOLEAN DEFAULT true,
+  max_retries INTEGER DEFAULT 3,
+  
+  is_active BOOLEAN DEFAULT true,
+  
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  created_by UUID REFERENCES users(id),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_tasks_org_id ON workflow_tasks(org_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_tasks_task_type ON workflow_tasks(task_type);
+
+-- ===========================================
+-- PENDING TRANSITION APPROVALS
+-- ===========================================
+
+-- Active approval requests (replaces pending_reviews but more general)
+CREATE TABLE IF NOT EXISTS pending_transition_approvals (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  transition_id UUID NOT NULL REFERENCES workflow_transitions(id) ON DELETE CASCADE,
+  approval_id UUID NOT NULL REFERENCES workflow_transition_approvals(id) ON DELETE CASCADE,
+  
+  -- Who initiated
+  requested_by UUID NOT NULL REFERENCES users(id),
+  requested_at TIMESTAMPTZ DEFAULT NOW(),
+  request_comment TEXT,
+  
+  -- Status
+  status review_status DEFAULT 'pending',
+  
+  -- If assigned to specific user (for sequential approval)
+  current_assignee UUID REFERENCES users(id),
+  
+  -- Responses collected so far
+  -- { "user_id": { "decision": "approved", "comment": "...", "timestamp": "...", "checklist": {} } }
+  responses JSONB DEFAULT '{}'::jsonb,
+  
+  -- How many approvals received so far
+  approval_count INTEGER DEFAULT 0,
+  rejection_count INTEGER DEFAULT 0,
+  
+  -- Final outcome
+  completed_at TIMESTAMPTZ,
+  final_decision TEXT,                       -- 'approved', 'rejected', 'cancelled', 'timed_out'
+  
+  -- Auto-transition deadline
+  expires_at TIMESTAMPTZ,
+  
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_transition_approvals_org_id ON pending_transition_approvals(org_id);
+CREATE INDEX IF NOT EXISTS idx_pending_transition_approvals_file_id ON pending_transition_approvals(file_id);
+CREATE INDEX IF NOT EXISTS idx_pending_transition_approvals_status ON pending_transition_approvals(status);
+CREATE INDEX IF NOT EXISTS idx_pending_transition_approvals_current_assignee ON pending_transition_approvals(current_assignee);
+
+-- ===========================================
+-- WORKFLOW HISTORY (Enhanced Audit Trail)
+-- ===========================================
+
+-- Comprehensive history of all workflow events
+CREATE TABLE IF NOT EXISTS workflow_history (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  
+  -- What happened
+  event_type TEXT NOT NULL,                  -- 'state_change', 'approval', 'rejection', 'auto_transition', 'task_executed', etc.
+  
+  -- File info (snapshot)
+  file_id UUID REFERENCES files(id) ON DELETE SET NULL,
+  file_path TEXT NOT NULL,
+  file_name TEXT NOT NULL,
+  file_version INTEGER,
+  
+  -- Workflow info (snapshot)
+  workflow_id UUID REFERENCES workflow_templates(id) ON DELETE SET NULL,
+  workflow_name TEXT NOT NULL,
+  
+  -- State change info
+  from_state_id UUID REFERENCES workflow_states(id) ON DELETE SET NULL,
+  from_state_name TEXT,
+  to_state_id UUID REFERENCES workflow_states(id) ON DELETE SET NULL,
+  to_state_name TEXT,
+  
+  -- Transition info
+  transition_id UUID REFERENCES workflow_transitions(id) ON DELETE SET NULL,
+  transition_name TEXT,
+  
+  -- Revision info
+  old_revision TEXT,
+  new_revision TEXT,
+  
+  -- Who/when
+  performed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  performed_by_email TEXT,
+  performed_at TIMESTAMPTZ DEFAULT NOW(),
+  
+  -- Details
+  comment TEXT,
+  details JSONB,                             -- Additional event-specific details
+  
+  -- For approvals
+  approval_decision TEXT,                    -- 'approved', 'rejected'
+  checklist_responses JSONB,
+  
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_history_org_id ON workflow_history(org_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_history_file_id ON workflow_history(file_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_history_event_type ON workflow_history(event_type);
+CREATE INDEX IF NOT EXISTS idx_workflow_history_performed_at ON workflow_history(performed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_history_workflow_id ON workflow_history(workflow_id);
+
+-- ===========================================
+-- FILE STATE TRACKING
+-- ===========================================
+
+-- Track when files entered each state (for timer-based auto-transitions)
+CREATE TABLE IF NOT EXISTS file_state_entries (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  state_id UUID NOT NULL REFERENCES workflow_states(id) ON DELETE CASCADE,
+  
+  entered_at TIMESTAMPTZ DEFAULT NOW(),
+  entered_by UUID REFERENCES users(id),
+  
+  -- For auto-transition tracking
+  auto_transition_scheduled_at TIMESTAMPTZ,
+  auto_transition_id UUID REFERENCES workflow_auto_transitions(id) ON DELETE SET NULL,
+  
+  -- Only one active entry per file
+  is_current BOOLEAN DEFAULT true,
+  left_at TIMESTAMPTZ,
+  
+  UNIQUE(file_id, state_id, entered_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_file_state_entries_file_id ON file_state_entries(file_id);
+CREATE INDEX IF NOT EXISTS idx_file_state_entries_state_id ON file_state_entries(state_id);
+CREATE INDEX IF NOT EXISTS idx_file_state_entries_is_current ON file_state_entries(is_current);
+CREATE INDEX IF NOT EXISTS idx_file_state_entries_auto_transition ON file_state_entries(auto_transition_scheduled_at);
+
+-- ===========================================
+-- ADD NEW COLUMNS TO EXISTING TABLES
+-- ===========================================
+
+-- Add revision_scheme_id to workflow_templates
+DO $$ BEGIN
+  ALTER TABLE workflow_templates ADD COLUMN revision_scheme_id UUID REFERENCES revision_schemes(id) ON DELETE SET NULL;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+-- Add is_initial to workflow_states (marks the starting state for new files)
+DO $$ BEGIN
+  ALTER TABLE workflow_states ADD COLUMN is_initial BOOLEAN DEFAULT false;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+-- Add is_released to workflow_states (marks states where files are considered "released")
+DO $$ BEGIN
+  ALTER TABLE workflow_states ADD COLUMN is_released BOOLEAN DEFAULT false;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+-- Add is_obsolete to workflow_states (marks states where files are considered "obsolete")
+DO $$ BEGIN
+  ALTER TABLE workflow_states ADD COLUMN is_obsolete BOOLEAN DEFAULT false;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+-- Add width and height to workflow_states for visual sizing
+DO $$ BEGIN
+  ALTER TABLE workflow_states ADD COLUMN width INTEGER DEFAULT 120;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  ALTER TABLE workflow_states ADD COLUMN height INTEGER DEFAULT 60;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+-- Add comment requirements to workflow_transitions
+DO $$ BEGIN
+  ALTER TABLE workflow_transitions ADD COLUMN comment_required BOOLEAN DEFAULT false;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+-- Add allowed workflow roles to transitions (for workflow role-based permissions)
+DO $$ BEGIN
+  ALTER TABLE workflow_transitions ADD COLUMN allowed_workflow_roles UUID[] DEFAULT '{}';
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+COMMENT ON COLUMN workflow_transitions.allowed_workflow_roles IS 'Array of workflow_role IDs that can execute this transition. Empty = no workflow role requirement (use allowed_roles only).';
+
+-- Add file pattern conditions to workflow_templates
+DO $$ BEGIN
+  ALTER TABLE workflow_templates ADD COLUMN file_conditions JSONB DEFAULT '{}'::jsonb;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+-- file_conditions: { "extensions": [".sldprt"], "folders": ["/Engineering"], "categories": ["uuid"] }
+
+-- ===========================================
+-- RLS POLICIES FOR NEW TABLES
+-- ===========================================
+
+ALTER TABLE revision_schemes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE workflow_state_permissions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE workflow_transition_conditions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE workflow_transition_actions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE workflow_transition_notifications ENABLE ROW LEVEL SECURITY;
+ALTER TABLE workflow_transition_approvals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE workflow_approval_reviewers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE workflow_auto_transitions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE workflow_tasks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pending_transition_approvals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE workflow_history ENABLE ROW LEVEL SECURITY;
+ALTER TABLE file_state_entries ENABLE ROW LEVEL SECURITY;
+
+-- Revision schemes
+DROP POLICY IF EXISTS "Users can view org revision schemes" ON revision_schemes;
+CREATE POLICY "Users can view org revision schemes"
+  ON revision_schemes FOR SELECT
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+DROP POLICY IF EXISTS "Admins can manage revision schemes" ON revision_schemes;
+CREATE POLICY "Admins can manage revision schemes"
+  ON revision_schemes FOR ALL
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'));
+
+-- Workflow state permissions
+DROP POLICY IF EXISTS "Users can view workflow state permissions" ON workflow_state_permissions;
+CREATE POLICY "Users can view workflow state permissions"
+  ON workflow_state_permissions FOR SELECT
+  USING (state_id IN (SELECT id FROM workflow_states WHERE workflow_id IN 
+    (SELECT id FROM workflow_templates WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid()))));
+
+DROP POLICY IF EXISTS "Admins can manage workflow state permissions" ON workflow_state_permissions;
+CREATE POLICY "Admins can manage workflow state permissions"
+  ON workflow_state_permissions FOR ALL
+  USING (state_id IN (SELECT id FROM workflow_states WHERE workflow_id IN 
+    (SELECT id FROM workflow_templates WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'))));
+
+-- Transition conditions
+DROP POLICY IF EXISTS "Users can view transition conditions" ON workflow_transition_conditions;
+CREATE POLICY "Users can view transition conditions"
+  ON workflow_transition_conditions FOR SELECT
+  USING (transition_id IN (SELECT id FROM workflow_transitions WHERE workflow_id IN 
+    (SELECT id FROM workflow_templates WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid()))));
+
+DROP POLICY IF EXISTS "Admins can manage transition conditions" ON workflow_transition_conditions;
+CREATE POLICY "Admins can manage transition conditions"
+  ON workflow_transition_conditions FOR ALL
+  USING (transition_id IN (SELECT id FROM workflow_transitions WHERE workflow_id IN 
+    (SELECT id FROM workflow_templates WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'))));
+
+-- Transition actions
+DROP POLICY IF EXISTS "Users can view transition actions" ON workflow_transition_actions;
+CREATE POLICY "Users can view transition actions"
+  ON workflow_transition_actions FOR SELECT
+  USING (transition_id IN (SELECT id FROM workflow_transitions WHERE workflow_id IN 
+    (SELECT id FROM workflow_templates WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid()))));
+
+DROP POLICY IF EXISTS "Admins can manage transition actions" ON workflow_transition_actions;
+CREATE POLICY "Admins can manage transition actions"
+  ON workflow_transition_actions FOR ALL
+  USING (transition_id IN (SELECT id FROM workflow_transitions WHERE workflow_id IN 
+    (SELECT id FROM workflow_templates WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'))));
+
+-- Transition notifications
+DROP POLICY IF EXISTS "Users can view transition notifications" ON workflow_transition_notifications;
+CREATE POLICY "Users can view transition notifications"
+  ON workflow_transition_notifications FOR SELECT
+  USING (transition_id IN (SELECT id FROM workflow_transitions WHERE workflow_id IN 
+    (SELECT id FROM workflow_templates WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid()))));
+
+DROP POLICY IF EXISTS "Admins can manage transition notifications" ON workflow_transition_notifications;
+CREATE POLICY "Admins can manage transition notifications"
+  ON workflow_transition_notifications FOR ALL
+  USING (transition_id IN (SELECT id FROM workflow_transitions WHERE workflow_id IN 
+    (SELECT id FROM workflow_templates WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'))));
+
+-- Transition approvals
+DROP POLICY IF EXISTS "Users can view transition approvals" ON workflow_transition_approvals;
+CREATE POLICY "Users can view transition approvals"
+  ON workflow_transition_approvals FOR SELECT
+  USING (transition_id IN (SELECT id FROM workflow_transitions WHERE workflow_id IN 
+    (SELECT id FROM workflow_templates WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid()))));
+
+DROP POLICY IF EXISTS "Admins can manage transition approvals" ON workflow_transition_approvals;
+CREATE POLICY "Admins can manage transition approvals"
+  ON workflow_transition_approvals FOR ALL
+  USING (transition_id IN (SELECT id FROM workflow_transitions WHERE workflow_id IN 
+    (SELECT id FROM workflow_templates WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'))));
+
+-- Approval reviewers
+DROP POLICY IF EXISTS "Users can view approval reviewers" ON workflow_approval_reviewers;
+CREATE POLICY "Users can view approval reviewers"
+  ON workflow_approval_reviewers FOR SELECT
+  USING (approval_id IN (SELECT id FROM workflow_transition_approvals WHERE transition_id IN 
+    (SELECT id FROM workflow_transitions WHERE workflow_id IN 
+      (SELECT id FROM workflow_templates WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid())))));
+
+DROP POLICY IF EXISTS "Admins can manage approval reviewers" ON workflow_approval_reviewers;
+CREATE POLICY "Admins can manage approval reviewers"
+  ON workflow_approval_reviewers FOR ALL
+  USING (approval_id IN (SELECT id FROM workflow_transition_approvals WHERE transition_id IN 
+    (SELECT id FROM workflow_transitions WHERE workflow_id IN 
+      (SELECT id FROM workflow_templates WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin')))));
+
+-- Auto transitions
+DROP POLICY IF EXISTS "Users can view auto transitions" ON workflow_auto_transitions;
+CREATE POLICY "Users can view auto transitions"
+  ON workflow_auto_transitions FOR SELECT
+  USING (transition_id IN (SELECT id FROM workflow_transitions WHERE workflow_id IN 
+    (SELECT id FROM workflow_templates WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid()))));
+
+DROP POLICY IF EXISTS "Admins can manage auto transitions" ON workflow_auto_transitions;
+CREATE POLICY "Admins can manage auto transitions"
+  ON workflow_auto_transitions FOR ALL
+  USING (transition_id IN (SELECT id FROM workflow_transitions WHERE workflow_id IN 
+    (SELECT id FROM workflow_templates WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'))));
+
+-- Workflow tasks
+DROP POLICY IF EXISTS "Users can view workflow tasks" ON workflow_tasks;
+CREATE POLICY "Users can view workflow tasks"
+  ON workflow_tasks FOR SELECT
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+DROP POLICY IF EXISTS "Admins can manage workflow tasks" ON workflow_tasks;
+CREATE POLICY "Admins can manage workflow tasks"
+  ON workflow_tasks FOR ALL
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'));
+
+-- Pending transition approvals
+DROP POLICY IF EXISTS "Users can view pending approvals" ON pending_transition_approvals;
+CREATE POLICY "Users can view pending approvals"
+  ON pending_transition_approvals FOR SELECT
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+DROP POLICY IF EXISTS "Engineers can create pending approvals" ON pending_transition_approvals;
+CREATE POLICY "Engineers can create pending approvals"
+  ON pending_transition_approvals FOR INSERT
+  WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role IN ('admin', 'engineer')));
+
+DROP POLICY IF EXISTS "Users can update pending approvals" ON pending_transition_approvals;
+CREATE POLICY "Users can update pending approvals"
+  ON pending_transition_approvals FOR UPDATE
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+-- Workflow history
+DROP POLICY IF EXISTS "Users can view workflow history" ON workflow_history;
+CREATE POLICY "Users can view workflow history"
+  ON workflow_history FOR SELECT
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+DROP POLICY IF EXISTS "System can insert workflow history" ON workflow_history;
+CREATE POLICY "System can insert workflow history"
+  ON workflow_history FOR INSERT
+  WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+-- File state entries
+DROP POLICY IF EXISTS "Users can view file state entries" ON file_state_entries;
+CREATE POLICY "Users can view file state entries"
+  ON file_state_entries FOR SELECT
+  USING (file_id IN (SELECT id FROM files WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid())));
+
+DROP POLICY IF EXISTS "Engineers can manage file state entries" ON file_state_entries;
+CREATE POLICY "Engineers can manage file state entries"
+  ON file_state_entries FOR ALL
+  USING (file_id IN (SELECT id FROM files WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role IN ('admin', 'engineer'))));
+
+-- ===========================================
+-- HELPER FUNCTIONS
+-- ===========================================
+
+-- Function to check if user has permission on a file in its current state
+CREATE OR REPLACE FUNCTION check_file_state_permission(
+  p_file_id UUID,
+  p_user_id UUID,
+  p_permission TEXT  -- 'read', 'write', 'delete', 'add', 'rename', 'change_state', 'edit_metadata'
+)
+RETURNS BOOLEAN AS $$
+DECLARE
+  v_state_id UUID;
+  v_user_role user_role;
+  v_workflow_role_ids UUID[];
+  v_has_permission BOOLEAN := false;
+BEGIN
+  -- Get file's current state
+  SELECT fwa.current_state_id INTO v_state_id
+  FROM file_workflow_assignments fwa
+  WHERE fwa.file_id = p_file_id;
+  
+  IF v_state_id IS NULL THEN
+    -- No workflow assigned, allow by default
+    RETURN true;
+  END IF;
+  
+  -- Get user's system role
+  SELECT role INTO v_user_role FROM users WHERE id = p_user_id;
+  
+  -- Get user's workflow roles
+  SELECT ARRAY_AGG(workflow_role_id) INTO v_workflow_role_ids
+  FROM user_workflow_roles
+  WHERE user_id = p_user_id;
+  
+  -- Check permissions in order of specificity: user > workflow_role > system_role > all
+  
+  -- 1. Check user-specific permission
+  SELECT CASE p_permission
+    WHEN 'read' THEN can_read
+    WHEN 'write' THEN can_write
+    WHEN 'delete' THEN can_delete
+    WHEN 'add' THEN can_add
+    WHEN 'rename' THEN can_rename
+    WHEN 'change_state' THEN can_change_state
+    WHEN 'edit_metadata' THEN can_edit_metadata
+    ELSE false
+  END INTO v_has_permission
+  FROM workflow_state_permissions
+  WHERE state_id = v_state_id 
+    AND permission_for = 'user' 
+    AND user_id = p_user_id;
+  
+  IF v_has_permission IS NOT NULL THEN
+    RETURN v_has_permission;
+  END IF;
+  
+  -- 2. Check workflow role permissions
+  SELECT bool_or(CASE p_permission
+    WHEN 'read' THEN can_read
+    WHEN 'write' THEN can_write
+    WHEN 'delete' THEN can_delete
+    WHEN 'add' THEN can_add
+    WHEN 'rename' THEN can_rename
+    WHEN 'change_state' THEN can_change_state
+    WHEN 'edit_metadata' THEN can_edit_metadata
+    ELSE false
+  END) INTO v_has_permission
+  FROM workflow_state_permissions
+  WHERE state_id = v_state_id 
+    AND permission_for = 'workflow_role' 
+    AND workflow_role_id = ANY(v_workflow_role_ids);
+  
+  IF v_has_permission IS NOT NULL AND v_has_permission THEN
+    RETURN true;
+  END IF;
+  
+  -- 3. Check system role permission
+  SELECT CASE p_permission
+    WHEN 'read' THEN can_read
+    WHEN 'write' THEN can_write
+    WHEN 'delete' THEN can_delete
+    WHEN 'add' THEN can_add
+    WHEN 'rename' THEN can_rename
+    WHEN 'change_state' THEN can_change_state
+    WHEN 'edit_metadata' THEN can_edit_metadata
+    ELSE false
+  END INTO v_has_permission
+  FROM workflow_state_permissions
+  WHERE state_id = v_state_id 
+    AND permission_for = 'role' 
+    AND role = v_user_role;
+  
+  IF v_has_permission IS NOT NULL THEN
+    RETURN v_has_permission;
+  END IF;
+  
+  -- 4. Check "all" permission
+  SELECT CASE p_permission
+    WHEN 'read' THEN can_read
+    WHEN 'write' THEN can_write
+    WHEN 'delete' THEN can_delete
+    WHEN 'add' THEN can_add
+    WHEN 'rename' THEN can_rename
+    WHEN 'change_state' THEN can_change_state
+    WHEN 'edit_metadata' THEN can_edit_metadata
+    ELSE false
+  END INTO v_has_permission
+  FROM workflow_state_permissions
+  WHERE state_id = v_state_id 
+    AND permission_for = 'all';
+  
+  IF v_has_permission IS NOT NULL THEN
+    RETURN v_has_permission;
+  END IF;
+  
+  -- Default: no permission
+  RETURN false;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Function to get next revision based on scheme
+CREATE OR REPLACE FUNCTION get_next_revision(
+  p_scheme_id UUID,
+  p_current_revision TEXT,
+  p_increment_type TEXT DEFAULT 'major'
+)
+RETURNS TEXT AS $$
+DECLARE
+  v_scheme revision_schemes%ROWTYPE;
+  v_next_revision TEXT;
+  v_current_revision TEXT;
+  v_current_num INTEGER;
+  v_current_alpha TEXT;
+  v_current_major TEXT;
+  v_current_minor TEXT;
+  v_next_num INTEGER;
+  v_next_alpha TEXT;
+BEGIN
+  SELECT * INTO v_scheme FROM revision_schemes WHERE id = p_scheme_id;
+  
+  IF NOT FOUND THEN
+    -- Default to numeric if scheme not found
+    IF p_current_revision IS NULL OR p_current_revision = '' THEN
+      RETURN '1';
+    END IF;
+    BEGIN
+      v_current_num := p_current_revision::INTEGER;
+      RETURN (v_current_num + 1)::TEXT;
+    EXCEPTION WHEN OTHERS THEN
+      RETURN '1';
+    END;
+  END IF;
+  
+  -- Handle empty/null current revision
+  IF p_current_revision IS NULL OR p_current_revision = '' THEN
+    CASE v_scheme.scheme_type
+      WHEN 'numeric' THEN
+        v_next_revision := v_scheme.start_value::TEXT;
+      WHEN 'alpha_upper' THEN
+        v_next_revision := 'A';
+      WHEN 'alpha_lower' THEN
+        v_next_revision := 'a';
+      WHEN 'alphanumeric' THEN
+        v_next_revision := 'A' || v_scheme.major_minor_separator || v_scheme.start_value::TEXT;
+      ELSE
+        v_next_revision := v_scheme.start_value::TEXT;
+    END CASE;
+    
+    -- Apply formatting
+    IF v_scheme.zero_padding > 0 AND v_scheme.scheme_type = 'numeric' THEN
+      v_next_revision := LPAD(v_next_revision, v_scheme.zero_padding, '0');
+    END IF;
+    
+    RETURN COALESCE(v_scheme.prefix, '') || v_next_revision || COALESCE(v_scheme.suffix, '');
+  END IF;
+  
+  -- Strip prefix/suffix for parsing
+  v_current_revision := p_current_revision;
+  IF v_scheme.prefix IS NOT NULL AND v_scheme.prefix != '' THEN
+    v_current_revision := REPLACE(v_current_revision, v_scheme.prefix, '');
+  END IF;
+  IF v_scheme.suffix IS NOT NULL AND v_scheme.suffix != '' THEN
+    v_current_revision := REPLACE(v_current_revision, v_scheme.suffix, '');
+  END IF;
+  
+  CASE v_scheme.scheme_type
+    WHEN 'numeric' THEN
+      BEGIN
+        v_current_num := v_current_revision::INTEGER;
+        v_next_num := v_current_num + COALESCE(v_scheme.increment_by, 1);
+        v_next_revision := v_next_num::TEXT;
+        IF v_scheme.zero_padding > 0 THEN
+          v_next_revision := LPAD(v_next_revision, v_scheme.zero_padding, '0');
+        END IF;
+      EXCEPTION WHEN OTHERS THEN
+        v_next_revision := COALESCE(v_scheme.start_value, 1)::TEXT;
+      END;
+      
+    WHEN 'alpha_upper' THEN
+      -- Simple A-Z, then AA-AZ, etc.
+      IF v_current_revision = 'Z' THEN
+        v_next_revision := 'AA';
+      ELSIF LENGTH(v_current_revision) = 1 THEN
+        v_next_revision := CHR(ASCII(v_current_revision) + 1);
+      ELSE
+        -- Handle multi-letter
+        IF RIGHT(v_current_revision, 1) = 'Z' THEN
+          v_next_revision := CHR(ASCII(LEFT(v_current_revision, 1)) + 1) || 'A';
+        ELSE
+          v_next_revision := LEFT(v_current_revision, LENGTH(v_current_revision) - 1) || CHR(ASCII(RIGHT(v_current_revision, 1)) + 1);
+        END IF;
+      END IF;
+      
+    WHEN 'alpha_lower' THEN
+      IF v_current_revision = 'z' THEN
+        v_next_revision := 'aa';
+      ELSIF LENGTH(v_current_revision) = 1 THEN
+        v_next_revision := CHR(ASCII(v_current_revision) + 1);
+      ELSE
+        IF RIGHT(v_current_revision, 1) = 'z' THEN
+          v_next_revision := CHR(ASCII(LEFT(v_current_revision, 1)) + 1) || 'a';
+        ELSE
+          v_next_revision := LEFT(v_current_revision, LENGTH(v_current_revision) - 1) || CHR(ASCII(RIGHT(v_current_revision, 1)) + 1);
+        END IF;
+      END IF;
+      
+    WHEN 'alphanumeric' THEN
+      -- Split by separator
+      v_current_major := SPLIT_PART(v_current_revision, v_scheme.major_minor_separator, 1);
+      v_current_minor := SPLIT_PART(v_current_revision, v_scheme.major_minor_separator, 2);
+      
+      IF p_increment_type = 'minor' THEN
+        -- Increment minor only
+        BEGIN
+          v_current_num := COALESCE(NULLIF(v_current_minor, '')::INTEGER, 0);
+          v_next_revision := v_current_major || v_scheme.major_minor_separator || (v_current_num + 1)::TEXT;
+        EXCEPTION WHEN OTHERS THEN
+          v_next_revision := v_current_major || v_scheme.major_minor_separator || '1';
+        END;
+      ELSE
+        -- Increment major, reset minor
+        IF v_current_major = 'Z' OR v_current_major = 'z' THEN
+          v_next_alpha := 'AA';
+        ELSIF LENGTH(v_current_major) = 1 THEN
+          v_next_alpha := CHR(ASCII(v_current_major) + 1);
+        ELSE
+          v_next_alpha := CHR(ASCII(LEFT(v_current_major, 1)) + 1) || 'A';
+        END IF;
+        v_next_revision := v_next_alpha || v_scheme.major_minor_separator || COALESCE(v_scheme.start_value, 1)::TEXT;
+      END IF;
+      
+    ELSE
+      -- Custom or unknown - default to numeric behavior
+      BEGIN
+        v_current_num := v_current_revision::INTEGER;
+        v_next_revision := (v_current_num + 1)::TEXT;
+      EXCEPTION WHEN OTHERS THEN
+        v_next_revision := '1';
+      END;
+  END CASE;
+  
+  RETURN COALESCE(v_scheme.prefix, '') || v_next_revision || COALESCE(v_scheme.suffix, '');
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Function to execute a workflow transition
+CREATE OR REPLACE FUNCTION execute_workflow_transition(
+  p_file_id UUID,
+  p_transition_id UUID,
+  p_user_id UUID,
+  p_comment TEXT DEFAULT NULL
+)
+RETURNS JSONB AS $$
+DECLARE
+  v_transition workflow_transitions%ROWTYPE;
+  v_from_state workflow_states%ROWTYPE;
+  v_to_state workflow_states%ROWTYPE;
+  v_file files%ROWTYPE;
+  v_workflow workflow_templates%ROWTYPE;
+  v_approval workflow_transition_approvals%ROWTYPE;
+  v_action workflow_transition_actions%ROWTYPE;
+  v_new_revision TEXT;
+  v_result JSONB := '{}'::jsonb;
+  v_approval_required BOOLEAN := false;
+BEGIN
+  -- Get transition details
+  SELECT * INTO v_transition FROM workflow_transitions WHERE id = p_transition_id;
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('success', false, 'error', 'Transition not found');
+  END IF;
+  
+  -- Get states
+  SELECT * INTO v_from_state FROM workflow_states WHERE id = v_transition.from_state_id;
+  SELECT * INTO v_to_state FROM workflow_states WHERE id = v_transition.to_state_id;
+  
+  -- Get file
+  SELECT * INTO v_file FROM files WHERE id = p_file_id;
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('success', false, 'error', 'File not found');
+  END IF;
+  
+  -- Get workflow
+  SELECT * INTO v_workflow FROM workflow_templates WHERE id = v_transition.workflow_id;
+  
+  -- Check for approval requirements
+  SELECT * INTO v_approval 
+  FROM workflow_transition_approvals 
+  WHERE transition_id = p_transition_id AND is_enabled = true
+  LIMIT 1;
+  
+  IF FOUND AND v_approval.required_count > 0 THEN
+    v_approval_required := true;
+  END IF;
+  
+  -- If approval required, create pending approval instead of transitioning
+  IF v_approval_required THEN
+    INSERT INTO pending_transition_approvals (
+      org_id, file_id, transition_id, approval_id,
+      requested_by, request_comment,
+      expires_at
+    ) VALUES (
+      v_file.org_id, p_file_id, p_transition_id, v_approval.id,
+      p_user_id, p_comment,
+      CASE WHEN v_approval.timeout_hours IS NOT NULL 
+        THEN NOW() + (v_approval.timeout_hours || ' hours')::INTERVAL 
+        ELSE NULL 
+      END
+    );
+    
+    RETURN jsonb_build_object(
+      'success', true, 
+      'approval_required', true,
+      'message', 'Transition requires approval'
+    );
+  END IF;
+  
+  -- Execute "before" actions
+  FOR v_action IN 
+    SELECT * FROM workflow_transition_actions 
+    WHERE transition_id = p_transition_id 
+      AND is_enabled = true 
+      AND execute_when = 'before'
+    ORDER BY sort_order
+  LOOP
+    -- Handle different action types
+    IF v_action.action_type = 'increment_revision' THEN
+      v_new_revision := get_next_revision(
+        v_action.revision_scheme_id,
+        v_file.revision,
+        v_action.increment_type
+      );
+    END IF;
+  END LOOP;
+  
+  -- Update file state
+  UPDATE file_workflow_assignments
+  SET current_state_id = v_to_state.id
+  WHERE file_id = p_file_id;
+  
+  -- Update revision if incremented
+  IF v_new_revision IS NOT NULL THEN
+    UPDATE files SET revision = v_new_revision WHERE id = p_file_id;
+  END IF;
+  
+  -- Mark previous state entry as left
+  UPDATE file_state_entries
+  SET is_current = false, left_at = NOW()
+  WHERE file_id = p_file_id AND is_current = true;
+  
+  -- Create new state entry
+  INSERT INTO file_state_entries (file_id, state_id, entered_by)
+  VALUES (p_file_id, v_to_state.id, p_user_id);
+  
+  -- Execute "after" actions
+  FOR v_action IN 
+    SELECT * FROM workflow_transition_actions 
+    WHERE transition_id = p_transition_id 
+      AND is_enabled = true 
+      AND execute_when = 'after'
+    ORDER BY sort_order
+  LOOP
+    IF v_action.action_type = 'increment_revision' AND v_new_revision IS NULL THEN
+      v_new_revision := get_next_revision(
+        v_action.revision_scheme_id,
+        v_file.revision,
+        v_action.increment_type
+      );
+      UPDATE files SET revision = v_new_revision WHERE id = p_file_id;
+    END IF;
+  END LOOP;
+  
+  -- Record in history
+  INSERT INTO workflow_history (
+    org_id, event_type, file_id, file_path, file_name, file_version,
+    workflow_id, workflow_name,
+    from_state_id, from_state_name, to_state_id, to_state_name,
+    transition_id, transition_name,
+    old_revision, new_revision,
+    performed_by, performed_by_email, comment
+  ) VALUES (
+    v_file.org_id, 'state_change', p_file_id, v_file.file_path, v_file.file_name, v_file.version,
+    v_workflow.id, v_workflow.name,
+    v_from_state.id, v_from_state.name, v_to_state.id, v_to_state.name,
+    v_transition.id, v_transition.name,
+    v_file.revision, COALESCE(v_new_revision, v_file.revision),
+    p_user_id, (SELECT email FROM users WHERE id = p_user_id), p_comment
+  );
+  
+  RETURN jsonb_build_object(
+    'success', true,
+    'from_state', v_from_state.name,
+    'to_state', v_to_state.name,
+    'new_revision', v_new_revision
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Create default revision scheme for an organization
+CREATE OR REPLACE FUNCTION create_default_revision_scheme(
+  p_org_id UUID,
+  p_created_by UUID
+)
+RETURNS UUID AS $$
+DECLARE
+  v_scheme_id UUID;
+BEGIN
+  INSERT INTO revision_schemes (org_id, name, description, scheme_type, start_value, is_default, created_by)
+  VALUES (p_org_id, 'Numeric (1, 2, 3...)', 'Simple numeric revision scheme', 'numeric', 1, true, p_created_by)
+  RETURNING id INTO v_scheme_id;
+  
+  -- Also create alpha and alphanumeric schemes
+  INSERT INTO revision_schemes (org_id, name, description, scheme_type, start_value, created_by)
+  VALUES 
+    (p_org_id, 'Alpha (A, B, C...)', 'Alphabetic revision scheme', 'alpha_upper', 1, p_created_by),
+    (p_org_id, 'Alphanumeric (A.1, A.2, B.1...)', 'Major.minor revision scheme', 'alphanumeric', 1, p_created_by);
+  
+  RETURN v_scheme_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Enhanced create_default_workflow to use new schema
+CREATE OR REPLACE FUNCTION create_default_workflow_v2(
+  p_org_id UUID,
+  p_created_by UUID
+)
+RETURNS UUID AS $$
+DECLARE
+  v_workflow_id UUID;
+  v_scheme_id UUID;
+  v_wip_state_id UUID;
+  v_review_state_id UUID;
+  v_released_state_id UUID;
+  v_obsolete_state_id UUID;
+  v_submit_transition_id UUID;
+  v_approve_transition_id UUID;
+  v_reject_transition_id UUID;
+  v_revise_transition_id UUID;
+  v_obsolete_transition_id UUID;
+BEGIN
+  -- Create or get revision scheme
+  SELECT id INTO v_scheme_id FROM revision_schemes WHERE org_id = p_org_id AND is_default = true;
+  IF NOT FOUND THEN
+    v_scheme_id := create_default_revision_scheme(p_org_id, p_created_by);
+  END IF;
+  
+  -- Create the workflow template
+  INSERT INTO workflow_templates (org_id, name, description, is_default, revision_scheme_id, created_by)
+  VALUES (p_org_id, 'Standard Release Process', 'Default workflow for releasing engineering files', true, v_scheme_id, p_created_by)
+  RETURNING id INTO v_workflow_id;
+  
+  -- Create states
+  INSERT INTO workflow_states (workflow_id, name, label, color, icon, position_x, position_y, 
+    is_editable, requires_checkout, is_initial, width, height, sort_order)
+  VALUES (v_workflow_id, 'WIP', 'Work In Progress', '#EAB308', 'pencil', 100, 200, 
+    true, true, true, 140, 70, 1)
+  RETURNING id INTO v_wip_state_id;
+  
+  INSERT INTO workflow_states (workflow_id, name, label, color, icon, position_x, position_y, 
+    is_editable, requires_checkout, width, height, sort_order)
+  VALUES (v_workflow_id, 'In Review', 'In Review', '#3B82F6', 'eye', 350, 200, 
+    false, false, 140, 70, 2)
+  RETURNING id INTO v_review_state_id;
+  
+  INSERT INTO workflow_states (workflow_id, name, label, color, icon, position_x, position_y, 
+    is_editable, requires_checkout, is_released, width, height, sort_order)
+  VALUES (v_workflow_id, 'Released', 'Released', '#22C55E', 'check-circle', 600, 200, 
+    false, false, true, 140, 70, 3)
+  RETURNING id INTO v_released_state_id;
+  
+  INSERT INTO workflow_states (workflow_id, name, label, color, icon, position_x, position_y, 
+    is_editable, requires_checkout, is_obsolete, width, height, sort_order)
+  VALUES (v_workflow_id, 'Obsolete', 'Obsolete', '#6B7280', 'archive', 600, 350, 
+    false, false, true, 140, 70, 4)
+  RETURNING id INTO v_obsolete_state_id;
+  
+  -- Create state permissions
+  -- WIP: Engineers can do everything
+  INSERT INTO workflow_state_permissions (state_id, permission_for, role, can_read, can_write, can_delete, can_add, can_rename, can_change_state, can_edit_metadata)
+  VALUES (v_wip_state_id, 'role', 'engineer', true, true, true, true, true, true, true);
+  INSERT INTO workflow_state_permissions (state_id, permission_for, role, can_read, can_write, can_delete, can_add, can_rename, can_change_state, can_edit_metadata)
+  VALUES (v_wip_state_id, 'role', 'admin', true, true, true, true, true, true, true);
+  INSERT INTO workflow_state_permissions (state_id, permission_for, role, can_read, can_write, can_delete, can_add, can_rename, can_change_state, can_edit_metadata)
+  VALUES (v_wip_state_id, 'role', 'viewer', true, false, false, false, false, false, false);
+  
+  -- In Review: Read only for most, admin can transition
+  INSERT INTO workflow_state_permissions (state_id, permission_for, role, can_read, can_write, can_delete, can_add, can_rename, can_change_state, can_edit_metadata)
+  VALUES (v_review_state_id, 'role', 'engineer', true, false, false, false, false, false, false);
+  INSERT INTO workflow_state_permissions (state_id, permission_for, role, can_read, can_write, can_delete, can_add, can_rename, can_change_state, can_edit_metadata)
+  VALUES (v_review_state_id, 'role', 'admin', true, false, false, false, false, true, true);
+  INSERT INTO workflow_state_permissions (state_id, permission_for, role, can_read, can_write, can_delete, can_add, can_rename, can_change_state, can_edit_metadata)
+  VALUES (v_review_state_id, 'role', 'viewer', true, false, false, false, false, false, false);
+  
+  -- Released: Read only, admin can transition
+  INSERT INTO workflow_state_permissions (state_id, permission_for, role, can_read, can_write, can_delete, can_add, can_rename, can_change_state, can_edit_metadata)
+  VALUES (v_released_state_id, 'role', 'engineer', true, false, false, false, false, false, false);
+  INSERT INTO workflow_state_permissions (state_id, permission_for, role, can_read, can_write, can_delete, can_add, can_rename, can_change_state, can_edit_metadata)
+  VALUES (v_released_state_id, 'role', 'admin', true, false, false, false, false, true, false);
+  INSERT INTO workflow_state_permissions (state_id, permission_for, role, can_read, can_write, can_delete, can_add, can_rename, can_change_state, can_edit_metadata)
+  VALUES (v_released_state_id, 'role', 'viewer', true, false, false, false, false, false, false);
+  
+  -- Obsolete: Read only
+  INSERT INTO workflow_state_permissions (state_id, permission_for, role, can_read, can_write, can_delete, can_add, can_rename, can_change_state, can_edit_metadata)
+  VALUES (v_obsolete_state_id, 'all', NULL, true, false, false, false, false, false, false);
+  
+  -- Create transitions
+  INSERT INTO workflow_transitions (workflow_id, from_state_id, to_state_id, name, line_style, comment_required)
+  VALUES (v_workflow_id, v_wip_state_id, v_review_state_id, 'Submit for Review', 'solid', true)
+  RETURNING id INTO v_submit_transition_id;
+  
+  INSERT INTO workflow_transitions (workflow_id, from_state_id, to_state_id, name, line_style, comment_required)
+  VALUES (v_workflow_id, v_review_state_id, v_released_state_id, 'Approve', 'solid', false)
+  RETURNING id INTO v_approve_transition_id;
+  
+  INSERT INTO workflow_transitions (workflow_id, from_state_id, to_state_id, name, line_style, comment_required)
+  VALUES (v_workflow_id, v_review_state_id, v_wip_state_id, 'Reject', 'dashed', true)
+  RETURNING id INTO v_reject_transition_id;
+  
+  INSERT INTO workflow_transitions (workflow_id, from_state_id, to_state_id, name, line_style)
+  VALUES (v_workflow_id, v_released_state_id, v_wip_state_id, 'Revise', 'dashed')
+  RETURNING id INTO v_revise_transition_id;
+  
+  INSERT INTO workflow_transitions (workflow_id, from_state_id, to_state_id, name, line_style)
+  VALUES (v_workflow_id, v_released_state_id, v_obsolete_state_id, 'Obsolete', 'dotted')
+  RETURNING id INTO v_obsolete_transition_id;
+  
+  -- Add approval requirement to "Approve" transition
+  INSERT INTO workflow_transition_approvals (transition_id, name, required_count, approval_mode, comment_required)
+  VALUES (v_approve_transition_id, 'Release Approval', 1, 'any', false);
+  
+  -- Add revision increment action to "Approve" transition
+  INSERT INTO workflow_transition_actions (transition_id, name, action_type, revision_scheme_id, execute_when)
+  VALUES (v_approve_transition_id, 'Increment Revision', 'increment_revision', v_scheme_id, 'after');
+  
+  -- Add notifications
+  INSERT INTO workflow_transition_notifications (transition_id, name, recipient_type, subject, message, send_email, send_in_app)
+  VALUES (v_submit_transition_id, 'Review Request', 'role', 
+    'Review Requested: {FILE_NAME}',
+    '{USER_NAME} has submitted {FILE_NAME} for review. Please review and approve or reject.',
+    true, true);
+  
+  INSERT INTO workflow_transition_notifications (transition_id, name, recipient_type, subject, message)
+  VALUES (v_approve_transition_id, 'Approved Notification', 'file_owner',
+    'File Approved: {FILE_NAME}',
+    'Your file {FILE_NAME} has been approved and is now at revision {REVISION}.');
+  
+  INSERT INTO workflow_transition_notifications (transition_id, name, recipient_type, subject, message)
+  VALUES (v_reject_transition_id, 'Rejection Notification', 'file_owner',
+    'File Rejected: {FILE_NAME}',
+    'Your file {FILE_NAME} has been rejected. Comment: {COMMENT}');
+  
+  RETURN v_workflow_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ===========================================
+-- REALTIME SUBSCRIPTIONS FOR NEW TABLES
+-- ===========================================
+
+ALTER TABLE revision_schemes REPLICA IDENTITY FULL;
+ALTER TABLE workflow_state_permissions REPLICA IDENTITY FULL;
+ALTER TABLE workflow_transition_conditions REPLICA IDENTITY FULL;
+ALTER TABLE workflow_transition_actions REPLICA IDENTITY FULL;
+ALTER TABLE workflow_transition_notifications REPLICA IDENTITY FULL;
+ALTER TABLE workflow_transition_approvals REPLICA IDENTITY FULL;
+ALTER TABLE workflow_approval_reviewers REPLICA IDENTITY FULL;
+ALTER TABLE workflow_auto_transitions REPLICA IDENTITY FULL;
+ALTER TABLE workflow_tasks REPLICA IDENTITY FULL;
+ALTER TABLE pending_transition_approvals REPLICA IDENTITY FULL;
+ALTER TABLE workflow_history REPLICA IDENTITY FULL;
+ALTER TABLE file_state_entries REPLICA IDENTITY FULL;
+
+DO $$
+BEGIN
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE revision_schemes; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE workflow_state_permissions; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE workflow_transition_conditions; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE workflow_transition_actions; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE workflow_transition_notifications; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE workflow_transition_approvals; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE workflow_approval_reviewers; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE workflow_auto_transitions; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE workflow_tasks; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE pending_transition_approvals; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE workflow_history; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE file_state_entries; EXCEPTION WHEN duplicate_object THEN NULL; END;
+END $$;
+
+-- ===========================================
+-- COMMENTS
+-- ===========================================
+
+COMMENT ON TABLE revision_schemes IS 'Revision numbering schemes (numeric, alpha, alphanumeric, custom)';
+COMMENT ON TABLE workflow_state_permissions IS 'Per-state permissions defining what users/roles can do with files';
+COMMENT ON TABLE workflow_transition_conditions IS 'Conditions that must be met before a transition can execute';
+COMMENT ON TABLE workflow_transition_actions IS 'Actions that execute automatically when a transition occurs';
+COMMENT ON TABLE workflow_transition_notifications IS 'Notification configuration for transitions';
+COMMENT ON TABLE workflow_transition_approvals IS 'Approval requirements for transitions (replaces gates)';
+COMMENT ON TABLE workflow_approval_reviewers IS 'Who can approve/review a transition';
+COMMENT ON TABLE workflow_auto_transitions IS 'Automatic transition triggers (timer, schedule, conditions)';
+COMMENT ON TABLE workflow_tasks IS 'Workflow automation tasks (file conversions, scripts, webhooks)';
+COMMENT ON TABLE pending_transition_approvals IS 'Active approval requests waiting for review';
+COMMENT ON TABLE workflow_history IS 'Complete audit trail of all workflow events';
+COMMENT ON TABLE file_state_entries IS 'Tracks when files enter/leave states for timer-based transitions';
 
 -- =====================================================================
 -- MIGRATION TEMPLATES (for future changes)

@@ -212,6 +212,12 @@ export async function getGateReviewers(gateId: string) {
         email,
         full_name,
         avatar_url
+      ),
+      workflow_role:workflow_role_id (
+        id,
+        name,
+        color,
+        icon
       )
     `
     )

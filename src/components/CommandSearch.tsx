@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { 
   Search, X, Clock, File, Folder, Hash, FileText, User, 
-  CheckCircle, Circle, AlertCircle, ArrowRight, Command,
+  ArrowRight, Command,
   ClipboardList, Tag, Filter, ChevronDown, HardDrive,
   FileSpreadsheet, Presentation, Loader2, ExternalLink
 } from 'lucide-react'
@@ -389,7 +389,7 @@ export function CommandSearch({ maxWidth = 'max-w-lg' }: CommandSearchProps) {
   }
 
   // Get workflow state indicator
-  const getStateIndicator = (workflowState?: { name: string; label: string | null; color: string }) => {
+  const getStateIndicator = (workflowState?: { name: string; label: string | null; color: string } | null) => {
     if (!workflowState) return null
     return (
       <span 

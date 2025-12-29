@@ -50,7 +50,7 @@ function getFileContext(file: LocalFile): Record<string, unknown> {
     fileId: file.pdmData?.id,
     version: file.pdmData?.version,
     checkedOutBy: file.pdmData?.checked_out_by,
-    state: file.pdmData?.state
+    state: file.pdmData?.workflow_state?.name
   }
 }
 

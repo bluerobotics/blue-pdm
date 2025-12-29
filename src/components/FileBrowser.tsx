@@ -144,11 +144,10 @@ interface FileIconCardProps {
   onCheckout?: (e: React.MouseEvent, file: LocalFile) => void
   onCheckin?: (e: React.MouseEvent, file: LocalFile) => void
   onUpload?: (e: React.MouseEvent, file: LocalFile) => void
-  onStateChange?: (file: LocalFile, newState: string) => void
 }
 
 // Memoized to prevent re-renders when other files change
-const FileIconCard = memo(function FileIconCard({ file, iconSize, isSelected, isCut, allFiles, processingPaths, currentMachineId, lowercaseExtensions, userId, userFullName, userEmail, userAvatarUrl, onClick, onDoubleClick, onContextMenu, onDownload, onCheckout, onCheckin, onUpload, onStateChange }: FileIconCardProps) {
+const FileIconCard = memo(function FileIconCard({ file, iconSize, isSelected, isCut, allFiles, processingPaths, currentMachineId, lowercaseExtensions, userId, userFullName, userEmail, userAvatarUrl, onClick, onDoubleClick, onContextMenu, onDownload, onCheckout, onCheckin, onUpload }: FileIconCardProps) {
   const [thumbnail, setThumbnail] = useState<string | null>(null)
   const [thumbnailError, setThumbnailError] = useState(false)
   const [loadingThumbnail, setLoadingThumbnail] = useState(false)
@@ -2390,33 +2389,6 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
   }
   
   const handleCancelCellEdit = () => {
-    setEditingCell(null)
-    setEditValue('')
-  }
-  
-  // Handle state change via dropdown
-  const handleStateChange = async (file: LocalFile, newState: string) => {
-    if (!file.pdmData?.id || !user) return
-    
-    setEditValue(newState)
-    
-    try {
-      const result = await updateFileMetadata(file.pdmData.id, user.id, {
-        state: newState as 'not_tracked' | 'wip' | 'in_review' | 'released' | 'obsolete'
-      })
-      
-      if (result.success && result.file) {
-        updateFileInStore(file.path, {
-          pdmData: { ...file.pdmData, ...result.file }
-        })
-        addToast('success', 'State updated')
-      } else {
-        addToast('error', result.error || 'Failed to update state')
-      }
-    } catch (err) {
-      addToast('error', `Failed to update: ${err instanceof Error ? err.message : String(err)}`)
-    }
-    
     setEditingCell(null)
     setEditValue('')
   }
@@ -4722,7 +4694,6 @@ export function FileBrowser({ onRefresh }: FileBrowserProps) {
                 onCheckout={handleInlineCheckout}
                 onCheckin={handleInlineCheckin}
                 onUpload={handleInlineUpload}
-                onStateChange={handleStateChange}
               />
             ))}
           </div>

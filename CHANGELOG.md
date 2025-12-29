@@ -5,15 +5,18 @@ All notable changes to BluePLM will be documented in this file.
 ## [2.15.0] - 2025-12-28
 
 ### Added
-- **History item navigation**: Click any history entry to reveal and select the file in the file browser
-- **Workflow snap settings**: New magnet button in workflow canvas toolbar with configurable snapping options
-  - **Snap to Grid**: States snap to grid intersections when dragged (configurable grid size 10-100px)
-  - **Snap to Alignment**: States auto-align horizontally/vertically with other states (configurable snap distance 5-30px)
-  - Blue dashed guide lines appear during drag when alignment is detected
-  - Settings persist per workflow in localStorage
+- **Workflow Roles**: Custom approval roles (Design Lead, QA Manager, etc.) assignable to states, transitions, and gate reviewers
+- **Advanced Workflow Features**: State permissions, transition conditions/actions, revision schemes, auto-transitions, workflow tasks, transition approvals, and audit history
+- **Workflow Canvas**: Right-click to create states, infinite canvas, elbow paths with draggable handles, connection point snapping, snap-to-grid/alignment with visual guides
+- **History navigation**: Click history entries to reveal files in browser
+- **Schema version checking**: Startup warnings for database migrations, status in Settings
+
+### Changed
+- **Workflow model simplified**: Gates replaced with transition approvals (industry-standard)
 
 ### Fixed
-- **Sidebar submenu animation**: Fixed submenu icons drifting left and lingering when hovering off menu items with submenus
+- Sidebar submenu animation drift
+- Workflow: drag-to-connect, elbow paths, transition persistence, spline perpendicularity, control points, color picker layout
 
 ---
 

@@ -90,7 +90,7 @@ function getFileContext(file: LocalFile): Record<string, unknown> {
     contentHash: file.pdmData?.content_hash ? `${file.pdmData.content_hash.substring(0, 12)}...` : null,
     fileId: file.pdmData?.id,
     version: file.pdmData?.version,
-    state: file.pdmData?.state
+    state: file.pdmData?.workflow_state?.name
   }
 }
 
@@ -295,7 +295,7 @@ export const downloadCommand: Command<DownloadParams> = {
           pdmData: file.pdmData ? {
             id: file.pdmData.id,
             version: file.pdmData.version,
-            state: file.pdmData.state,
+            state: file.pdmData.workflow_state?.name,
             hasHash: !!file.pdmData.content_hash
           } : null
         })

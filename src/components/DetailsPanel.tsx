@@ -3,7 +3,7 @@ import { usePDMStore, LocalFile, DetailsPanelTab } from '../stores/pdmStore'
 import { formatFileSize, getFileIconType } from '../types/pdm'
 import { DraggableTab, TabDropZone, PanelLocation } from './shared/DraggableTab'
 import { format, formatDistanceToNow } from 'date-fns'
-import { getFileVersions, getRecentActivity, updateFileMetadata } from '../lib/supabase'
+import { getFileVersions, getRecentActivity } from '../lib/supabase'
 import { rollbackToVersion } from '../lib/fileService'
 import { downloadFile } from '../lib/storage'
 import { getNextSerialNumber } from '../lib/serialization'
@@ -192,7 +192,7 @@ export function DetailsPanel() {
   // Editable property state
   const [editingField, setEditingField] = useState<'itemNumber' | 'description' | 'revision' | 'state' | null>(null)
   const [editValue, setEditValue] = useState('')
-  const [isSavingEdit, setIsSavingEdit] = useState(false)
+  const [isSavingEdit] = useState(false)
   const [isGeneratingSerial, setIsGeneratingSerial] = useState(false)
   
   // Folder-specific state
@@ -511,8 +511,6 @@ export function DetailsPanel() {
 
   // Check if file is editable (must be checked out by current user)
   const isFileEditable = file?.pdmData?.id && file?.pdmData?.checked_out_by === user?.id
-  // State can be edited without checkout - just needs to be synced
-  const canEditState = !!file?.pdmData?.id
 
   // Handle starting edit of a property field
   const handleStartEdit = (field: 'itemNumber' | 'description' | 'revision' | 'state') => {
@@ -634,34 +632,6 @@ export function DetailsPanel() {
   const handleCancelEdit = () => {
     setEditingField(null)
     setEditValue('')
-  }
-  
-  // Handle state change via dropdown
-  const handleStateChange = async (newState: string) => {
-    if (!file?.pdmData?.id || !user) return
-    
-    setIsSavingEdit(true)
-    
-    try {
-      const result = await updateFileMetadata(file.pdmData.id, user.id, {
-        state: newState as 'not_tracked' | 'wip' | 'in_review' | 'released' | 'obsolete'
-      })
-      
-      if (result.success && result.file) {
-        updateFileInStore(file.path, {
-          pdmData: { ...file.pdmData, ...result.file }
-        })
-        addToast('success', 'State updated')
-      } else {
-        addToast('error', result.error || 'Failed to update state')
-      }
-    } catch (err) {
-      addToast('error', `Failed to update: ${err instanceof Error ? err.message : String(err)}`)
-    } finally {
-      setIsSavingEdit(false)
-      setEditingField(null)
-      setEditValue('')
-    }
   }
 
   const getFileIcon = () => {

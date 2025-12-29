@@ -25,6 +25,7 @@ import {
 } from 'lucide-react'
 import { usePDMStore } from '../../stores/pdmStore'
 import { supabase, getCurrentConfig, isSupabaseConfigured } from '../../lib/supabase'
+import { getSchemaVersion, EXPECTED_SCHEMA_VERSION, type SchemaVersionInfo } from '../../lib/schemaVersion'
 
 // Cast supabase client to bypass known v2 type inference issues
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -94,6 +95,8 @@ export function SupabaseSettings() {
   })
   const [loadingActivity, setLoadingActivity] = useState(false)
   const [timeRange, setTimeRange] = useState<'24h' | '7d' | '30d' | 'all'>('7d')
+  const [schemaVersion, setSchemaVersion] = useState<SchemaVersionInfo | null>(null)
+  const [loadingSchema, setLoadingSchema] = useState(false)
   
   const config = getCurrentConfig()
   const isConfigured = isSupabaseConfigured()
@@ -110,8 +113,20 @@ export function SupabaseSettings() {
     if (organization?.id && status === 'online') {
       loadStats()
       loadActivityData()
+      loadSchemaVersion()
     }
   }, [organization?.id, status])
+  
+  const loadSchemaVersion = async () => {
+    setLoadingSchema(true)
+    try {
+      const version = await getSchemaVersion()
+      setSchemaVersion(version)
+    } catch (err) {
+      console.error('[SupabaseSettings] Failed to load schema version:', err)
+    }
+    setLoadingSchema(false)
+  }
   
   // Reload activity when time range changes
   useEffect(() => {
@@ -558,6 +573,108 @@ export function SupabaseSettings() {
           </div>
         </div>
       </div>
+
+      {/* Schema Version */}
+      {status === 'online' && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 text-sm text-plm-fg-muted uppercase tracking-wide font-medium">
+            <Server size={14} />
+            Schema Version
+          </div>
+          <div className="p-4 bg-plm-bg rounded-lg border border-plm-border">
+            {loadingSchema ? (
+              <div className="flex items-center gap-2 text-plm-fg-muted">
+                <Loader2 size={16} className="animate-spin" />
+                <span>Checking schema version...</span>
+              </div>
+            ) : schemaVersion ? (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className={`p-2 rounded-full ${
+                      schemaVersion.version === EXPECTED_SCHEMA_VERSION 
+                        ? 'bg-green-500/20' 
+                        : schemaVersion.version > EXPECTED_SCHEMA_VERSION
+                          ? 'bg-blue-500/20'
+                          : 'bg-yellow-500/20'
+                    }`}>
+                      <Database size={16} className={
+                        schemaVersion.version === EXPECTED_SCHEMA_VERSION 
+                          ? 'text-green-400' 
+                          : schemaVersion.version > EXPECTED_SCHEMA_VERSION
+                            ? 'text-blue-400'
+                            : 'text-yellow-400'
+                      } />
+                    </div>
+                    <div>
+                      <div className="text-sm font-medium text-plm-fg">
+                        Database: v{schemaVersion.version}
+                        {schemaVersion.version === EXPECTED_SCHEMA_VERSION && (
+                          <span className="ml-2 text-green-400">(Up to date)</span>
+                        )}
+                        {schemaVersion.version > EXPECTED_SCHEMA_VERSION && (
+                          <span className="ml-2 text-blue-400">(Newer than app)</span>
+                        )}
+                        {schemaVersion.version < EXPECTED_SCHEMA_VERSION && (
+                          <span className="ml-2 text-yellow-400">(Update available)</span>
+                        )}
+                      </div>
+                      <div className="text-xs text-plm-fg-muted">
+                        App expects: v{EXPECTED_SCHEMA_VERSION}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                {schemaVersion.description && (
+                  <div className="text-xs text-plm-fg-muted pt-2 border-t border-plm-border/50">
+                    {schemaVersion.description}
+                  </div>
+                )}
+                {schemaVersion.appliedAt && (
+                  <div className="text-xs text-plm-fg-muted">
+                    Last updated: {schemaVersion.appliedAt.toLocaleDateString()} at {schemaVersion.appliedAt.toLocaleTimeString()}
+                  </div>
+                )}
+                {schemaVersion.version < EXPECTED_SCHEMA_VERSION && isAdmin && (
+                  <div className="mt-2 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
+                    <p className="text-sm text-yellow-300">
+                      <strong>Admin action needed:</strong> Run the latest <code className="bg-plm-bg px-1 rounded">schema.sql</code> in your Supabase SQL editor to enable new features.
+                    </p>
+                  </div>
+                )}
+                {schemaVersion.version > EXPECTED_SCHEMA_VERSION && (
+                  <div className="mt-2 p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
+                    <p className="text-sm text-blue-300">
+                      Your database is newer than this app version. Consider updating BluePLM for the best experience.
+                    </p>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-full bg-orange-500/20">
+                    <Database size={16} className="text-orange-400" />
+                  </div>
+                  <div>
+                    <div className="text-sm font-medium text-plm-fg">Version tracking not found</div>
+                    <div className="text-xs text-plm-fg-muted">
+                      App expects: v{EXPECTED_SCHEMA_VERSION}
+                    </div>
+                  </div>
+                </div>
+                {isAdmin && (
+                  <div className="mt-2 p-3 bg-orange-500/10 border border-orange-500/30 rounded-lg">
+                    <p className="text-sm text-orange-300">
+                      <strong>Admin action needed:</strong> Run the latest <code className="bg-plm-bg px-1 rounded">schema.sql</code> in your Supabase SQL editor to enable schema version tracking.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Supabase URL */}
       <div className="space-y-2">

@@ -35,6 +35,7 @@ import { TabWindow, isTabWindowMode, parseTabWindowParams } from './components/T
 import { executeTerminalCommand } from './lib/commands/parser'
 import { executeCommand } from './lib/commands'
 import { logKeyboard, logUserAction } from './lib/userActionLogger'
+import { checkSchemaCompatibility } from './lib/schemaVersion'
 
 // Check if we're in performance mode (pop-out window)
 function isPerformanceMode(): boolean {
@@ -546,6 +547,49 @@ function App() {
     
     validateVaults()
   }, [organization, connectedVaults, currentVaultId, setVaultConnected, setVaultPath])
+
+  // Track if we've already shown the schema warning this session (prevent duplicate toasts)
+  const schemaCheckDoneRef = useRef(false)
+  
+  // Check schema compatibility after organization loads
+  // Warns users if the database schema is outdated compared to what the app expects
+  useEffect(() => {
+    const checkSchema = async () => {
+      // Only check once per session, and only when we have an org
+      if (!organization?.id || isOfflineMode || schemaCheckDoneRef.current) return
+      
+      schemaCheckDoneRef.current = true
+      
+      try {
+        const result = await checkSchemaCompatibility()
+        console.log('[SchemaVersion] Check result:', result)
+        
+        if (result.status === 'missing') {
+          // Schema version table doesn't exist - older database
+          addToast('warning', `${result.message}: ${result.details}`, 15000)
+        } else if (result.status === 'incompatible') {
+          // Critical - database too old, might cause errors
+          addToast('error', `${result.message}: ${result.details}`, 0) // Don't auto-dismiss
+        } else if (result.status === 'outdated') {
+          // Soft warning - some features might not work
+          // Check if the app is outdated vs database is outdated
+          if (result.dbVersion && result.dbVersion > result.expectedVersion) {
+            // Database is newer than app - user should update the app
+            addToast('info', `${result.message}. ${result.details}`, 10000)
+          } else {
+            // Database is older than app - admin should run migrations
+            addToast('warning', `${result.message}. ${result.details}`, 10000)
+          }
+        }
+        // 'current' status = no toast needed, everything is fine
+      } catch (err) {
+        console.error('[SchemaVersion] Error checking schema:', err)
+      }
+    }
+    
+    checkSchema()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [organization?.id, isOfflineMode])
 
   // Load files from working directory and merge with PDM data
   // silent = true means no loading spinner (for background refreshes after downloads/uploads)
@@ -1989,8 +2033,8 @@ function App() {
                 queueNotification('version', newFile.updated_by, newFile.file_name, { version: newFile.version })
               }
               // Check for state change
-              else if (oldFile?.state !== newFile.state) {
-                queueNotification('state', newFile.updated_by, newFile.file_name, { state: newFile.state })
+              else if (oldFile?.workflow_state?.name !== newFile.workflow_state?.name) {
+                queueNotification('state', newFile.updated_by, newFile.file_name, { state: newFile.workflow_state?.name })
               }
             }
           }

@@ -125,7 +125,7 @@ export interface FileVersion {
   content_hash: string
   file_size: number
   comment: string | null
-  state: FileState
+  workflow_state_id: string | null
   created_at: string
   created_by: string
 }
@@ -268,7 +268,7 @@ export interface DeletedFile {
   version: number
   content_hash: string | null
   file_size: number
-  state: FileState
+  workflow_state_id: string | null
   deleted_at: string
   deleted_by: string | null
   vault_id: string
