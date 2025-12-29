@@ -6,7 +6,7 @@
 import * as Sentry from '@sentry/browser'
 
 // Sentry DSN for error tracking
-const SENTRY_DSN = import.meta.env.VITE_SENTRY_DSN || 'https://7e0fa5359dedac9d87c951c593def9fa@o4510557909417984.ingest.us.sentry.io/4510557913350144'
+const SENTRY_DSN = import.meta.env.VITE_SENTRY_DSN || 'https://cbbd3e20a9a48e7f20d25966cfd838c1@o4510557909417984.ingest.us.sentry.io/4510557922263040'
 
 let initialized = false
 

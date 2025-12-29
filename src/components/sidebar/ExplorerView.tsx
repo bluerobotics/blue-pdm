@@ -652,8 +652,12 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
   }, [getVisibleFiles, selectedFiles, setSelectedFiles, expandedFolders, toggleFolder])
 
   // Wrapper for shared isFolderSynced using local files
+  // Must filter out temp files when setting is enabled to match tree view
   const checkFolderSynced = (folderPath: string): boolean => {
-    return isFolderSynced(folderPath, files)
+    const filteredFiles = hideSolidworksTempFiles 
+      ? files.filter(f => !f.name.startsWith('~$'))
+      : files
+    return isFolderSynced(folderPath, filteredFiles)
   }
 
   // Wrapper for shared getFolderCheckoutStatus using local files  
@@ -1347,12 +1351,16 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     const diffCounts = file.isDirectory ? getFolderDiffCounts(file.relativePath) : null
     
     // Get local-only (unsynced) files count for folders
+    // Must match the tree filtering (exclude temp files when setting enabled)
+    // and include deleted_remote files (orphaned local files)
     const localOnlyCount = file.isDirectory ? files.filter(f => 
       !f.isDirectory && 
-      (!f.pdmData || f.diffStatus === 'added') && 
+      (!f.pdmData || f.diffStatus === 'added' || f.diffStatus === 'deleted_remote') && 
       f.diffStatus !== 'cloud' && 
       f.diffStatus !== 'ignored' &&
-      f.relativePath.startsWith(file.relativePath + '/')
+      f.relativePath.startsWith(file.relativePath + '/') &&
+      // Exclude temp files when hide setting is enabled (must match tree filtering)
+      !(hideSolidworksTempFiles && f.name.startsWith('~$'))
     ).length : 0
     
     // Get checkout info for folders
@@ -1743,7 +1751,8 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
           )}
           
           {/* First Check In for individual local-only files (not folders) - only when online */}
-          {!isRenaming && !isProcessing && !file.isDirectory && !isOfflineMode && (!file.pdmData || file.diffStatus === 'added') && file.diffStatus !== 'cloud' && (
+          {/* Includes: new files (!pdmData), added files, and deleted_remote (orphaned local files) */}
+          {!isRenaming && !isProcessing && !file.isDirectory && !isOfflineMode && (!file.pdmData || file.diffStatus === 'added' || file.diffStatus === 'deleted_remote') && file.diffStatus !== 'cloud' && (
             <InlineUploadButton 
               onClick={(e) => handleInlineFirstCheckin(e, file)}
               selectedCount={selectedFiles.includes(file.path) && selectedUploadableFiles.length > 1 ? selectedUploadableFiles.length : undefined}
@@ -1900,7 +1909,14 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
     // Use isBeingProcessed for consistency with individual file checks (handles path normalization)
     const isAnyCloudFileProcessing = isActive && cloudFiles.some(f => isBeingProcessed(f.relativePath))
     const outdatedFilesCount = isActive ? files.filter(f => !f.isDirectory && f.diffStatus === 'outdated').length : 0
-    const localOnlyFilesCount = isActive ? files.filter(f => !f.isDirectory && (!f.pdmData || f.diffStatus === 'added')).length : 0
+    // Local-only files count - must match tree filtering (exclude temp files when setting enabled)
+    const localOnlyFilesCount = isActive ? files.filter(f => 
+      !f.isDirectory && 
+      (!f.pdmData || f.diffStatus === 'added' || f.diffStatus === 'deleted_remote') &&
+      f.diffStatus !== 'cloud' &&
+      f.diffStatus !== 'ignored' &&
+      !(hideSolidworksTempFiles && f.name.startsWith('~$'))
+    ).length : 0
     // Synced files that can be checked out (have pdmData, not checked out, not cloud-only)
     const syncedFilesCount = isActive ? files.filter(f => !f.isDirectory && f.pdmData && !f.pdmData.checked_out_by && f.diffStatus !== 'cloud' && f.diffStatus !== 'cloud_new').length : 0
     const checkedOutByMeCount = isActive ? files.filter(f => !f.isDirectory && f.pdmData?.checked_out_by === user?.id).length : 0
@@ -2239,14 +2255,16 @@ export function ExplorerView({ onOpenVault, onOpenRecentVault, onRefresh }: Expl
                   : rawFileName
                 
                 // Get folder stats for pinned folders - same as regular tree items
+                // Must match tree filtering (exclude temp files when setting enabled)
                 const pinnedFolderPrefix = pinned.path + '/'
                 const localOnlyCount = pinned.isDirectory && pinned.vaultId === activeVaultId
                   ? files.filter(f => 
                       !f.isDirectory && 
-                      (!f.pdmData || f.diffStatus === 'added') && 
+                      (!f.pdmData || f.diffStatus === 'added' || f.diffStatus === 'deleted_remote') && 
                       f.diffStatus !== 'cloud' && 
                       f.diffStatus !== 'ignored' &&
-                      f.relativePath.startsWith(pinnedFolderPrefix)
+                      f.relativePath.startsWith(pinnedFolderPrefix) &&
+                      !(hideSolidworksTempFiles && f.name.startsWith('~$'))
                     ).length
                   : 0
                 

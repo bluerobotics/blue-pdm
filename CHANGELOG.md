@@ -2,6 +2,17 @@
 
 All notable changes to BluePLM will be documented in this file.
 
+## [2.14.2] - 2025-12-28
+
+### Fixed
+- **Sentry error tracking**: Updated DSN to correct project, fixing 403 Forbidden errors on analytics initialization
+- **Folder file counts**: Fixed folder badges showing incorrect counts when SolidWorks temp files (`~$`) are hidden
+  - Vault-level, folder-level, and pinned folder local file counts now properly exclude hidden temp files
+  - Folder sync status (green vs grey icon) now correctly ignores hidden temp files
+  - Individual file upload buttons now show for `deleted_remote` (orphaned) files
+
+---
+
 ## [2.14.1] - 2025-12-20
 
 ### Fixed
