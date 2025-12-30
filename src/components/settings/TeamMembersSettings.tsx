@@ -275,6 +275,10 @@ export function TeamMembersSettings() {
   const [removingUser, setRemovingUser] = useState<OrgUser | null>(null)
   const [isRemoving, setIsRemoving] = useState(false)
   
+  // Remove from team confirmation (for removing self from Administrators)
+  const [removingFromTeam, setRemovingFromTeam] = useState<{ user: OrgUser; teamId: string; teamName: string } | null>(null)
+  const [isRemovingFromTeam, setIsRemovingFromTeam] = useState(false)
+  
   // Job titles state
   const [jobTitles, setJobTitles] = useState<{ id: string; name: string; color: string; icon: string }[]>([])
   const [titleDropdownOpen, setTitleDropdownOpen] = useState<string | null>(null)
@@ -886,7 +890,18 @@ export function TeamMembersSettings() {
   }
   
   const handleRemoveFromTeam = async (targetUser: OrgUser, teamId: string, teamName: string) => {
+    // If removing yourself from Administrators, show confirmation
+    if (targetUser.id === user?.id && teamName === 'Administrators') {
+      setRemovingFromTeam({ user: targetUser, teamId, teamName })
+      return
+    }
+    
+    await executeRemoveFromTeam(targetUser, teamId, teamName)
+  }
+  
+  const executeRemoveFromTeam = async (targetUser: OrgUser, teamId: string, teamName: string) => {
     try {
+      setIsRemovingFromTeam(true)
       const { error } = await supabase
         .from('team_members')
         .delete()
@@ -896,10 +911,13 @@ export function TeamMembersSettings() {
       if (error) throw error
       
       addToast('success', `Removed ${targetUser.full_name || targetUser.email} from ${teamName}`)
+      setRemovingFromTeam(null)
       await loadOrgUsers()
       await loadTeams()
     } catch {
       addToast('error', 'Failed to remove from team')
+    } finally {
+      setIsRemovingFromTeam(false)
     }
   }
   
@@ -2062,6 +2080,18 @@ export function TeamMembersSettings() {
           onClose={() => setRemovingUser(null)}
           onConfirm={handleRemoveUser}
           isRemoving={isRemoving}
+          isSelf={removingUser.id === user?.id}
+        />
+      )}
+
+      {/* Remove from Administrators Team Dialog */}
+      {removingFromTeam && (
+        <RemoveFromAdminsDialog
+          user={removingFromTeam.user}
+          teamName={removingFromTeam.teamName}
+          onClose={() => setRemovingFromTeam(null)}
+          onConfirm={() => executeRemoveFromTeam(removingFromTeam.user, removingFromTeam.teamId, removingFromTeam.teamName)}
+          isRemoving={isRemovingFromTeam}
         />
       )}
 
@@ -2713,8 +2743,6 @@ function UserRow({
 }) {
   // Admins can manage settings for everyone including themselves
   const canManage = isAdmin
-  // But can't remove themselves from org
-  const canRemove = isAdmin && !isCurrentUser
   
   return (
     <div className={`flex items-center gap-3 ${compact ? 'py-2 px-1' : 'p-3'} rounded-lg hover:bg-plm-highlight transition-colors group`}>
@@ -2932,7 +2960,7 @@ function UserRow({
         )}
         
         {/* Remove from team button */}
-        {canRemove && onRemoveFromTeam && (
+        {canManage && onRemoveFromTeam && (
           <button
             onClick={onRemoveFromTeam}
             className="p-1.5 text-plm-fg-muted hover:text-plm-warning hover:bg-plm-warning/10 rounded transition-colors"
@@ -2943,7 +2971,7 @@ function UserRow({
         )}
         
         {/* Remove from organization button */}
-        {canRemove && (
+        {canManage && (
           <button
             onClick={onRemove}
             className="p-1.5 text-plm-fg-muted hover:text-plm-error hover:bg-plm-error/10 rounded transition-colors"
@@ -3639,17 +3667,20 @@ function RemoveUserDialog({
   user,
   onClose,
   onConfirm,
-  isRemoving
+  isRemoving,
+  isSelf = false
 }: {
   user: OrgUser
   onClose: () => void
   onConfirm: () => void
   isRemoving: boolean
+  isSelf?: boolean
 }) {
   const [confirmText, setConfirmText] = useState('')
   
   const displayName = user.full_name || user.email
-  const isConfirmed = confirmText === displayName
+  const confirmPhrase = isSelf ? 'confirm' : displayName
+  const isConfirmed = confirmText === confirmPhrase
   
   return (
     <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center" onClick={onClose}>
@@ -3659,7 +3690,9 @@ function RemoveUserDialog({
             <AlertTriangle className="w-5 h-5 text-plm-error" />
           </div>
           <div>
-            <h3 className="text-lg font-medium text-plm-fg">Remove User from Organization</h3>
+            <h3 className="text-lg font-medium text-plm-fg">
+              {isSelf ? 'Leave Organization' : 'Remove User from Organization'}
+            </h3>
             <p className="text-sm text-plm-fg-muted mt-1">This action cannot be undone</p>
           </div>
         </div>
@@ -3667,7 +3700,11 @@ function RemoveUserDialog({
         <div className="space-y-4 mb-6">
           <div className="p-3 bg-plm-error/10 border border-plm-error/30 rounded-lg">
             <p className="text-sm text-plm-fg">
-              You are about to remove <strong>{displayName}</strong> from this organization. They will:
+              {isSelf ? (
+                <>You are about to <strong>leave this organization</strong>. You will:</>
+              ) : (
+                <>You are about to remove <strong>{displayName}</strong> from this organization. They will:</>
+              )}
             </p>
             <ul className="text-sm text-plm-fg-muted list-disc list-inside mt-2 space-y-1">
               <li>Lose access to all vaults and files</li>
@@ -3678,13 +3715,13 @@ function RemoveUserDialog({
           
           <div>
             <p className="text-sm text-plm-fg-muted mb-2">
-              To confirm, type <strong className="text-plm-fg">{displayName}</strong> below:
+              To confirm, type <strong className="text-plm-fg">{confirmPhrase}</strong> below:
             </p>
             <input
               type="text"
               value={confirmText}
               onChange={e => setConfirmText(e.target.value)}
-              placeholder={displayName}
+              placeholder={confirmPhrase}
               className="w-full px-3 py-2 bg-plm-bg border border-plm-border rounded-lg text-plm-fg placeholder:text-plm-fg-muted/50 focus:outline-none focus:border-plm-error"
               autoFocus
             />
@@ -3705,7 +3742,88 @@ function RemoveUserDialog({
             }`}
           >
             {isRemoving ? <Loader2 size={16} className="animate-spin" /> : <UserMinus size={16} />}
-            {isRemoving ? 'Removing...' : 'Remove User'}
+            {isRemoving ? 'Removing...' : isSelf ? 'Leave Organization' : 'Remove User'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Dialog for confirming removal from Administrators team
+function RemoveFromAdminsDialog({
+  user,
+  teamName,
+  onClose,
+  onConfirm,
+  isRemoving
+}: {
+  user: OrgUser
+  teamName: string
+  onClose: () => void
+  onConfirm: () => void
+  isRemoving: boolean
+}) {
+  const [confirmText, setConfirmText] = useState('')
+  
+  const confirmPhrase = 'confirm'
+  const isConfirmed = confirmText === confirmPhrase
+  
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center" onClick={onClose}>
+      <div className="bg-plm-bg-light border border-plm-border rounded-xl p-6 max-w-md w-full mx-4" onClick={e => e.stopPropagation()}>
+        <div className="flex items-start gap-3 mb-4">
+          <div className="p-2 rounded-full bg-plm-warning/20">
+            <AlertTriangle className="w-5 h-5 text-plm-warning" />
+          </div>
+          <div>
+            <h3 className="text-lg font-medium text-plm-fg">Leave {teamName} Team</h3>
+            <p className="text-sm text-plm-fg-muted mt-1">This may affect your admin privileges</p>
+          </div>
+        </div>
+        
+        <div className="space-y-4 mb-6">
+          <div className="p-3 bg-plm-warning/10 border border-plm-warning/30 rounded-lg">
+            <p className="text-sm text-plm-fg">
+              You are about to remove yourself from the <strong>{teamName}</strong> team. 
+            </p>
+            <ul className="text-sm text-plm-fg-muted list-disc list-inside mt-2 space-y-1">
+              <li>You may lose admin-level permissions</li>
+              <li>You won't be able to manage team settings</li>
+              <li>Another admin will need to add you back</li>
+            </ul>
+          </div>
+          
+          <div>
+            <p className="text-sm text-plm-fg-muted mb-2">
+              To confirm, type <strong className="text-plm-fg">{confirmPhrase}</strong> below:
+            </p>
+            <input
+              type="text"
+              value={confirmText}
+              onChange={e => setConfirmText(e.target.value)}
+              placeholder={confirmPhrase}
+              className="w-full px-3 py-2 bg-plm-bg border border-plm-border rounded-lg text-plm-fg placeholder:text-plm-fg-muted/50 focus:outline-none focus:border-plm-warning"
+              autoFocus
+            />
+          </div>
+        </div>
+        
+        <div className="flex gap-2 justify-end">
+          <button onClick={onClose} className="btn btn-ghost">
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={!isConfirmed || isRemoving}
+            className={`btn flex items-center gap-2 ${
+              isConfirmed
+                ? 'bg-plm-warning hover:bg-plm-warning/90 text-white'
+                : 'bg-plm-fg-muted/20 text-plm-fg-muted cursor-not-allowed'
+            }`}
+          >
+            {isRemoving ? <Loader2 size={16} className="animate-spin" /> : <X size={16} />}
+            {isRemoving ? 'Leaving...' : 'Leave Team'}
           </button>
         </div>
       </div>
