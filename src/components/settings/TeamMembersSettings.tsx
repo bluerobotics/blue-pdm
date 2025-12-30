@@ -271,9 +271,7 @@ export function TeamMembersSettings() {
   const [copyFromTeamId, setCopyFromTeamId] = useState<string | null>(null)
   
   // User management state
-  const [showInviteDialog, setShowInviteDialog] = useState(false)
   const [showCreateUserDialog, setShowCreateUserDialog] = useState(false)
-  const [inviteCopied, setInviteCopied] = useState(false)
   const [removingUser, setRemovingUser] = useState<OrgUser | null>(null)
   const [isRemoving, setIsRemoving] = useState(false)
   
@@ -659,6 +657,17 @@ export function TeamMembersSettings() {
     )
   }, [teams, searchQuery])
   
+  // Filter all users for the "users" tab
+  const filteredAllUsers = useMemo(() => {
+    if (!searchQuery) return orgUsers
+    const q = searchQuery.toLowerCase()
+    return orgUsers.filter(u =>
+      u.full_name?.toLowerCase().includes(q) ||
+      u.email.toLowerCase().includes(q) ||
+      u.job_title?.toLowerCase().includes(q)
+    )
+  }, [orgUsers, searchQuery])
+  
   // Team CRUD operations
   const handleCreateTeam = async () => {
     if (!organization || !user || !teamFormData.name.trim()) return
@@ -855,39 +864,6 @@ export function TeamMembersSettings() {
     }
   }
   
-  // User management
-  const generateInviteMessage = () => {
-    const config = getCurrentConfig()
-    if (!config || !organization) return ''
-    
-    const code = generateOrgCode(config)
-    return `You've been invited to join ${organization.name} on BluePLM!
-
-BluePLM is a Product Lifecycle Management tool for everyone who builds.
-
-To get started:
-1. Download BluePLM from: https://github.com/bluerobotics/bluePLM/releases
-2. Install and open the app
-3. When prompted, enter this organization code:
-
-${code}
-
-4. Sign in with your Google account
-
-See you on the team!`
-  }
-  
-  const handleCopyInvite = async () => {
-    const message = generateInviteMessage()
-    const result = await copyToClipboard(message)
-    if (result.success) {
-      setInviteCopied(true)
-      setTimeout(() => setInviteCopied(false), 2000)
-      addToast('success', 'Invite copied! Paste it in an email to send.')
-    } else {
-      addToast('error', 'Failed to copy invite')
-    }
-  }
   
   const handleRemoveUser = async () => {
     if (!removingUser || !organization) return
@@ -1117,40 +1093,75 @@ See you on the team!`
           >
             <RefreshCw size={14} className={isLoading ? 'animate-spin' : ''} />
           </button>
-          {isAdmin && activeTab === 'users' && (
+          {isAdmin && (
             <>
               <button
-                onClick={() => setShowInviteDialog(true)}
-                className="btn btn-ghost btn-sm flex items-center gap-1"
-                title="Send invite code"
+                onClick={() => {
+                  resetTeamForm()
+                  setShowCreateTeamDialog(true)
+                }}
+                className="btn btn-ghost btn-sm flex items-center gap-2"
               >
-                <Mail size={14} />
-                Invite
+                <Plus size={14} />
+                Create Team
               </button>
               <button
                 onClick={() => setShowCreateUserDialog(true)}
                 className="btn btn-primary btn-sm flex items-center gap-1"
-                title="Pre-create user account"
+                title="Add user"
               >
                 <UserPlus size={14} />
                 Add User
               </button>
             </>
           )}
-          {isAdmin && activeTab === 'teams' && (
+        </div>
+      </div>
+      
+      {/* Organization Code (Admin only) */}
+      {isAdmin && (
+        <div className="p-4 bg-plm-bg rounded-lg border border-plm-border">
+          <div className="flex items-center gap-2 mb-2">
+            <Key size={16} className="text-plm-accent" />
+            <h3 className="text-sm font-medium text-plm-fg">Organization Code</h3>
+          </div>
+          {showOrgCode && orgCode ? (
+            <div className="flex items-center gap-2">
+              <code className="flex-1 text-sm bg-plm-bg-secondary border border-plm-border rounded px-3 py-1.5 font-mono text-plm-fg truncate">
+                {orgCode}
+              </code>
+              <button
+                onClick={async () => {
+                  const result = await copyToClipboard(orgCode)
+                  if (result.success) {
+                    setCodeCopied(true)
+                    setTimeout(() => setCodeCopied(false), 2000)
+                  }
+                }}
+                className="btn btn-ghost btn-sm"
+              >
+                {codeCopied ? <Check size={14} className="text-green-500" /> : <Copy size={14} />}
+              </button>
+              <button onClick={() => setShowOrgCode(false)} className="text-sm text-plm-fg-muted hover:text-plm-fg">
+                Hide
+              </button>
+            </div>
+          ) : (
             <button
               onClick={() => {
-                resetTeamForm()
-                setShowCreateTeamDialog(true)
+                const config = getCurrentConfig()
+                if (config) {
+                  setOrgCode(generateOrgCode(config))
+                  setShowOrgCode(true)
+                }
               }}
-              className="btn btn-primary btn-sm flex items-center gap-2"
+              className="text-sm text-plm-accent hover:underline"
             >
-              <Plus size={16} />
-              Create Team
+              Show organization code
             </button>
           )}
         </div>
-      </div>
+      )}
       
       {/* Tab Navigation */}
       <div className="flex gap-1 p-1 bg-plm-bg-secondary rounded-lg w-fit">
@@ -1203,51 +1214,6 @@ See you on the team!`
           className="w-full pl-10 pr-4 py-2 bg-plm-bg border border-plm-border rounded-lg text-plm-fg placeholder:text-plm-fg-dim focus:outline-none focus:border-plm-accent"
         />
       </div>
-      
-      {/* Organization Code (Admin only) */}
-      {isAdmin && (
-        <div className="p-4 bg-plm-bg rounded-lg border border-plm-border">
-          <div className="flex items-center gap-2 mb-2">
-            <Key size={16} className="text-plm-accent" />
-            <h3 className="text-sm font-medium text-plm-fg">Organization Code</h3>
-          </div>
-          {showOrgCode && orgCode ? (
-            <div className="flex items-center gap-2">
-              <code className="flex-1 text-sm bg-plm-bg-secondary border border-plm-border rounded px-3 py-1.5 font-mono text-plm-fg truncate">
-                {orgCode}
-              </code>
-              <button
-                onClick={async () => {
-                  const result = await copyToClipboard(orgCode)
-                  if (result.success) {
-                    setCodeCopied(true)
-                    setTimeout(() => setCodeCopied(false), 2000)
-                  }
-                }}
-                className="btn btn-ghost btn-sm"
-              >
-                {codeCopied ? <Check size={14} className="text-green-500" /> : <Copy size={14} />}
-              </button>
-              <button onClick={() => setShowOrgCode(false)} className="text-sm text-plm-fg-muted hover:text-plm-fg">
-                Hide
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={() => {
-                const config = getCurrentConfig()
-                if (config) {
-                  setOrgCode(generateOrgCode(config))
-                  setShowOrgCode(true)
-                }
-              }}
-              className="text-sm text-plm-accent hover:underline"
-            >
-              Show organization code
-            </button>
-          )}
-        </div>
-      )}
 
       {isLoading ? (
         <div className="flex items-center justify-center py-12">
@@ -1255,12 +1221,9 @@ See you on the team!`
         </div>
       ) : (
         <div className="space-y-4">
-          {/* Teams Section */}
+          {/* Teams Tab Content */}
+          {activeTab === 'teams' && (
           <div className="space-y-3">
-            <h3 className="text-sm font-medium text-plm-fg-muted uppercase tracking-wide flex items-center gap-2">
-              <Users size={14} />
-              Teams ({teams.length})
-            </h3>
             
             {filteredTeams.length === 0 ? (
               <div className="text-center py-8 border border-dashed border-plm-border rounded-lg">
@@ -1453,75 +1416,62 @@ See you on the team!`
               </div>
             )}
           </div>
+          )}
           
-          {/* Unassigned Users Section */}
+          {/* Users Tab Content */}
+          {activeTab === 'users' && (
+          <>
+          {/* All Users Section */}
           <div className="space-y-3">
-            <button
-              onClick={() => setShowUnassignedUsers(!showUnassignedUsers)}
-              className="w-full flex items-center justify-between text-sm font-medium text-plm-fg-muted uppercase tracking-wide hover:text-plm-fg transition-colors"
-            >
-              <span className="flex items-center gap-2">
-                <UserX size={14} />
-                Unassigned Users ({unassignedUsers.length})
-              </span>
-              {showUnassignedUsers ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-            </button>
-            
-            {showUnassignedUsers && (
-              <>
-                {filteredUnassignedUsers.length === 0 ? (
-                  <div className="text-center py-6 border border-dashed border-plm-border rounded-lg">
-                    <Check size={24} className="mx-auto text-plm-success mb-2" />
-                    <p className="text-sm text-plm-fg-muted">
-                      {unassignedUsers.length === 0 
-                        ? 'All users are assigned to teams'
-                        : 'No unassigned users match your search'
-                      }
-                    </p>
-                  </div>
-                ) : (
-                  <div className="border border-plm-border rounded-lg overflow-hidden bg-plm-bg/50">
-                    <div className="p-3 border-b border-plm-border bg-plm-bg/30">
-                      <p className="text-xs text-plm-fg-muted">
-                        {isAdmin 
-                          ? 'These users are not in any team. You can assign them to teams or set individual permissions. Individual permissions are additive—users get the union of all team + individual permissions (highest level wins).'
-                          : 'These users are not assigned to any team.'
-                        }
-                      </p>
-                    </div>
-                    <div className="divide-y divide-plm-border/50">
-                      {filteredUnassignedUsers.map(u => (
-                        <UserRow
-                          key={u.id}
-                          user={u}
-                          isAdmin={isAdmin}
-                          isCurrentUser={u.id === user?.id}
-                          onViewProfile={() => setViewingUserId(u.id)}
-                          onRemove={() => setRemovingUser(u)}
-                          onVaultAccess={() => openVaultAccessEditor(u)}
-                          onPermissions={isAdmin ? () => setEditingPermissionsUser(u) : undefined}
-                          vaultAccessCount={getUserVaultAccessCount(u.id)}
-                          showAddToTeam={isAdmin && teams.length > 0}
-                          onOpenAddToTeamModal={() => setAddToTeamUser(u)}
-                          jobTitles={jobTitles}
-                          titleDropdownOpen={titleDropdownOpen}
-                          setTitleDropdownOpen={setTitleDropdownOpen}
-                          onChangeJobTitle={handleChangeJobTitle}
-                          changingTitleUserId={changingTitleUserId}
-                          onCreateTitle={openCreateTitleDialog}
-                          workflowRoles={workflowRoles}
-                          userWorkflowRoleIds={userWorkflowRoleAssignments[u.id]}
-                          onEditWorkflowRoles={setEditingWorkflowRolesUser}
-                        />
-                      ))}
-                    </div>
-                  </div>
+            {filteredAllUsers.length === 0 ? (
+              <div className="text-center py-8 border border-dashed border-plm-border rounded-lg">
+                <UsersRound size={36} className="mx-auto text-plm-fg-muted mb-3 opacity-50" />
+                <p className="text-sm text-plm-fg-muted mb-4">
+                  {orgUsers.length === 0 ? 'No users yet' : 'No users match your search'}
+                </p>
+                {isAdmin && orgUsers.length === 0 && (
+                  <button
+                    onClick={() => setShowCreateUserDialog(true)}
+                    className="btn btn-primary btn-sm"
+                  >
+                    <UserPlus size={14} className="mr-1" />
+                    Add First User
+                  </button>
                 )}
-              </>
+              </div>
+            ) : (
+              <div className="border border-plm-border rounded-lg overflow-hidden bg-plm-bg/50">
+                <div className="divide-y divide-plm-border/50">
+                  {filteredAllUsers.map(u => (
+                    <UserRow
+                      key={u.id}
+                      user={u}
+                      isAdmin={isAdmin}
+                      isCurrentUser={u.id === user?.id}
+                      onViewProfile={() => setViewingUserId(u.id)}
+                      onRemove={() => setRemovingUser(u)}
+                      onVaultAccess={() => openVaultAccessEditor(u)}
+                      onPermissions={isAdmin ? () => setEditingPermissionsUser(u) : undefined}
+                      vaultAccessCount={getUserVaultAccessCount(u.id)}
+                      showAddToTeam={isAdmin && teams.length > 0}
+                      onOpenAddToTeamModal={() => setAddToTeamUser(u)}
+                      jobTitles={jobTitles}
+                      titleDropdownOpen={titleDropdownOpen}
+                      setTitleDropdownOpen={setTitleDropdownOpen}
+                      onChangeJobTitle={handleChangeJobTitle}
+                      changingTitleUserId={changingTitleUserId}
+                      onCreateTitle={openCreateTitleDialog}
+                      workflowRoles={workflowRoles}
+                      userWorkflowRoleIds={userWorkflowRoleAssignments[u.id]}
+                      onEditWorkflowRoles={setEditingWorkflowRolesUser}
+                    />
+                  ))}
+                </div>
+              </div>
             )}
           </div>
-          
-          {/* Pending Members Section (pre-created accounts) */}
+
+          {/* Pending Members Section (pre-created accounts) - only in users tab */}
           {isAdmin && pendingMembers.length > 0 && (
             <div className="space-y-3">
               <button
@@ -1539,7 +1489,7 @@ See you on the team!`
                 <div className="border border-plm-border rounded-lg overflow-hidden bg-plm-bg/50">
                   <div className="p-3 border-b border-plm-border bg-plm-bg/30">
                     <p className="text-xs text-plm-fg-muted">
-                      Pre-created accounts waiting for users to sign in. They will automatically join the org with assigned teams.
+                      Pre-created accounts awaiting user sign-in. These users can sign in with the organization code.
                     </p>
                   </div>
                   <div className="divide-y divide-plm-border/50">
@@ -1557,7 +1507,7 @@ See you on the team!`
                           </div>
                           <div className="text-sm text-plm-fg-muted truncate flex items-center gap-2 flex-wrap">
                             <span className="truncate">{pm.email}</span>
-                            {pm.workflow_role_ids?.length > 0 && (
+                            {pm.workflow_role_ids && pm.workflow_role_ids.length > 0 && (
                               <span className="flex items-center gap-1">
                                 {pm.workflow_role_ids.slice(0, 2).map(roleId => {
                                   const role = workflowRoles.find(r => r.id === roleId)
@@ -1580,7 +1530,7 @@ See you on the team!`
                                 )}
                               </span>
                             )}
-                            {pm.team_ids?.length > 0 && (
+                            {pm.team_ids && pm.team_ids.length > 0 && (
                               <span className="flex items-center gap-1 px-1.5 py-0.5 bg-plm-fg-muted/10 rounded text-plm-fg-dim">
                                 <Users size={10} />
                                 {pm.team_ids.length} team{pm.team_ids.length !== 1 ? 's' : ''}
@@ -1626,6 +1576,9 @@ See you on the team!`
               )}
             </div>
           )}
+          </>
+          )}
+
         </div>
       )}
 
@@ -2021,7 +1974,12 @@ See you on the team!`
           currentUserName={user?.full_name || user?.email}
           orgName={organization.name}
           vaults={orgVaults}
+          workflowRoles={workflowRoles}
           apiUrl={apiServerUrl}
+          orgCode={(() => {
+            const config = getCurrentConfig()
+            return config ? generateOrgCode(config) : undefined
+          })()}
         />
       )}
 
@@ -2163,30 +2121,6 @@ See you on the team!`
                 className="btn btn-primary"
               >
                 {isCreatingTitle ? 'Creating...' : 'Create'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Invite Dialog */}
-      {showInviteDialog && (
-        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center" onClick={() => setShowInviteDialog(false)}>
-          <div className="bg-plm-bg-light border border-plm-border rounded-xl p-6 max-w-lg w-full mx-4" onClick={e => e.stopPropagation()}>
-            <h3 className="text-lg font-medium text-plm-fg mb-4">Invite User</h3>
-            <p className="text-base text-plm-fg-muted mb-4">
-              Copy the invite message below and send it to your team member via email or chat.
-            </p>
-            <div className="bg-plm-bg border border-plm-border rounded-lg p-4 text-base text-plm-fg-muted font-mono whitespace-pre-wrap max-h-60 overflow-y-auto mb-4">
-              {generateInviteMessage()}
-            </div>
-            <div className="flex gap-2 justify-end">
-              <button onClick={() => setShowInviteDialog(false)} className="btn btn-ghost">
-                Close
-              </button>
-              <button onClick={handleCopyInvite} className="btn btn-primary flex items-center gap-2">
-                {inviteCopied ? <Check size={14} /> : <Copy size={14} />}
-                {inviteCopied ? 'Copied!' : 'Copy Invite'}
               </button>
             </div>
           </div>
@@ -3786,7 +3720,9 @@ function CreateUserDialog({
   currentUserName,
   orgName,
   vaults,
-  apiUrl
+  workflowRoles,
+  apiUrl,
+  orgCode
 }: {
   onClose: () => void
   onCreated: () => void
@@ -3796,7 +3732,9 @@ function CreateUserDialog({
   currentUserName?: string
   orgName?: string
   vaults: { id: string; name: string; description?: string }[]
+  workflowRoles: WorkflowRoleBasic[]
   apiUrl?: string | null
+  orgCode?: string
 }) {
   const { addToast } = usePDMStore()
   const [showEmailPreview, setShowEmailPreview] = useState(false)
@@ -3804,6 +3742,7 @@ function CreateUserDialog({
   const [fullName, setFullName] = useState('')
   const [selectedTeamIds, setSelectedTeamIds] = useState<string[]>([])
   const [selectedVaultIds, setSelectedVaultIds] = useState<string[]>([])
+  const [selectedWorkflowRoleIds, setSelectedWorkflowRoleIds] = useState<string[]>([])
   const [notes, setNotes] = useState('')
   const [sendInviteEmail, setSendInviteEmail] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
@@ -3835,6 +3774,7 @@ function CreateUserDialog({
             full_name: fullName.trim() || undefined,
             team_ids: selectedTeamIds.length > 0 ? selectedTeamIds : undefined,
             vault_ids: selectedVaultIds.length > 0 ? selectedVaultIds : undefined,
+            workflow_role_ids: selectedWorkflowRoleIds.length > 0 ? selectedWorkflowRoleIds : undefined,
             notes: notes.trim() || undefined
           })
         })
@@ -3866,6 +3806,7 @@ function CreateUserDialog({
           role: 'viewer',  // Default role, permissions come from teams
           team_ids: selectedTeamIds,
           vault_ids: selectedVaultIds,
+          workflow_role_ids: selectedWorkflowRoleIds,
           notes: notes.trim() || null,
           created_by: currentUserId
         })
@@ -3903,6 +3844,14 @@ function CreateUserDialog({
       current.includes(vaultId)
         ? current.filter(id => id !== vaultId)
         : [...current, vaultId]
+    )
+  }
+  
+  const toggleWorkflowRole = (roleId: string) => {
+    setSelectedWorkflowRoleIds(current =>
+      current.includes(roleId)
+        ? current.filter(id => id !== roleId)
+        : [...current, roleId]
     )
   }
   
@@ -4035,6 +3984,47 @@ function CreateUserDialog({
             </div>
           )}
           
+          {/* Workflow Roles */}
+          {workflowRoles.length > 0 && (
+            <div>
+              <label className="block text-sm text-plm-fg-muted mb-1.5">Workflow Roles</label>
+              <div className="space-y-1 max-h-40 overflow-y-auto bg-plm-bg border border-plm-border rounded-lg p-2">
+                {workflowRoles.map(role => {
+                  const RoleIcon = (LucideIcons as any)[role.icon] || Shield
+                  const isSelected = selectedWorkflowRoleIds.includes(role.id)
+                  return (
+                    <label
+                      key={role.id}
+                      className="flex items-center gap-3 p-2 rounded-lg cursor-pointer hover:bg-plm-highlight transition-colors"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleWorkflowRole(role.id)}
+                        className="w-4 h-4 rounded border-plm-border text-plm-accent focus:ring-plm-accent"
+                      />
+                      <div
+                        className="p-1.5 rounded"
+                        style={{ backgroundColor: `${role.color}15`, color: role.color }}
+                      >
+                        <RoleIcon size={14} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <span className="text-sm text-plm-fg">{role.name}</span>
+                        {role.description && (
+                          <span className="text-xs text-plm-fg-dim ml-2">{role.description}</span>
+                        )}
+                      </div>
+                    </label>
+                  )
+                })}
+              </div>
+              <p className="text-xs text-plm-fg-dim mt-1">
+                Workflow roles for approval processes (e.g., R&D Approver, QA Reviewer)
+              </p>
+            </div>
+          )}
+          
           {/* Send Invite Email */}
           <div className="pt-2 border-t border-plm-border">
             <div className="flex items-center justify-between">
@@ -4089,6 +4079,12 @@ function CreateUserDialog({
                       Accept Invitation
                     </span>
                   </div>
+                  {orgCode && (
+                    <div className="my-4 p-3 bg-gray-100 rounded-lg">
+                      <p className="text-gray-600 text-xs mb-1">Organization Code:</p>
+                      <code className="text-sm font-mono text-gray-800 break-all">{orgCode}</code>
+                    </div>
+                  )}
                   <p className="text-gray-500 text-xs">
                     If you didn't expect this invitation, you can ignore this email.
                   </p>

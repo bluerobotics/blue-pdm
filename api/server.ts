@@ -1368,6 +1368,7 @@ export async function buildServer(): Promise<FastifyInstance> {
           full_name: { type: 'string' },
           team_ids: { type: 'array', items: { type: 'string', format: 'uuid' } },
           vault_ids: { type: 'array', items: { type: 'string', format: 'uuid' } },
+          workflow_role_ids: { type: 'array', items: { type: 'string', format: 'uuid' } },
           notes: { type: 'string' }
         }
       },
@@ -1395,11 +1396,12 @@ export async function buildServer(): Promise<FastifyInstance> {
       return reply.code(500).send({ error: 'Configuration error', message: 'Service key not configured' })
     }
     
-    const { email, full_name, team_ids, vault_ids, notes } = request.body as {
+    const { email, full_name, team_ids, vault_ids, workflow_role_ids, notes } = request.body as {
       email: string
       full_name?: string
       team_ids?: string[]
       vault_ids?: string[]
+      workflow_role_ids?: string[]
       notes?: string
     }
     
@@ -1420,6 +1422,7 @@ export async function buildServer(): Promise<FastifyInstance> {
         role: 'viewer',
         team_ids: team_ids || [],
         vault_ids: vault_ids || [],
+        workflow_role_ids: workflow_role_ids || [],
         notes: notes || null,
         created_by: user.id
       })

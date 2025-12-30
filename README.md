@@ -163,43 +163,186 @@ Open-source product lifecycle management for everyone who builds. Built with Ele
 ### For Users
 1. **Download** from the [releases page](https://github.com/bluerobotics/bluePLM/releases)
 2. **Install** and launch BluePLM
-3. **Enter** your organization's Supabase URL and anon key (from your admin)
+3. **Select "Join existing organization"** and enter the Organization Code from your admin
 4. **Sign in with Google**
 5. **Connect** to a vault from Settings → Organization
 
-### For Admins
+### For Admins (First-Time Setup)
+
+Follow these steps in order to set up BluePLM for your organization.
 
 <details>
 <summary><strong>1. Create a Supabase Project</strong></summary>
 
 1. Sign up at [supabase.com](https://supabase.com)
-2. Create a new project
-3. Note your **Project URL** and **anon/public key** (Settings → API)
+2. Create a new project (choose a strong database password)
+3. Wait for the project to finish provisioning (~2 minutes)
+4. Go to **Settings → API** and note:
+   - **Project URL** (e.g., `https://abcdefgh.supabase.co`)
+   - **anon/public key** (starts with `eyJ...`)
 </details>
 
 <details>
 <summary><strong>2. Set Up Google OAuth</strong></summary>
 
+**In Google Cloud Console:**
 1. Go to [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
-2. Create OAuth 2.0 Client ID (Web application)
-3. Add `https://your-project.supabase.co/auth/v1/callback` to redirect URIs
-4. In Supabase: Authentication → Providers → Google → Enable and add credentials
-5. Add `http://localhost` to Supabase Redirect URLs
+2. Create a new project (or select existing)
+3. Go to **OAuth consent screen** → Configure as Internal (if Google Workspace) or External
+4. Add your app name and required fields
+5. Go to **Credentials** → **Create Credentials** → **OAuth 2.0 Client ID**
+6. Select **Web application**
+7. Add these **Authorized redirect URIs**:
+   - `https://YOUR-PROJECT-REF.supabase.co/auth/v1/callback`
+8. Copy your **Client ID** and **Client Secret**
+
+**In Supabase Dashboard:**
+1. Go to **Authentication** → **Providers** → **Google**
+2. Enable the Google provider
+3. Paste your **Client ID** and **Client Secret**
+4. Go to **Authentication** → **URL Configuration**
+5. Set **Site URL** to: `http://localhost`
+6. Add these **Redirect URLs**:
+   - `http://localhost`
+   - `http://localhost:5173`
+   - `http://127.0.0.1`
 </details>
 
 <details>
-<summary><strong>3. Set Up Storage & Database</strong></summary>
+<summary><strong>3. Create Storage Bucket</strong></summary>
 
-1. Create a private bucket named `vault` (Storage → New Bucket)
-2. Run [`supabase/schema.sql`](supabase/schema.sql) in the SQL Editor
-3. Create your organization:
-   ```sql
-   INSERT INTO organizations (name, slug, email_domains)
-   VALUES ('Your Company', 'your-company', ARRAY['yourcompany.com']);
-   ```
+⚠️ **This must be done BEFORE running the schema SQL.**
+
+1. Go to **Storage** in Supabase Dashboard
+2. Click **New Bucket**
+3. Name it exactly: `vault`
+4. **Uncheck** "Public bucket" (must be private)
+5. Click **Create bucket**
 </details>
 
-Share your **Project URL** and **anon key** with team members. Users with matching email domains auto-join.
+<details>
+<summary><strong>4. Run Database Schema</strong></summary>
+
+1. Go to **SQL Editor** in Supabase Dashboard
+2. Click **New query**
+3. Copy the entire contents of [`supabase/schema.sql`](supabase/schema.sql)
+4. Paste into the editor and click **Run**
+5. Verify no errors (warnings about "already exists" are OK)
+
+The schema creates all required tables, functions, RLS policies, and storage policies.
+</details>
+
+<details>
+<summary><strong>5. Create Your Organization</strong></summary>
+
+Run this SQL in the SQL Editor (customize the values):
+
+```sql
+INSERT INTO organizations (name, slug, email_domains)
+VALUES (
+  'Your Company Name',           -- Display name
+  'your-company',                -- URL-safe slug (lowercase, no spaces)
+  ARRAY['yourcompany.com']       -- Email domains for your team
+);
+```
+
+This automatically creates:
+- Default teams: **Viewers**, **Engineers**, **Administrators**
+- Default job titles (Design Engineer, Quality Engineer, etc.)
+</details>
+
+<details>
+<summary><strong>6. Set Up First Admin User</strong></summary>
+
+1. **Launch BluePLM** on your computer
+2. Select **"Set up new organization"**
+3. Enter your **Supabase URL** and **anon key**
+4. Copy the generated **Organization Code** (save this for team members!)
+5. Click **Continue** and **Sign in with Google**
+
+After signing in, link yourself to the organization and grant admin privileges. Run this SQL:
+
+```sql
+-- 1. Link yourself to the org and set as admin
+UPDATE users 
+SET org_id = (SELECT id FROM organizations WHERE slug = 'your-company'),
+    role = 'admin'
+WHERE email = 'your.email@yourcompany.com';
+
+-- 2. Add yourself to the Administrators team (permissions flow through teams)
+INSERT INTO team_members (team_id, user_id, is_team_admin, added_by)
+SELECT 
+  t.id,
+  u.id,
+  TRUE,
+  u.id
+FROM teams t, users u
+WHERE t.org_id = (SELECT id FROM organizations WHERE slug = 'your-company')
+  AND t.name = 'Administrators'
+  AND u.email = 'your.email@yourcompany.com'
+ON CONFLICT (team_id, user_id) DO NOTHING;
+```
+
+Then **sign out and back in** to BluePLM for the changes to take effect.
+
+> **Note:** If your email domain matches what you set in step 5 (e.g., `@yourcompany.com`), BluePLM may auto-detect your organization on sign-in.
+</details>
+
+<details>
+<summary><strong>7. Create Your First Vault</strong></summary>
+
+Run this SQL in the SQL Editor (replace `'ORG-UUID'` with your organization's ID):
+
+```sql
+-- Get your org ID
+SELECT id FROM organizations WHERE slug = 'your-company';
+
+-- Create the default vault (replace the org_id UUID)
+INSERT INTO vaults (org_id, name, slug, storage_bucket, is_default)
+VALUES (
+  'ORG-UUID-HERE',   -- Your organization ID from above
+  'Main Vault',      -- Display name
+  'main-vault',      -- URL-safe slug
+  'vault',           -- Storage bucket name (must match step 3)
+  true               -- Make this the default vault
+);
+```
+</details>
+
+<details>
+<summary><strong>8. Create Default Workflow (Recommended)</strong></summary>
+
+Files need a workflow to track their lifecycle states. Create the default workflow:
+
+```sql
+-- Get your org ID and user ID
+SELECT id FROM organizations WHERE slug = 'your-company';
+SELECT id FROM users WHERE email = 'your.email@yourcompany.com';
+
+-- Create default workflow (replace UUIDs)
+SELECT create_default_workflow_v2('ORG-UUID', 'USER-UUID');
+```
+
+This creates the standard release workflow: **WIP → In Review → Released → Obsolete**
+</details>
+
+<details>
+<summary><strong>9. Customize Email Templates (Optional)</strong></summary>
+
+BluePLM includes branded email templates in [`supabase/email-templates/`](supabase/email-templates/).
+
+1. Go to **Authentication** → **Email Templates** in Supabase
+2. For each template, copy the HTML from the corresponding file
+3. Update the **Subject** line as noted in the [README](supabase/email-templates/README.md)
+</details>
+
+---
+
+**Sharing with Team Members:**
+
+Share the **Organization Code** generated in step 6 with your team. They enter this code when launching BluePLM for the first time (select "Join existing organization").
+
+The code contains your Supabase connection info in an encoded format — team members don't need to enter URLs or keys manually.
 
 ## File Storage
 
