@@ -2347,7 +2347,7 @@ function WorkflowRolesModal({
                 className="w-full px-3 py-2 bg-plm-bg-light border border-plm-border rounded-lg text-plm-fg text-sm placeholder:text-plm-fg-dim focus:outline-none focus:border-plm-accent"
                 autoFocus
               />
-              <div className="flex gap-2">
+              <div className="flex items-center gap-2">
                 <input
                   type="color"
                   value={newRoleColor}
@@ -2355,15 +2355,49 @@ function WorkflowRolesModal({
                   className="w-10 h-10 rounded border border-plm-border cursor-pointer"
                   title="Role color"
                 />
-                <button
-                  onClick={handleCreateRole}
-                  disabled={isCreating || !newRoleName.trim()}
-                  className="flex-1 btn btn-primary btn-sm flex items-center justify-center gap-2"
-                >
-                  {isCreating ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
-                  Create Role
-                </button>
+                {(() => {
+                  const PreviewIcon = (LucideIcons as any)[newRoleIcon] || Shield
+                  return (
+                    <div
+                      className="p-2 rounded-lg"
+                      style={{ backgroundColor: `${newRoleColor}20`, color: newRoleColor }}
+                    >
+                      <PreviewIcon size={16} />
+                    </div>
+                  )
+                })()}
               </div>
+              {/* Icon picker grid */}
+              <div className="grid grid-cols-6 gap-1.5">
+                {WORKFLOW_ROLE_ICONS.map(iconName => {
+                  const IconComponent = (LucideIcons as any)[iconName] || Shield
+                  const isSelected = newRoleIcon === iconName
+                  return (
+                    <button
+                      key={iconName}
+                      type="button"
+                      onClick={() => setNewRoleIcon(iconName)}
+                      className={`p-2 rounded-lg border transition-colors ${
+                        isSelected
+                          ? 'border-plm-accent bg-plm-accent/20'
+                          : 'border-plm-border bg-plm-bg-light hover:border-plm-fg-muted'
+                      }`}
+                      title={iconName.replace(/([A-Z])/g, ' $1').trim()}
+                      style={isSelected ? { color: newRoleColor } : {}}
+                    >
+                      <IconComponent size={16} className={isSelected ? '' : 'text-plm-fg-muted'} />
+                    </button>
+                  )
+                })}
+              </div>
+              <button
+                onClick={handleCreateRole}
+                disabled={isCreating || !newRoleName.trim()}
+                className="w-full btn btn-primary btn-sm flex items-center justify-center gap-2"
+              >
+                {isCreating ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+                Create Role
+              </button>
             </div>
           ) : workflowRoles.length > 0 && (
             <button
