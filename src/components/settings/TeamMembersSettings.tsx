@@ -333,6 +333,7 @@ export function TeamMembersSettings() {
     vault_ids: string[]
   }>({ full_name: '', team_ids: [], workflow_role_ids: [], vault_ids: [] })
   const [isSavingPendingMember, setIsSavingPendingMember] = useState(false)
+  const [resendingInviteId, setResendingInviteId] = useState<string | null>(null)
   
   // Load data on mount
   useEffect(() => {
@@ -470,6 +471,51 @@ export function TeamMembersSettings() {
       addToast('error', 'Failed to update pending member')
     } finally {
       setIsSavingPendingMember(false)
+    }
+  }
+  
+  const handleResendInvite = async (pm: PendingMember) => {
+    if (!apiServerUrl || !user) {
+      addToast('error', 'API server not configured - cannot send invite emails')
+      return
+    }
+    
+    setResendingInviteId(pm.id)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.access_token) {
+        addToast('error', 'Session expired, please log in again')
+        return
+      }
+      
+      const response = await fetch(`${apiServerUrl}/auth/invite`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({
+          email: pm.email,
+          full_name: pm.full_name || undefined,
+          team_ids: pm.team_ids?.length > 0 ? pm.team_ids : undefined,
+          vault_ids: pm.vault_ids?.length > 0 ? pm.vault_ids : undefined,
+          workflow_role_ids: pm.workflow_role_ids?.length > 0 ? pm.workflow_role_ids : undefined,
+          resend: true
+        })
+      })
+      
+      const result = await response.json()
+      
+      if (!response.ok) {
+        throw new Error(result.message || 'Failed to resend invite')
+      }
+      
+      addToast('success', `Invite email resent to ${pm.email}`)
+    } catch (err: any) {
+      console.error('Failed to resend invite:', err)
+      addToast('error', err.message || 'Failed to resend invite email')
+    } finally {
+      setResendingInviteId(null)
     }
   }
   
@@ -1554,6 +1600,20 @@ export function TeamMembersSettings() {
                           </div>
                         </div>
                         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                          {apiServerUrl && (
+                            <button
+                              onClick={() => handleResendInvite(pm)}
+                              disabled={resendingInviteId === pm.id}
+                              className="p-1.5 text-plm-fg-muted hover:text-plm-accent hover:bg-plm-accent/10 rounded disabled:opacity-50"
+                              title="Resend invite email"
+                            >
+                              {resendingInviteId === pm.id ? (
+                                <Loader2 size={14} className="animate-spin" />
+                              ) : (
+                                <Mail size={14} />
+                              )}
+                            </button>
+                          )}
                           <button
                             onClick={() => openEditPendingMember(pm)}
                             className="p-1.5 text-plm-fg-muted hover:text-plm-accent hover:bg-plm-accent/10 rounded"
@@ -1978,7 +2038,7 @@ export function TeamMembersSettings() {
       {editingVaultAccessUser && (
         <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center" onClick={() => setEditingVaultAccessUser(null)}>
           <div className="bg-plm-bg-light border border-plm-border rounded-xl p-6 max-w-md w-full mx-4" onClick={e => e.stopPropagation()}>
-            <h3 className="text-lg font-medium text-plm-fg mb-2">Vault Access</h3>
+            <h3 className="text-lg font-medium text-plm-fg mb-2">Individual Vault Access</h3>
             <p className="text-base text-plm-fg-muted mb-4">
               Select which vaults <strong>{editingVaultAccessUser.full_name || editingVaultAccessUser.email}</strong> can access.
             </p>
@@ -2921,12 +2981,12 @@ function UserRow({
           </button>
         )}
         
-        {/* Vault access button */}
-        {canManage && (
+        {/* Individual vault access button - only show in users section (not in team member rows) */}
+        {canManage && !compact && (
           <button
             onClick={onVaultAccess}
             className="p-1.5 text-plm-fg-muted hover:text-plm-accent hover:bg-plm-accent/10 rounded transition-colors"
-            title="Vault access"
+            title="Individual vault access"
           >
             <Lock size={14} />
           </button>

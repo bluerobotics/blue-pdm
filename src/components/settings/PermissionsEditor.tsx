@@ -566,6 +566,8 @@ export function PermissionsEditor({ team, onClose, userId, isAdmin }: Permission
                               </button>
                             )
                           })}
+                          {/* Spacer to align with child rows' quick actions */}
+                          <div className="ml-2 w-[52px]" />
                         </div>
                       )}
                     </div>

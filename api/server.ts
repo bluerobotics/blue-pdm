@@ -1357,7 +1357,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   // Invite user by email (admin only)
   fastify.post('/auth/invite', {
     schema: {
-      description: 'Invite a user by email. Requires admin role. Creates pending org member and sends invite email.',
+      description: 'Invite a user by email. Requires admin role. Creates pending org member and sends invite email. Use resend=true to resend an invite.',
       tags: ['Auth'],
       security: [{ bearerAuth: [] }],
       body: {
@@ -1369,7 +1369,8 @@ export async function buildServer(): Promise<FastifyInstance> {
           team_ids: { type: 'array', items: { type: 'string', format: 'uuid' } },
           vault_ids: { type: 'array', items: { type: 'string', format: 'uuid' } },
           workflow_role_ids: { type: 'array', items: { type: 'string', format: 'uuid' } },
-          notes: { type: 'string' }
+          notes: { type: 'string' },
+          resend: { type: 'boolean', description: 'If true, resends invite for existing pending member' }
         }
       },
       response: {
@@ -1396,13 +1397,14 @@ export async function buildServer(): Promise<FastifyInstance> {
       return reply.code(500).send({ error: 'Configuration error', message: 'Service key not configured' })
     }
     
-    const { email, full_name, team_ids, vault_ids, workflow_role_ids, notes } = request.body as {
+    const { email, full_name, team_ids, vault_ids, workflow_role_ids, notes, resend } = request.body as {
       email: string
       full_name?: string
       team_ids?: string[]
       vault_ids?: string[]
       workflow_role_ids?: string[]
       notes?: string
+      resend?: boolean
     }
     
     const normalizedEmail = email.toLowerCase().trim()
@@ -1412,28 +1414,46 @@ export async function buildServer(): Promise<FastifyInstance> {
       auth: { autoRefreshToken: false, persistSession: false }
     })
     
-    // Create pending org member record
-    const { data: pendingMember, error: pendingError } = await adminClient
-      .from('pending_org_members')
-      .insert({
-        org_id: user.org_id,
-        email: normalizedEmail,
-        full_name: full_name || null,
-        role: 'viewer',
-        team_ids: team_ids || [],
-        vault_ids: vault_ids || [],
-        workflow_role_ids: workflow_role_ids || [],
-        notes: notes || null,
-        created_by: user.id
-      })
-      .select('id')
-      .single()
+    let pendingMemberId: string | null = null
     
-    if (pendingError) {
-      if (pendingError.code === '23505') {
-        return reply.code(409).send({ error: 'Conflict', message: 'User with this email already exists or is pending' })
+    // If resending, verify pending member exists for this org
+    if (resend) {
+      const { data: existingPending, error: checkError } = await adminClient
+        .from('pending_org_members')
+        .select('id')
+        .eq('org_id', user.org_id)
+        .eq('email', normalizedEmail)
+        .single()
+      
+      if (checkError || !existingPending) {
+        return reply.code(404).send({ error: 'Not found', message: 'No pending member found with this email' })
       }
-      throw pendingError
+      pendingMemberId = existingPending.id
+    } else {
+      // Create pending org member record
+      const { data: pendingMember, error: pendingError } = await adminClient
+        .from('pending_org_members')
+        .insert({
+          org_id: user.org_id,
+          email: normalizedEmail,
+          full_name: full_name || null,
+          role: 'viewer',
+          team_ids: team_ids || [],
+          vault_ids: vault_ids || [],
+          workflow_role_ids: workflow_role_ids || [],
+          notes: notes || null,
+          created_by: user.id
+        })
+        .select('id')
+        .single()
+      
+      if (pendingError) {
+        if (pendingError.code === '23505') {
+          return reply.code(409).send({ error: 'Conflict', message: 'User with this email already exists or is pending' })
+        }
+        throw pendingError
+      }
+      pendingMemberId = pendingMember.id
     }
     
     // Get organization name for invite email
@@ -1457,15 +1477,17 @@ export async function buildServer(): Promise<FastifyInstance> {
       fastify.log.warn({ email: normalizedEmail, error: inviteError }, 'Failed to send invite email, but pending member created')
       return {
         success: true,
-        message: `User added but invite email failed: ${inviteError.message}. They can still sign up manually.`,
-        pending_member_id: pendingMember.id
+        message: resend 
+          ? `Failed to resend invite: ${inviteError.message}` 
+          : `User added but invite email failed: ${inviteError.message}. They can still sign up manually.`,
+        pending_member_id: pendingMemberId
       }
     }
     
     return {
       success: true,
-      message: `Invite email sent to ${normalizedEmail}`,
-      pending_member_id: pendingMember.id
+      message: resend ? `Invite email resent to ${normalizedEmail}` : `Invite email sent to ${normalizedEmail}`,
+      pending_member_id: pendingMemberId
     }
   })
 
