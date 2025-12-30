@@ -2721,27 +2721,24 @@ function UserRow({
       
       {/* Workflow roles badges */}
       {workflowRoles && workflowRoles.length > 0 && (
-        <div className="flex items-center gap-1">
-          {(userWorkflowRoleIds || []).slice(0, 2).map(roleId => {
+        <div className="flex items-center gap-1 flex-wrap">
+          {(userWorkflowRoleIds || []).map(roleId => {
             const role = workflowRoles.find(r => r.id === roleId)
             if (!role) return null
             const RoleIcon = (LucideIcons as any)[role.icon] || Shield
             return (
               <div
                 key={role.id}
-                className="flex items-center gap-1 px-1.5 py-0.5 rounded text-xs"
+                className="flex items-center gap-1 px-1.5 py-0.5 rounded text-xs whitespace-nowrap"
                 style={{ backgroundColor: `${role.color}15`, color: role.color }}
                 title={role.description || role.name}
               >
                 <RoleIcon size={10} />
-                {!compact && <span className="truncate max-w-[60px]">{role.name}</span>}
+                <span>{role.name}</span>
               </div>
             )
           })}
-          {(userWorkflowRoleIds || []).length > 2 && (
-            <span className="text-xs text-plm-fg-dim">+{(userWorkflowRoleIds || []).length - 2}</span>
-          )}
-          {canManage && onEditWorkflowRoles && (
+          {canManage && onEditWorkflowRoles && userWorkflowRoleIds && userWorkflowRoleIds.length > 0 && (
             <button
               onClick={() => onEditWorkflowRoles(user)}
               className="p-1 text-plm-fg-dim hover:text-plm-accent hover:bg-plm-accent/10 rounded transition-colors"
