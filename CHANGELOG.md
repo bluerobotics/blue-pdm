@@ -26,6 +26,7 @@ All notable changes to BluePLM will be documented in this file.
 - **Clipboard**: Fixed "Write permission denied" in packaged app using Electron native API
 - **Contribution count**: Accurate totals (previously capped at 1000)
 - **Pending view**: SolidWorks temp files (`~$...`) now hidden
+- **Light theme contrast**: Improved visibility of status colors, contribution grid, and UI indicators
 
 ---
 

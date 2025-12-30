@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useEffect } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import * as LucideIcons from 'lucide-react'
 import {
   GripVertical,
@@ -32,6 +32,8 @@ import {
   Users,
   ExternalLink
 } from 'lucide-react'
+import { IconGridPicker } from '../shared/IconPicker'
+import { ColorPicker, ColorSwatchRow } from '../shared/ColorPicker'
 import { usePDMStore } from '../../stores/pdmStore'
 import { supabase } from '../../lib/supabase'
 import {
@@ -75,113 +77,6 @@ const moduleIcons: Record<string, React.ReactNode> = {
   Building2: <Building2 size={16} />,
   Globe: <Globe size={16} />,
   GoogleDrive: <GoogleDriveIcon size={16} />,
-}
-
-// Preset colors for quick selection
-const PRESET_COLORS = [
-  '#ef4444', // red
-  '#f97316', // orange
-  '#eab308', // yellow
-  '#22c55e', // green
-  '#06b6d4', // cyan
-  '#3b82f6', // blue
-  '#8b5cf6', // violet
-  '#ec4899', // pink
-  '#f43f5e', // rose
-  '#14b8a6', // teal
-  '#84cc16', // lime
-  '#a855f7', // purple
-]
-
-// Color picker component
-function IconColorPicker({ 
-  color, 
-  onChange,
-  onClose 
-}: { 
-  color: string | null
-  onChange: (color: string | null) => void
-  onClose: () => void
-}) {
-  const [customColor, setCustomColor] = useState(color || '#3b82f6')
-  const inputRef = useRef<HTMLInputElement>(null)
-  
-  return (
-    <div 
-      className="absolute right-0 top-full mt-1 w-56 bg-plm-bg border border-plm-border rounded-lg shadow-xl z-50 p-3"
-      onClick={(e) => e.stopPropagation()}
-    >
-      <div className="text-[10px] uppercase tracking-wide text-plm-fg-muted mb-2">
-        Icon Color
-      </div>
-      
-      {/* Preset colors grid */}
-      <div className="grid grid-cols-6 gap-1.5 mb-3">
-        {PRESET_COLORS.map(presetColor => (
-          <button
-            key={presetColor}
-            onClick={() => {
-              onChange(presetColor)
-              onClose()
-            }}
-            className={`w-7 h-7 rounded-md border-2 transition-all hover:scale-110 ${
-              color === presetColor ? 'border-plm-fg ring-2 ring-plm-accent' : 'border-transparent'
-            }`}
-            style={{ backgroundColor: presetColor }}
-            title={presetColor}
-          />
-        ))}
-      </div>
-      
-      {/* Custom color picker */}
-      <div className="flex items-center gap-2 mb-3">
-        <div className="relative">
-          <input
-            ref={inputRef}
-            type="color"
-            value={customColor}
-            onChange={(e) => setCustomColor(e.target.value)}
-            className="w-8 h-8 rounded cursor-pointer border border-plm-border"
-          />
-        </div>
-        <input
-          type="text"
-          value={customColor}
-          onChange={(e) => {
-            const val = e.target.value
-            if (/^#[0-9A-Fa-f]{0,6}$/.test(val)) {
-              setCustomColor(val)
-            }
-          }}
-          placeholder="#000000"
-          className="flex-1 px-2 py-1.5 text-xs bg-plm-bg-secondary border border-plm-border rounded font-mono"
-        />
-        <button
-          onClick={() => {
-            onChange(customColor)
-            onClose()
-          }}
-          className="px-2 py-1.5 text-xs bg-plm-accent text-white rounded hover:bg-plm-accent/80 transition-colors"
-        >
-          Apply
-        </button>
-      </div>
-      
-      {/* Reset to default */}
-      <button
-        onClick={() => {
-          onChange(null)
-          onClose()
-        }}
-        className={`w-full px-3 py-2 text-xs text-left rounded transition-colors flex items-center gap-2 ${
-          !color ? 'bg-plm-accent/20 text-plm-accent' : 'hover:bg-plm-highlight text-plm-fg-muted'
-        }`}
-      >
-        <RotateCcw size={12} />
-        Use default color
-      </button>
-    </div>
-  )
 }
 
 // Combined order list item (module, divider, or group)
@@ -429,11 +324,13 @@ function OrderListItemComponent({
         } ${
           isDragging 
             ? 'opacity-50 border-plm-accent bg-plm-accent/10' 
+            : !module.implemented
+            ? 'border-plm-border/30 bg-plm-bg-secondary/50 opacity-60'
             : isEnabled && isVisible
-          ? 'border-plm-success/30 bg-gradient-to-r from-plm-success/5 to-transparent hover:from-plm-success/10 shadow-[inset_0_0_0_1px_rgba(34,197,94,0.1)]'
-          : isVisible
-          ? 'border-plm-border bg-plm-bg hover:bg-plm-highlight/50'
-          : 'border-plm-border/50 bg-plm-bg-secondary'
+            ? 'border-plm-success/30 bg-gradient-to-r from-plm-success/5 to-transparent hover:from-plm-success/10 shadow-[inset_0_0_0_1px_rgba(34,197,94,0.1)]'
+            : isVisible
+            ? 'border-plm-border bg-plm-bg hover:bg-plm-highlight/50'
+            : 'border-plm-border/50 bg-plm-bg-secondary'
       } ${currentParentId ? 'ml-6 border-l-2 border-l-plm-accent/30' : ''}`}
     >
       {/* Only show drag handle if not locked to a group */}
@@ -466,8 +363,8 @@ function OrderListItemComponent({
             {module.name}
           </span>
           {!module.implemented && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-400 font-medium">
-              Under Development
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-plm-bg-secondary text-plm-fg-dim italic">
+              Coming Soon
             </span>
           )}
           {module.required && (
@@ -525,10 +422,11 @@ function OrderListItemComponent({
         
         {/* Color picker dropdown */}
         {showColorPicker && (
-          <IconColorPicker
+          <ColorPicker
             color={customIconColor}
             onChange={(color) => onSetIconColor?.(moduleId, color)}
             onClose={() => setShowColorPicker(false)}
+            title="Icon Color"
           />
         )}
       </div>
@@ -646,19 +544,19 @@ function OrderListItemComponent({
       <button
         onClick={(e) => {
           e.stopPropagation()
-          if (canToggle && !isDisabledByGroup) {
+          if (canToggle && !isDisabledByGroup && module.implemented) {
             setModuleEnabled(moduleId, !moduleConfig.enabledModules[moduleId])
           }
         }}
-        disabled={!canToggle || isDisabledByGroup}
+        disabled={!canToggle || isDisabledByGroup || !module.implemented}
         className={`relative flex items-center gap-2 px-2.5 py-1.5 rounded-lg transition-all duration-200 ${
-          (!canToggle || isDisabledByGroup) ? 'opacity-40 cursor-not-allowed' : ''
+          (!canToggle || isDisabledByGroup || !module.implemented) ? 'opacity-40 cursor-not-allowed' : ''
         } ${
           moduleConfig.enabledModules[moduleId]
             ? 'bg-plm-success/20 border border-plm-success/40 hover:bg-plm-success/30'
             : 'bg-plm-bg-secondary border border-plm-border hover:bg-plm-highlight/50'
         }`}
-        title={!canToggle ? 'This module cannot be disabled' : isDisabledByGroup ? 'Enable the group first' : undefined}
+        title={!module.implemented ? 'Coming soon' : !canToggle ? 'This module cannot be disabled' : isDisabledByGroup ? 'Enable the group first' : undefined}
       >
         {/* Status indicator dot */}
         <div className={`w-2 h-2 rounded-full transition-all duration-300 ${
@@ -1074,8 +972,8 @@ export function ModulesSettings() {
             <span>Has sub-items / Set parent</span>
           </div>
           <div className="flex items-center gap-1.5">
-            <div className="w-2 h-2 bg-orange-500 rounded-full" />
-            <span>Under Development</span>
+            <span className="text-[10px] px-1 py-0.5 rounded bg-plm-bg-secondary text-plm-fg-dim italic">Coming Soon</span>
+            <span>Not yet available</span>
           </div>
         </div>
       </section>
@@ -1174,26 +1072,6 @@ function GroupEditorModal({
   const [name, setName] = useState(group?.name || '')
   const [icon, setIcon] = useState(group?.icon || 'Folder')
   const [iconColor, setIconColor] = useState<string | null>(group?.iconColor || null)
-  const [iconSearch, setIconSearch] = useState('')
-  
-  const POPULAR_ICONS = [
-    'Folder', 'FolderTree', 'Package', 'Box', 'Layers', 'Grid2X2', 'LayoutGrid',
-    'Workflow', 'GitBranch', 'Network', 'Share2', 'Puzzle', 'Blocks', 'Cog',
-    'Settings', 'Wrench', 'Star', 'Heart', 'Bookmark', 'Tag', 'Flag', 'Award',
-    'Users', 'User', 'Building2', 'Globe', 'Database', 'Server', 'Cloud',
-    'File', 'FileText', 'Files', 'ClipboardList', 'Book', 'Notebook',
-    'Mail', 'MessageSquare', 'Bell', 'Calendar', 'Clock', 'Timer',
-    'Shield', 'Lock', 'Key', 'Eye', 'Search', 'Zap', 'Sparkles'
-  ]
-  
-  const PRESET_COLORS = [
-    '#ef4444', '#f97316', '#eab308', '#22c55e', '#14b8a6', 
-    '#3b82f6', '#6366f1', '#8b5cf6', '#ec4899', '#64748b'
-  ]
-  
-  const filteredIcons = iconSearch
-    ? POPULAR_ICONS.filter(i => i.toLowerCase().includes(iconSearch.toLowerCase()))
-    : POPULAR_ICONS
   
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
@@ -1221,58 +1099,23 @@ function GroupEditorModal({
           {/* Icon picker */}
           <div>
             <label className="block text-sm text-plm-fg-muted mb-1">Icon</label>
-            <input
-              type="text"
-              value={iconSearch}
-              onChange={(e) => setIconSearch(e.target.value)}
-              placeholder="Search icons..."
-              className="w-full px-3 py-2 mb-2 bg-plm-bg-secondary border border-plm-border rounded text-plm-fg placeholder:text-plm-fg-dim focus:outline-none focus:border-plm-accent"
+            <IconGridPicker
+              value={icon}
+              onChange={setIcon}
+              maxHeight="160px"
+              columns={8}
             />
-            <div className="grid grid-cols-8 gap-1 max-h-32 overflow-y-auto p-2 bg-plm-bg-secondary rounded border border-plm-border">
-              {filteredIcons.map(iconName => {
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                const IconComponent = (LucideIcons as any)[iconName]
-                return (
-                  <button
-                    key={iconName}
-                    onClick={() => setIcon(iconName)}
-                    className={`p-2 rounded hover:bg-plm-highlight transition-colors ${
-                      icon === iconName ? 'bg-plm-accent/20 text-plm-accent' : 'text-plm-fg-muted'
-                    }`}
-                    title={iconName}
-                  >
-                    {IconComponent && <IconComponent size={16} />}
-                  </button>
-                )
-              })}
-            </div>
           </div>
           
           {/* Color picker */}
           <div>
             <label className="block text-sm text-plm-fg-muted mb-1">Color (optional)</label>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setIconColor(null)}
-                className={`w-8 h-8 rounded border-2 ${
-                  iconColor === null ? 'border-plm-accent' : 'border-plm-border'
-                } bg-plm-bg-secondary flex items-center justify-center text-xs text-plm-fg-muted`}
-                title="Default"
-              >
-                ∅
-              </button>
-              {PRESET_COLORS.map(color => (
-                <button
-                  key={color}
-                  onClick={() => setIconColor(color)}
-                  className={`w-8 h-8 rounded border-2 ${
-                    iconColor === color ? 'border-plm-accent' : 'border-transparent'
-                  }`}
-                  style={{ backgroundColor: color }}
-                  title={color}
-                />
-              ))}
-            </div>
+            <ColorSwatchRow
+              color={iconColor}
+              onChange={setIconColor}
+              showReset
+              size="lg"
+            />
           </div>
           
           {/* Preview */}

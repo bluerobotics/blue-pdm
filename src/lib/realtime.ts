@@ -34,9 +34,15 @@ type OrganizationChangeCallback = (
   oldOrg?: Organization
 ) => void
 
+type ColorSwatchChangeCallback = (
+  eventType: 'INSERT' | 'DELETE',
+  swatch: { id: string; color: string; org_id: string | null; user_id: string | null; created_at: string }
+) => void
+
 let filesChannel: RealtimeChannel | null = null
 let activityChannel: RealtimeChannel | null = null
 let organizationChannel: RealtimeChannel | null = null
+let colorSwatchesChannel: RealtimeChannel | null = null
 
 /**
  * Subscribe to real-time file changes for an organization
@@ -208,6 +214,65 @@ export function subscribeToOrganization(
 }
 
 /**
+ * Subscribe to org color swatch changes for real-time sync
+ * 
+ * Updates are instant for:
+ * - New org colors added by admins
+ * - Org colors deleted by admins
+ * 
+ * This ensures all users see shared color palette changes immediately.
+ */
+export function subscribeToColorSwatches(
+  orgId: string,
+  onSwatchChange: ColorSwatchChangeCallback
+): () => void {
+  // Unsubscribe from previous channel if exists
+  if (colorSwatchesChannel) {
+    colorSwatchesChannel.unsubscribe()
+  }
+
+  colorSwatchesChannel = supabase
+    .channel(`color_swatches:${orgId}`)
+    .on(
+      'postgres_changes',
+      {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'color_swatches',
+        filter: `org_id=eq.${orgId}`
+      },
+      (payload) => {
+        console.log('[Realtime] Org color swatch added:', payload.new)
+        onSwatchChange('INSERT', payload.new as { id: string; color: string; org_id: string | null; user_id: string | null; created_at: string })
+      }
+    )
+    .on(
+      'postgres_changes',
+      {
+        event: 'DELETE',
+        schema: 'public',
+        table: 'color_swatches',
+        filter: `org_id=eq.${orgId}`
+      },
+      (payload) => {
+        console.log('[Realtime] Org color swatch deleted:', payload.old)
+        onSwatchChange('DELETE', payload.old as { id: string; color: string; org_id: string | null; user_id: string | null; created_at: string })
+      }
+    )
+    .subscribe((status) => {
+      console.log('[Realtime] Color swatches subscription status:', status)
+    })
+
+  // Return unsubscribe function
+  return () => {
+    if (colorSwatchesChannel) {
+      colorSwatchesChannel.unsubscribe()
+      colorSwatchesChannel = null
+    }
+  }
+}
+
+/**
  * Unsubscribe from all realtime channels
  */
 export function unsubscribeAll() {
@@ -222,6 +287,10 @@ export function unsubscribeAll() {
   if (organizationChannel) {
     organizationChannel.unsubscribe()
     organizationChannel = null
+  }
+  if (colorSwatchesChannel) {
+    colorSwatchesChannel.unsubscribe()
+    colorSwatchesChannel = null
   }
 }
 

@@ -5,7 +5,7 @@ import { usePDMStore } from './stores/pdmStore'
 import { SettingsContent } from './components/SettingsContent'
 import type { SettingsTab } from './types/settings'
 import { supabase, getCurrentSession, isSupabaseConfigured, getFilesLightweight, getCheckedOutUsers, linkUserToOrganization, getUserProfile, setCurrentAccessToken, registerDeviceSession, startSessionHeartbeat, stopSessionHeartbeat, signOut, syncUserSessionsOrgId, getAccessibleVaults } from './lib/supabase'
-import { subscribeToFiles, subscribeToActivity, subscribeToOrganization, unsubscribeAll } from './lib/realtime'
+import { subscribeToFiles, subscribeToActivity, subscribeToOrganization, subscribeToColorSwatches, unsubscribeAll } from './lib/realtime'
 import { getBackupStatus, isThisDesignatedMachine, updateHeartbeat } from './lib/backup'
 import { MenuBar } from './components/MenuBar'
 import { ActivityBar } from './components/ActivityBar'
@@ -507,6 +507,16 @@ function App() {
       setApiServerUrl(orgApiUrl)
     }
   }, [organization?.settings?.api_url, apiServerUrl, setApiServerUrl])
+
+  // Load color swatches when user and organization are available
+  useEffect(() => {
+    if (user && organization) {
+      const { syncColorSwatches } = usePDMStore.getState()
+      syncColorSwatches().catch(err => {
+        console.warn('[ColorSwatches] Failed to sync:', err)
+      })
+    }
+  }, [user?.id, organization?.id])
 
   // Validate connected vault IDs after organization loads
   // This cleans up stale vaults that no longer exist on the server or that user lost access to
@@ -2168,6 +2178,35 @@ function App() {
       }
     })
     
+    // Subscribe to org color swatch changes (shared palette)
+    const unsubscribeColorSwatches = subscribeToColorSwatches(organization.id, (eventType, swatch) => {
+      const { orgColorSwatches, user: currentUser } = usePDMStore.getState()
+      
+      // Only process org swatches (swatch.org_id is set)
+      if (!swatch.org_id) return
+      
+      if (eventType === 'INSERT') {
+        // Add new org swatch if not already present
+        if (!orgColorSwatches.find(s => s.id === swatch.id)) {
+          usePDMStore.setState({
+            orgColorSwatches: [...orgColorSwatches, {
+              id: swatch.id,
+              color: swatch.color,
+              isOrg: true,
+              createdAt: swatch.created_at
+            }]
+          })
+          console.log('[Realtime] Org color swatch added:', swatch.color)
+        }
+      } else if (eventType === 'DELETE') {
+        // Remove deleted org swatch
+        usePDMStore.setState({
+          orgColorSwatches: orgColorSwatches.filter(s => s.id !== swatch.id)
+        })
+        console.log('[Realtime] Org color swatch removed:', swatch.color)
+      }
+    })
+    
     return () => {
       console.log('[Realtime] Cleaning up subscriptions')
       // Clear any pending notification timeout
@@ -2177,6 +2216,7 @@ function App() {
       unsubscribeFiles()
       unsubscribeActivity()
       unsubscribeOrg()
+      unsubscribeColorSwatches()
       unsubscribeAll()
     }
   }, [organization, isOfflineMode, setOrganization, addToast])

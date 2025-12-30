@@ -226,6 +226,14 @@ export interface StagedCheckin {
   serverHash?: string        // Server content hash at time of staging (for conflict detection)
 }
 
+// Color swatch for custom color picker colors
+export interface ColorSwatch {
+  id: string
+  color: string              // Hex color value
+  isOrg: boolean             // True if org-level swatch, false if user-level
+  createdAt: string          // ISO timestamp
+}
+
 interface PDMState {
   // Auth & Org
   user: User | null
@@ -406,6 +414,10 @@ interface PDMState {
   pinnedFolders: { path: string; vaultId: string; vaultName: string; isDirectory: boolean }[]
   pinnedSectionExpanded: boolean
   
+  // Color swatches (user and org-level custom colors)
+  colorSwatches: ColorSwatch[]
+  orgColorSwatches: ColorSwatch[]  // Org-level swatches (synced from database)
+  
   // Processing folders (for spinner display)
   processingFolders: Set<string>
   
@@ -571,6 +583,12 @@ interface PDMState {
   unpinFolder: (path: string) => void
   togglePinnedSection: () => void
   reorderPinnedFolders: (fromIndex: number, toIndex: number) => void
+  
+  // Actions - Color Swatches
+  addColorSwatch: (color: string, isOrg: boolean) => void
+  removeColorSwatch: (swatchId: string) => void
+  loadOrgColorSwatches: () => Promise<void>
+  syncColorSwatches: () => Promise<void>
   
   // Actions - Connected Vaults
   setConnectedVaults: (vaults: ConnectedVault[]) => void
@@ -935,6 +953,8 @@ export const usePDMStore = create<PDMState>()(
       weatherEffectsEnabled: true,  // Default enabled
       pinnedFolders: [],
       pinnedSectionExpanded: true,
+      colorSwatches: [],
+      orgColorSwatches: [],
       processingFolders: new Set(),
       operationQueue: [],
       historyFolderFilter: null,
@@ -1586,6 +1606,189 @@ export const usePDMStore = create<PDMState>()(
         const [removed] = newPinned.splice(fromIndex, 1)
         newPinned.splice(toIndex, 0, removed)
         set({ pinnedFolders: newPinned })
+      },
+      
+      // Actions - Color Swatches
+      addColorSwatch: async (color, isOrg) => {
+        const { user, organization, addToast, getEffectiveRole, syncColorSwatches } = get()
+        if (!user) {
+          addToast('error', 'You must be logged in to save colors')
+          return
+        }
+        
+        // Only admins can add org swatches
+        if (isOrg && getEffectiveRole() !== 'admin') {
+          addToast('error', 'Only admins can add organization colors')
+          return
+        }
+        
+        // For org swatches, need organization
+        if (isOrg && !organization?.id) {
+          addToast('error', 'No organization found')
+          return
+        }
+        
+        // Insert to database (let DB generate UUID)
+        try {
+          const insertData = isOrg 
+            ? {
+                color,
+                org_id: organization!.id,
+                user_id: null,
+                created_by: user.id
+              }
+            : {
+                color,
+                org_id: null,
+                user_id: user.id,
+                created_by: user.id
+              }
+          
+          const { data, error } = await supabase
+            .from('color_swatches')
+            .insert(insertData)
+            .select('id, color, created_at')
+            .single()
+          
+          if (error) {
+            console.error('Failed to save color swatch:', error)
+            addToast('error', `Failed to save color: ${error.message}`)
+            return
+          }
+          
+          // Add to local state with the DB-generated ID
+          const newSwatch: ColorSwatch = {
+            id: data.id,
+            color: data.color,
+            isOrg,
+            createdAt: data.created_at
+          }
+          
+          if (isOrg) {
+            set({ orgColorSwatches: [...get().orgColorSwatches, newSwatch] })
+          } else {
+            set({ colorSwatches: [...get().colorSwatches, newSwatch] })
+          }
+          
+          addToast('success', isOrg ? 'Color saved for organization' : 'Color saved')
+        } catch (err) {
+          console.error('Failed to save color swatch:', err)
+          addToast('error', 'Failed to save color')
+        }
+      },
+      
+      removeColorSwatch: async (swatchId) => {
+        const { colorSwatches, orgColorSwatches, addToast, getEffectiveRole } = get()
+        
+        // Find the swatch
+        const userSwatch = colorSwatches.find(s => s.id === swatchId)
+        const orgSwatch = orgColorSwatches.find(s => s.id === swatchId)
+        
+        if (orgSwatch && getEffectiveRole() !== 'admin') {
+          addToast('error', 'Only admins can remove organization colors')
+          return
+        }
+        
+        // Remove from local state immediately
+        if (userSwatch) {
+          set({ colorSwatches: colorSwatches.filter(s => s.id !== swatchId) })
+        } else if (orgSwatch) {
+          set({ orgColorSwatches: orgColorSwatches.filter(s => s.id !== swatchId) })
+        }
+        
+        // Sync to database
+        try {
+          const { error } = await supabase
+            .from('color_swatches')
+            .delete()
+            .eq('id', swatchId)
+          
+          if (error) {
+            console.error('Failed to delete color swatch:', error)
+            // Rollback on error
+            if (userSwatch) {
+              set({ colorSwatches: [...get().colorSwatches, userSwatch] })
+            } else if (orgSwatch) {
+              set({ orgColorSwatches: [...get().orgColorSwatches, orgSwatch] })
+            }
+          }
+        } catch (err) {
+          console.error('Failed to delete color swatch:', err)
+        }
+      },
+      
+      loadOrgColorSwatches: async () => {
+        const { organization } = get()
+        if (!organization?.id) return
+        
+        try {
+          const { data, error } = await supabase
+            .from('color_swatches')
+            .select('id, color, created_at')
+            .eq('org_id', organization.id)
+            .order('created_at', { ascending: true })
+          
+          if (error) throw error
+          
+          set({
+            orgColorSwatches: (data || []).map(s => ({
+              id: s.id,
+              color: s.color,
+              isOrg: true,
+              createdAt: s.created_at
+            }))
+          })
+        } catch (err) {
+          console.error('Failed to load org color swatches:', err)
+        }
+      },
+      
+      syncColorSwatches: async () => {
+        const { user, organization } = get()
+        if (!user) return
+        
+        try {
+          // Load user's personal swatches
+          const { data: userSwatches, error: userError } = await supabase
+            .from('color_swatches')
+            .select('id, color, created_at')
+            .eq('user_id', user.id)
+            .is('org_id', null)
+            .order('created_at', { ascending: true })
+          
+          if (userError) throw userError
+          
+          set({
+            colorSwatches: (userSwatches || []).map(s => ({
+              id: s.id,
+              color: s.color,
+              isOrg: false,
+              createdAt: s.created_at
+            }))
+          })
+          
+          // Load org swatches
+          if (organization?.id) {
+            const { data: orgSwatches, error: orgError } = await supabase
+              .from('color_swatches')
+              .select('id, color, created_at')
+              .eq('org_id', organization.id)
+              .order('created_at', { ascending: true })
+            
+            if (orgError) throw orgError
+            
+            set({
+              orgColorSwatches: (orgSwatches || []).map(s => ({
+                id: s.id,
+                color: s.color,
+                isOrg: true,
+                createdAt: s.created_at
+              }))
+            })
+          }
+        } catch (err) {
+          console.error('Failed to sync color swatches:', err)
+        }
       },
       
       // Actions - Connected Vaults
@@ -2823,6 +3026,7 @@ export const usePDMStore = create<PDMState>()(
         autoDownloadExcludedFiles: state.autoDownloadExcludedFiles,
         pinnedFolders: state.pinnedFolders,
         pinnedSectionExpanded: state.pinnedSectionExpanded,
+        colorSwatches: state.colorSwatches,
         connectedVaults: state.connectedVaults,
         activeVaultId: state.activeVaultId,
         sidebarVisible: state.sidebarVisible,

@@ -1,5 +1,5 @@
 // @ts-nocheck - Supabase type inference issues with Database generics
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect } from 'react'
 import * as LucideIcons from 'lucide-react'
 import {
   Users,
@@ -8,16 +8,10 @@ import {
   Trash2,
   Loader2,
   Shield,
-  ChevronRight,
-  ChevronDown,
   UserPlus,
   X,
   Check,
   Search,
-  MoreVertical,
-  Copy,
-  Settings2,
-  Sparkles,
   Crown,
   LayoutGrid,
   Save,
@@ -31,102 +25,7 @@ import { PermissionsEditor } from './PermissionsEditor'
 import { MODULES, MODULE_GROUPS } from '../../types/modules'
 import type { OrgModuleDefaults, ModuleId, ModuleGroupId } from '../../types/modules'
 
-// Popular icons for team selection - organized by category
-const TEAM_ICONS = [
-  // People & Teams
-  'Users', 'UsersRound', 'UserCog', 'UserCheck', 'UserPlus', 'User', 'UserCircle',
-  'Contact', 'ContactRound', 'PersonStanding', 'Accessibility', 'Baby', 'Handshake',
-  
-  // Security & Admin
-  'Shield', 'ShieldCheck', 'ShieldAlert', 'ShieldQuestion', 'ShieldOff', 'ShieldPlus',
-  'Lock', 'LockKeyhole', 'Unlock', 'Key', 'KeyRound', 'Fingerprint', 'ScanFace',
-  
-  // Status & Achievements
-  'Star', 'Crown', 'Award', 'Trophy', 'Medal', 'BadgeCheck', 'Badge', 'Gem',
-  'Sparkles', 'Flame', 'Leaf', 'Sun', 'Moon', 'Cloud', 'CloudSun', 'Snowflake',
-  
-  // Buildings & Places
-  'Building', 'Building2', 'Factory', 'Warehouse', 'Store', 'Hotel', 'School',
-  'Church', 'Castle', 'Landmark', 'Home', 'House', 'Tent', 'TreePine', 'Trees',
-  
-  // Work & Business
-  'Briefcase', 'BriefcaseBusiness', 'BriefcaseMedical', 'Suitcase', 'Wallet',
-  'PiggyBank', 'Banknote', 'CreditCard', 'Receipt', 'HandCoins', 'CircleDollarSign',
-  'TrendingUp', 'BarChart', 'BarChart2', 'BarChart3', 'PieChart', 'LineChart',
-  
-  // Engineering & Tools
-  'Wrench', 'Hammer', 'Screwdriver', 'PenTool', 'Paintbrush', 'Palette', 'Ruler',
-  'Settings', 'Settings2', 'Cog', 'SlidersHorizontal', 'SlidersVertical', 'Gauge',
-  
-  // Technology & Code
-  'Code', 'Code2', 'Braces', 'Terminal', 'Cpu', 'CircuitBoard', 'Binary',
-  'Database', 'Server', 'HardDrive', 'Monitor', 'Laptop', 'Smartphone', 'Tablet',
-  'Wifi', 'Bluetooth', 'Radio', 'Antenna', 'Satellite', 'Signal', 'Router',
-  
-  // Science & Research
-  'Microscope', 'Beaker', 'TestTube', 'TestTubes', 'FlaskConical', 'FlaskRound',
-  'Atom', 'Dna', 'Pill', 'Syringe', 'Stethoscope', 'HeartPulse', 'Activity',
-  'Brain', 'Bone', 'Scan', 'Radiation', 'Magnet', 'Orbit', 'Telescope',
-  
-  // Documents & Files
-  'File', 'FileText', 'FileCheck', 'FileCode', 'FileSpreadsheet', 'FileImage',
-  'Folder', 'FolderOpen', 'FolderCog', 'FolderHeart', 'FolderLock', 'FolderSearch',
-  'ClipboardList', 'Clipboard', 'ClipboardCheck', 'BookOpen', 'Book', 'Library',
-  'Notebook', 'NotebookPen', 'ScrollText', 'FileStack', 'Files', 'Archive',
-  
-  // Math & Analysis
-  'Calculator', 'Hash', 'Percent', 'Sigma', 'Pi', 'Infinity', 'Variable',
-  'Target', 'Crosshair', 'Focus', 'Scan', 'ZoomIn', 'Search', 'SearchCode',
-  
-  // Logistics & Shipping
-  'Box', 'Package', 'PackageOpen', 'PackageCheck', 'PackageSearch', 'Boxes',
-  'Truck', 'Car', 'Plane', 'Ship', 'Train', 'Bike', 'Bus', 'Forklift',
-  'ShoppingCart', 'ShoppingBag', 'ShoppingBasket', 'Store', 'Barcode', 'QrCode',
-  'Container', 'Anchor', 'Navigation', 'MapPin', 'Route', 'Milestone',
-  
-  // Communication
-  'Mail', 'MailOpen', 'Send', 'Inbox', 'MessageSquare', 'MessageCircle',
-  'MessagesSquare', 'Phone', 'PhoneCall', 'Video', 'Camera', 'Mic', 'Headphones',
-  'Bell', 'BellRing', 'Megaphone', 'Radio', 'Podcast', 'Rss', 'Share2',
-  
-  // Creative & Design
-  'Pencil', 'PencilRuler', 'Eraser', 'Highlighter', 'Brush', 'Pipette', 'Crop',
-  'Scissors', 'Slice', 'Shapes', 'Square', 'Circle', 'Triangle', 'Hexagon',
-  'Pentagon', 'Octagon', 'Diamond', 'Heart', 'Spade', 'Club', 'Layers',
-  
-  // Nature & Environment
-  'Globe', 'Globe2', 'Earth', 'Map', 'Compass', 'Mountain', 'MountainSnow',
-  'Waves', 'Droplet', 'Droplets', 'Wind', 'Tornado', 'ThermometerSun', 'Umbrella',
-  'Flower', 'Flower2', 'Clover', 'Sprout', 'Shrub', 'Vegan', 'Apple', 'Cherry',
-  
-  // Energy & Power
-  'Zap', 'ZapOff', 'Battery', 'BatteryCharging', 'Plug', 'PlugZap', 'Power',
-  'Lightbulb', 'LightbulbOff', 'Flashlight', 'Rocket', 'Fuel', 'Flame', 'Bolt',
-  
-  // Media & Entertainment
-  'Music', 'Music2', 'Music3', 'Music4', 'Disc', 'Disc2', 'Disc3',
-  'Play', 'Pause', 'FastForward', 'Rewind', 'Volume2', 'Film', 'Clapperboard',
-  'Tv', 'Tv2', 'Gamepad', 'Gamepad2', 'Joystick', 'Dices', 'Puzzle',
-  
-  // Food & Dining
-  'Utensils', 'UtensilsCrossed', 'ChefHat', 'CookingPot', 'Soup', 'Pizza', 'Sandwich',
-  'Salad', 'Coffee', 'Wine', 'Beer', 'Milk', 'IceCream', 'Cake', 'Cookie', 'Croissant',
-  
-  // Sports & Fitness
-  'Dumbbell', 'Timer', 'Stopwatch', 'Clock', 'Alarm', 'Watch', 'Footprints',
-  'Volleyball', 'Football', 'Dribbble', 'Volleyball', 'Trophy', 'Flag', 'Goal',
-  
-  // Health & Safety
-  'HeartHandshake', 'HeartPulse', 'Stethoscope', 'Thermometer', 'Syringe', 'Pill',
-  'Cross', 'CirclePlus', 'ShieldPlus', 'AlertTriangle', 'AlertCircle', 'AlertOctagon',
-  'HardHat', 'Construction', 'Cone', 'BadgeAlert', 'CircleAlert', 'OctagonAlert',
-  
-  // Miscellaneous
-  'Gift', 'PartyPopper', 'Candy', 'Balloon', 'Cake', 'Sparkle', 'Wand', 'Wand2',
-  'Glasses', 'Sunglasses', 'Watch', 'Hourglass', 'Timer', 'Calendar', 'CalendarDays',
-  'Bug', 'Bot', 'Ghost', 'Cat', 'Dog', 'Bird', 'Fish', 'Rabbit', 'Snail', 'Turtle',
-  'Aperture', 'Eye', 'EyeOff', 'Scan', 'Fingerprint', 'Hand', 'HandMetal', 'ThumbsUp'
-]
+import { IconPicker, ICON_LIBRARY } from '../shared/IconPicker'
 
 // Preset colors for teams
 const TEAM_COLORS = [
@@ -715,17 +614,8 @@ function TeamFormDialog({
   copyFromTeamId?: string | null
   setCopyFromTeamId?: (id: string | null) => void
 }) {
-  const [showIconPicker, setShowIconPicker] = useState(false)
-  const [iconSearch, setIconSearch] = useState('')
   const IconComponent = (LucideIcons as any)[formData.icon] || Users
   const isCreating = title === 'Create Team'
-  
-  // Filter icons based on search
-  const filteredIcons = useMemo(() => {
-    if (!iconSearch.trim()) return TEAM_ICONS
-    const search = iconSearch.toLowerCase()
-    return TEAM_ICONS.filter(icon => icon.toLowerCase().includes(search))
-  }, [iconSearch])
   
   // When copying from a team, update the form with that team's color/icon as defaults
   const handleCopyFromChange = (teamId: string | null) => {
@@ -829,66 +719,11 @@ function TeamFormDialog({
             {/* Icon */}
             <div>
               <label className="block text-sm text-plm-fg-muted mb-1.5">Icon</label>
-              <div className="relative">
-                <button
-                  onClick={() => setShowIconPicker(!showIconPicker)}
-                  className="w-full px-3 py-2 bg-plm-bg border border-plm-border rounded-lg flex items-center gap-2 hover:border-plm-accent transition-colors"
-                  style={{ color: formData.color }}
-                >
-                  <IconComponent size={18} />
-                  <span className="text-plm-fg text-sm">{formData.icon}</span>
-                  <ChevronDown size={14} className="ml-auto text-plm-fg-muted" />
-                </button>
-                
-                {showIconPicker && (
-                  <div className="absolute z-50 top-full mt-1 left-0 bg-plm-bg border border-plm-border rounded-lg shadow-xl p-2 w-72">
-                    {/* Search input */}
-                    <div className="relative mb-2">
-                      <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-plm-fg-muted" />
-                      <input
-                        type="text"
-                        value={iconSearch}
-                        onChange={e => setIconSearch(e.target.value)}
-                        placeholder="Search icons..."
-                        className="w-full pl-8 pr-3 py-1.5 text-sm bg-plm-bg-secondary border border-plm-border rounded text-plm-fg placeholder:text-plm-fg-dim focus:outline-none focus:border-plm-accent"
-                        autoFocus
-                      />
-                    </div>
-                    {/* Icons grid */}
-                    <div className="max-h-52 overflow-y-auto">
-                      <div className="grid grid-cols-8 gap-1">
-                        {filteredIcons.map(iconName => {
-                          const Icon = (LucideIcons as any)[iconName]
-                          if (!Icon) return null
-                          return (
-                            <button
-                              key={iconName}
-                              onClick={() => {
-                                setFormData({ ...formData, icon: iconName })
-                                setShowIconPicker(false)
-                                setIconSearch('')
-                              }}
-                              className={`p-1.5 rounded transition-colors ${
-                                formData.icon === iconName
-                                  ? 'bg-plm-accent/20 text-plm-accent'
-                                  : 'hover:bg-plm-highlight text-plm-fg-muted hover:text-plm-fg'
-                              }`}
-                              title={iconName}
-                            >
-                              <Icon size={16} />
-                            </button>
-                          )
-                        })}
-                      </div>
-                      {filteredIcons.length === 0 && (
-                        <div className="text-center text-sm text-plm-fg-muted py-4">
-                          No icons match "{iconSearch}"
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
+              <IconPicker
+                value={formData.icon}
+                onChange={(icon) => setFormData({ ...formData, icon })}
+                color={formData.color}
+              />
             </div>
           </div>
           

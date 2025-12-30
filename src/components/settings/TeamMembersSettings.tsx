@@ -47,143 +47,13 @@ import { UserProfileModal } from './UserProfileModal'
 import { PermissionsEditor } from './PermissionsEditor'
 import type { Team, TeamMember, TeamPermission, PermissionAction } from '../../types/permissions'
 
-// Popular icons for team selection - organized by category
-const TEAM_ICONS = [
-  // People & Teams
-  'Users', 'UsersRound', 'UserCog', 'UserCheck', 'UserPlus', 'User', 'UserCircle',
-  'Contact', 'ContactRound', 'PersonStanding', 'Accessibility', 'Baby', 'Handshake',
-  
-  // Security & Admin
-  'Shield', 'ShieldCheck', 'ShieldAlert', 'ShieldQuestion', 'ShieldOff', 'ShieldPlus',
-  'Lock', 'LockKeyhole', 'Unlock', 'Key', 'KeyRound', 'Fingerprint', 'ScanFace',
-  
-  // Status & Achievements
-  'Star', 'Crown', 'Award', 'Trophy', 'Medal', 'BadgeCheck', 'Badge', 'Gem',
-  'Sparkles', 'Flame', 'Leaf', 'Sun', 'Moon', 'Cloud', 'CloudSun', 'Snowflake',
-  
-  // Buildings & Places
-  'Building', 'Building2', 'Factory', 'Warehouse', 'Store', 'Hotel', 'School',
-  'Church', 'Castle', 'Landmark', 'Home', 'House', 'Tent', 'TreePine', 'Trees',
-  
-  // Work & Business
-  'Briefcase', 'BriefcaseBusiness', 'BriefcaseMedical', 'Suitcase', 'Wallet',
-  'PiggyBank', 'Banknote', 'CreditCard', 'Receipt', 'HandCoins', 'CircleDollarSign',
-  'TrendingUp', 'BarChart', 'BarChart2', 'BarChart3', 'PieChart', 'LineChart',
-  
-  // Engineering & Tools
-  'Wrench', 'Hammer', 'Screwdriver', 'PenTool', 'Paintbrush', 'Palette', 'Ruler',
-  'Settings', 'Settings2', 'Cog', 'SlidersHorizontal', 'SlidersVertical', 'Gauge',
-  
-  // Technology & Code
-  'Code', 'Code2', 'Braces', 'Terminal', 'Cpu', 'CircuitBoard', 'Binary',
-  'Database', 'Server', 'HardDrive', 'Monitor', 'Laptop', 'Smartphone', 'Tablet',
-  'Wifi', 'Bluetooth', 'Radio', 'Antenna', 'Satellite', 'Signal', 'Router',
-  
-  // Science & Research
-  'Microscope', 'Beaker', 'TestTube', 'TestTubes', 'FlaskConical', 'FlaskRound',
-  'Atom', 'Dna', 'Pill', 'Syringe', 'Stethoscope', 'HeartPulse', 'Activity',
-  'Brain', 'Bone', 'Scan', 'Radiation', 'Magnet', 'Orbit', 'Telescope',
-  
-  // Documents & Files
-  'File', 'FileText', 'FileCheck', 'FileCode', 'FileSpreadsheet', 'FileImage',
-  'Folder', 'FolderOpen', 'FolderCog', 'FolderHeart', 'FolderLock', 'FolderSearch',
-  'ClipboardList', 'Clipboard', 'ClipboardCheck', 'BookOpen', 'Book', 'Library',
-  'Notebook', 'NotebookPen', 'ScrollText', 'FileStack', 'Files', 'Archive',
-  
-  // Math & Analysis
-  'Calculator', 'Hash', 'Percent', 'Sigma', 'Pi', 'Infinity', 'Variable',
-  'Target', 'Crosshair', 'Focus', 'ZoomIn', 'SearchCode',
-  
-  // Logistics & Shipping
-  'Box', 'Package', 'PackageOpen', 'PackageCheck', 'PackageSearch', 'Boxes',
-  'Truck', 'Car', 'Plane', 'Ship', 'Train', 'Bike', 'Bus', 'Forklift',
-  'ShoppingCart', 'ShoppingBag', 'ShoppingBasket', 'Barcode', 'QrCode',
-  'Container', 'Anchor', 'Navigation', 'MapPin', 'Route', 'Milestone',
-  
-  // Communication
-  'Mail', 'MailOpen', 'Send', 'Inbox', 'MessageSquare', 'MessageCircle',
-  'MessagesSquare', 'Phone', 'PhoneCall', 'Video', 'Camera', 'Mic', 'Headphones',
-  'Bell', 'BellRing', 'Megaphone', 'Podcast', 'Rss', 'Share2',
-  
-  // Creative & Design
-  'Pencil', 'PencilRuler', 'Eraser', 'Highlighter', 'Brush', 'Pipette', 'Crop',
-  'Scissors', 'Slice', 'Shapes', 'Square', 'Circle', 'Triangle', 'Hexagon',
-  'Pentagon', 'Octagon', 'Diamond', 'Heart', 'Spade', 'Club', 'Layers',
-  
-  // Nature & Environment
-  'Globe', 'Globe2', 'Earth', 'Map', 'Compass', 'Mountain', 'MountainSnow',
-  'Waves', 'Droplet', 'Droplets', 'Wind', 'Tornado', 'ThermometerSun', 'Umbrella',
-  'Flower', 'Flower2', 'Clover', 'Sprout', 'Shrub', 'Vegan', 'Apple', 'Cherry',
-  
-  // Energy & Power
-  'Zap', 'ZapOff', 'Battery', 'BatteryCharging', 'Plug', 'PlugZap', 'Power',
-  'Lightbulb', 'LightbulbOff', 'Flashlight', 'Rocket', 'Fuel',
-  
-  // Media & Entertainment
-  'Music', 'Music2', 'Music3', 'Music4', 'Disc', 'Disc2', 'Disc3',
-  'Play', 'Pause', 'FastForward', 'Rewind', 'Volume2', 'Film', 'Clapperboard',
-  'Tv', 'Tv2', 'Gamepad', 'Gamepad2', 'Joystick', 'Dices', 'Puzzle',
-  
-  // Food & Dining
-  'Utensils', 'UtensilsCrossed', 'ChefHat', 'CookingPot', 'Soup', 'Pizza', 'Sandwich',
-  'Salad', 'Coffee', 'Wine', 'Beer', 'Milk', 'IceCream', 'Cake', 'Cookie', 'Croissant',
-  
-  // Sports & Fitness
-  'Dumbbell', 'Timer', 'Stopwatch', 'Alarm', 'Watch', 'Footprints',
-  'Trophy', 'Flag', 'Goal',
-  
-  // Health & Safety
-  'HeartHandshake', 'Thermometer',
-  'Cross', 'CirclePlus', 'AlertTriangle', 'AlertCircle', 'AlertOctagon',
-  'HardHat', 'Construction', 'Cone', 'BadgeAlert', 'CircleAlert', 'OctagonAlert',
-  
-  // Miscellaneous
-  'Gift', 'PartyPopper', 'Candy', 'Balloon', 'Sparkle', 'Wand', 'Wand2',
-  'Glasses', 'Sunglasses', 'Hourglass', 'Calendar', 'CalendarDays',
-  'Bug', 'Bot', 'Ghost', 'Cat', 'Dog', 'Bird', 'Fish', 'Rabbit', 'Snail', 'Turtle',
-  'Aperture', 'Eye', 'EyeOff', 'Hand', 'HandMetal', 'ThumbsUp'
-]
+import { IconPicker, IconGridPicker, ICON_LIBRARY } from '../shared/IconPicker'
+import { ColorPickerDropdown, DEFAULT_PRESET_COLORS } from '../shared/ColorPicker'
 
 // Preset colors for teams
-const TEAM_COLORS = [
-  '#ef4444', '#f97316', '#f59e0b', '#eab308', '#84cc16', '#22c55e',
-  '#14b8a6', '#06b6d4', '#0ea5e9', '#3b82f6', '#6366f1', '#8b5cf6',
-  '#a855f7', '#d946ef', '#ec4899', '#f43f5e', '#64748b', '#78716c'
-]
+const TEAM_COLORS = DEFAULT_PRESET_COLORS
 
 // Icon options for workflow roles
-const WORKFLOW_ROLE_ICONS = [
-  // Badges & Verification
-  'BadgeCheck', 'Badge', 'BadgeAlert', 'BadgeDollarSign', 'BadgePercent',
-  'Shield', 'ShieldCheck', 'ShieldAlert', 'ShieldOff', 'ShieldQuestion',
-  'CheckCircle', 'CheckCircle2', 'CircleCheck', 'CircleCheckBig', 'Verified',
-  // People & Roles
-  'User', 'UserCheck', 'UserCog', 'UserPlus', 'Users', 'UsersRound',
-  'UserRound', 'UserRoundCheck', 'UserRoundCog', 'Contact', 'ContactRound',
-  // Awards & Achievement
-  'Award', 'Medal', 'Trophy', 'Star', 'Crown', 'Gem', 'Diamond',
-  'Sparkles', 'Zap', 'Flame', 'Heart', 'ThumbsUp',
-  // Security & Access
-  'Key', 'KeyRound', 'Lock', 'LockKeyhole', 'Unlock', 'Eye', 'EyeOff',
-  'Fingerprint', 'ScanFace', 'Scan', 'QrCode',
-  // Documents & Files
-  'FileCheck', 'FileCheck2', 'FileBadge', 'FileBadge2', 'FileKey', 'FileKey2',
-  'ClipboardCheck', 'ClipboardList', 'ClipboardSignature', 'Stamp', 'Signature',
-  // Tools & Settings
-  'Settings', 'Settings2', 'Cog', 'Wrench', 'Hammer', 'PenTool', 'Pencil',
-  'Ruler', 'Compass', 'Calculator',
-  // Communication
-  'MessageCircle', 'MessageSquare', 'Mail', 'Send', 'Bell', 'Megaphone',
-  // Business
-  'Briefcase', 'Building', 'Building2', 'Factory', 'Landmark', 'Store',
-  'DollarSign', 'Wallet', 'CreditCard', 'Receipt', 'Package',
-  // Science & Engineering
-  'Atom', 'FlaskConical', 'Microscope', 'Dna', 'Cpu', 'CircuitBoard',
-  'Lightbulb', 'Rocket', 'Plane', 'Car', 'Truck',
-  // Nature & Misc
-  'Leaf', 'TreeDeciduous', 'Mountain', 'Sun', 'Moon', 'Cloud', 'Umbrella',
-  'Anchor', 'Globe', 'Map', 'Navigation', 'Target', 'Crosshair'
-]
 
 interface WorkflowRoleBasic {
   id: string
@@ -1439,7 +1309,7 @@ export function TeamMembersSettings() {
           >
             <RefreshCw size={14} className={isLoading ? 'animate-spin' : ''} />
           </button>
-          {isAdmin && (
+          {isAdmin && activeTab === 'users' && (
             <button
               onClick={() => setShowCreateUserDialog(true)}
               className="btn btn-primary btn-sm flex items-center gap-1"
@@ -1447,6 +1317,39 @@ export function TeamMembersSettings() {
             >
               <UserPlus size={14} />
               Add User
+            </button>
+          )}
+          {isAdmin && activeTab === 'teams' && (
+            <button
+              onClick={() => {
+                resetTeamForm()
+                setShowCreateTeamDialog(true)
+              }}
+              className="btn btn-primary btn-sm flex items-center gap-1"
+              title="Add team"
+            >
+              <Plus size={14} />
+              Add Team
+            </button>
+          )}
+          {isAdmin && activeTab === 'roles' && (
+            <button
+              onClick={() => setShowCreateWorkflowRoleDialog(true)}
+              className="btn btn-primary btn-sm flex items-center gap-1"
+              title="Add role"
+            >
+              <Plus size={14} />
+              Add Role
+            </button>
+          )}
+          {isAdmin && activeTab === 'titles' && (
+            <button
+              onClick={openCreateJobTitle}
+              className="btn btn-primary btn-sm flex items-center gap-1"
+              title="Add title"
+            >
+              <Plus size={14} />
+              Add Title
             </button>
           )}
         </div>
@@ -1958,19 +1861,6 @@ export function TeamMembersSettings() {
           {/* Roles Tab Content */}
           {activeTab === 'roles' && (
             <div className="space-y-3">
-              {/* Add Role button */}
-              {isAdmin && (
-                <div className="flex justify-end">
-                  <button
-                    onClick={() => setShowCreateWorkflowRoleDialog(true)}
-                    className="btn btn-primary btn-sm flex items-center gap-1.5"
-                  >
-                    <Plus size={14} />
-                    Add Role
-                  </button>
-                </div>
-              )}
-              
               {workflowRoles.filter(r => 
                 !searchQuery || r.name.toLowerCase().includes(searchQuery.toLowerCase())
               ).length === 0 ? (
@@ -2098,19 +1988,6 @@ export function TeamMembersSettings() {
           {/* Titles Tab Content */}
           {activeTab === 'titles' && (
             <div className="space-y-3">
-              {/* Add Title button */}
-              {isAdmin && (
-                <div className="flex justify-end">
-                  <button
-                    onClick={openCreateJobTitle}
-                    className="btn btn-primary btn-sm flex items-center gap-1.5"
-                  >
-                    <Plus size={14} />
-                    Add Title
-                  </button>
-                </div>
-              )}
-              
               {jobTitles.filter(t => 
                 !searchQuery || t.name.toLowerCase().includes(searchQuery.toLowerCase())
               ).length === 0 ? (
@@ -2742,35 +2619,34 @@ export function TeamMembersSettings() {
               
               <div>
                 <label className="block text-sm font-medium text-plm-fg mb-1">Color</label>
-                <div className="flex flex-wrap gap-1">
-                  {['#8b5cf6', '#6366f1', '#3b82f6', '#14b8a6', '#22c55e', '#f59e0b', '#f97316', '#ef4444', '#ec4899', '#64748b'].map(color => (
-                    <button
-                      key={color}
-                      onClick={() => setWorkflowRoleFormData(prev => ({ ...prev, color }))}
-                      className={`w-6 h-6 rounded ${workflowRoleFormData.color === color ? 'ring-2 ring-offset-2 ring-offset-plm-bg-light ring-plm-accent' : ''}`}
-                      style={{ backgroundColor: color }}
-                    />
-                  ))}
+                <div className="flex items-center gap-2">
+                  <ColorPickerDropdown
+                    color={workflowRoleFormData.color}
+                    onChange={(c) => c && setWorkflowRoleFormData(prev => ({ ...prev, color: c }))}
+                    triggerSize="lg"
+                    showReset={false}
+                    title="Role Color"
+                  />
+                  <div
+                    className="p-2 rounded-lg"
+                    style={{ backgroundColor: `${workflowRoleFormData.color}20`, color: workflowRoleFormData.color }}
+                  >
+                    {(() => {
+                      const IconComp = (LucideIcons as any)[workflowRoleFormData.icon] || Shield
+                      return <IconComp size={16} />
+                    })()}
+                  </div>
                 </div>
               </div>
               
               <div>
                 <label className="block text-sm font-medium text-plm-fg mb-1">Icon</label>
-                <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto p-1 bg-plm-bg rounded-lg border border-plm-border">
-                  {WORKFLOW_ROLE_ICONS.map(iconName => {
-                    const IconComp = (LucideIcons as any)[iconName] || Shield
-                    return (
-                      <button
-                        key={iconName}
-                        onClick={() => setWorkflowRoleFormData(prev => ({ ...prev, icon: iconName }))}
-                        className={`p-1.5 rounded ${workflowRoleFormData.icon === iconName ? 'bg-plm-accent/20 text-plm-accent' : 'text-plm-fg-muted hover:bg-plm-highlight hover:text-plm-fg'}`}
-                        title={iconName}
-                      >
-                        <IconComp size={16} />
-                      </button>
-                    )
-                  })}
-                </div>
+                <IconGridPicker
+                  value={workflowRoleFormData.icon}
+                  onChange={(icon) => setWorkflowRoleFormData(prev => ({ ...prev, icon }))}
+                  maxHeight="128px"
+                  columns={8}
+                />
               </div>
             </div>
             
@@ -2832,35 +2708,34 @@ export function TeamMembersSettings() {
               
               <div>
                 <label className="block text-sm font-medium text-plm-fg mb-1">Color</label>
-                <div className="flex flex-wrap gap-1">
-                  {['#8b5cf6', '#6366f1', '#3b82f6', '#14b8a6', '#22c55e', '#f59e0b', '#f97316', '#ef4444', '#ec4899', '#64748b'].map(color => (
-                    <button
-                      key={color}
-                      onClick={() => setWorkflowRoleFormData(prev => ({ ...prev, color }))}
-                      className={`w-6 h-6 rounded ${workflowRoleFormData.color === color ? 'ring-2 ring-offset-2 ring-offset-plm-bg-light ring-plm-accent' : ''}`}
-                      style={{ backgroundColor: color }}
-                    />
-                  ))}
+                <div className="flex items-center gap-2">
+                  <ColorPickerDropdown
+                    color={workflowRoleFormData.color}
+                    onChange={(c) => c && setWorkflowRoleFormData(prev => ({ ...prev, color: c }))}
+                    triggerSize="lg"
+                    showReset={false}
+                    title="Role Color"
+                  />
+                  <div
+                    className="p-2 rounded-lg"
+                    style={{ backgroundColor: `${workflowRoleFormData.color}20`, color: workflowRoleFormData.color }}
+                  >
+                    {(() => {
+                      const IconComp = (LucideIcons as any)[workflowRoleFormData.icon] || Shield
+                      return <IconComp size={16} />
+                    })()}
+                  </div>
                 </div>
               </div>
               
               <div>
                 <label className="block text-sm font-medium text-plm-fg mb-1">Icon</label>
-                <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto p-1 bg-plm-bg rounded-lg border border-plm-border">
-                  {WORKFLOW_ROLE_ICONS.map(iconName => {
-                    const IconComp = (LucideIcons as any)[iconName] || Shield
-                    return (
-                      <button
-                        key={iconName}
-                        onClick={() => setWorkflowRoleFormData(prev => ({ ...prev, icon: iconName }))}
-                        className={`p-1.5 rounded ${workflowRoleFormData.icon === iconName ? 'bg-plm-accent/20 text-plm-accent' : 'text-plm-fg-muted hover:bg-plm-highlight hover:text-plm-fg'}`}
-                        title={iconName}
-                      >
-                        <IconComp size={16} />
-                      </button>
-                    )
-                  })}
-                </div>
+                <IconGridPicker
+                  value={workflowRoleFormData.icon}
+                  onChange={(icon) => setWorkflowRoleFormData(prev => ({ ...prev, icon }))}
+                  maxHeight="128px"
+                  columns={8}
+                />
               </div>
               
               <p className="text-xs text-plm-fg-muted bg-plm-bg p-2 rounded">
@@ -2927,35 +2802,33 @@ export function TeamMembersSettings() {
               
               <div>
                 <label className="block text-sm font-medium text-plm-fg mb-1">Color</label>
-                <div className="flex flex-wrap gap-1">
-                  {['#3b82f6', '#6366f1', '#8b5cf6', '#14b8a6', '#22c55e', '#f59e0b', '#f97316', '#ef4444', '#ec4899', '#64748b'].map(color => (
-                    <button
-                      key={color}
-                      onClick={() => setTeamFormData(prev => ({ ...prev, color }))}
-                      className={`w-6 h-6 rounded ${teamFormData.color === color ? 'ring-2 ring-offset-2 ring-offset-plm-bg-light ring-plm-accent' : ''}`}
-                      style={{ backgroundColor: color }}
-                    />
-                  ))}
+                <div className="flex items-center gap-2">
+                  <ColorPickerDropdown
+                    color={teamFormData.color}
+                    onChange={(c) => c && setTeamFormData(prev => ({ ...prev, color: c }))}
+                    triggerSize="lg"
+                    showReset={false}
+                    title="Team Color"
+                  />
+                  <div
+                    className="p-2 rounded-lg"
+                    style={{ backgroundColor: `${teamFormData.color}20`, color: teamFormData.color }}
+                  >
+                    {(() => {
+                      const IconComp = (LucideIcons as any)[teamFormData.icon] || Users
+                      return <IconComp size={16} />
+                    })()}
+                  </div>
                 </div>
               </div>
               
               <div>
                 <label className="block text-sm font-medium text-plm-fg mb-1">Icon</label>
-                <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto p-1 bg-plm-bg rounded-lg border border-plm-border">
-                  {TEAM_ICONS.map(iconName => {
-                    const IconComp = (LucideIcons as any)[iconName] || Users
-                    return (
-                      <button
-                        key={iconName}
-                        onClick={() => setTeamFormData(prev => ({ ...prev, icon: iconName }))}
-                        className={`p-1.5 rounded ${teamFormData.icon === iconName ? 'bg-plm-accent/20 text-plm-accent' : 'text-plm-fg-muted hover:bg-plm-highlight hover:text-plm-fg'}`}
-                        title={iconName}
-                      >
-                        <IconComp size={16} />
-                      </button>
-                    )
-                  })}
-                </div>
+                <IconPicker
+                  value={teamFormData.icon}
+                  onChange={(icon) => setTeamFormData(prev => ({ ...prev, icon }))}
+                  color={teamFormData.color}
+                />
               </div>
               
               <p className="text-xs text-plm-fg-muted bg-plm-bg p-2 rounded">
@@ -3012,35 +2885,34 @@ export function TeamMembersSettings() {
               
               <div>
                 <label className="block text-sm font-medium text-plm-fg mb-1">Color</label>
-                <div className="flex flex-wrap gap-1">
-                  {['#ef4444', '#f97316', '#f59e0b', '#22c55e', '#14b8a6', '#3b82f6', '#6366f1', '#8b5cf6', '#ec4899', '#64748b'].map(color => (
-                    <button
-                      key={color}
-                      onClick={() => setNewTitleColor(color)}
-                      className={`w-6 h-6 rounded ${newTitleColor === color ? 'ring-2 ring-offset-2 ring-offset-plm-bg-light ring-plm-accent' : ''}`}
-                      style={{ backgroundColor: color }}
-                    />
-                  ))}
+                <div className="flex items-center gap-2">
+                  <ColorPickerDropdown
+                    color={newTitleColor}
+                    onChange={(c) => c && setNewTitleColor(c)}
+                    triggerSize="lg"
+                    showReset={false}
+                    title="Title Color"
+                  />
+                  <div
+                    className="p-2 rounded-lg"
+                    style={{ backgroundColor: `${newTitleColor}20`, color: newTitleColor }}
+                  >
+                    {(() => {
+                      const IconComp = (LucideIcons as any)[newTitleIcon] || Briefcase
+                      return <IconComp size={16} />
+                    })()}
+                  </div>
                 </div>
               </div>
               
               <div>
                 <label className="block text-sm font-medium text-plm-fg mb-1">Icon</label>
-                <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto p-1 bg-plm-bg rounded-lg border border-plm-border">
-                  {['Briefcase', 'User', 'Users', 'Wrench', 'PenTool', 'ShieldCheck', 'Factory', 'ShoppingCart', 'FileCheck', 'Settings', 'Code', 'Beaker', 'Microscope', 'Truck', 'Package', 'Clipboard', 'Calculator', 'Headphones', 'MessageSquare', 'Star'].map(iconName => {
-                    const IconComp = (LucideIcons as any)[iconName] || Briefcase
-                    return (
-                      <button
-                        key={iconName}
-                        onClick={() => setNewTitleIcon(iconName)}
-                        className={`p-1.5 rounded ${newTitleIcon === iconName ? 'bg-plm-accent/20 text-plm-accent' : 'text-plm-fg-muted hover:bg-plm-highlight hover:text-plm-fg'}`}
-                        title={iconName}
-                      >
-                        <IconComp size={16} />
-                      </button>
-                    )
-                  })}
-                </div>
+                <IconGridPicker
+                  value={newTitleIcon}
+                  onChange={setNewTitleIcon}
+                  maxHeight="128px"
+                  columns={8}
+                />
               </div>
               
               {pendingTitleForUser && (
@@ -3190,31 +3062,6 @@ export function TeamMembersSettings() {
               addToast('error', 'Failed to update workflow roles')
             }
           }}
-          onCreateRole={async (name, color, icon) => {
-            if (!organization || !user) return
-            try {
-              const { error } = await supabase
-                .from('workflow_roles')
-                .insert({
-                  org_id: organization.id,
-                  name,
-                  color,
-                  icon,
-                  created_by: user.id
-                })
-              
-              if (error) throw error
-              
-              addToast('success', `Created workflow role "${name}"`)
-              await loadWorkflowRoles()
-            } catch (err: any) {
-              if (err.code === '23505') {
-                addToast('error', 'A workflow role with this name already exists')
-              } else {
-                addToast('error', 'Failed to create workflow role')
-              }
-            }
-          }}
           onUpdateRole={async (roleId, name, color, icon) => {
             try {
               const { error } = await supabase
@@ -3249,6 +3096,10 @@ export function TeamMembersSettings() {
               console.error('Failed to delete workflow role:', err)
               addToast('error', 'Failed to delete workflow role')
             }
+          }}
+          onManageRoles={() => {
+            setEditingWorkflowRolesUser(null)
+            setActiveTab('roles')
           }}
         />
       )}
@@ -3301,6 +3152,10 @@ export function TeamMembersSettings() {
               addToast('error', 'Failed to update teams')
             }
           }}
+          onManageTeams={() => {
+            setEditingTeamsUser(null)
+            setActiveTab('teams')
+          }}
         />
       )}
 
@@ -3335,26 +3190,21 @@ function WorkflowRolesModal({
   userRoleIds,
   onClose,
   onSave,
-  onCreateRole,
   onUpdateRole,
-  onDeleteRole
+  onDeleteRole,
+  onManageRoles
 }: {
   user: OrgUser
   workflowRoles: WorkflowRoleBasic[]
   userRoleIds: string[]
   onClose: () => void
   onSave: (roleIds: string[]) => Promise<void>
-  onCreateRole: (name: string, color: string, icon: string) => Promise<void>
   onUpdateRole: (roleId: string, name: string, color: string, icon: string) => Promise<void>
   onDeleteRole: (roleId: string) => Promise<void>
+  onManageRoles?: () => void
 }) {
   const [selectedRoleIds, setSelectedRoleIds] = useState<string[]>(userRoleIds)
   const [isSaving, setIsSaving] = useState(false)
-  const [showCreateForm, setShowCreateForm] = useState(false)
-  const [newRoleName, setNewRoleName] = useState('')
-  const [newRoleColor, setNewRoleColor] = useState('#6B7280')
-  const [newRoleIcon, setNewRoleIcon] = useState('badge-check')
-  const [isCreating, setIsCreating] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   
   // Edit state
@@ -3379,18 +3229,6 @@ function WorkflowRolesModal({
       await onSave(selectedRoleIds)
     } finally {
       setIsSaving(false)
-    }
-  }
-  
-  const handleCreateRole = async () => {
-    if (!newRoleName.trim()) return
-    setIsCreating(true)
-    try {
-      await onCreateRole(newRoleName.trim(), newRoleColor, newRoleIcon)
-      setNewRoleName('')
-      setShowCreateForm(false)
-    } finally {
-      setIsCreating(false)
     }
   }
   
@@ -3477,20 +3315,15 @@ function WorkflowRolesModal({
         
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-4 space-y-2">
-          {filteredRoles.length === 0 && !showCreateForm ? (
+          {filteredRoles.length === 0 ? (
             <div className="text-center py-6 text-sm text-plm-fg-muted">
               {searchQuery ? (
                 `No roles match "${searchQuery}"`
               ) : (
                 <>
-              <Shield size={32} className="mx-auto mb-2 opacity-50" />
-              <p>No workflow roles defined yet.</p>
-              <button
-                onClick={() => setShowCreateForm(true)}
-                className="mt-2 text-plm-accent hover:underline"
-              >
-                Create the first workflow role
-              </button>
+                  <Shield size={32} className="mx-auto mb-2 opacity-50" />
+                  <p>No workflow roles defined yet.</p>
+                  <p className="text-xs mt-1">Create roles in the Roles tab.</p>
                 </>
               )}
             </div>
@@ -3524,12 +3357,12 @@ function WorkflowRolesModal({
                         autoFocus
                       />
                       <div className="flex items-center gap-2">
-                        <input
-                          type="color"
-                          value={editColor}
-                          onChange={e => setEditColor(e.target.value)}
-                          className="w-10 h-10 rounded border border-plm-border cursor-pointer"
-                          title="Role color"
+                        <ColorPickerDropdown
+                          color={editColor}
+                          onChange={(c) => c && setEditColor(c)}
+                          triggerSize="lg"
+                          showReset={false}
+                          title="Role Color"
                         />
                         <div
                           className="p-2 rounded-lg"
@@ -3539,30 +3372,12 @@ function WorkflowRolesModal({
                         </div>
                       </div>
                       {/* Icon picker grid */}
-                      <div className="max-h-32 overflow-y-auto border border-plm-border rounded-lg p-2 bg-plm-bg-light">
-                        <div className="grid grid-cols-8 gap-1">
-                          {WORKFLOW_ROLE_ICONS.map(iconName => {
-                            const IconComponent = (LucideIcons as any)[iconName] || Shield
-                            const isIconSelected = editIcon === iconName
-                            return (
-                              <button
-                                key={iconName}
-                                type="button"
-                                onClick={() => setEditIcon(iconName)}
-                                className={`p-1.5 rounded border transition-colors ${
-                                  isIconSelected
-                                    ? 'border-plm-accent bg-plm-accent/20'
-                                    : 'border-transparent hover:border-plm-border hover:bg-plm-bg'
-                                }`}
-                                title={iconName.replace(/([A-Z])/g, ' $1').trim()}
-                                style={isIconSelected ? { color: editColor } : {}}
-                              >
-                                <IconComponent size={14} className={isIconSelected ? '' : 'text-plm-fg-muted'} />
-                              </button>
-                            )
-                          })}
-                        </div>
-                      </div>
+                      <IconGridPicker
+                        value={editIcon}
+                        onChange={setEditIcon}
+                        maxHeight="128px"
+                        columns={8}
+                      />
                       <div className="flex gap-2">
                         <button
                           onClick={() => handleDeleteRole(role.id)}
@@ -3626,87 +3441,14 @@ function WorkflowRolesModal({
             </>
           )}
           
-          {/* Create new role form */}
-          {showCreateForm ? (
-            <div className="p-3 rounded-lg border border-plm-border bg-plm-bg space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium text-plm-fg">New Workflow Role</span>
-                <button
-                  onClick={() => setShowCreateForm(false)}
-                  className="p-1 text-plm-fg-muted hover:text-plm-fg"
-                >
-                  <X size={14} />
-                </button>
-              </div>
-              <input
-                type="text"
-                value={newRoleName}
-                onChange={e => setNewRoleName(e.target.value)}
-                placeholder="Role name (e.g., Design Lead)"
-                className="w-full px-3 py-2 bg-plm-bg-light border border-plm-border rounded-lg text-plm-fg text-sm placeholder:text-plm-fg-dim focus:outline-none focus:border-plm-accent"
-                autoFocus
-              />
-              <div className="flex items-center gap-2">
-                <input
-                  type="color"
-                  value={newRoleColor}
-                  onChange={e => setNewRoleColor(e.target.value)}
-                  className="w-10 h-10 rounded border border-plm-border cursor-pointer"
-                  title="Role color"
-                />
-                {(() => {
-                  const PreviewIcon = (LucideIcons as any)[newRoleIcon] || Shield
-                  return (
-                    <div
-                      className="p-2 rounded-lg"
-                      style={{ backgroundColor: `${newRoleColor}20`, color: newRoleColor }}
-                    >
-                      <PreviewIcon size={16} />
-                    </div>
-                  )
-                })()}
-              </div>
-              {/* Icon picker grid */}
-              <div className="max-h-32 overflow-y-auto border border-plm-border rounded-lg p-2 bg-plm-bg-light">
-                <div className="grid grid-cols-8 gap-1">
-                  {WORKFLOW_ROLE_ICONS.map(iconName => {
-                    const IconComponent = (LucideIcons as any)[iconName] || Shield
-                    const isIconSelected = newRoleIcon === iconName
-                    return (
-                      <button
-                        key={iconName}
-                        type="button"
-                        onClick={() => setNewRoleIcon(iconName)}
-                        className={`p-1.5 rounded border transition-colors ${
-                          isIconSelected
-                            ? 'border-plm-accent bg-plm-accent/20'
-                            : 'border-transparent hover:border-plm-border hover:bg-plm-bg'
-                        }`}
-                        title={iconName.replace(/([A-Z])/g, ' $1').trim()}
-                        style={isIconSelected ? { color: newRoleColor } : {}}
-                      >
-                        <IconComponent size={14} className={isIconSelected ? '' : 'text-plm-fg-muted'} />
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-              <button
-                onClick={handleCreateRole}
-                disabled={isCreating || !newRoleName.trim()}
-                className="w-full btn btn-primary btn-sm flex items-center justify-center gap-2"
-              >
-                {isCreating ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
-                Create Role
-              </button>
-            </div>
-          ) : filteredRoles.length > 0 && !searchQuery && (
+          {/* Manage Roles option */}
+          {!searchQuery && onManageRoles && (
             <button
-              onClick={() => setShowCreateForm(true)}
-              className="w-full flex items-center justify-center gap-2 p-3 rounded-lg border border-dashed border-plm-border text-plm-fg-muted hover:border-plm-accent hover:text-plm-accent transition-colors"
+              onClick={onManageRoles}
+              className="w-full flex items-center justify-center gap-2 p-3 rounded-lg border border-dashed border-plm-border text-purple-400 hover:border-purple-400 hover:bg-purple-500/5 transition-colors"
             >
-              <Plus size={14} />
-              Create new workflow role
+              <ExternalLink size={14} />
+              Manage all roles
             </button>
           )}
         </div>
@@ -3734,13 +3476,15 @@ function UserTeamsModal({
   allTeams,
   userTeamIds,
   onClose,
-  onSave
+  onSave,
+  onManageTeams
 }: {
   user: OrgUser
   allTeams: { id: string; name: string; color: string; icon: string }[]
   userTeamIds: string[]
   onClose: () => void
   onSave: (teamIds: string[]) => Promise<void>
+  onManageTeams?: () => void
 }) {
   const [selectedTeamIds, setSelectedTeamIds] = useState<string[]>(userTeamIds)
   const [isSaving, setIsSaving] = useState(false)
@@ -3846,6 +3590,17 @@ function UserTeamsModal({
                 </button>
               )
             })
+          )}
+          
+          {/* Manage Teams option */}
+          {!searchQuery && onManageTeams && (
+            <button
+              onClick={onManageTeams}
+              className="w-full flex items-center justify-center gap-2 p-3 rounded-lg border border-dashed border-plm-border text-plm-accent hover:border-plm-accent hover:bg-plm-accent/5 transition-colors"
+            >
+              <ExternalLink size={14} />
+              Manage all teams
+            </button>
           )}
         </div>
         
@@ -3953,17 +3708,6 @@ function UserJobTitleModal({
   
   const hasChanges = selectedTitleId !== (user.job_title?.id || null)
   
-  // Icon options for job titles
-  const JOB_TITLE_ICONS = [
-    'Briefcase', 'User', 'UserCheck', 'Users', 'Crown', 'Star', 'Award', 'Trophy',
-    'Target', 'Zap', 'Rocket', 'Code', 'Palette', 'PenTool', 'Wrench', 'Settings',
-    'Database', 'Server', 'Shield', 'Lock', 'Key', 'Eye', 'Search', 'FileText',
-    'Clipboard', 'Calendar', 'Clock', 'Timer', 'Gauge', 'BarChart', 'LineChart', 'PieChart',
-    'DollarSign', 'CreditCard', 'ShoppingCart', 'Package', 'Truck', 'Globe', 'Map', 'Navigation',
-    'Phone', 'Mail', 'MessageSquare', 'Headphones', 'Mic', 'Video', 'Camera', 'Image',
-    'Layers', 'Grid', 'Layout', 'Columns', 'Sidebar', 'Monitor', 'Smartphone', 'Tablet',
-    'Cpu', 'HardDrive', 'Wifi', 'Bluetooth', 'Battery', 'Power', 'Plug', 'Activity'
-  ]
   
   return (
     <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center" onClick={onClose}>
@@ -4061,12 +3805,12 @@ function UserJobTitleModal({
                       autoFocus
                     />
                     <div className="flex items-center gap-2">
-                      <input
-                        type="color"
-                        value={editColor}
-                        onChange={e => setEditColor(e.target.value)}
-                        className="w-10 h-10 rounded border border-plm-border cursor-pointer"
-                        title="Title color"
+                      <ColorPickerDropdown
+                        color={editColor}
+                        onChange={(c) => c && setEditColor(c)}
+                        triggerSize="lg"
+                        showReset={false}
+                        title="Title Color"
                       />
                       <div
                         className="p-2 rounded-lg"
@@ -4076,30 +3820,12 @@ function UserJobTitleModal({
                       </div>
                     </div>
                     {/* Icon picker grid */}
-                    <div className="max-h-32 overflow-y-auto border border-plm-border rounded-lg p-2 bg-plm-bg-light">
-                      <div className="grid grid-cols-8 gap-1">
-                        {JOB_TITLE_ICONS.map(iconName => {
-                          const IconComponent = (LucideIcons as any)[iconName] || Briefcase
-                          const isIconSelected = editIcon === iconName
-                          return (
-                            <button
-                              key={iconName}
-                              type="button"
-                              onClick={() => setEditIcon(iconName)}
-                              className={`p-1.5 rounded border transition-colors ${
-                                isIconSelected
-                                  ? 'border-plm-accent bg-plm-accent/20'
-                                  : 'border-transparent hover:border-plm-border hover:bg-plm-bg'
-                              }`}
-                              title={iconName.replace(/([A-Z])/g, ' $1').trim()}
-                              style={isIconSelected ? { color: editColor } : {}}
-                            >
-                              <IconComponent size={14} className={isIconSelected ? '' : 'text-plm-fg-muted'} />
-                            </button>
-                          )
-                        })}
-                      </div>
-                    </div>
+                    <IconGridPicker
+                      value={editIcon}
+                      onChange={setEditIcon}
+                      maxHeight="128px"
+                      columns={8}
+                    />
                     <div className="flex gap-2">
                       <button
                         onClick={() => handleDeleteTitle(title.id)}
@@ -4474,17 +4200,8 @@ function TeamFormDialog({
   copyFromTeamId?: string | null
   setCopyFromTeamId?: (id: string | null) => void
 }) {
-  const [showIconPicker, setShowIconPicker] = useState(false)
-  const [iconSearch, setIconSearch] = useState('')
   const IconComponent = (LucideIcons as any)[formData.icon] || Users
   const isCreating = title === 'Create Team'
-  
-  // Filter icons based on search
-  const filteredIcons = useMemo(() => {
-    if (!iconSearch.trim()) return TEAM_ICONS
-    const search = iconSearch.toLowerCase()
-    return TEAM_ICONS.filter(icon => icon.toLowerCase().includes(search))
-  }, [iconSearch])
   
   return (
     <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center" onClick={onCancel}>
@@ -4556,82 +4273,31 @@ function TeamFormDialog({
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm text-plm-fg-muted mb-1.5">Color</label>
-              <div className="grid grid-cols-6 gap-1.5 p-2 bg-plm-bg border border-plm-border rounded-lg">
-                {TEAM_COLORS.map(color => (
-                  <button
-                    key={color}
-                    onClick={() => setFormData({ ...formData, color })}
-                    className={`w-6 h-6 rounded-md transition-all ${
-                      formData.color === color ? 'ring-2 ring-plm-fg ring-offset-2 ring-offset-plm-bg scale-110' : 'hover:scale-110'
-                    }`}
-                    style={{ backgroundColor: color }}
-                  />
-                ))}
+              <div className="flex items-center gap-2 p-2 bg-plm-bg border border-plm-border rounded-lg">
+                <ColorPickerDropdown
+                  color={formData.color}
+                  onChange={(c) => c && setFormData({ ...formData, color: c })}
+                  triggerSize="lg"
+                  showReset={false}
+                  title="Team Color"
+                  position="left"
+                />
+                <div
+                  className="p-2 rounded-lg"
+                  style={{ backgroundColor: `${formData.color}20`, color: formData.color }}
+                >
+                  <IconComponent size={16} />
+                </div>
               </div>
             </div>
             
             <div>
               <label className="block text-sm text-plm-fg-muted mb-1.5">Icon</label>
-              <div className="relative">
-                <button
-                  onClick={() => setShowIconPicker(!showIconPicker)}
-                  className="w-full px-3 py-2 bg-plm-bg border border-plm-border rounded-lg flex items-center gap-2 hover:border-plm-accent transition-colors"
-                  style={{ color: formData.color }}
-                >
-                  <IconComponent size={18} />
-                  <span className="text-plm-fg text-sm">{formData.icon}</span>
-                  <ChevronDown size={14} className="ml-auto text-plm-fg-muted" />
-                </button>
-                
-                {showIconPicker && (
-                  <div className="absolute z-50 top-full mt-1 left-0 bg-plm-bg border border-plm-border rounded-lg shadow-xl p-2 w-72">
-                    {/* Search input */}
-                    <div className="relative mb-2">
-                      <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-plm-fg-muted" />
-                      <input
-                        type="text"
-                        value={iconSearch}
-                        onChange={e => setIconSearch(e.target.value)}
-                        placeholder="Search icons..."
-                        className="w-full pl-8 pr-3 py-1.5 text-sm bg-plm-bg-secondary border border-plm-border rounded text-plm-fg placeholder:text-plm-fg-dim focus:outline-none focus:border-plm-accent"
-                        autoFocus
-                      />
-                    </div>
-                    {/* Icons grid */}
-                    <div className="max-h-52 overflow-y-auto">
-                      <div className="grid grid-cols-8 gap-1">
-                        {filteredIcons.map(iconName => {
-                          const Icon = (LucideIcons as any)[iconName]
-                          if (!Icon) return null
-                          return (
-                            <button
-                              key={iconName}
-                              onClick={() => {
-                                setFormData({ ...formData, icon: iconName })
-                                setShowIconPicker(false)
-                                setIconSearch('')
-                              }}
-                              className={`p-1.5 rounded transition-colors ${
-                                formData.icon === iconName
-                                  ? 'bg-plm-accent/20 text-plm-accent'
-                                  : 'hover:bg-plm-highlight text-plm-fg-muted hover:text-plm-fg'
-                              }`}
-                              title={iconName}
-                            >
-                              <Icon size={16} />
-                            </button>
-                          )
-                        })}
-                      </div>
-                      {filteredIcons.length === 0 && (
-                        <div className="text-center text-sm text-plm-fg-muted py-4">
-                          No icons match "{iconSearch}"
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
+              <IconPicker
+                value={formData.icon}
+                onChange={(icon) => setFormData({ ...formData, icon })}
+                color={formData.color}
+              />
             </div>
           </div>
           

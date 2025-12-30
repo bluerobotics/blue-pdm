@@ -220,8 +220,8 @@ export function UserProfileModal({ userId, onClose }: UserProfileModalProps) {
           
           setUserData({
             ...user,
-            teams: (membershipsData || []).map(m => m.team).filter(Boolean) as { id: string; name: string; color: string; icon: string }[],
-            workflow_roles: (rolesData || []).map(r => r.role).filter(Boolean) as { id: string; name: string; color: string }[],
+            teams: (membershipsData || []).map((m: { team: { id: string; name: string; color: string; icon: string } | null }) => m.team).filter(Boolean) as { id: string; name: string; color: string; icon: string }[],
+            workflow_roles: (rolesData || []).map((r: { role: { id: string; name: string; color: string } | null }) => r.role).filter(Boolean) as { id: string; name: string; color: string }[],
             job_title: titleData?.title as { id: string; name: string; color: string; icon: string } | null
           })
         }

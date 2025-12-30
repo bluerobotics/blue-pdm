@@ -8172,6 +8172,101 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
+-- =====================================================================
+-- COLOR SWATCHES (2024-12-29)
+-- =====================================================================
+-- Custom color swatches for color pickers throughout the app.
+-- Can be either organization-level (shared with all org members) or
+-- user-level (personal to each user).
+
+CREATE TABLE IF NOT EXISTS color_swatches (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  
+  -- Either org-level (org_id set, user_id null) or user-level (user_id set, org_id null)
+  org_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
+  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+  
+  -- Color value (hex)
+  color TEXT NOT NULL CHECK (color ~ '^#[0-9A-Fa-f]{6}$'),
+  
+  -- Metadata
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  created_by UUID REFERENCES users(id),
+  
+  -- Constraint: either org_id or user_id must be set, but not both
+  CONSTRAINT color_swatch_scope CHECK (
+    (org_id IS NOT NULL AND user_id IS NULL) OR
+    (org_id IS NULL AND user_id IS NOT NULL)
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_color_swatches_org_id ON color_swatches(org_id);
+CREATE INDEX IF NOT EXISTS idx_color_swatches_user_id ON color_swatches(user_id);
+
+-- RLS for color_swatches
+ALTER TABLE color_swatches ENABLE ROW LEVEL SECURITY;
+
+-- Users can view their own swatches
+DROP POLICY IF EXISTS "Users can view own swatches" ON color_swatches;
+CREATE POLICY "Users can view own swatches"
+  ON color_swatches FOR SELECT
+  USING (user_id = auth.uid());
+
+-- Users can view their org's swatches
+DROP POLICY IF EXISTS "Users can view org swatches" ON color_swatches;
+CREATE POLICY "Users can view org swatches"
+  ON color_swatches FOR SELECT
+  USING (
+    org_id IN (SELECT org_id FROM users WHERE id = auth.uid())
+  );
+
+-- Users can create their own swatches
+DROP POLICY IF EXISTS "Users can create own swatches" ON color_swatches;
+CREATE POLICY "Users can create own swatches"
+  ON color_swatches FOR INSERT
+  WITH CHECK (
+    user_id = auth.uid() AND org_id IS NULL
+  );
+
+-- Admins can create org swatches
+DROP POLICY IF EXISTS "Admins can create org swatches" ON color_swatches;
+CREATE POLICY "Admins can create org swatches"
+  ON color_swatches FOR INSERT
+  WITH CHECK (
+    org_id IS NOT NULL AND
+    user_id IS NULL AND
+    org_id IN (
+      SELECT u.org_id FROM users u WHERE u.id = auth.uid() AND u.role = 'admin'
+    )
+  );
+
+-- Users can delete their own swatches
+DROP POLICY IF EXISTS "Users can delete own swatches" ON color_swatches;
+CREATE POLICY "Users can delete own swatches"
+  ON color_swatches FOR DELETE
+  USING (user_id = auth.uid());
+
+-- Admins can delete org swatches
+DROP POLICY IF EXISTS "Admins can delete org swatches" ON color_swatches;
+CREATE POLICY "Admins can delete org swatches"
+  ON color_swatches FOR DELETE
+  USING (
+    org_id IS NOT NULL AND
+    org_id IN (
+      SELECT u.org_id FROM users u WHERE u.id = auth.uid() AND u.role = 'admin'
+    )
+  );
+
+COMMENT ON TABLE color_swatches IS 'Custom color swatches for color pickers. Can be org-level (shared) or user-level (personal).';
+
+-- Enable realtime for color_swatches (org colors sync across all users)
+ALTER TABLE color_swatches REPLICA IDENTITY FULL;
+
+DO $$
+BEGIN
+  BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE color_swatches; EXCEPTION WHEN duplicate_object THEN NULL; END;
+END $$;
+
 -- ===================================================================== 
 -- END OF SCHEMA
 -- =====================================================================

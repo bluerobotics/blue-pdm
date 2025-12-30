@@ -67,34 +67,8 @@ import type {
   CanvasMode
 } from '../../types/workflow'
 import { STATE_COLORS, getContrastColor } from '../../types/workflow'
-
-// Icon mapping for state icons
-const ICON_MAP: Record<string, React.ComponentType<{ size?: number; className?: string }>> = {
-  'circle': Circle,
-  'pencil': Pencil,
-  'eye': Eye,
-  'check-circle': CheckCircle,
-  'x-circle': XCircle,
-  'archive': Archive,
-  'clock': Clock,
-  'alert-triangle': AlertTriangle,
-  'star': Star,
-  'flag': Flag,
-  'lock': Lock,
-  'unlock': Unlock,
-  'send': Send,
-  'inbox': Inbox,
-  'file-check': FileCheck,
-  'file-x': FileX,
-  'thumbs-up': ThumbsUp,
-  'thumbs-down': ThumbsDown,
-  'user-check': UserCheck,
-  'users': Users,
-  'shield-check': ShieldCheck,
-  'badge-check': BadgeCheck,
-  'clipboard-check': ClipboardCheck,
-  'list-checks': ListChecks,
-}
+import { IconGridPicker, ICON_LIBRARY } from '../shared/IconPicker'
+import { ColorPicker } from '../shared/ColorPicker'
 
 // Helper to lighten a hex color
 const lightenColor = (hex: string, amount: number): string => {
@@ -5647,41 +5621,15 @@ function TickSlider({ value, min, max, step, snapPoints, onChange }: TickSliderP
 // Floating Toolbar
 // ============================================
 
-// Color palette for toolbar - expanded with more organized colors
-const TOOLBAR_COLORS = [
-  // Row 1: Reds to Yellows
-  '#ef4444', '#f97316', '#f59e0b', '#eab308',
-  // Row 2: Greens
-  '#84cc16', '#22c55e', '#10b981', '#14b8a6',
-  // Row 3: Blues
-  '#06b6d4', '#0ea5e9', '#3b82f6', '#6366f1',
-  // Row 4: Purples to Pinks
-  '#8b5cf6', '#a855f7', '#d946ef', '#ec4899',
-  // Row 5: Neutrals
-  '#f5f5f4', '#a8a29e', '#6b7280', '#1f2937',
+// Additional preset colors for workflow toolbar (extends centralized DEFAULT_PRESET_COLORS)
+const WORKFLOW_ADDITIONAL_COLORS = [
+  '#10b981', // emerald
+  '#0ea5e9', // sky
+  '#d946ef', // fuchsia
+  '#f5f5f4', // white
+  '#a8a29e', // stone
+  '#1f2937', // slate-dark
 ]
-
-// LocalStorage key for saved colors
-const SAVED_COLORS_KEY = 'blueplm_workflow_saved_colors'
-
-// Get saved colors from localStorage
-function getSavedColors(): string[] {
-  try {
-    const saved = localStorage.getItem(SAVED_COLORS_KEY)
-    return saved ? JSON.parse(saved) : []
-  } catch {
-    return []
-  }
-}
-
-// Save colors to localStorage
-function setSavedColors(colors: string[]): void {
-  try {
-    localStorage.setItem(SAVED_COLORS_KEY, JSON.stringify(colors.slice(0, 12))) // Max 12 saved colors
-  } catch {
-    // Ignore storage errors
-  }
-}
 
 interface FloatingToolbarProps {
   x: number
@@ -5742,9 +5690,6 @@ function FloatingToolbar({
   const [showBoxStyles, setShowBoxStyles] = useState(false)
   const [showShapePicker, setShowShapePicker] = useState(false)
   const [adjustedPos, setAdjustedPos] = useState<{ x: number; y: number } | null>(null)
-  const [savedColors, setSavedColorsState] = useState<string[]>(getSavedColors)
-  const [customColor, setCustomColor] = useState('#6b7280')
-  const [customBorderColor, setCustomBorderColor] = useState('#6b7280')
   
   // Close all dropdowns
   const closeAllDropdowns = () => {
@@ -5755,21 +5700,6 @@ function FloatingToolbar({
     setShowThickness(false)
     setShowBoxStyles(false)
     setShowShapePicker(false)
-  }
-  
-  // Save a color to saved colors
-  const saveColor = (color: string) => {
-    const newSaved = [color, ...savedColors.filter(c => c !== color)].slice(0, 12)
-    setSavedColorsState(newSaved)
-    setSavedColors(newSaved)
-  }
-  
-  // Remove a color from saved colors
-  const removeSavedColor = (color: string, e: React.MouseEvent) => {
-    e.stopPropagation()
-    const newSaved = savedColors.filter(c => c !== color)
-    setSavedColorsState(newSaved)
-    setSavedColors(newSaved)
   }
   
   // Current color
@@ -5849,7 +5779,6 @@ function FloatingToolbar({
             onClick={() => {
               closeAllDropdowns()
               setShowColorPicker(!showColorPicker)
-              setCustomColor(currentColor)
             }}
             className="flex items-center justify-center w-8 h-8 rounded hover:bg-plm-highlight transition-colors"
             title={type === 'state' ? 'Fill color' : 'Line color'}
@@ -5860,100 +5789,19 @@ function FloatingToolbar({
             />
           </button>
           
-          {/* Enhanced color picker dropdown */}
+          {/* Centralized color picker dropdown */}
           {showColorPicker && (
-            <div 
-              className="absolute top-full left-0 mt-1 p-2 bg-plm-sidebar rounded-lg shadow-xl border border-plm-border z-50"
-              onClick={(e) => e.stopPropagation()}
-            >
-              {/* Preset colors - dense grid */}
-              <div className="text-[10px] uppercase tracking-wide text-plm-fg-muted mb-2">Colors</div>
-              <div className="grid grid-cols-5 gap-1.5 mb-3">
-                {TOOLBAR_COLORS.map((color) => (
-                  <button
-                    key={color}
-                    onClick={() => {
-                      onColorChange(color)
-                      closeAllDropdowns()
-                    }}
-                    className={`w-5 h-5 rounded transition-transform hover:scale-105 ${
-                      currentColor === color ? 'ring-2 ring-plm-fg ring-offset-1 ring-offset-plm-sidebar' : ''
-                    }`}
-                    style={{ backgroundColor: color }}
-                  />
-                ))}
-              </div>
-              
-              {/* Saved colors */}
-              {savedColors.length > 0 && (
-                <>
-                  <div className="text-[10px] uppercase tracking-wide text-plm-fg-muted mb-2">Saved</div>
-                  <div className="grid grid-cols-5 gap-1.5 mb-3">
-                    {savedColors.map((color) => (
-                      <button
-                        key={color}
-                        onClick={() => {
-                          onColorChange(color)
-                          closeAllDropdowns()
-                        }}
-                        onContextMenu={(e) => {
-                          e.preventDefault()
-                          removeSavedColor(color, e)
-                        }}
-                        className={`relative w-5 h-5 rounded transition-transform hover:scale-105 group ${
-                          currentColor === color ? 'ring-2 ring-plm-fg ring-offset-1 ring-offset-plm-sidebar' : ''
-                        }`}
-                        style={{ backgroundColor: color }}
-                        title="Right-click to remove"
-                      >
-                        <span className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full text-[8px] text-white opacity-0 group-hover:opacity-100 flex items-center justify-center">×</span>
-                      </button>
-                    ))}
-                  </div>
-                </>
-              )}
-              
-              {/* Custom color */}
-              <div className="text-[10px] uppercase tracking-wide text-plm-fg-muted mb-1.5">Custom</div>
-              <div className="flex items-center gap-1.5">
-                <input
-                  type="color"
-                  value={customColor}
-                  onChange={(e) => setCustomColor(e.target.value)}
-                  className="w-7 h-7 rounded cursor-pointer border border-plm-border bg-transparent"
-                />
-                <input
-                  type="text"
-                  value={customColor}
-                  onChange={(e) => {
-                    const val = e.target.value
-                    if (/^#[0-9A-Fa-f]{0,6}$/.test(val)) {
-                      setCustomColor(val)
-                    }
-                  }}
-                  className="flex-1 px-2 py-1 text-xs bg-plm-bg border border-plm-border rounded font-mono text-plm-fg"
-                  placeholder="#000000"
-                />
-                <button
-                  onClick={() => {
-                    onColorChange(customColor)
-                    closeAllDropdowns()
-                  }}
-                  className="px-2 py-1 text-xs bg-plm-accent text-white rounded hover:bg-plm-accent/80 transition-colors"
-                >
-                  Apply
-                </button>
-              </div>
-              
-              {/* Save color button */}
-              <button
-                onClick={() => saveColor(customColor)}
-                className="mt-1.5 w-full px-2 py-1 text-xs text-plm-fg-muted hover:text-plm-fg hover:bg-plm-highlight rounded flex items-center justify-center gap-1 transition-colors"
-              >
-                <Plus size={12} />
-                Save color
-              </button>
-            </div>
+            <ColorPicker
+              color={currentColor}
+              onChange={(color) => {
+                if (color) onColorChange(color)
+              }}
+              onClose={closeAllDropdowns}
+              showReset={false}
+              title={type === 'state' ? 'Fill Color' : 'Line Color'}
+              additionalPresets={WORKFLOW_ADDITIONAL_COLORS}
+              position="left"
+            />
           )}
         </div>
         
@@ -6205,7 +6053,6 @@ function FloatingToolbar({
                 onClick={() => {
                   closeAllDropdowns()
                   setShowBoxStyles(!showBoxStyles)
-                  setCustomBorderColor(currentBorderColor || currentColor)
                 }}
                 className="flex items-center justify-center w-8 h-8 rounded hover:bg-plm-highlight transition-colors"
                 title="Box styling"
@@ -6241,7 +6088,7 @@ function FloatingToolbar({
                         </svg>
                       </button>
                       {/* Color presets */}
-                      {TOOLBAR_COLORS.slice(0, 13).map((color) => (
+                      {DEFAULT_PRESET_COLORS.slice(0, 13).map((color) => (
                         <button
                           key={color}
                           onClick={() => {
@@ -6295,12 +6142,11 @@ function FloatingToolbar({
                         </svg>
                       </button>
                       {/* Color presets */}
-                      {TOOLBAR_COLORS.slice(0, 13).map((color) => (
+                      {DEFAULT_PRESET_COLORS.slice(0, 13).map((color) => (
                         <button
                           key={color}
                           onClick={() => {
                             onBorderColorChange?.(color)
-                            setCustomBorderColor(color)
                           }}
                           className={`w-5 h-5 rounded transition-transform hover:scale-105 ${
                             currentBorderColor === color ? 'ring-2 ring-plm-fg ring-offset-1 ring-offset-plm-sidebar' : ''
@@ -6728,19 +6574,12 @@ function EditStateDialog({ state, onClose, onSave }: EditStateDialogProps) {
           
           <div>
             <label className="block text-xs text-plm-fg-muted mb-1">Icon</label>
-            <div className="flex flex-wrap gap-1">
-              {Object.entries(ICON_MAP).slice(0, 16).map(([key, IconComp]) => (
-                <button
-                  key={key}
-                  onClick={() => setIcon(key)}
-                  className={`w-8 h-8 rounded flex items-center justify-center ${
-                    icon === key ? 'bg-plm-accent text-white' : 'bg-plm-bg hover:bg-plm-highlight'
-                  }`}
-                >
-                  <IconComp size={16} />
-                </button>
-              ))}
-            </div>
+            <IconGridPicker
+              value={icon}
+              onChange={setIcon}
+              maxHeight="128px"
+              columns={8}
+            />
           </div>
           
           {/* Required Workflow Roles */}
