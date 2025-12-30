@@ -5,6 +5,8 @@
 ## Critical Rules
 ⚠️ **ALWAYS update `supabase/schema.sql` when making database changes.** This file is the source of truth and must stay in sync with all migrations.
 
+⚠️ **ALWAYS bump schema version when adding/modifying tables or columns.** Update the version history comment, change the INSERT to use the new version, and add an UPDATE statement to migrate existing databases. See `schema_version` table at top of `supabase/schema.sql`.
+
 ⚠️ **Sidebar text must be left-aligned.** All text in `ActivityBar.tsx` must use `text-left`. Never center-justify sidebar labels.
 
 ## Tech Stack
@@ -117,10 +119,11 @@ supabase/ - Database migrations and schema.sql
 
 ### Database Changes
 1. **ALWAYS update `supabase/schema.sql` FIRST** (source of truth)
-2. Create migration file in `supabase/` (descriptive name)
-3. Update `src/types/database.ts` if schema changes
-4. Test with local Supabase
-5. Update RLS policies and indexes
+2. **Bump schema version** (update version history comment, INSERT value, and add UPDATE for migrations)
+3. Create migration file in `supabase/` (descriptive name)
+4. Update `src/types/database.ts` if schema changes
+5. Test with local Supabase
+6. Update RLS policies and indexes
 
 ### API Design (Fastify)
 - RESTful conventions
