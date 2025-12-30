@@ -1,6 +1,6 @@
 {
   "name": "blue-plm",
-  "version": "2.16.2",
+  "version": "2.16.3",
   "description": "Product Lifecycle Management for everyone who builds",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -15,7 +15,10 @@
     "cli": "node cli/blueplm.js",
     "api": "npx tsx api/server.ts",
     "api:dev": "npx tsx --watch api/server.ts",
-    "api:build": "npx tsc api/server.ts --outDir dist-api --esModuleInterop --module commonjs --target ES2020"
+    "api:build": "npx tsc api/server.ts --outDir dist-api --esModuleInterop --module commonjs --target ES2020",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.2",
@@ -41,6 +44,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "vitepress": "^1.5.0",
     "@types/react": "^19.0.1",
     "@types/react-dom": "^19.0.2",
     "@vitejs/plugin-react": "^4.3.4",

@@ -2,6 +2,14 @@
 
 All notable changes to BluePLM will be documented in this file.
 
+## [2.16.3] - 2025-12-30
+
+### Added
+- **Documentation site**: VitePress-powered docs at docs.blueplm.io with auto-deploy on release
+- **Docs content**: Getting started guides, admin/user setup, source files, and settings documentation
+
+---
+
 ## [2.16.2] - 2025-12-30
 
 ### Changed
