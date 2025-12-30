@@ -12,7 +12,9 @@ services:
       - key: SUPABASE_URL
         sync: false # User must set this
       - key: SUPABASE_KEY
-        sync: false # User must set this
+        sync: false # User must set this (anon key)
+      - key: SUPABASE_SERVICE_KEY
+        sync: false # User must set this (service role key - required for invites)
       - key: CORS_ORIGINS
         value: "*"
       - key: RATE_LIMIT_MAX

@@ -2,6 +2,13 @@
 
 All notable changes to BluePLM will be documented in this file.
 
+## [2.16.1] - 2025-12-30
+
+### Fixed
+- **User invite**: Added REST API deployment step to main README and API docs (SUPABASE_SERVICE_KEY required for invite emails)
+
+---
+
 ## [2.16.0] - 2025-12-29
 
 ### Added

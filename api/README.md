@@ -16,7 +16,7 @@ Integration API for external systems (ERP, CI/CD, automation) built with [Fastif
 ┌─────────────────────────────────────────────────────────────┐
 │  Step 1: Deploy API (5 min)                                 │
 │  Click "Deploy to Railway" button below                     │
-│  Set your Supabase URL and Key                              │
+│  Set: SUPABASE_URL, SUPABASE_KEY, SUPABASE_SERVICE_KEY      │
 ├─────────────────────────────────────────────────────────────┤
 │  Step 2: Get API URL                                        │
 │  Railway gives you: https://your-app.railway.app            │
@@ -94,6 +94,7 @@ The server will start on `http://127.0.0.1:3001` by default.
 |----------|---------|-------------|
 | `SUPABASE_URL` | - | Supabase project URL (required) |
 | `SUPABASE_KEY` | - | Supabase anon key (required) |
+| `SUPABASE_SERVICE_KEY` | - | Service role key (required for user invites) |
 | `API_PORT` | `3001` | Port to listen on |
 | `API_HOST` | `0.0.0.0` | Host to bind to |
 | `RATE_LIMIT_MAX` | `100` | Max requests per window |
@@ -114,20 +115,20 @@ The easiest way - no repo access needed:
 1. Go to [railway.app/new](https://railway.app/new)
 2. Select **"Deploy from Docker Image"**
 3. Enter: `ghcr.io/bluerobotics/blueplm-api:latest`
-4. Add variables: `SUPABASE_URL`, `SUPABASE_KEY`
+4. Add variables: `SUPABASE_URL`, `SUPABASE_KEY`, `SUPABASE_SERVICE_KEY`
 5. Deploy!
 
 **Render:**
 1. Go to [render.com](https://render.com) → New → Web Service
 2. Select **"Deploy an existing image from a registry"**
 3. Enter: `ghcr.io/bluerobotics/blueplm-api:latest`
-4. Add environment variables
+4. Add environment variables: `SUPABASE_URL`, `SUPABASE_KEY`, `SUPABASE_SERVICE_KEY`
 5. Deploy!
 
 **Fly.io:**
 ```bash
 fly launch --image ghcr.io/bluerobotics/blueplm-api:latest
-fly secrets set SUPABASE_URL=https://xxx.supabase.co SUPABASE_KEY=your-key
+fly secrets set SUPABASE_URL=https://xxx.supabase.co SUPABASE_KEY=your-anon-key SUPABASE_SERVICE_KEY=your-service-key
 fly deploy
 ```
 
@@ -136,6 +137,7 @@ fly deploy
 docker run -d -p 3001:3001 \
   -e SUPABASE_URL=https://xxx.supabase.co \
   -e SUPABASE_KEY=your-anon-key \
+  -e SUPABASE_SERVICE_KEY=your-service-key \
   ghcr.io/bluerobotics/blueplm-api:latest
 ```
 
@@ -152,6 +154,7 @@ railway init
 # Set environment variables (get these from your Supabase project settings)
 railway variables set SUPABASE_URL=https://xxx.supabase.co
 railway variables set SUPABASE_KEY=your-anon-key
+railway variables set SUPABASE_SERVICE_KEY=your-service-key
 railway variables set CORS_ORIGINS=https://your-erp.com,https://odoo.yourcompany.com
 
 # Deploy
@@ -168,6 +171,9 @@ Your API will be live at `https://your-app.railway.app`
 4. Copy:
    - **Project URL** → `SUPABASE_URL`
    - **anon public** key → `SUPABASE_KEY`
+   - **service_role** key → `SUPABASE_SERVICE_KEY` (required for user invites)
+
+> ⚠️ **Keep your service_role key secret!** It bypasses Row Level Security. Never expose it in client-side code.
 
 ### Render
 
@@ -188,6 +194,7 @@ docker build -f api/Dockerfile -t blueplm-api .
 docker run -p 3001:3001 \
   -e SUPABASE_URL=https://xxx.supabase.co \
   -e SUPABASE_KEY=your-anon-key \
+  -e SUPABASE_SERVICE_KEY=your-service-key \
   blueplm-api
 ```
 
@@ -203,6 +210,7 @@ fly launch
 # Set secrets
 fly secrets set SUPABASE_URL=https://xxx.supabase.co
 fly secrets set SUPABASE_KEY=your-anon-key
+fly secrets set SUPABASE_SERVICE_KEY=your-service-key
 
 # Deploy
 fly deploy
@@ -1250,6 +1258,10 @@ For JSON output (production), remove the `pino-pretty` transport in `server.js`.
 
 **"Supabase not configured" error**
 - Set the `SUPABASE_URL` and `SUPABASE_KEY` environment variables
+
+**"Service key not configured" error**
+- Set the `SUPABASE_SERVICE_KEY` environment variable (required for `/auth/invite` endpoint)
+- Get the service_role key from Supabase Dashboard → Settings → API
 
 **"Invalid token" error**
 - Token may have expired - use `/auth/refresh` to get a new one

@@ -327,7 +327,35 @@ This creates the standard release workflow: **WIP → In Review → Released →
 </details>
 
 <details>
-<summary><strong>9. Customize Email Templates (Optional)</strong></summary>
+<summary><strong>9. Deploy REST API (Required for User Invites)</strong></summary>
+
+The REST API is needed for sending invite emails and ERP integrations.
+
+**One-Click Deploy to Railway:**
+1. Go to [railway.app/new](https://railway.app/new)
+2. Select **"Deploy from Docker Image"**
+3. Enter: `ghcr.io/bluerobotics/blueplm-api:latest`
+4. Add these environment variables (from Supabase Dashboard → Settings → API):
+   | Variable | Value |
+   |----------|-------|
+   | `SUPABASE_URL` | Your Project URL |
+   | `SUPABASE_KEY` | anon/public key |
+   | `SUPABASE_SERVICE_KEY` | service_role key ⚠️ |
+5. Deploy and copy your API URL (e.g., `https://your-app.railway.app`)
+
+**Configure in BluePLM:**
+1. Go to **Settings → Organization → REST API**
+2. Enable **"Use External API"**
+3. Enter your Railway API URL
+4. Click **Test Connection** to verify
+
+> ⚠️ **Keep `SUPABASE_SERVICE_KEY` secret!** It bypasses Row Level Security. Only use in server-side code.
+
+See [API README](api/README.md) for alternative deployment options (Render, Fly.io, Docker).
+</details>
+
+<details>
+<summary><strong>10. Customize Email Templates (Optional)</strong></summary>
 
 BluePLM includes branded email templates in [`supabase/email-templates/`](supabase/email-templates/).
 
