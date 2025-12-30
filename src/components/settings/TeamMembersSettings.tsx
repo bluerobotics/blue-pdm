@@ -1000,6 +1000,11 @@ See you on the team!`
           <h2 className="text-xl font-semibold text-plm-fg flex items-center gap-2">
             <UsersRound size={22} />
             Members & Teams
+            {orgUsers.length > 0 && (
+              <span className="text-sm font-normal text-plm-fg-muted bg-plm-bg-secondary px-2 py-0.5 rounded-full">
+                {orgUsers.length} {orgUsers.length === 1 ? 'member' : 'members'}
+              </span>
+            )}
           </h2>
           <p className="text-sm text-plm-fg-muted mt-1">
             Organize members into teams and manage permissions
@@ -1410,9 +1415,32 @@ See you on the team!`
                               Pending
                             </span>
                           </div>
-                          <div className="text-sm text-plm-fg-muted truncate flex items-center gap-2">
-                            <span>{pm.email}</span>
-                            {pm.team_ids.length > 0 && (
+                          <div className="text-sm text-plm-fg-muted truncate flex items-center gap-2 flex-wrap">
+                            <span className="truncate">{pm.email}</span>
+                            {pm.workflow_role_ids?.length > 0 && (
+                              <span className="flex items-center gap-1">
+                                {pm.workflow_role_ids.slice(0, 2).map(roleId => {
+                                  const role = workflowRoles.find(r => r.id === roleId)
+                                  if (!role) return null
+                                  const RoleIcon = (LucideIcons as any)[role.icon] || Shield
+                                  return (
+                                    <span
+                                      key={roleId}
+                                      className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px]"
+                                      style={{ backgroundColor: `${role.color}20`, color: role.color }}
+                                      title={role.name}
+                                    >
+                                      <RoleIcon size={10} />
+                                      {role.name}
+                                    </span>
+                                  )
+                                })}
+                                {pm.workflow_role_ids.length > 2 && (
+                                  <span className="text-xs text-plm-fg-dim">+{pm.workflow_role_ids.length - 2}</span>
+                                )}
+                              </span>
+                            )}
+                            {pm.team_ids?.length > 0 && (
                               <span className="flex items-center gap-1 px-1.5 py-0.5 bg-plm-fg-muted/10 rounded text-plm-fg-dim">
                                 <Users size={10} />
                                 {pm.team_ids.length} team{pm.team_ids.length !== 1 ? 's' : ''}
@@ -1420,7 +1448,7 @@ See you on the team!`
                             )}
                           </div>
                         </div>
-                        <div className={`px-2 py-1 rounded text-xs ${
+                        <div className={`px-2 py-1 rounded text-xs shrink-0 ${
                           pm.role === 'admin' ? 'bg-plm-accent/20 text-plm-accent' :
                           pm.role === 'engineer' ? 'bg-plm-success/20 text-plm-success' :
                           'bg-plm-fg-muted/20 text-plm-fg-muted'
@@ -1555,9 +1583,47 @@ See you on the team!`
                 />
               </div>
               
-              {/* Role */}
+              {/* Workflow Roles */}
               <div>
-                <label className="block text-sm text-plm-fg-muted mb-1">Role</label>
+                <label className="block text-sm text-plm-fg-muted mb-2">Workflow Roles</label>
+                <div className="space-y-1 max-h-36 overflow-y-auto border border-plm-border rounded-lg p-2 bg-plm-bg">
+                  {workflowRoles.length === 0 ? (
+                    <div className="text-sm text-plm-fg-muted p-2">No workflow roles defined yet</div>
+                  ) : (
+                    workflowRoles.map(role => {
+                      const RoleIcon = (LucideIcons as any)[role.icon] || Shield
+                      const isSelected = pendingMemberForm.workflow_role_ids.includes(role.id)
+                      return (
+                        <button
+                          key={role.id}
+                          onClick={() => togglePendingMemberWorkflowRole(role.id)}
+                          className={`w-full flex items-center gap-2 p-2 rounded-lg transition-colors ${
+                            isSelected 
+                              ? 'bg-plm-accent/10 border border-plm-accent/30' 
+                              : 'hover:bg-plm-highlight border border-transparent'
+                          }`}
+                        >
+                          <div
+                            className="w-6 h-6 rounded flex items-center justify-center"
+                            style={{ backgroundColor: `${role.color}20`, color: role.color }}
+                          >
+                            <RoleIcon size={14} />
+                          </div>
+                          <span className="flex-1 text-left text-sm text-plm-fg">{role.name}</span>
+                          {isSelected && <Check size={14} className="text-plm-accent" />}
+                        </button>
+                      )
+                    })
+                  )}
+                </div>
+                <p className="text-xs text-plm-fg-muted mt-1">
+                  Roles for workflow approvals and state transitions.
+                </p>
+              </div>
+              
+              {/* System Role */}
+              <div>
+                <label className="block text-sm text-plm-fg-muted mb-1">System Role</label>
                 <select
                   value={pendingMemberForm.role}
                   onChange={e => setPendingMemberForm(prev => ({ ...prev, role: e.target.value }))}
@@ -1567,6 +1633,9 @@ See you on the team!`
                   <option value="engineer">Engineer</option>
                   <option value="admin">Admin</option>
                 </select>
+                <p className="text-xs text-plm-fg-muted mt-1">
+                  Basic access level (permissions come from teams).
+                </p>
               </div>
               
               {/* Teams */}
