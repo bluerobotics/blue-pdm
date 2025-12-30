@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { registerModule, unregisterModule } from '@/lib/telemetry'
+import { setAnalyticsUser, clearAnalyticsUser } from '@/lib/analytics'
 import { usePDMStore } from './stores/pdmStore'
 import { SettingsContent } from './components/SettingsContent'
 import type { SettingsTab } from './types/settings'
@@ -339,6 +340,9 @@ function App() {
           logUserAction('auth', 'User authenticated', { email: userData.email, role: userData.role })
           console.log('[Auth] User profile loaded:', { email: userData.email, role: userData.role })
           
+          // Set user for Sentry analytics (uses hashed IDs for privacy)
+          setAnalyticsUser(userData.id, userData.org_id || undefined)
+          
           // Then load organization using the working linkUserToOrganization function
           console.log('[Auth] Loading organization for:', session.user.email)
           const { org, error } = await linkUserToOrganization(session.user.id, session.user.email || '')
@@ -418,6 +422,9 @@ function App() {
             })
             console.log('[Auth] User set:', { email: session.user.email, role: userProfile?.role || 'engineer' })
             
+            // Set user for Sentry analytics (uses hashed IDs for privacy)
+            setAnalyticsUser(session.user.id, userProfile?.org_id || undefined)
+            
             if (event === 'SIGNED_IN') {
               setStatusMessage(`Welcome, ${session.user.user_metadata?.full_name || session.user.email}!`)
               setTimeout(() => setStatusMessage(''), 3000)
@@ -466,6 +473,7 @@ function App() {
         } else if (event === 'SIGNED_OUT') {
           logUserAction('auth', 'User signed out')
           console.log('[Auth] Signed out')
+          clearAnalyticsUser()
           setUser(null)
           setOrganization(null)
           setVaultConnected(false)

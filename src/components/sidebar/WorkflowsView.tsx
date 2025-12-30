@@ -4368,7 +4368,7 @@ export function WorkflowsView() {
                 // Navigate to workflow roles settings
                 const { setActiveView } = usePDMStore.getState()
                 setActiveView('settings')
-                window.dispatchEvent(new CustomEvent('navigate-settings-tab', { detail: 'workflow-roles' }))
+                window.dispatchEvent(new CustomEvent('navigate-settings-tab', { detail: 'team-members' }))
               }}
               className="flex items-center gap-1 px-2 py-1 hover:bg-plm-bg rounded text-xs text-plm-fg-muted hover:text-plm-fg"
               title="Manage workflow roles (approval authorities)"
@@ -6699,7 +6699,7 @@ function EditStateDialog({ state, onClose, onSave }: EditStateDialogProps) {
                   onClick={() => {
                     const { setActiveView } = usePDMStore.getState()
                     setActiveView('settings')
-                    window.dispatchEvent(new CustomEvent('navigate-settings-tab', { detail: 'workflow-roles' }))
+                    window.dispatchEvent(new CustomEvent('navigate-settings-tab', { detail: 'team-members' }))
                     onClose()
                   }}
                   className="text-plm-accent hover:underline"
@@ -6925,7 +6925,7 @@ function EditTransitionDialog({ transition, onClose, onSave }: EditTransitionDia
                   onClick={() => {
                     const { setActiveView } = usePDMStore.getState()
                     setActiveView('settings')
-                    window.dispatchEvent(new CustomEvent('navigate-settings-tab', { detail: 'workflow-roles' }))
+                    window.dispatchEvent(new CustomEvent('navigate-settings-tab', { detail: 'team-members' }))
                     onClose()
                   }}
                   className="text-plm-accent hover:underline"

@@ -63,6 +63,14 @@ const TEAM_COLORS = [
   '#a855f7', '#d946ef', '#ec4899', '#f43f5e', '#64748b', '#78716c'
 ]
 
+interface WorkflowRoleBasic {
+  id: string
+  name: string
+  color: string
+  icon: string
+  description?: string | null
+}
+
 interface OrgUser {
   id: string
   email: string
@@ -72,6 +80,7 @@ interface OrgUser {
   last_sign_in: string | null
   teams?: { id: string; name: string; color: string; icon: string }[]
   job_title?: { id: string; name: string; color: string; icon: string } | null
+  workflow_roles?: WorkflowRoleBasic[]
 }
 
 interface Vault {
@@ -152,6 +161,11 @@ export function TeamMembersSettings() {
   const [newTitleColor, setNewTitleColor] = useState('#3b82f6')
   const [isCreatingTitle, setIsCreatingTitle] = useState(false)
   
+  // Workflow roles state
+  const [workflowRoles, setWorkflowRoles] = useState<WorkflowRoleBasic[]>([])
+  const [editingWorkflowRolesUser, setEditingWorkflowRolesUser] = useState<OrgUser | null>(null)
+  const [userWorkflowRoleAssignments, setUserWorkflowRoleAssignments] = useState<Record<string, string[]>>({}) // userId -> roleIds
+  
   // User vault access state
   const [vaultAccessMap, setVaultAccessMap] = useState<Record<string, string[]>>({})
   const [editingVaultAccessUser, setEditingVaultAccessUser] = useState<OrgUser | null>(null)
@@ -199,7 +213,8 @@ export function TeamMembersSettings() {
         loadVaultAccess(),
         loadTeamVaultAccess(),
         loadPendingMembers(),
-        loadJobTitles()
+        loadJobTitles(),
+        loadWorkflowRoles()
       ])
     } finally {
       setIsLoading(false)
@@ -220,6 +235,47 @@ export function TeamMembersSettings() {
       setJobTitles(data || [])
     } catch (err) {
       console.error('Failed to load job titles:', err)
+    }
+  }
+  
+  const loadWorkflowRoles = async () => {
+    if (!organization) return
+    
+    try {
+      // Load workflow roles
+      const { data: rolesData, error: rolesError } = await supabase
+        .from('workflow_roles')
+        .select('id, name, color, icon, description')
+        .eq('org_id', organization.id)
+        .eq('is_active', true)
+        .order('sort_order')
+      
+      if (rolesError) throw rolesError
+      setWorkflowRoles(rolesData || [])
+      
+      // Load user role assignments
+      const { data: assignmentsData, error: assignmentsError } = await supabase
+        .from('user_workflow_roles')
+        .select(`
+          user_id,
+          workflow_role_id,
+          workflow_roles!inner (org_id)
+        `)
+        .eq('workflow_roles.org_id', organization.id)
+      
+      if (assignmentsError) throw assignmentsError
+      
+      // Build userId -> roleIds map
+      const assignmentsMap: Record<string, string[]> = {}
+      for (const a of (assignmentsData || [])) {
+        if (!assignmentsMap[a.user_id]) {
+          assignmentsMap[a.user_id] = []
+        }
+        assignmentsMap[a.user_id].push(a.workflow_role_id)
+      }
+      setUserWorkflowRoleAssignments(assignmentsMap)
+    } catch (err) {
+      console.error('Failed to load workflow roles:', err)
     }
   }
   
@@ -1041,7 +1097,7 @@ See you on the team!`
                       {isExpanded && (
                         <div className="border-t border-plm-border">
                           {/* Team Actions */}
-                          {isAdmin && !team.is_system && (
+                          {isAdmin && (
                             <div className="p-3 bg-plm-bg/30 border-b border-plm-border flex flex-wrap gap-2">
                               <button
                                 onClick={(e) => {
@@ -1075,27 +1131,37 @@ See you on the team!`
                                 <Database size={14} />
                                 Vault Access
                               </button>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  openEditTeamDialog(team)
-                                }}
-                                className="btn btn-ghost btn-sm flex items-center gap-1.5"
-                              >
-                                <Pencil size={14} />
-                                Edit
-                              </button>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  setSelectedTeam(team)
-                                  setShowDeleteTeamDialog(true)
-                                }}
-                                className="btn btn-ghost btn-sm flex items-center gap-1.5 text-plm-error hover:bg-plm-error/10"
-                              >
-                                <Trash2 size={14} />
-                                Delete
-                              </button>
+                              {!team.is_system && (
+                                <>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      openEditTeamDialog(team)
+                                    }}
+                                    className="btn btn-ghost btn-sm flex items-center gap-1.5"
+                                  >
+                                    <Pencil size={14} />
+                                    Edit
+                                  </button>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      setSelectedTeam(team)
+                                      setShowDeleteTeamDialog(true)
+                                    }}
+                                    className="btn btn-ghost btn-sm flex items-center gap-1.5 text-plm-error hover:bg-plm-error/10"
+                                  >
+                                    <Trash2 size={14} />
+                                    Delete
+                                  </button>
+                                </>
+                              )}
+                              {team.is_system && (
+                                <span className="text-xs text-plm-fg-muted flex items-center gap-1 ml-auto">
+                                  <Crown size={12} className="text-yellow-500" />
+                                  System team (cannot be deleted)
+                                </span>
+                              )}
                             </div>
                           )}
                           
@@ -1125,6 +1191,9 @@ See you on the team!`
                                     onChangeJobTitle={handleChangeJobTitle}
                                     changingTitleUserId={changingTitleUserId}
                                     onCreateTitle={openCreateTitleDialog}
+                                    workflowRoles={workflowRoles}
+                                    userWorkflowRoleIds={userWorkflowRoleAssignments[member.id]}
+                                    onEditWorkflowRoles={setEditingWorkflowRolesUser}
                                   />
                                 ))}
                               </div>
@@ -1194,6 +1263,9 @@ See you on the team!`
                           onChangeJobTitle={handleChangeJobTitle}
                           changingTitleUserId={changingTitleUserId}
                           onCreateTitle={openCreateTitleDialog}
+                          workflowRoles={workflowRoles}
+                          userWorkflowRoleIds={userWorkflowRoleAssignments[u.id]}
+                          onEditWorkflowRoles={setEditingWorkflowRolesUser}
                         />
                       ))}
                     </div>
@@ -1706,6 +1778,422 @@ See you on the team!`
           </div>
         </div>
       )}
+
+      {/* Workflow Roles Modal */}
+      {editingWorkflowRolesUser && (
+        <WorkflowRolesModal
+          user={editingWorkflowRolesUser}
+          workflowRoles={workflowRoles}
+          userRoleIds={userWorkflowRoleAssignments[editingWorkflowRolesUser.id] || []}
+          onClose={() => setEditingWorkflowRolesUser(null)}
+          onSave={async (roleIds) => {
+            if (!user) return
+            try {
+              // Remove existing assignments
+              await supabase
+                .from('user_workflow_roles')
+                .delete()
+                .eq('user_id', editingWorkflowRolesUser.id)
+              
+              // Add new assignments
+              if (roleIds.length > 0) {
+                await supabase
+                  .from('user_workflow_roles')
+                  .insert(roleIds.map(roleId => ({
+                    user_id: editingWorkflowRolesUser.id,
+                    workflow_role_id: roleId,
+                    assigned_by: user.id
+                  })))
+              }
+              
+              addToast('success', `Updated workflow roles for ${editingWorkflowRolesUser.full_name || editingWorkflowRolesUser.email}`)
+              loadWorkflowRoles()
+              setEditingWorkflowRolesUser(null)
+            } catch (err) {
+              console.error('Failed to update workflow roles:', err)
+              addToast('error', 'Failed to update workflow roles')
+            }
+          }}
+          onCreateRole={async (name, color, icon) => {
+            if (!organization || !user) return
+            try {
+              const { error } = await supabase
+                .from('workflow_roles')
+                .insert({
+                  org_id: organization.id,
+                  name,
+                  color,
+                  icon,
+                  created_by: user.id
+                })
+              
+              if (error) throw error
+              
+              addToast('success', `Created workflow role "${name}"`)
+              await loadWorkflowRoles()
+            } catch (err: any) {
+              if (err.code === '23505') {
+                addToast('error', 'A workflow role with this name already exists')
+              } else {
+                addToast('error', 'Failed to create workflow role')
+              }
+            }
+          }}
+          onUpdateRole={async (roleId, name, color, icon) => {
+            try {
+              const { error } = await supabase
+                .from('workflow_roles')
+                .update({ name, color, icon })
+                .eq('id', roleId)
+              
+              if (error) throw error
+              
+              addToast('success', `Updated workflow role "${name}"`)
+              await loadWorkflowRoles()
+            } catch (err: any) {
+              if (err.code === '23505') {
+                addToast('error', 'A workflow role with this name already exists')
+              } else {
+                addToast('error', 'Failed to update workflow role')
+              }
+            }
+          }}
+          onDeleteRole={async (roleId) => {
+            try {
+              const { error } = await supabase
+                .from('workflow_roles')
+                .delete()
+                .eq('id', roleId)
+              
+              if (error) throw error
+              
+              addToast('success', 'Deleted workflow role')
+              await loadWorkflowRoles()
+            } catch (err) {
+              console.error('Failed to delete workflow role:', err)
+              addToast('error', 'Failed to delete workflow role')
+            }
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+// Workflow Roles Modal Component
+function WorkflowRolesModal({
+  user,
+  workflowRoles,
+  userRoleIds,
+  onClose,
+  onSave,
+  onCreateRole,
+  onUpdateRole,
+  onDeleteRole
+}: {
+  user: OrgUser
+  workflowRoles: WorkflowRoleBasic[]
+  userRoleIds: string[]
+  onClose: () => void
+  onSave: (roleIds: string[]) => Promise<void>
+  onCreateRole: (name: string, color: string, icon: string) => Promise<void>
+  onUpdateRole: (roleId: string, name: string, color: string, icon: string) => Promise<void>
+  onDeleteRole: (roleId: string) => Promise<void>
+}) {
+  const [selectedRoleIds, setSelectedRoleIds] = useState<string[]>(userRoleIds)
+  const [isSaving, setIsSaving] = useState(false)
+  const [showCreateForm, setShowCreateForm] = useState(false)
+  const [newRoleName, setNewRoleName] = useState('')
+  const [newRoleColor, setNewRoleColor] = useState('#6B7280')
+  const [newRoleIcon, setNewRoleIcon] = useState('badge-check')
+  const [isCreating, setIsCreating] = useState(false)
+  
+  // Edit state
+  const [editingRoleId, setEditingRoleId] = useState<string | null>(null)
+  const [editName, setEditName] = useState('')
+  const [editColor, setEditColor] = useState('')
+  const [editIcon, setEditIcon] = useState('')
+  const [isUpdating, setIsUpdating] = useState(false)
+  const [deletingRoleId, setDeletingRoleId] = useState<string | null>(null)
+  
+  const toggleRole = (roleId: string) => {
+    setSelectedRoleIds(prev =>
+      prev.includes(roleId)
+        ? prev.filter(id => id !== roleId)
+        : [...prev, roleId]
+    )
+  }
+  
+  const handleSave = async () => {
+    setIsSaving(true)
+    try {
+      await onSave(selectedRoleIds)
+    } finally {
+      setIsSaving(false)
+    }
+  }
+  
+  const handleCreateRole = async () => {
+    if (!newRoleName.trim()) return
+    setIsCreating(true)
+    try {
+      await onCreateRole(newRoleName.trim(), newRoleColor, newRoleIcon)
+      setNewRoleName('')
+      setShowCreateForm(false)
+    } finally {
+      setIsCreating(false)
+    }
+  }
+  
+  const startEditing = (role: WorkflowRoleBasic) => {
+    setEditingRoleId(role.id)
+    setEditName(role.name)
+    setEditColor(role.color)
+    setEditIcon(role.icon)
+  }
+  
+  const cancelEditing = () => {
+    setEditingRoleId(null)
+    setEditName('')
+    setEditColor('')
+    setEditIcon('')
+  }
+  
+  const handleUpdateRole = async () => {
+    if (!editingRoleId || !editName.trim()) return
+    setIsUpdating(true)
+    try {
+      await onUpdateRole(editingRoleId, editName.trim(), editColor, editIcon)
+      cancelEditing()
+    } finally {
+      setIsUpdating(false)
+    }
+  }
+  
+  const handleDeleteRole = async (roleId: string) => {
+    setDeletingRoleId(roleId)
+    try {
+      await onDeleteRole(roleId)
+      // Remove from selected if it was selected
+      setSelectedRoleIds(prev => prev.filter(id => id !== roleId))
+    } finally {
+      setDeletingRoleId(null)
+    }
+  }
+  
+  const hasChanges = JSON.stringify([...selectedRoleIds].sort()) !== JSON.stringify([...userRoleIds].sort())
+  
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center" onClick={onClose}>
+      <div className="bg-plm-bg-light border border-plm-border rounded-xl p-6 max-w-md w-full mx-4 max-h-[80vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="flex items-start gap-3 mb-4">
+          <div className="p-2 rounded-lg bg-purple-500/20 text-purple-400">
+            <Shield size={20} />
+          </div>
+          <div>
+            <h3 className="text-lg font-medium text-plm-fg">Workflow Roles</h3>
+            <p className="text-sm text-plm-fg-muted">
+              Assign workflow roles to <strong>{user.full_name || user.email}</strong>
+            </p>
+          </div>
+        </div>
+        
+        <div className="flex-1 overflow-y-auto space-y-2 mb-4">
+          {workflowRoles.length === 0 && !showCreateForm ? (
+            <div className="text-center py-8 text-sm text-plm-fg-muted">
+              <Shield size={32} className="mx-auto mb-2 opacity-50" />
+              <p>No workflow roles defined yet.</p>
+              <button
+                onClick={() => setShowCreateForm(true)}
+                className="mt-2 text-plm-accent hover:underline"
+              >
+                Create the first workflow role
+              </button>
+            </div>
+          ) : (
+            <>
+              {workflowRoles.map(role => {
+                const RoleIcon = (LucideIcons as any)[role.icon] || Shield
+                const isSelected = selectedRoleIds.includes(role.id)
+                const isEditing = editingRoleId === role.id
+                const isDeleting = deletingRoleId === role.id
+                
+                if (isEditing) {
+                  const EditIcon = (LucideIcons as any)[editIcon] || Shield
+                  return (
+                    <div key={role.id} className="p-3 rounded-lg border border-plm-accent bg-plm-accent/5 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-medium text-plm-fg">Edit Role</span>
+                        <button
+                          onClick={cancelEditing}
+                          className="p-1 text-plm-fg-muted hover:text-plm-fg"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                      <input
+                        type="text"
+                        value={editName}
+                        onChange={e => setEditName(e.target.value)}
+                        placeholder="Role name"
+                        className="w-full px-3 py-2 bg-plm-bg border border-plm-border rounded-lg text-plm-fg text-sm placeholder:text-plm-fg-dim focus:outline-none focus:border-plm-accent"
+                        autoFocus
+                      />
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="color"
+                          value={editColor}
+                          onChange={e => setEditColor(e.target.value)}
+                          className="w-10 h-10 rounded border border-plm-border cursor-pointer"
+                          title="Role color"
+                        />
+                        <div
+                          className="p-2 rounded-lg"
+                          style={{ backgroundColor: `${editColor}20`, color: editColor }}
+                        >
+                          <EditIcon size={16} />
+                        </div>
+                        <select
+                          value={editIcon}
+                          onChange={e => setEditIcon(e.target.value)}
+                          className="flex-1 px-2 py-2 bg-plm-bg border border-plm-border rounded-lg text-plm-fg text-sm focus:outline-none focus:border-plm-accent"
+                        >
+                          <option value="badge-check">Badge Check</option>
+                          <option value="shield">Shield</option>
+                          <option value="shield-check">Shield Check</option>
+                          <option value="user-check">User Check</option>
+                          <option value="star">Star</option>
+                          <option value="crown">Crown</option>
+                          <option value="award">Award</option>
+                          <option value="medal">Medal</option>
+                          <option value="key">Key</option>
+                          <option value="lock">Lock</option>
+                          <option value="clipboard-check">Clipboard Check</option>
+                          <option value="file-check">File Check</option>
+                        </select>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => handleDeleteRole(role.id)}
+                          disabled={isDeleting}
+                          className="btn btn-ghost btn-sm text-plm-error hover:bg-plm-error/10"
+                        >
+                          {isDeleting ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                        </button>
+                        <button
+                          onClick={handleUpdateRole}
+                          disabled={isUpdating || !editName.trim()}
+                          className="flex-1 btn btn-primary btn-sm flex items-center justify-center gap-2"
+                        >
+                          {isUpdating ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                          Save
+                        </button>
+                      </div>
+                    </div>
+                  )
+                }
+                
+                return (
+                  <div
+                    key={role.id}
+                    className={`group flex items-center gap-3 p-3 rounded-lg border transition-colors ${
+                      isSelected
+                        ? 'border-plm-accent bg-plm-accent/10'
+                        : 'border-plm-border bg-plm-bg hover:border-plm-fg-muted'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => toggleRole(role.id)}
+                      className="w-4 h-4 rounded border-plm-border text-plm-accent focus:ring-plm-accent cursor-pointer"
+                    />
+                    <div
+                      className="p-2 rounded-lg"
+                      style={{ backgroundColor: `${role.color}20`, color: role.color }}
+                    >
+                      <RoleIcon size={16} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-plm-fg">{role.name}</div>
+                      {role.description && (
+                        <div className="text-xs text-plm-fg-muted truncate">{role.description}</div>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => startEditing(role)}
+                      className="p-1.5 text-plm-fg-muted hover:text-plm-accent hover:bg-plm-accent/10 rounded transition-colors opacity-0 group-hover:opacity-100"
+                      title="Edit role"
+                    >
+                      <Pencil size={12} />
+                    </button>
+                  </div>
+                )
+              })}
+            </>
+          )}
+          
+          {/* Create new role form */}
+          {showCreateForm ? (
+            <div className="p-3 rounded-lg border border-plm-border bg-plm-bg space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium text-plm-fg">New Workflow Role</span>
+                <button
+                  onClick={() => setShowCreateForm(false)}
+                  className="p-1 text-plm-fg-muted hover:text-plm-fg"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+              <input
+                type="text"
+                value={newRoleName}
+                onChange={e => setNewRoleName(e.target.value)}
+                placeholder="Role name (e.g., Design Lead)"
+                className="w-full px-3 py-2 bg-plm-bg-light border border-plm-border rounded-lg text-plm-fg text-sm placeholder:text-plm-fg-dim focus:outline-none focus:border-plm-accent"
+                autoFocus
+              />
+              <div className="flex gap-2">
+                <input
+                  type="color"
+                  value={newRoleColor}
+                  onChange={e => setNewRoleColor(e.target.value)}
+                  className="w-10 h-10 rounded border border-plm-border cursor-pointer"
+                  title="Role color"
+                />
+                <button
+                  onClick={handleCreateRole}
+                  disabled={isCreating || !newRoleName.trim()}
+                  className="flex-1 btn btn-primary btn-sm flex items-center justify-center gap-2"
+                >
+                  {isCreating ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+                  Create Role
+                </button>
+              </div>
+            </div>
+          ) : workflowRoles.length > 0 && (
+            <button
+              onClick={() => setShowCreateForm(true)}
+              className="w-full flex items-center justify-center gap-2 p-3 rounded-lg border border-dashed border-plm-border text-plm-fg-muted hover:border-plm-accent hover:text-plm-accent transition-colors"
+            >
+              <Plus size={14} />
+              Create new workflow role
+            </button>
+          )}
+        </div>
+        
+        <div className="flex gap-2 justify-end pt-4 border-t border-plm-border">
+          <button onClick={onClose} className="btn btn-ghost">Cancel</button>
+          <button
+            onClick={handleSave}
+            disabled={isSaving || !hasChanges}
+            className="btn btn-primary flex items-center gap-2"
+          >
+            {isSaving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+            Save Changes
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -1729,7 +2217,10 @@ function UserRow({
   setTitleDropdownOpen,
   onChangeJobTitle,
   changingTitleUserId,
-  onCreateTitle
+  onCreateTitle,
+  workflowRoles,
+  userWorkflowRoleIds,
+  onEditWorkflowRoles
 }: {
   user: OrgUser
   isAdmin: boolean
@@ -1749,6 +2240,9 @@ function UserRow({
   onChangeJobTitle?: (user: OrgUser, titleId: string | null) => void
   changingTitleUserId?: string | null
   onCreateTitle?: (user: OrgUser) => void
+  workflowRoles?: WorkflowRoleBasic[]
+  userWorkflowRoleIds?: string[]
+  onEditWorkflowRoles?: (user: OrgUser) => void
 }) {
   const canManage = isAdmin && !isCurrentUser
   
@@ -1881,6 +2375,50 @@ function UserRow({
               {user.job_title.name}
             </div>
           ) : null}
+        </div>
+      )}
+      
+      {/* Workflow roles badges */}
+      {workflowRoles && workflowRoles.length > 0 && (
+        <div className="flex items-center gap-1">
+          {(userWorkflowRoleIds || []).slice(0, 2).map(roleId => {
+            const role = workflowRoles.find(r => r.id === roleId)
+            if (!role) return null
+            const RoleIcon = (LucideIcons as any)[role.icon] || Shield
+            return (
+              <div
+                key={role.id}
+                className="flex items-center gap-1 px-1.5 py-0.5 rounded text-xs"
+                style={{ backgroundColor: `${role.color}15`, color: role.color }}
+                title={role.description || role.name}
+              >
+                <RoleIcon size={10} />
+                {!compact && <span className="truncate max-w-[60px]">{role.name}</span>}
+              </div>
+            )
+          })}
+          {(userWorkflowRoleIds || []).length > 2 && (
+            <span className="text-xs text-plm-fg-dim">+{(userWorkflowRoleIds || []).length - 2}</span>
+          )}
+          {canManage && onEditWorkflowRoles && (
+            <button
+              onClick={() => onEditWorkflowRoles(user)}
+              className="p-1 text-plm-fg-dim hover:text-plm-accent hover:bg-plm-accent/10 rounded transition-colors"
+              title="Edit workflow roles"
+            >
+              <Pencil size={10} />
+            </button>
+          )}
+          {!userWorkflowRoleIds?.length && canManage && onEditWorkflowRoles && (
+            <button
+              onClick={() => onEditWorkflowRoles(user)}
+              className="flex items-center gap-1 px-1.5 py-0.5 rounded text-xs text-plm-fg-muted bg-plm-fg-muted/10 border border-dashed border-plm-border hover:border-plm-accent hover:text-plm-accent transition-colors"
+              title="Add workflow role"
+            >
+              <Plus size={10} />
+              Role
+            </button>
+          )}
         </div>
       )}
       

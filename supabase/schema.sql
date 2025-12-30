@@ -5493,7 +5493,7 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 -- ===========================================
 -- DEFAULT PERMISSION TEAMS
 -- ===========================================
--- Creates Viewers, Engineers, and Admins teams with appropriate permissions.
+-- Creates Viewers, Engineers, and Administrators teams with appropriate permissions.
 -- ALL permissions flow through teams.
 
 CREATE OR REPLACE FUNCTION create_default_permission_teams(p_org_id UUID, p_created_by UUID DEFAULT NULL)
@@ -5515,9 +5515,9 @@ BEGIN
   ON CONFLICT (org_id, name) DO UPDATE SET updated_at = NOW()
   RETURNING id INTO v_engineers_id;
   
-  -- Create Admins team
+  -- Create Administrators team (mandatory, cannot be deleted)
   INSERT INTO teams (org_id, name, description, color, icon, is_system, created_by)
-  VALUES (p_org_id, 'Admins', 'Full administrative access to all modules and settings', '#22c55e', 'Shield', TRUE, p_created_by)
+  VALUES (p_org_id, 'Administrators', 'Full administrative access to all modules and settings', '#22c55e', 'Shield', TRUE, p_created_by)
   ON CONFLICT (org_id, name) DO UPDATE SET updated_at = NOW()
   RETURNING id INTO v_admins_id;
   
@@ -5529,7 +5529,14 @@ BEGIN
     SELECT id INTO v_engineers_id FROM teams WHERE org_id = p_org_id AND name = 'Engineers';
   END IF;
   IF v_admins_id IS NULL THEN
-    SELECT id INTO v_admins_id FROM teams WHERE org_id = p_org_id AND name = 'Admins';
+    SELECT id INTO v_admins_id FROM teams WHERE org_id = p_org_id AND name = 'Administrators';
+  END IF;
+  
+  -- Add creator to Administrators team (org creator should always be in Administrators)
+  IF p_created_by IS NOT NULL AND v_admins_id IS NOT NULL THEN
+    INSERT INTO team_members (team_id, user_id, is_team_admin, added_by)
+    VALUES (v_admins_id, p_created_by, TRUE, p_created_by)
+    ON CONFLICT (team_id, user_id) DO NOTHING;
   END IF;
   
   -- Viewers permissions: view on all modules
@@ -5611,7 +5618,7 @@ END $$;
 COMMENT ON TABLE job_titles IS 'Job titles are display-only labels for users. Permissions come from teams.';
 COMMENT ON TABLE user_job_titles IS 'Assignment of job titles to users (one title per user).';
 COMMENT ON FUNCTION create_default_job_titles IS 'Creates common job titles for an organization.';
-COMMENT ON FUNCTION create_default_permission_teams IS 'Creates Viewers/Engineers/Admins teams with appropriate permissions.';
+COMMENT ON FUNCTION create_default_permission_teams IS 'Creates Viewers/Engineers/Administrators teams with appropriate permissions.';
 
 -- ===========================================
 -- TEAM MODULE DEFAULTS
@@ -7998,6 +8005,38 @@ COMMENT ON TABLE file_state_entries IS 'Tracks when files enter/leave states for
 --   ALTER TYPE your_enum_type ADD VALUE IF NOT EXISTS 'new_value';
 -- EXCEPTION WHEN duplicate_object THEN NULL;
 -- END $$;
+
+-- ===========================================
+-- AUTO-CREATE DEFAULT TEAMS ON ORG CREATION
+-- ===========================================
+-- Automatically creates Viewers, Engineers, and Administrators teams when a new organization is created.
+-- The org creator is automatically added to the Administrators team.
+
+CREATE OR REPLACE FUNCTION handle_new_organization()
+RETURNS TRIGGER AS $$
+DECLARE
+  v_creator_id UUID;
+BEGIN
+  -- Try to get the creator from the auth context
+  v_creator_id := auth.uid();
+  
+  -- Create default permission teams and add creator to Admins
+  PERFORM create_default_permission_teams(NEW.id, v_creator_id);
+  
+  -- Also create default job titles
+  PERFORM create_default_job_titles(NEW.id, v_creator_id);
+  
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS on_organization_created ON organizations;
+CREATE TRIGGER on_organization_created
+  AFTER INSERT ON organizations
+  FOR EACH ROW EXECUTE FUNCTION handle_new_organization();
+
+COMMENT ON FUNCTION handle_new_organization IS 'Creates default teams (Viewers, Engineers, Administrators) and job titles when a new organization is created. Adds org creator to Administrators team.';
+
 --
 -- TEMPLATE: Add new column to existing table
 -- --------------------------------------------------------------------

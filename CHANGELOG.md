@@ -11,12 +11,24 @@ All notable changes to BluePLM will be documented in this file.
   - Admins can click to assign any user a job title from a dropdown
   - "Create new title..." option directly in the dropdown - no separate settings page needed
   - Database tables: `job_titles`, `user_job_titles`
-- **Default Permission Teams**: New organizations get Viewers/Engineers/Admins teams with pre-configured permissions
+- **Default Permission Teams**: New organizations get Viewers/Engineers/Administrators teams with pre-configured permissions
+  - Administrators team is mandatory and cannot be deleted (system team)
+  - Organization creator is automatically added to the Administrators team
+  - Database trigger auto-creates teams when new organization is created
+- **Add to Team modal**: Converted dropdown to modal for unassigned users (fixes dropdown being cut off by overflow)
 - **Delete Account**: Users can permanently delete their own account from Settings → Account → Delete Account
   - Type-name confirmation required (must type your full name to confirm)
   - Removes organization association, team memberships, vault access, and active sessions
   - Releases any file checkouts held by the user
   - Preserves activity history and file versions for audit purposes
+- **Workflow Roles inline management**: Workflow roles now appear next to job titles in user rows
+  - Click to edit a user's workflow roles (add/remove)
+  - Create new workflow roles directly from the modal
+  - Edit existing roles (name, color, icon) inline
+  - Delete workflow roles from the edit form
+  - Badges show up to 2 roles with "+N" for more
+  - Used for workflow gate approvals and state permissions
+  - Removed separate "Workflow Roles" settings page (now integrated into Members & Teams)
 
 ### Changed
 - **Permissions model simplified**: Removed role selection from create user dialog and user rows - all permissions now flow through team membership
@@ -30,7 +42,7 @@ All notable changes to BluePLM will be documented in this file.
   - ALL permissions now flow through teams (simplified model)
   - Viewers: read-only access to modules
   - Engineers: create/edit access to engineering modules
-  - Admins: full administrative access to all modules and settings
+  - Administrators: full administrative access to all modules and settings (mandatory, cannot be deleted)
 
 ### Improved
 - **Network error handling**: Better resilience for unstable or lost connections
@@ -42,6 +54,9 @@ All notable changes to BluePLM will be documented in this file.
 - **Clipboard operations**: Fixed "Write permission denied" error when copying to clipboard in packaged app
   - Created centralized clipboard utility that uses Electron's native clipboard API (more reliable than browser API)
   - Updated all 13 components to use the new utility with proper fallbacks
+- **Contribution count accuracy**: Profile "X contributions in the last year" now shows accurate count
+  - Previously capped at 1000 due to Supabase query limit
+  - Now uses separate COUNT query for accurate totals (even 10,000+)
 
 ---
 

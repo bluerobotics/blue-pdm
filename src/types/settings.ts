@@ -9,7 +9,6 @@ export type SettingsTab =
   | 'members'
   | 'teams'
   | 'team-members'
-  | 'workflow-roles'
   | 'company-profile' 
   | 'serialization'
   | 'rfq' 

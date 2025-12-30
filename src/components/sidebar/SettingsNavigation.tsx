@@ -32,7 +32,6 @@ const settingsSections: SettingsSection[] = [
     items: [
       { id: 'vaults', label: 'Vaults' },
       { id: 'team-members', label: 'Members & Teams' },
-      { id: 'workflow-roles', label: 'Workflow Roles' },
       { id: 'company-profile', label: 'Company Profile' },
       { id: 'serialization', label: 'Serialization' },
       { id: 'metadata-columns', label: 'File Metadata' },
