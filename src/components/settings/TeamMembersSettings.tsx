@@ -328,11 +328,10 @@ export function TeamMembersSettings() {
   const [editingPendingMember, setEditingPendingMember] = useState<PendingMember | null>(null)
   const [pendingMemberForm, setPendingMemberForm] = useState<{
     full_name: string
-    role: string
     team_ids: string[]
     workflow_role_ids: string[]
     vault_ids: string[]
-  }>({ full_name: '', role: 'viewer', team_ids: [], workflow_role_ids: [], vault_ids: [] })
+  }>({ full_name: '', team_ids: [], workflow_role_ids: [], vault_ids: [] })
   const [isSavingPendingMember, setIsSavingPendingMember] = useState(false)
   
   // Load data on mount
@@ -440,7 +439,6 @@ export function TeamMembersSettings() {
     setEditingPendingMember(pm)
     setPendingMemberForm({
       full_name: pm.full_name || '',
-      role: pm.role,
       team_ids: pm.team_ids || [],
       workflow_role_ids: pm.workflow_role_ids || [],
       vault_ids: pm.vault_ids || []
@@ -456,7 +454,6 @@ export function TeamMembersSettings() {
         .from('pending_org_members')
         .update({
           full_name: pendingMemberForm.full_name || null,
-          role: pendingMemberForm.role,
           team_ids: pendingMemberForm.team_ids,
           workflow_role_ids: pendingMemberForm.workflow_role_ids,
           vault_ids: pendingMemberForm.vault_ids
@@ -1556,13 +1553,6 @@ export function TeamMembersSettings() {
                             )}
                           </div>
                         </div>
-                        <div className={`px-2 py-1 rounded text-xs shrink-0 ${
-                          pm.role === 'admin' ? 'bg-plm-accent/20 text-plm-accent' :
-                          pm.role === 'engineer' ? 'bg-plm-success/20 text-plm-success' :
-                          'bg-plm-fg-muted/20 text-plm-fg-muted'
-                        }`}>
-                          {pm.role.charAt(0).toUpperCase() + pm.role.slice(1)}
-                        </div>
                         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
                           <button
                             onClick={() => openEditPendingMember(pm)}
@@ -1729,23 +1719,6 @@ export function TeamMembersSettings() {
                 </div>
                 <p className="text-xs text-plm-fg-muted mt-1">
                   Roles for workflow approvals and state transitions.
-                </p>
-              </div>
-              
-              {/* System Role */}
-              <div>
-                <label className="block text-sm text-plm-fg-muted mb-1">System Role</label>
-                <select
-                  value={pendingMemberForm.role}
-                  onChange={e => setPendingMemberForm(prev => ({ ...prev, role: e.target.value }))}
-                  className="w-full px-3 py-2 bg-plm-bg border border-plm-border rounded-lg text-plm-fg focus:border-plm-accent focus:outline-none"
-                >
-                  <option value="viewer">Viewer</option>
-                  <option value="engineer">Engineer</option>
-                  <option value="admin">Admin</option>
-                </select>
-                <p className="text-xs text-plm-fg-muted mt-1">
-                  Basic access level (permissions come from teams).
                 </p>
               </div>
               
