@@ -44,6 +44,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 --
 -- Version history:
 --   1 = Initial schema version tracking (v2.15.0)
+--   2 = Added workflow_roles, job_titles, pending_org_members, vault_users (v2.16.0)
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -54,10 +55,17 @@ CREATE TABLE IF NOT EXISTS schema_version (
   applied_by TEXT -- Could be 'migration' or admin email
 );
 
--- Insert initial version if table is empty
+-- Insert initial version if table is empty (new installations get latest version)
 INSERT INTO schema_version (id, version, description, applied_at, applied_by)
-VALUES (1, 1, 'Initial schema version tracking', NOW(), 'migration')
+VALUES (1, 2, 'workflow_roles, job_titles, pending_org_members, vault_users', NOW(), 'migration')
 ON CONFLICT (id) DO NOTHING;
+
+-- Upgrade existing v1 installations to v2
+UPDATE schema_version 
+SET version = 2, 
+    description = 'workflow_roles, job_titles, pending_org_members, vault_users',
+    applied_at = NOW()
+WHERE version < 2;
 
 -- Function to update schema version (for use in migrations)
 CREATE OR REPLACE FUNCTION update_schema_version(

@@ -2,6 +2,13 @@
 
 All notable changes to BluePLM will be documented in this file.
 
+## [2.16.2] - 2025-12-30
+
+### Changed
+- **Schema version**: Bumped to v2 for workflow_roles, job_titles, pending_org_members, vault_users tables
+
+---
+
 ## [2.16.1] - 2025-12-30
 
 ### Fixed
