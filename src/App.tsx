@@ -2180,7 +2180,7 @@ function App() {
     
     // Subscribe to org color swatch changes (shared palette)
     const unsubscribeColorSwatches = subscribeToColorSwatches(organization.id, (eventType, swatch) => {
-      const { orgColorSwatches, user: currentUser } = usePDMStore.getState()
+      const { orgColorSwatches } = usePDMStore.getState()
       
       // Only process org swatches (swatch.org_id is set)
       if (!swatch.org_id) return

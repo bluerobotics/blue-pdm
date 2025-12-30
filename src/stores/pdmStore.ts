@@ -1610,7 +1610,7 @@ export const usePDMStore = create<PDMState>()(
       
       // Actions - Color Swatches
       addColorSwatch: async (color, isOrg) => {
-        const { user, organization, addToast, getEffectiveRole, syncColorSwatches } = get()
+        const { user, organization, addToast, getEffectiveRole } = get()
         if (!user) {
           addToast('error', 'You must be logged in to save colors')
           return
@@ -1646,7 +1646,7 @@ export const usePDMStore = create<PDMState>()(
           
           const { data, error } = await supabase
             .from('color_swatches')
-            .insert(insertData)
+            .insert(insertData as never)
             .select('id, color, created_at')
             .single()
           
@@ -1657,11 +1657,12 @@ export const usePDMStore = create<PDMState>()(
           }
           
           // Add to local state with the DB-generated ID
+          const swatchData = data as { id: string; color: string; created_at: string }
           const newSwatch: ColorSwatch = {
-            id: data.id,
-            color: data.color,
+            id: swatchData.id,
+            color: swatchData.color,
             isOrg,
-            createdAt: data.created_at
+            createdAt: swatchData.created_at
           }
           
           if (isOrg) {
@@ -1730,8 +1731,9 @@ export const usePDMStore = create<PDMState>()(
           
           if (error) throw error
           
+          const swatches = (data || []) as { id: string; color: string; created_at: string }[]
           set({
-            orgColorSwatches: (data || []).map(s => ({
+            orgColorSwatches: swatches.map(s => ({
               id: s.id,
               color: s.color,
               isOrg: true,
@@ -1758,8 +1760,9 @@ export const usePDMStore = create<PDMState>()(
           
           if (userError) throw userError
           
+          const userSwatchData = (userSwatches || []) as { id: string; color: string; created_at: string }[]
           set({
-            colorSwatches: (userSwatches || []).map(s => ({
+            colorSwatches: userSwatchData.map(s => ({
               id: s.id,
               color: s.color,
               isOrg: false,
@@ -1777,8 +1780,9 @@ export const usePDMStore = create<PDMState>()(
             
             if (orgError) throw orgError
             
+            const orgSwatchData = (orgSwatches || []) as { id: string; color: string; created_at: string }[]
             set({
-              orgColorSwatches: (orgSwatches || []).map(s => ({
+              orgColorSwatches: orgSwatchData.map(s => ({
                 id: s.id,
                 color: s.color,
                 isOrg: true,

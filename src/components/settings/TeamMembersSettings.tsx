@@ -3097,9 +3097,9 @@ export function TeamMembersSettings() {
               addToast('error', 'Failed to delete workflow role')
             }
           }}
-          onManageRoles={() => {
+          onCreateRole={() => {
             setEditingWorkflowRolesUser(null)
-            setActiveTab('roles')
+            setShowCreateWorkflowRoleDialog(true)
           }}
         />
       )}
@@ -3152,9 +3152,10 @@ export function TeamMembersSettings() {
               addToast('error', 'Failed to update teams')
             }
           }}
-          onManageTeams={() => {
+          onCreateTeam={() => {
             setEditingTeamsUser(null)
-            setActiveTab('teams')
+            resetTeamForm()
+            setShowCreateTeamDialog(true)
           }}
         />
       )}
@@ -3192,7 +3193,7 @@ function WorkflowRolesModal({
   onSave,
   onUpdateRole,
   onDeleteRole,
-  onManageRoles
+  onCreateRole
 }: {
   user: OrgUser
   workflowRoles: WorkflowRoleBasic[]
@@ -3201,7 +3202,7 @@ function WorkflowRolesModal({
   onSave: (roleIds: string[]) => Promise<void>
   onUpdateRole: (roleId: string, name: string, color: string, icon: string) => Promise<void>
   onDeleteRole: (roleId: string) => Promise<void>
-  onManageRoles?: () => void
+  onCreateRole?: () => void
 }) {
   const [selectedRoleIds, setSelectedRoleIds] = useState<string[]>(userRoleIds)
   const [isSaving, setIsSaving] = useState(false)
@@ -3441,14 +3442,14 @@ function WorkflowRolesModal({
             </>
           )}
           
-          {/* Manage Roles option */}
-          {!searchQuery && onManageRoles && (
+          {/* Create new role option */}
+          {!searchQuery && onCreateRole && (
             <button
-              onClick={onManageRoles}
+              onClick={onCreateRole}
               className="w-full flex items-center justify-center gap-2 p-3 rounded-lg border border-dashed border-plm-border text-purple-400 hover:border-purple-400 hover:bg-purple-500/5 transition-colors"
             >
-              <ExternalLink size={14} />
-              Manage all roles
+              <Plus size={14} />
+              Create new role
             </button>
           )}
         </div>
@@ -3477,14 +3478,14 @@ function UserTeamsModal({
   userTeamIds,
   onClose,
   onSave,
-  onManageTeams
+  onCreateTeam
 }: {
   user: OrgUser
   allTeams: { id: string; name: string; color: string; icon: string }[]
   userTeamIds: string[]
   onClose: () => void
   onSave: (teamIds: string[]) => Promise<void>
-  onManageTeams?: () => void
+  onCreateTeam?: () => void
 }) {
   const [selectedTeamIds, setSelectedTeamIds] = useState<string[]>(userTeamIds)
   const [isSaving, setIsSaving] = useState(false)
@@ -3592,14 +3593,14 @@ function UserTeamsModal({
             })
           )}
           
-          {/* Manage Teams option */}
-          {!searchQuery && onManageTeams && (
+          {/* Create new team option */}
+          {!searchQuery && onCreateTeam && (
             <button
-              onClick={onManageTeams}
+              onClick={onCreateTeam}
               className="w-full flex items-center justify-center gap-2 p-3 rounded-lg border border-dashed border-plm-border text-plm-accent hover:border-plm-accent hover:bg-plm-accent/5 transition-colors"
             >
-              <ExternalLink size={14} />
-              Manage all teams
+              <Plus size={14} />
+              Create new team
             </button>
           )}
         </div>
