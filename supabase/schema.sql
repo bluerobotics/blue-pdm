@@ -8415,6 +8415,34 @@ BEGIN
   BEGIN ALTER PUBLICATION supabase_realtime ADD TABLE color_swatches; EXCEPTION WHEN duplicate_object THEN NULL; END;
 END $$;
 
+-- =====================================================================
+-- MIGRATION: Create default teams for existing organizations
+-- This ensures existing orgs get the New Users team and default_new_user_team_id
+-- =====================================================================
+
+DO $$
+DECLARE
+  org_record RECORD;
+  admin_user_id UUID;
+BEGIN
+  -- Find orgs that don't have a default_new_user_team_id set yet
+  FOR org_record IN 
+    SELECT id, name FROM organizations 
+    WHERE default_new_user_team_id IS NULL
+  LOOP
+    -- Find an admin user to use as created_by (or NULL if none)
+    SELECT id INTO admin_user_id 
+    FROM users 
+    WHERE org_id = org_record.id AND role = 'admin' 
+    LIMIT 1;
+    
+    -- Call the function to create default teams (it's idempotent via ON CONFLICT)
+    PERFORM create_default_permission_teams(org_record.id, admin_user_id);
+    
+    RAISE NOTICE 'Created default teams for org: % (%)', org_record.name, org_record.id;
+  END LOOP;
+END $$;
+
 -- ===================================================================== 
 -- END OF SCHEMA
 -- =====================================================================
