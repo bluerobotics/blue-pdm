@@ -2,6 +2,13 @@
 
 All notable changes to BluePLM will be documented in this file.
 
+## [2.17.4] - 2025-12-31
+
+### Changed
+- **Schema version**: Bumped to v7 (was missing from v2.17.2/v2.17.3)
+
+---
+
 ## [2.17.3] - 2025-12-31
 
 ### Added

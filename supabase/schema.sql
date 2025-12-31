@@ -49,6 +49,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 --   4 = delete_user_account now performs hard delete from auth.users (v2.16.11)
 --   5 = on_auth_user_created trigger fires on INSERT OR UPDATE (fixes invited user flow)
 --   6 = New Users team, default_new_user_team_id, join_org_by_slug RPC
+--   7 = apply_pending_team_memberships uses default team, migration for existing orgs
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -61,15 +62,15 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 -- Insert initial version if table is empty (new installations get latest version)
 INSERT INTO schema_version (id, version, description, applied_at, applied_by)
-VALUES (1, 6, 'New Users team and join_org_by_slug', NOW(), 'migration')
+VALUES (1, 7, 'Default team for invited users, migration for existing orgs', NOW(), 'migration')
 ON CONFLICT (id) DO NOTHING;
 
--- Upgrade existing installations to v6
+-- Upgrade existing installations to v7
 UPDATE schema_version 
-SET version = 6, 
-    description = 'New Users team and join_org_by_slug',
+SET version = 7, 
+    description = 'Default team for invited users, migration for existing orgs',
     applied_at = NOW()
-WHERE version < 6;
+WHERE version < 7;
 
 -- Function to update schema version (for use in migrations)
 CREATE OR REPLACE FUNCTION update_schema_version(
