@@ -69,6 +69,7 @@ export function WelcomeScreen({ onOpenRecentVault, onChangeOrg }: WelcomeScreenP
     isOfflineMode, 
     setOfflineMode,
     connectedVaults,
+    activeVaultId,
     addConnectedVault,
     removeConnectedVault,
     setConnectedVaults,
@@ -147,16 +148,21 @@ export function WelcomeScreen({ onOpenRecentVault, onChangeOrg }: WelcomeScreenP
   }, [user, isOfflineMode, hasSeenUser])
 
   // Auto-connect on mount if we have connected vaults
-  // Also re-run when vault ID changes (e.g., after stale vault cleanup and reconnection)
-  const firstVaultId = connectedVaults[0]?.id
+  // Use the persisted activeVaultId if available, otherwise fall back to first vault
+  // This prevents race conditions where the wrong vault's files show up
+  // IMPORTANT: Compute activeVault inside effect to avoid stale closures
   useEffect(() => {
-    if (connectedVaults.length > 0 && (user || isOfflineMode)) {
-      uiLog('info', 'Auto-connecting to vault', { vaultName: connectedVaults[0].name, vaultId: connectedVaults[0].id })
-      // Auto-connect to first connected vault
-      const vault = connectedVaults[0]
+    // Get fresh state inside the effect to avoid stale closure issues
+    const currentVaults = usePDMStore.getState().connectedVaults
+    const currentActiveId = usePDMStore.getState().activeVaultId
+    const vault = currentVaults.find(v => v.id === currentActiveId) || currentVaults[0]
+    
+    if (currentVaults.length > 0 && (user || isOfflineMode) && vault) {
+      uiLog('info', 'Auto-connecting to vault', { vaultName: vault.name, vaultId: vault.id, wasActiveVaultId: currentActiveId })
+      // Auto-connect to the active vault (or first vault if no active vault)
       onOpenRecentVault(vault.localPath)
     }
-  }, [user, isOfflineMode, connectedVaults.length, firstVaultId])
+  }, [user, isOfflineMode, connectedVaults.length, activeVaultId, onOpenRecentVault])
 
   // Load organization vaults with stats
   useEffect(() => {
@@ -786,7 +792,7 @@ export function WelcomeScreen({ onOpenRecentVault, onChangeOrg }: WelcomeScreenP
           {/* Start Fresh option - always visible on connecting screen */}
           <button
             onClick={handleStartFresh}
-            className="mt-3 flex items-center justify-center gap-2 text-sm text-plm-fg-muted hover:text-plm-fg transition-colors"
+            className="mt-3 inline-flex items-center justify-center gap-2 text-sm text-plm-fg-muted hover:text-plm-fg transition-colors"
           >
             <Trash2 size={14} />
             {t('welcome.startFresh', 'Clear saved data & start fresh')}

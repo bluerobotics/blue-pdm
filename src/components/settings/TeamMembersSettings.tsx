@@ -5153,11 +5153,32 @@ function CreateUserDialog({
       }
       
       // Otherwise just create pending member without email
+      const normalizedEmail = email.toLowerCase().trim()
+      
+      // First check if user is already in the org
+      const { data: existingUsers } = await supabase
+        .from('users')
+        .select('id, org_id')
+        .ilike('email', normalizedEmail)
+      
+      const existingUser = existingUsers?.[0]
+      if (existingUser?.org_id === orgId) {
+        addToast('error', 'This user is already a member of your organization')
+        return
+      }
+      
+      // Delete any existing pending record for this email (in case of re-invite)
+      await supabase
+        .from('pending_org_members')
+        .delete()
+        .eq('org_id', orgId)
+        .ilike('email', normalizedEmail)
+      
       const { error } = await supabase
         .from('pending_org_members')
         .insert({
           org_id: orgId,
-          email: email.toLowerCase().trim(),
+          email: normalizedEmail,
           full_name: fullName.trim() || null,
           role: 'viewer',  // Default role, permissions come from teams
           team_ids: selectedTeamIds,

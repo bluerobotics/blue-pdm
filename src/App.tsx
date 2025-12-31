@@ -633,14 +633,25 @@ function App() {
   // Load files from working directory and merge with PDM data
   // silent = true means no loading spinner (for background refreshes after downloads/uploads)
   const loadFiles = useCallback(async (silent: boolean = false) => {
-    window.electronAPI?.log('info', '[LoadFiles] Called with', { vaultPath, currentVaultId, silent })
-    if (!window.electronAPI || !vaultPath) return
+    // Capture vault context at start - used to detect if vault changed during async operations
+    const loadingForVaultId = currentVaultId
+    const loadingForVaultPath = vaultPath
+    
+    window.electronAPI?.log('info', '[LoadFiles] Called with', { vaultPath: loadingForVaultPath, currentVaultId: loadingForVaultId, silent })
+    if (!window.electronAPI || !loadingForVaultPath) return
     
     if (!silent) {
       setIsLoading(true)
       setStatusMessage('Loading files...')
       // Yield to UI thread so loading state renders before heavy work
       await new Promise(resolve => setTimeout(resolve, 0))
+    }
+    
+    // Helper to check if vault changed during async operation
+    const isVaultStale = () => {
+      const currentState = usePDMStore.getState()
+      const currentActive = currentState.activeVaultId || currentState.connectedVaults[0]?.id
+      return currentActive !== loadingForVaultId
     }
     
     try {
@@ -1036,6 +1047,16 @@ function App() {
         }
       }
       
+      // Check if vault changed during async operations - if so, skip setting files
+      // This prevents race conditions when auto-connect switches vaults during initial load
+      if (isVaultStale()) {
+        window.electronAPI?.log('info', '[LoadFiles] Skipping setFiles - vault changed during load', { 
+          loadedFor: loadingForVaultId, 
+          currentVault: usePDMStore.getState().activeVaultId 
+        })
+        return
+      }
+      
       setFiles(localFiles)
       setFilesLoaded(true)  // Mark that initial load is complete
       const totalFiles = localFiles.filter(f => !f.isDirectory).length
@@ -1046,6 +1067,12 @@ function App() {
       // Background tasks (non-blocking) - run after UI renders
       if (user && window.electronAPI) {
         setTimeout(async () => {
+          // Skip background tasks if vault changed
+          if (isVaultStale()) {
+            window.electronAPI?.log('info', '[LoadFiles] Skipping background tasks - vault changed')
+            return
+          }
+          
           // 1. Set read-only status on synced files
           for (const file of localFiles) {
             if (file.isDirectory || !file.pdmData) continue
@@ -1062,7 +1089,7 @@ function App() {
           if (checkedOutFileIds.length > 0 && organization) {
             const { users: userInfo } = await getCheckedOutUsers(checkedOutFileIds)
             const userInfoMap = userInfo as Record<string, { email: string; full_name: string; avatar_url?: string }>
-            if (Object.keys(userInfoMap).length > 0) {
+            if (Object.keys(userInfoMap).length > 0 && !isVaultStale()) {
               // Update files in store with user info
               const currentFiles = usePDMStore.getState().files
               const updatedFiles = currentFiles.map(f => {
@@ -1104,7 +1131,7 @@ function App() {
               // Compute hashes in background (with progress updates via IPC)
               const { results } = await window.electronAPI.computeFileHashes(hashRequests)
               
-              if (results && results.length > 0) {
+              if (results && results.length > 0 && !isVaultStale()) {
                 // Create a map for quick lookup
                 const hashMap = new Map(results.map(r => [r.relativePath, r.hash]))
                 
@@ -1167,6 +1194,12 @@ function App() {
           }
           
           const { autoDownloadCloudFiles, autoDownloadUpdates, addToast, autoDownloadExcludedFiles, activeVaultId } = usePDMStore.getState()
+          
+          // Skip auto-download if vault changed during async operations
+          if (isVaultStale()) {
+            window.electronAPI?.log('info', '[AutoDownload] Skipping - vault changed during load')
+            return
+          }
           
           if (!silent && (autoDownloadCloudFiles || autoDownloadUpdates) && organization && !isOfflineMode) {
             const latestFiles = usePDMStore.getState().files
@@ -1636,14 +1669,18 @@ function App() {
       if (!window.electronAPI) return
       
       // Get the path from vaultPath (which is synced from activeVault in store merge)
-      // If no vaultPath but we have connected vaults, use the first vault's path
-      const pathToUse = vaultPath || connectedVaults[0]?.localPath
+      // If no vaultPath but we have connected vaults, use the ACTIVE vault's path (matching activeVaultId)
+      // This ensures consistency between working directory and activeVaultId
+      const activeVault = connectedVaults.find(v => v.id === activeVaultId) || connectedVaults[0]
+      // CRITICAL: Prefer active vault's path over vaultPath to avoid showing wrong vault's files
+      // This fixes the issue where vaultPath might be stale after vault switch
+      const pathToUse = activeVault?.localPath || vaultPath
       if (!pathToUse) {
         console.log('[Init] No vault path available')
         return
       }
       
-      console.log('[Init] Setting working directory:', pathToUse)
+      console.log('[Init] Setting working directory:', pathToUse, 'activeVaultId:', activeVaultId)
       const result = await window.electronAPI.setWorkingDir(pathToUse)
       
       if (result.success) {
@@ -1656,9 +1693,9 @@ function App() {
         if (user || isOfflineMode) {
           setVaultConnected(true)
         }
-        // Update vaultPath if we used connectedVaults fallback
-        if (!vaultPath && connectedVaults[0]?.localPath) {
-          setVaultPath(connectedVaults[0].localPath)
+        // Update vaultPath to match active vault (ensures consistency)
+        if (activeVault?.localPath && vaultPath !== activeVault.localPath) {
+          setVaultPath(activeVault.localPath)
         }
       } else {
         console.error('[Init] Failed to set working directory:', result.error)
@@ -1678,7 +1715,8 @@ function App() {
     }
     
     initWorkingDir()
-  }, [user, isOfflineMode, vaultPath, connectedVaults, setVaultPath, setVaultConnected])
+  // IMPORTANT: Include activeVaultId so working directory updates when vault changes
+  }, [user, isOfflineMode, vaultPath, connectedVaults, activeVaultId, setVaultPath, setVaultConnected])
 
   // Load files when ready - wait for organization to be loaded when online
   // This prevents double-loading (once without org, once with org)

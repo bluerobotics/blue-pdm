@@ -1419,11 +1419,13 @@ export async function buildServer(): Promise<FastifyInstance> {
     const existingAuthUser = existingAuthUsers?.users?.find(u => u.email?.toLowerCase() === normalizedEmail)
     
     // Check if user exists in our users table (fully registered)
-    const { data: existingUser } = await adminClient
+    // Use ilike for case-insensitive email matching
+    const { data: existingUsers } = await adminClient
       .from('users')
       .select('id, org_id')
-      .eq('email', normalizedEmail)
-      .single()
+      .ilike('email', normalizedEmail)
+    
+    const existingUser = existingUsers?.[0]
     
     if (existingUser) {
       if (existingUser.org_id === user.org_id) {
@@ -1431,7 +1433,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       } else if (existingUser.org_id) {
         return reply.code(409).send({ error: 'Conflict', message: 'User belongs to a different organization' })
       }
-      // User exists but has no org - they can be invited
+      // User exists but has no org - they can be invited (will update their org_id when they sign in)
     }
     
     // If user exists in auth but hasn't completed signup, delete and re-invite
@@ -1459,12 +1461,13 @@ export async function buildServer(): Promise<FastifyInstance> {
       }
       pendingMemberId = existingPending.id
     } else {
-      // Delete any existing pending record for this email/org (in case of re-invite after delete)
+      // Delete any existing pending record for this email/org (in case of re-invite after removal)
+      // Use ilike for case-insensitive email matching
       await adminClient
         .from('pending_org_members')
         .delete()
         .eq('org_id', user.org_id)
-        .eq('email', normalizedEmail)
+        .ilike('email', normalizedEmail)
       
       // Create pending org member record
       const { data: pendingMember, error: pendingError } = await adminClient

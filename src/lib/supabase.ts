@@ -722,8 +722,11 @@ export async function linkUserToOrganization(userId: string, userEmail: string) 
     
     // Check pending_org_members for this email (in case trigger didn't run)
     // Fetch all relevant fields so we can apply the correct permissions
+    // Use ilike for case-insensitive matching (admin may have typed email differently)
+    // Escape any % or _ characters in email to prevent pattern matching issues
+    const escapedEmail = userEmail.toLowerCase().replace(/%/g, '\\%').replace(/_/g, '\\_')
     const pendingResponse = await fetch(
-      `${url}/rest/v1/pending_org_members?select=id,org_id,role,full_name,team_ids,vault_ids,workflow_role_ids,created_by&email=eq.${encodeURIComponent(userEmail.toLowerCase())}&claimed_at=is.null&limit=1`, 
+      `${url}/rest/v1/pending_org_members?select=id,org_id,role,full_name,team_ids,vault_ids,workflow_role_ids,created_by&email=ilike.${encodeURIComponent(escapedEmail)}&claimed_at=is.null&limit=1`, 
       {
         headers: {
           'apikey': key,
@@ -834,40 +837,55 @@ export async function linkUserToOrganization(userId: string, userEmail: string) 
     if (orgSlugToUse) {
       authLog('info', 'Found org slug in config, calling join_org_by_slug', { slug: orgSlugToUse })
       
-      try {
-        const rpcResponse = await fetch(`${url}/rest/v1/rpc/join_org_by_slug`, {
-          method: 'POST',
-          headers: {
-            'apikey': key,
-            'Authorization': `Bearer ${accessToken}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ p_org_slug: orgSlugToUse })
-        })
-        
-        const result = await rpcResponse.json()
-        authLog('info', 'join_org_by_slug result', { success: result?.success, orgName: result?.org_name })
-        
-        if (result?.success && result?.org_id) {
-          // Successfully joined - fetch the full organization
-          const orgResponse = await fetch(`${url}/rest/v1/organizations?select=*&id=eq.${result.org_id}`, {
+      // Retry up to 5 times with delay if user record isn't ready yet
+      const maxRetries = 5
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          const rpcResponse = await fetch(`${url}/rest/v1/rpc/join_org_by_slug`, {
+            method: 'POST',
             headers: {
               'apikey': key,
               'Authorization': `Bearer ${accessToken}`,
               'Content-Type': 'application/json'
-            }
+            },
+            body: JSON.stringify({ p_org_slug: orgSlugToUse })
           })
-          const orgData = await orgResponse.json()
           
-          if (orgData?.[0]) {
-            authLog('info', 'User joined org via slug', { orgName: orgData[0].name, addedToDefaultTeam: result.added_to_default_team })
-            return { org: orgData[0], error: null }
+          const result = await rpcResponse.json()
+          authLog('info', 'join_org_by_slug result', { success: result?.success, orgName: result?.org_name, retry: result?.retry, attempt })
+          
+          if (result?.success && result?.org_id) {
+            // Successfully joined - fetch the full organization
+            const orgResponse = await fetch(`${url}/rest/v1/organizations?select=*&id=eq.${result.org_id}`, {
+              headers: {
+                'apikey': key,
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+              }
+            })
+            const orgData = await orgResponse.json()
+            
+            if (orgData?.[0]) {
+              authLog('info', 'User joined org via slug', { orgName: orgData[0].name, addedToDefaultTeam: result.added_to_default_team })
+              return { org: orgData[0], error: null }
+            }
+          } else if (result?.retry && attempt < maxRetries) {
+            // User record not ready yet, wait and retry
+            authLog('info', 'User record not ready, retrying join_org_by_slug...', { attempt, maxRetries })
+            await new Promise(resolve => setTimeout(resolve, 1000 * attempt))
+            continue
+          } else if (result?.error) {
+            authLog('warn', 'join_org_by_slug failed', { error: result.error })
+            break
           }
-        } else if (result?.error) {
-          authLog('warn', 'join_org_by_slug failed', { error: result.error })
+        } catch (rpcErr) {
+          authLog('warn', 'Failed to call join_org_by_slug RPC', { error: String(rpcErr), attempt })
+          if (attempt < maxRetries) {
+            await new Promise(resolve => setTimeout(resolve, 1000 * attempt))
+            continue
+          }
         }
-      } catch (rpcErr) {
-        authLog('warn', 'Failed to call join_org_by_slug RPC', { error: String(rpcErr) })
+        break
       }
     }
     
@@ -878,28 +896,43 @@ export async function linkUserToOrganization(userId: string, userEmail: string) 
     if (allOrgs && allOrgs.length === 1) {
       authLog('info', 'Only one org in database, attempting to join via slug', { slug: allOrgs[0].slug })
       
-      try {
-        const rpcResponse = await fetch(`${url}/rest/v1/rpc/join_org_by_slug`, {
-          method: 'POST',
-          headers: {
-            'apikey': key,
-            'Authorization': `Bearer ${accessToken}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ p_org_slug: allOrgs[0].slug })
-        })
-        
-        const result = await rpcResponse.json()
-        authLog('info', 'join_org_by_slug (single org fallback) result', { success: result?.success, orgName: result?.org_name })
-        
-        if (result?.success && result?.org_id) {
-          authLog('info', 'User joined the only org in database', { orgName: allOrgs[0].name })
-          return { org: allOrgs[0], error: null }
-        } else if (result?.error) {
-          authLog('warn', 'join_org_by_slug (single org fallback) failed', { error: result.error })
+      // Retry up to 5 times with delay if user record isn't ready yet
+      const maxRetries = 5
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          const rpcResponse = await fetch(`${url}/rest/v1/rpc/join_org_by_slug`, {
+            method: 'POST',
+            headers: {
+              'apikey': key,
+              'Authorization': `Bearer ${accessToken}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ p_org_slug: allOrgs[0].slug })
+          })
+          
+          const result = await rpcResponse.json()
+          authLog('info', 'join_org_by_slug (single org fallback) result', { success: result?.success, orgName: result?.org_name, retry: result?.retry, attempt })
+          
+          if (result?.success && result?.org_id) {
+            authLog('info', 'User joined the only org in database', { orgName: allOrgs[0].name })
+            return { org: allOrgs[0], error: null }
+          } else if (result?.retry && attempt < maxRetries) {
+            // User record not ready yet, wait and retry
+            authLog('info', 'User record not ready, retrying join_org_by_slug (single org fallback)...', { attempt, maxRetries })
+            await new Promise(resolve => setTimeout(resolve, 1000 * attempt))
+            continue
+          } else if (result?.error) {
+            authLog('warn', 'join_org_by_slug (single org fallback) failed', { error: result.error })
+            break
+          }
+        } catch (rpcErr) {
+          authLog('warn', 'Failed to call join_org_by_slug for single org fallback', { error: String(rpcErr), attempt })
+          if (attempt < maxRetries) {
+            await new Promise(resolve => setTimeout(resolve, 1000 * attempt))
+            continue
+          }
         }
-      } catch (rpcErr) {
-        authLog('warn', 'Failed to call join_org_by_slug for single org fallback', { error: String(rpcErr) })
+        break
       }
     }
     
@@ -2182,6 +2215,14 @@ export async function removeUserFromOrg(
   if (targetUser.org_id !== adminOrgId) {
     return { success: false, error: 'User is not in your organization' }
   }
+  
+  // Delete any pending_org_members entries for this user's email in this org
+  // This allows the user to be re-invited later without constraint violations
+  await client
+    .from('pending_org_members')
+    .delete()
+    .eq('org_id', adminOrgId)
+    .ilike('email', targetUser.email)
   
   // Remove from org by setting org_id to null
   const { error } = await client

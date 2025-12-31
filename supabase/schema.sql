@@ -52,6 +52,9 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 --   7 = apply_pending_team_memberships uses default team, migration for existing orgs
 --   8 = RLS policy for users to see their own pending membership (fixes invite flow)
 --   9 = claim_pending_membership and apply triggers fire on UPDATE too (fixes re-login invite flow)
+--  10 = join_org_by_slug creates user record if trigger hasn't fired (fixes race condition)
+--  11 = Case-insensitive email matching for pending_org_members (fixes invite flow with different email case)
+--  12 = Block user feature and regenerate org code (security features)
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -64,15 +67,31 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 -- Insert initial version if table is empty (new installations get latest version)
 INSERT INTO schema_version (id, version, description, applied_at, applied_by)
-VALUES (1, 9, 'Invite triggers fire on UPDATE for re-login flow', NOW(), 'migration')
+VALUES (1, 12, 'Block user feature and regenerate org code', NOW(), 'migration')
 ON CONFLICT (id) DO NOTHING;
 
--- Upgrade existing installations to v9
+-- Upgrade from v11 to v12: Block user feature
+UPDATE schema_version SET
+  version = 12,
+  description = 'Block user feature and regenerate org code',
+  applied_at = NOW(),
+  applied_by = 'migration'
+WHERE version = 11;
+
+-- Upgrade from v10 to v12 (skip v11 for those who missed it)
+UPDATE schema_version SET
+  version = 12,
+  description = 'Block user feature and regenerate org code',
+  applied_at = NOW(),
+  applied_by = 'migration'
+WHERE version = 10;
+
+-- Upgrade existing installations to v10
 UPDATE schema_version 
-SET version = 9, 
-    description = 'Invite triggers fire on UPDATE for re-login flow',
+SET version = 10, 
+    description = 'join_org_by_slug creates user record if trigger hasn''t fired',
     applied_at = NOW()
-WHERE version < 9;
+WHERE version < 10;
 
 -- Function to update schema version (for use in migrations)
 CREATE OR REPLACE FUNCTION update_schema_version(
@@ -404,6 +423,38 @@ CREATE INDEX IF NOT EXISTS idx_users_org_id ON users(org_id);
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 
 -- ===========================================
+-- BLOCKED USERS (Per-organization blocklist)
+-- ===========================================
+-- Tracks users who have been blocked from an organization.
+-- Blocked users cannot rejoin via org code - they need an explicit invite.
+
+CREATE TABLE IF NOT EXISTS blocked_users (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  email TEXT NOT NULL,  -- Email of blocked user (stored lowercase)
+  blocked_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  blocked_at TIMESTAMPTZ DEFAULT NOW(),
+  reason TEXT,  -- Optional reason for blocking
+  UNIQUE(org_id, email)
+);
+
+CREATE INDEX IF NOT EXISTS idx_blocked_users_org_id ON blocked_users(org_id);
+CREATE INDEX IF NOT EXISTS idx_blocked_users_email ON blocked_users(email);
+
+-- RLS for blocked_users
+ALTER TABLE blocked_users ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Admins can view blocked users" ON blocked_users;
+CREATE POLICY "Admins can view blocked users"
+  ON blocked_users FOR SELECT
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'));
+
+DROP POLICY IF EXISTS "Admins can manage blocked users" ON blocked_users;
+CREATE POLICY "Admins can manage blocked users"
+  ON blocked_users FOR ALL
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'));
+
+-- ===========================================
 -- AUTO-SET USER ORG_ID TRIGGER (DISABLED)
 -- ===========================================
 -- Previously auto-assigned org_id based on email domain.
@@ -488,6 +539,9 @@ DECLARE
   email_domain TEXT;
   enforce_domain BOOLEAN;
   allowed_domains TEXT[];
+  auth_user_email TEXT;
+  auth_user_name TEXT;
+  auth_user_avatar TEXT;
 BEGIN
   current_user_id := auth.uid();
   
@@ -495,10 +549,41 @@ BEGIN
     RETURN json_build_object('success', false, 'error', 'Not authenticated');
   END IF;
   
-  -- Get user's current org_id and email
+  -- Get user's current org_id and email from public.users
   SELECT org_id, email INTO current_org_id, user_email
   FROM users
   WHERE id = current_user_id;
+  
+  -- If user record doesn't exist yet (trigger hasn't fired), create it now
+  -- This handles the race condition where the app calls this RPC before the trigger completes
+  IF user_email IS NULL THEN
+    -- Get user info from auth.users
+    SELECT email, 
+           COALESCE(raw_user_meta_data->>'full_name', raw_user_meta_data->>'name'),
+           COALESCE(raw_user_meta_data->>'avatar_url', raw_user_meta_data->>'picture')
+    INTO auth_user_email, auth_user_name, auth_user_avatar
+    FROM auth.users
+    WHERE id = current_user_id;
+    
+    IF auth_user_email IS NULL THEN
+      RETURN json_build_object(
+        'success', false, 
+        'error', 'Authentication error. Please sign out and sign in again.',
+        'retry', false
+      );
+    END IF;
+    
+    -- Create the user record (same logic as handle_new_user trigger)
+    INSERT INTO users (id, email, full_name, avatar_url, org_id)
+    VALUES (current_user_id, auth_user_email, auth_user_name, auth_user_avatar, NULL)
+    ON CONFLICT (id) DO UPDATE SET
+      email = EXCLUDED.email,
+      full_name = COALESCE(EXCLUDED.full_name, users.full_name),
+      avatar_url = COALESCE(EXCLUDED.avatar_url, users.avatar_url);
+    
+    -- Set the email for the rest of the function
+    user_email := auth_user_email;
+  END IF;
   
   -- If user already has an org, return error (they can't join another)
   IF current_org_id IS NOT NULL THEN
@@ -517,6 +602,18 @@ BEGIN
   
   IF target_org_id IS NULL THEN
     RETURN json_build_object('success', false, 'error', 'Organization not found');
+  END IF;
+  
+  -- Check if user is blocked from this organization
+  IF EXISTS (
+    SELECT 1 FROM blocked_users 
+    WHERE org_id = target_org_id 
+      AND LOWER(email) = LOWER(user_email)
+  ) THEN
+    RETURN json_build_object(
+      'success', false,
+      'error', 'You have been blocked from this organization. Please contact an administrator.'
+    );
   END IF;
   
   -- Check email domain enforcement if enabled
@@ -554,6 +651,161 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 GRANT EXECUTE ON FUNCTION join_org_by_slug(TEXT) TO authenticated;
 
 COMMENT ON FUNCTION join_org_by_slug IS 'Allows users to join an organization using the org slug from their org code. Adds them to the default team if configured.';
+
+-- ===========================================
+-- BLOCK/UNBLOCK USER (Admin only)
+-- ===========================================
+
+-- Block a user from the organization (admin only)
+-- Blocked users cannot rejoin via org code - they need an explicit invite
+CREATE OR REPLACE FUNCTION block_user(p_email TEXT, p_reason TEXT DEFAULT NULL)
+RETURNS JSON AS $$
+DECLARE
+  current_user_id UUID;
+  current_org_id UUID;
+  current_role user_role;
+  target_user_id UUID;
+  normalized_email TEXT;
+BEGIN
+  current_user_id := auth.uid();
+  normalized_email := LOWER(TRIM(p_email));
+  
+  -- Get current user's org and role
+  SELECT org_id, role INTO current_org_id, current_role
+  FROM users WHERE id = current_user_id;
+  
+  IF current_org_id IS NULL THEN
+    RETURN json_build_object('success', false, 'error', 'You are not a member of any organization');
+  END IF;
+  
+  IF current_role != 'admin' THEN
+    RETURN json_build_object('success', false, 'error', 'Only admins can block users');
+  END IF;
+  
+  -- Check if target user exists and is in the same org
+  SELECT id INTO target_user_id
+  FROM users
+  WHERE LOWER(email) = normalized_email AND org_id = current_org_id;
+  
+  -- Remove user from org if they're currently a member
+  IF target_user_id IS NOT NULL THEN
+    UPDATE users SET org_id = NULL, role = 'engineer'
+    WHERE id = target_user_id;
+    
+    -- Delete any pending org members entries
+    DELETE FROM pending_org_members
+    WHERE org_id = current_org_id AND LOWER(email) = normalized_email;
+  END IF;
+  
+  -- Add to blocked list (or update if already blocked)
+  INSERT INTO blocked_users (org_id, email, blocked_by, reason)
+  VALUES (current_org_id, normalized_email, current_user_id, p_reason)
+  ON CONFLICT (org_id, email) DO UPDATE SET
+    blocked_by = current_user_id,
+    blocked_at = NOW(),
+    reason = p_reason;
+  
+  RETURN json_build_object(
+    'success', true,
+    'message', 'User has been blocked from the organization'
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION block_user(TEXT, TEXT) TO authenticated;
+
+-- Unblock a user (admin only)
+CREATE OR REPLACE FUNCTION unblock_user(p_email TEXT)
+RETURNS JSON AS $$
+DECLARE
+  current_user_id UUID;
+  current_org_id UUID;
+  current_role user_role;
+  normalized_email TEXT;
+BEGIN
+  current_user_id := auth.uid();
+  normalized_email := LOWER(TRIM(p_email));
+  
+  -- Get current user's org and role
+  SELECT org_id, role INTO current_org_id, current_role
+  FROM users WHERE id = current_user_id;
+  
+  IF current_org_id IS NULL THEN
+    RETURN json_build_object('success', false, 'error', 'You are not a member of any organization');
+  END IF;
+  
+  IF current_role != 'admin' THEN
+    RETURN json_build_object('success', false, 'error', 'Only admins can unblock users');
+  END IF;
+  
+  -- Remove from blocked list
+  DELETE FROM blocked_users
+  WHERE org_id = current_org_id AND LOWER(email) = normalized_email;
+  
+  RETURN json_build_object(
+    'success', true,
+    'message', 'User has been unblocked'
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION unblock_user(TEXT) TO authenticated;
+
+-- ===========================================
+-- REGENERATE ORG SLUG (Admin only)
+-- ===========================================
+-- Generates a new random slug for the organization
+-- This invalidates all existing org codes for security
+
+CREATE OR REPLACE FUNCTION regenerate_org_slug()
+RETURNS JSON AS $$
+DECLARE
+  current_user_id UUID;
+  current_org_id UUID;
+  current_role user_role;
+  new_slug TEXT;
+  org_name TEXT;
+BEGIN
+  current_user_id := auth.uid();
+  
+  -- Get current user's org and role
+  SELECT u.org_id, u.role, o.name 
+  INTO current_org_id, current_role, org_name
+  FROM users u
+  JOIN organizations o ON o.id = u.org_id
+  WHERE u.id = current_user_id;
+  
+  IF current_org_id IS NULL THEN
+    RETURN json_build_object('success', false, 'error', 'You are not a member of any organization');
+  END IF;
+  
+  IF current_role != 'admin' THEN
+    RETURN json_build_object('success', false, 'error', 'Only admins can regenerate the organization code');
+  END IF;
+  
+  -- Generate new random slug (8 random alphanumeric characters)
+  new_slug := encode(gen_random_bytes(6), 'base64');
+  new_slug := replace(replace(new_slug, '/', ''), '+', '');
+  new_slug := substring(new_slug from 1 for 8);
+  
+  -- Update the organization slug
+  UPDATE organizations
+  SET slug = new_slug
+  WHERE id = current_org_id;
+  
+  RETURN json_build_object(
+    'success', true,
+    'new_slug', new_slug,
+    'message', 'Organization code regenerated. Share the new code with your team members.'
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION regenerate_org_slug() TO authenticated;
+
+COMMENT ON FUNCTION block_user IS 'Blocks a user from the organization. They cannot rejoin via org code and need an explicit invite.';
+COMMENT ON FUNCTION unblock_user IS 'Removes a user from the organization blocklist.';
+COMMENT ON FUNCTION regenerate_org_slug IS 'Generates a new org slug, invalidating all existing org codes for security.';
 
 -- ===========================================
 -- VAULTS
@@ -6226,10 +6478,12 @@ CREATE POLICY "Users can view pending members in their org"
 -- CRITICAL: Allow users to see their OWN pending membership before they have an org_id
 -- This is needed because when a new user signs in via invite, they don't have an org_id yet
 -- but they need to be able to find their pending membership to claim it
+-- Uses auth.jwt() ->> 'email' to get email directly from JWT (avoids permission issues with auth.users)
+-- Uses LOWER() for case-insensitive matching (admin may have typed email differently than OAuth provider stores it)
 DROP POLICY IF EXISTS "Users can see their own pending membership" ON pending_org_members;
 CREATE POLICY "Users can see their own pending membership"
   ON pending_org_members FOR SELECT
-  USING (email = (SELECT email FROM auth.users WHERE id = auth.uid()));
+  USING (LOWER(email) = LOWER(auth.jwt() ->> 'email'));
 
 DROP POLICY IF EXISTS "Admins can manage pending members" ON pending_org_members;
 CREATE POLICY "Admins can manage pending members"
@@ -6251,10 +6505,11 @@ BEGIN
     RETURN NEW;
   END IF;
   
-  -- Find any pending membership for this email
+  -- Find any pending membership for this email (case-insensitive)
+  -- Admin may have typed email differently than OAuth provider stores it
   SELECT * INTO pending
   FROM pending_org_members
-  WHERE email = NEW.email
+  WHERE LOWER(email) = LOWER(NEW.email)
     AND claimed_at IS NULL
   LIMIT 1;
   
@@ -6298,10 +6553,11 @@ BEGIN
   -- Get the user's email and org_id to find their pending membership
   SELECT email, org_id INTO user_email, user_org_id FROM users WHERE id = p_user_id;
   
-  -- Find the pending membership by email (not claimed_by, since that's set here)
+  -- Find the pending membership by email (case-insensitive)
+  -- Admin may have typed email differently than OAuth provider stores it
   SELECT * INTO pending
   FROM pending_org_members
-  WHERE email = user_email
+  WHERE LOWER(email) = LOWER(user_email)
     AND claimed_at IS NULL
   LIMIT 1;
   

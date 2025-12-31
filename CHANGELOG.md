@@ -2,6 +2,23 @@
 
 All notable changes to BluePLM will be documented in this file.
 
+## [2.18.3] - 2025-12-31
+
+### Added
+- **Block user feature**: Admins can now block users from the organization. Blocked users cannot rejoin via org code and need an explicit re-invite
+- **Regenerate org code**: Admins can regenerate the organization code/slug for security, invalidating all existing org codes
+
+### Fixed
+- **Invite flow 403 error**: Fixed RLS policy that queried `auth.users` directly (permission denied). Now uses `auth.jwt()` to get email from JWT token
+- **Case-insensitive email matching**: All invite-related email comparisons are now case-insensitive (RLS policies, triggers, and client queries)
+- **Re-invite after removal**: When removing a user from the org, their pending invite is now cleaned up properly, allowing them to be re-invited
+- **API invite validation**: API now uses case-insensitive email matching and properly cleans up old invites before creating new ones
+
+### Changed
+- **Schema version**: Bumped to v12
+
+---
+
 ## [2.18.2] - 2025-12-31
 
 ### Fixed
