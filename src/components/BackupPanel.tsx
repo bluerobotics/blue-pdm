@@ -28,6 +28,7 @@ import {
 import { usePDMStore } from '../stores/pdmStore'
 import {
   getBackupStatus,
+  getBackupConfig,
   saveBackupConfig,
   deleteSnapshot,
   runBackup,
@@ -260,8 +261,9 @@ export function BackupPanel({ isAdmin }: BackupPanelProps) {
         await handleRunBackupInternal(config)
       },
       async () => {
-        // Get latest config
-        return status?.config || null
+        // Fetch fresh config from database each time
+        // (don't use status?.config - it's a stale closure capture!)
+        return await getBackupConfig(organization.id)
       }
     )
     

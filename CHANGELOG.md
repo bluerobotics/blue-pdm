@@ -2,6 +2,13 @@
 
 All notable changes to BluePLM will be documented in this file.
 
+## [2.18.2] - 2025-12-31
+
+### Fixed
+- **Backup scheduler not triggering**: Fixed React closure bug where scheduled backups never ran because the scheduler was checking stale config state instead of fetching fresh data from the database
+
+---
+
 ## [2.18.1] - 2025-12-31
 
 ### Fixed
