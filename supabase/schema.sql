@@ -48,6 +48,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 --   3 = Added auth_providers to organizations for SSO control (v2.16.6)
 --   4 = delete_user_account now performs hard delete from auth.users (v2.16.11)
 --   5 = on_auth_user_created trigger fires on INSERT OR UPDATE (fixes invited user flow)
+--   6 = New Users team, default_new_user_team_id, join_org_by_slug RPC
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -60,15 +61,15 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 -- Insert initial version if table is empty (new installations get latest version)
 INSERT INTO schema_version (id, version, description, applied_at, applied_by)
-VALUES (1, 5, 'on_auth_user_created fires on INSERT OR UPDATE', NOW(), 'migration')
+VALUES (1, 6, 'New Users team and join_org_by_slug', NOW(), 'migration')
 ON CONFLICT (id) DO NOTHING;
 
--- Upgrade existing installations to v5
+-- Upgrade existing installations to v6
 UPDATE schema_version 
-SET version = 5, 
-    description = 'on_auth_user_created fires on INSERT OR UPDATE',
+SET version = 6, 
+    description = 'New Users team and join_org_by_slug',
     applied_at = NOW()
-WHERE version < 5;
+WHERE version < 6;
 
 -- Function to update schema version (for use in migrations)
 CREATE OR REPLACE FUNCTION update_schema_version(
@@ -213,7 +214,12 @@ CREATE TABLE IF NOT EXISTS organizations (
   auth_providers JSONB DEFAULT '{
     "users": { "google": true, "email": true, "phone": true },
     "suppliers": { "google": true, "email": true, "phone": true }
-  }'::jsonb
+  }'::jsonb,
+  
+  -- Default team for users who join via org code (not via invite)
+  -- NULL means users aren't auto-added to any team (they'll be in "Unassigned")
+  -- Set this to a team ID to auto-add new users to that team
+  default_new_user_team_id UUID
 );
 
 -- MIGRATIONS: Add columns that may be missing from existing organizations tables
@@ -235,6 +241,7 @@ DO $$ BEGIN ALTER TABLE organizations ADD COLUMN rfq_settings JSONB DEFAULT '{"d
 DO $$ BEGIN ALTER TABLE organizations ADD COLUMN module_defaults JSONB DEFAULT NULL; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE organizations ADD COLUMN serialization_settings JSONB DEFAULT '{"enabled": true, "prefix": "PN-", "suffix": "", "padding_digits": 5, "letter_count": 0, "current_counter": 0, "use_letters_before_numbers": false, "letter_prefix": "", "keepout_zones": [], "auto_apply_extensions": []}'::jsonb; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE organizations ADD COLUMN auth_providers JSONB DEFAULT '{"users": {"google": true, "email": true, "phone": true}, "suppliers": {"google": true, "email": true, "phone": true}}'::jsonb; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE organizations ADD COLUMN default_new_user_team_id UUID; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
 
 -- Index for email domain lookup
 CREATE INDEX IF NOT EXISTS idx_organizations_email_domains ON organizations USING GIN (email_domains);
@@ -458,6 +465,92 @@ END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 GRANT EXECUTE ON FUNCTION ensure_user_org_id() TO authenticated;
+
+-- ===========================================
+-- JOIN ORG BY SLUG
+-- ===========================================
+-- RPC function for users to join an organization using the org slug from their org code.
+-- This is for users who have the org code but weren't pre-invited.
+-- Optionally adds them to the default_new_user_team if configured.
+
+CREATE OR REPLACE FUNCTION join_org_by_slug(p_org_slug TEXT)
+RETURNS JSON AS $$
+DECLARE
+  current_user_id UUID;
+  current_org_id UUID;
+  target_org_id UUID;
+  target_org_name TEXT;
+  default_team_id UUID;
+  user_email TEXT;
+  email_domain TEXT;
+  enforce_domain BOOLEAN;
+  allowed_domains TEXT[];
+BEGIN
+  current_user_id := auth.uid();
+  
+  IF current_user_id IS NULL THEN
+    RETURN json_build_object('success', false, 'error', 'Not authenticated');
+  END IF;
+  
+  -- Get user's current org_id and email
+  SELECT org_id, email INTO current_org_id, user_email
+  FROM users
+  WHERE id = current_user_id;
+  
+  -- If user already has an org, return error (they can't join another)
+  IF current_org_id IS NOT NULL THEN
+    RETURN json_build_object(
+      'success', false,
+      'error', 'You are already a member of an organization'
+    );
+  END IF;
+  
+  -- Look up the organization by slug
+  SELECT id, name, email_domains, default_new_user_team_id,
+         COALESCE((settings->>'enforce_email_domain')::boolean, false)
+  INTO target_org_id, target_org_name, allowed_domains, default_team_id, enforce_domain
+  FROM organizations
+  WHERE slug = p_org_slug;
+  
+  IF target_org_id IS NULL THEN
+    RETURN json_build_object('success', false, 'error', 'Organization not found');
+  END IF;
+  
+  -- Check email domain enforcement if enabled
+  IF enforce_domain AND array_length(allowed_domains, 1) > 0 THEN
+    email_domain := split_part(user_email, '@', 2);
+    IF NOT (email_domain = ANY(allowed_domains)) THEN
+      RETURN json_build_object(
+        'success', false,
+        'error', 'Your email domain is not allowed to join this organization'
+      );
+    END IF;
+  END IF;
+  
+  -- Update user's org_id
+  UPDATE users
+  SET org_id = target_org_id
+  WHERE id = current_user_id;
+  
+  -- Add user to default team if configured
+  IF default_team_id IS NOT NULL THEN
+    INSERT INTO team_members (team_id, user_id, added_by)
+    VALUES (default_team_id, current_user_id, current_user_id)
+    ON CONFLICT (team_id, user_id) DO NOTHING;
+  END IF;
+  
+  RETURN json_build_object(
+    'success', true,
+    'org_id', target_org_id,
+    'org_name', target_org_name,
+    'added_to_default_team', default_team_id IS NOT NULL
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION join_org_by_slug(TEXT) TO authenticated;
+
+COMMENT ON FUNCTION join_org_by_slug IS 'Allows users to join an organization using the org slug from their org code. Adds them to the default team if configured.';
 
 -- ===========================================
 -- VAULTS
@@ -5546,6 +5639,7 @@ DECLARE
   v_viewers_id UUID;
   v_engineers_id UUID;
   v_admins_id UUID;
+  v_new_users_id UUID;
 BEGIN
   -- Create Viewers team
   INSERT INTO teams (org_id, name, description, color, icon, is_system, created_by)
@@ -5565,6 +5659,13 @@ BEGIN
   ON CONFLICT (org_id, name) DO UPDATE SET updated_at = NOW()
   RETURNING id INTO v_admins_id;
   
+  -- Create New Users team - default team for users joining via org code (not via invite)
+  -- Has same permissions as Engineers so new users can start working immediately
+  INSERT INTO teams (org_id, name, description, color, icon, is_system, created_by)
+  VALUES (p_org_id, 'New Users', 'Default team for new members joining via organization code. Same permissions as Engineers.', '#f59e0b', 'UserPlus', TRUE, p_created_by)
+  ON CONFLICT (org_id, name) DO UPDATE SET updated_at = NOW()
+  RETURNING id INTO v_new_users_id;
+  
   -- Get team IDs if they already existed (ON CONFLICT doesn't return id)
   IF v_viewers_id IS NULL THEN
     SELECT id INTO v_viewers_id FROM teams WHERE org_id = p_org_id AND name = 'Viewers';
@@ -5575,6 +5676,12 @@ BEGIN
   IF v_admins_id IS NULL THEN
     SELECT id INTO v_admins_id FROM teams WHERE org_id = p_org_id AND name = 'Administrators';
   END IF;
+  IF v_new_users_id IS NULL THEN
+    SELECT id INTO v_new_users_id FROM teams WHERE org_id = p_org_id AND name = 'New Users';
+  END IF;
+  
+  -- Set New Users as the default team for users joining via org code
+  UPDATE organizations SET default_new_user_team_id = v_new_users_id WHERE id = p_org_id;
   
   -- Add creator to Administrators team (org creator should always be in Administrators)
   IF p_created_by IS NOT NULL AND v_admins_id IS NOT NULL THEN
@@ -5612,6 +5719,23 @@ BEGIN
     (v_engineers_id, 'module:reviews', '{view,create,edit}', p_created_by),
     (v_engineers_id, 'module:deviations', '{view,create,edit}', p_created_by),
     (v_engineers_id, 'module:settings', '{view,edit}', p_created_by)
+  ON CONFLICT (team_id, resource) DO NOTHING;
+  
+  -- New Users permissions: same as Engineers (so new users can work immediately)
+  INSERT INTO team_permissions (team_id, resource, actions, granted_by) VALUES
+    (v_new_users_id, 'module:explorer', '{view,create,edit,delete}', p_created_by),
+    (v_new_users_id, 'module:pending', '{view,create,edit,delete}', p_created_by),
+    (v_new_users_id, 'module:history', '{view}', p_created_by),
+    (v_new_users_id, 'module:workflows', '{view,edit}', p_created_by),
+    (v_new_users_id, 'module:trash', '{view,delete}', p_created_by),
+    (v_new_users_id, 'module:items', '{view,create,edit}', p_created_by),
+    (v_new_users_id, 'module:boms', '{view,create,edit}', p_created_by),
+    (v_new_users_id, 'module:products', '{view,create,edit}', p_created_by),
+    (v_new_users_id, 'module:ecr', '{view,create,edit}', p_created_by),
+    (v_new_users_id, 'module:eco', '{view,create,edit}', p_created_by),
+    (v_new_users_id, 'module:reviews', '{view,create,edit}', p_created_by),
+    (v_new_users_id, 'module:deviations', '{view,create,edit}', p_created_by),
+    (v_new_users_id, 'module:settings', '{view,edit}', p_created_by)
   ON CONFLICT (team_id, resource) DO NOTHING;
   
   -- Admins permissions: full admin on everything
@@ -5662,7 +5786,7 @@ END $$;
 COMMENT ON TABLE job_titles IS 'Job titles are display-only labels for users. Permissions come from teams.';
 COMMENT ON TABLE user_job_titles IS 'Assignment of job titles to users (one title per user).';
 COMMENT ON FUNCTION create_default_job_titles IS 'Creates common job titles for an organization.';
-COMMENT ON FUNCTION create_default_permission_teams IS 'Creates Viewers/Engineers/Administrators teams with appropriate permissions.';
+COMMENT ON FUNCTION create_default_permission_teams IS 'Creates Viewers/Engineers/Administrators/New Users teams with appropriate permissions. Sets New Users as the default team for org code joiners.';
 
 -- ===========================================
 -- TEAM MODULE DEFAULTS

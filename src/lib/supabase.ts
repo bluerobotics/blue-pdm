@@ -821,7 +821,54 @@ export async function linkUserToOrganization(userId: string, userEmail: string) 
       }
     }
     
-    authLog('warn', 'No organization found for domain or pending membership', { domain })
+    // No pending membership found - try joining by org slug from config
+    authLog('info', 'No pending membership, trying org slug from config...')
+    
+    // Import dynamically to avoid circular dependency
+    const { loadConfig } = await import('./supabaseConfig')
+    const config = loadConfig()
+    
+    if (config?.orgSlug) {
+      authLog('info', 'Found org slug in config, calling join_org_by_slug', { slug: config.orgSlug })
+      
+      try {
+        const rpcResponse = await fetch(`${url}/rest/v1/rpc/join_org_by_slug`, {
+          method: 'POST',
+          headers: {
+            'apikey': key,
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ p_org_slug: config.orgSlug })
+        })
+        
+        const result = await rpcResponse.json()
+        authLog('info', 'join_org_by_slug result', { success: result?.success, orgName: result?.org_name })
+        
+        if (result?.success && result?.org_id) {
+          // Successfully joined - fetch the full organization
+          const orgResponse = await fetch(`${url}/rest/v1/organizations?select=*&id=eq.${result.org_id}`, {
+            headers: {
+              'apikey': key,
+              'Authorization': `Bearer ${accessToken}`,
+              'Content-Type': 'application/json'
+            }
+          })
+          const orgData = await orgResponse.json()
+          
+          if (orgData?.[0]) {
+            authLog('info', 'User joined org via slug', { orgName: orgData[0].name, addedToDefaultTeam: result.added_to_default_team })
+            return { org: orgData[0], error: null }
+          }
+        } else if (result?.error) {
+          authLog('warn', 'join_org_by_slug failed', { error: result.error })
+        }
+      } catch (rpcErr) {
+        authLog('warn', 'Failed to call join_org_by_slug RPC', { error: String(rpcErr) })
+      }
+    }
+    
+    authLog('warn', 'No organization found for domain, pending membership, or org slug', { domain })
     return { org: null, error: new Error(`No organization found for @${domain}. If you were invited, please contact your administrator.`) }
   } catch (err) {
     authLog('error', 'linkUserToOrganization failed', { error: String(err) })
