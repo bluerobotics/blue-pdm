@@ -45,6 +45,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- Version history:
 --   1 = Initial schema version tracking (v2.15.0)
 --   2 = Added workflow_roles, job_titles, pending_org_members, vault_users (v2.16.0)
+--   3 = Added auth_providers to organizations for SSO control (v2.16.6)
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -57,15 +58,15 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 -- Insert initial version if table is empty (new installations get latest version)
 INSERT INTO schema_version (id, version, description, applied_at, applied_by)
-VALUES (1, 2, 'workflow_roles, job_titles, pending_org_members, vault_users', NOW(), 'migration')
+VALUES (1, 3, 'auth_providers for SSO control', NOW(), 'migration')
 ON CONFLICT (id) DO NOTHING;
 
--- Upgrade existing v1 installations to v2
+-- Upgrade existing v1/v2 installations to v3
 UPDATE schema_version 
-SET version = 2, 
-    description = 'workflow_roles, job_titles, pending_org_members, vault_users',
+SET version = 3, 
+    description = 'auth_providers for SSO control',
     applied_at = NOW()
-WHERE version < 2;
+WHERE version < 3;
 
 -- Function to update schema version (for use in migrations)
 CREATE OR REPLACE FUNCTION update_schema_version(
@@ -203,6 +204,13 @@ CREATE TABLE IF NOT EXISTS organizations (
     "letter_prefix": "",
     "keepout_zones": [],
     "auto_apply_extensions": []
+  }'::jsonb,
+  
+  -- Auth provider settings for controlling which sign-in methods are allowed
+  -- Structure: { users: { google, email, phone }, suppliers: { google, email, phone } }
+  auth_providers JSONB DEFAULT '{
+    "users": { "google": true, "email": true, "phone": true },
+    "suppliers": { "google": true, "email": true, "phone": true }
   }'::jsonb
 );
 
@@ -224,6 +232,7 @@ DO $$ BEGIN ALTER TABLE organizations ADD COLUMN contact_email TEXT; EXCEPTION W
 DO $$ BEGIN ALTER TABLE organizations ADD COLUMN rfq_settings JSONB DEFAULT '{"default_payment_terms": "Net 30", "default_incoterms": "FOB", "default_valid_days": 30, "show_company_logo": true, "show_revision_column": true, "show_material_column": true, "show_finish_column": true, "show_notes_column": true, "terms_and_conditions": "", "footer_text": ""}'::jsonb; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE organizations ADD COLUMN module_defaults JSONB DEFAULT NULL; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE organizations ADD COLUMN serialization_settings JSONB DEFAULT '{"enabled": true, "prefix": "PN-", "suffix": "", "padding_digits": 5, "letter_count": 0, "current_counter": 0, "use_letters_before_numbers": false, "letter_prefix": "", "keepout_zones": [], "auto_apply_extensions": []}'::jsonb; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE organizations ADD COLUMN auth_providers JSONB DEFAULT '{"users": {"google": true, "email": true, "phone": true}, "suppliers": {"google": true, "email": true, "phone": true}}'::jsonb; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
 
 -- Index for email domain lookup
 CREATE INDEX IF NOT EXISTS idx_organizations_email_domains ON organizations USING GIN (email_domains);

@@ -10,6 +10,7 @@ export type SettingsTab =
   | 'teams'
   | 'team-members'
   | 'company-profile' 
+  | 'auth-providers'
   | 'serialization'
   | 'rfq' 
   | 'metadata-columns' 

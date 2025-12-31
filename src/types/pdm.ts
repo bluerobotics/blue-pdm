@@ -163,6 +163,28 @@ export interface Organization {
   serialization_settings?: SerializationSettings | null
   // Module defaults for organization members
   module_defaults?: Record<string, unknown> | null
+  // Auth provider settings
+  auth_providers?: AuthProviderSettings | null
+}
+
+// Auth provider settings for controlling which sign-in methods are allowed
+export interface AuthProviderSettings {
+  users: {
+    google: boolean
+    email: boolean
+    phone: boolean
+  }
+  suppliers: {
+    google: boolean
+    email: boolean
+    phone: boolean
+  }
+}
+
+// Default auth provider settings (all enabled)
+export const DEFAULT_AUTH_PROVIDERS: AuthProviderSettings = {
+  users: { google: true, email: true, phone: true },
+  suppliers: { google: true, email: true, phone: true }
 }
 
 // RFQ template settings

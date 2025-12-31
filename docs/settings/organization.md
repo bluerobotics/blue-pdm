@@ -61,6 +61,28 @@ Set organization details:
 - **Logo** - Company logo for branding
 - **Settings** - Organization-wide configuration
 
+## Sign-In Methods
+
+Control which authentication methods are available for your organization.
+
+### Team Members
+
+Configure sign-in options for your employees:
+- **Google Account** - Sign in with Google OAuth
+- **Email & Password** - Traditional email/password authentication
+- **Phone Number (SMS)** - Sign in via SMS verification code
+
+### Suppliers
+
+Configure sign-in options for external suppliers and partners:
+- **Google Account** - Sign in with Google OAuth
+- **Email & Password** - Traditional email/password authentication
+- **Phone Number (SMS)** - Sign in via SMS verification code
+
+!!! note "Security"
+    At least one sign-in method must remain enabled for each user type.
+    Disabling a method prevents new sign-ins but doesn't affect existing sessions.
+
 ## Serialization
 
 Configure part numbering:

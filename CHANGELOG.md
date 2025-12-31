@@ -2,6 +2,13 @@
 
 All notable changes to BluePLM will be documented in this file.
 
+## [2.16.6] - 2025-12-30
+
+### Added
+- **Sign-In Methods settings**: Admins can control which authentication providers (Google, Email, Phone) are available for team members and suppliers
+
+---
+
 ## [2.16.5] - 2025-12-30
 
 ### Added

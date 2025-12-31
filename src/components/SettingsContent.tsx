@@ -8,6 +8,7 @@ import {
   TeamsSettings,
   TeamMembersSettings,
   CompanyProfileSettings,
+  AuthProvidersSettings,
   SerializationSettings,
   RFQSettings,
   MetadataColumnsSettings,
@@ -54,6 +55,8 @@ export function SettingsContent({ activeTab }: SettingsContentProps) {
         return <TeamMembersSettings />
       case 'company-profile':
         return <CompanyProfileSettings />
+      case 'auth-providers':
+        return <AuthProvidersSettings />
       case 'serialization':
         return <SerializationSettings />
       case 'rfq':

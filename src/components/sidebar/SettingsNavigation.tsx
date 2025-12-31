@@ -33,6 +33,7 @@ const settingsSections: SettingsSection[] = [
       { id: 'vaults', label: 'Vaults' },
       { id: 'team-members', label: 'Members & Teams' },
       { id: 'company-profile', label: 'Company Profile' },
+      { id: 'auth-providers', label: 'Sign-In Methods' },
       { id: 'serialization', label: 'Serialization' },
       { id: 'metadata-columns', label: 'File Metadata' },
       { id: 'rfq', label: 'RFQ Settings' },
