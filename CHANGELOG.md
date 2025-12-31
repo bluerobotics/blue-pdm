@@ -2,6 +2,26 @@
 
 All notable changes to BluePLM will be documented in this file.
 
+## [2.17.0] - 2025-12-31
+
+### Added
+- **"New Users" default team**: New organizations automatically get a "New Users" team with Engineer-level permissions
+- **Org code join flow**: Users entering an org code can now sign in without a pre-created invite — they're automatically added to the org and default team
+- **`join_org_by_slug` RPC**: Database function for joining an organization via org slug (from org code)
+- **`default_new_user_team_id` setting**: Admins can configure which team new users (joining via org code) are auto-added to
+
+### Fixed
+- **Invited users auth flow**: `on_auth_user_created` trigger now fires on INSERT **and** UPDATE (fixes issue where `inviteUserByEmail` creates auth.users first, then user signs in)
+- **Delete account now hard deletes**: `delete_user_account` actually removes records from `auth.users` and `public.users` instead of just soft-deleting
+- **Pending membership role handling**: Improved logging shows exact role being assigned from pending_org_members
+- **Backup RPC call**: App now calls `apply_pending_team_memberships` RPC as fallback if DB trigger doesn't fire
+
+### Changed
+- **Schema version**: Bumped to v6
+- **Email domain enforcement**: `join_org_by_slug` respects email domain restrictions if configured
+
+---
+
 ## [2.16.10] - 2025-12-30
 
 ### Fixed
