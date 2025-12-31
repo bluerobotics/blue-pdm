@@ -82,7 +82,7 @@ MIT — see [LICENSE](LICENSE)
 
 <div align="center">
   <img src="./assets/blue-robotics-white-name-logo.png" width="200">
-  <p><strong>On a mission to enable the future of marine robotics</strong></p>
+  <p>Made with 💙 by Blue Robotics and contributors worldwide</p>
   <p>
     <a href="https://bluerobotics.com">Website</a> •
     <a href="https://github.com/bluerobotics">GitHub</a> •
