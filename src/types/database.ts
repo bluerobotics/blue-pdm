@@ -44,6 +44,10 @@ export interface Database {
             require_approval_for_release: boolean
             max_file_size_mb: number
           }
+          auth_providers?: {
+            users: { google: boolean; email: boolean; phone: boolean }
+            suppliers: { google: boolean; email: boolean; phone: boolean }
+          } | null
           created_at: string
         }
         Insert: {
@@ -62,6 +66,10 @@ export interface Database {
             require_approval_for_release?: boolean
             max_file_size_mb?: number
           }
+          auth_providers?: {
+            users?: { google?: boolean; email?: boolean; phone?: boolean }
+            suppliers?: { google?: boolean; email?: boolean; phone?: boolean }
+          } | null
           created_at?: string
         }
         Update: {
@@ -80,6 +88,10 @@ export interface Database {
             require_approval_for_release?: boolean
             max_file_size_mb?: number
           }
+          auth_providers?: {
+            users?: { google?: boolean; email?: boolean; phone?: boolean }
+            suppliers?: { google?: boolean; email?: boolean; phone?: boolean }
+          } | null
           created_at?: string
         }
       }

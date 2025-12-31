@@ -13,6 +13,8 @@
 
 ⚠️ **ALWAYS update version before pushing a tag.** Before creating a git tag, update `package.json` version AND add a `CHANGELOG.md` entry. The tag version must match `package.json`. Run `npm install` to update lockfile if dependencies changed.
 
+⚠️ **ALWAYS run typecheck before pushing a tag.** Run `npm run typecheck` to verify no TypeScript errors before creating and pushing a git tag.
+
 ## Tech Stack
 Frontend: React 19, TypeScript, Zustand, Tailwind CSS, Vite
 Backend: Supabase (PostgreSQL, Auth, Storage, Realtime)
