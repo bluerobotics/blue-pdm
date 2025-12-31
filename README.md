@@ -8,6 +8,7 @@ Open-source product lifecycle management for everyone who builds.
 [![Build](https://img.shields.io/github/actions/workflow/status/bluerobotics/bluePLM/release.yml)](https://github.com/bluerobotics/bluePLM/actions)
 [![Downloads](https://img.shields.io/github/downloads/bluerobotics/bluePLM/total)](https://github.com/bluerobotics/bluePLM/releases)
 [![License](https://img.shields.io/github/license/bluerobotics/bluePLM)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-blueplm.io-blue)](https://docs.blueplm.io)
 
 ![BluePLM Screenshot](assets/screenshot.png)
 
@@ -72,17 +73,6 @@ npm run build    # Production build
 | Desktop | Electron 34, React 19, TypeScript, Tailwind, Zustand |
 | Backend | Supabase (PostgreSQL, Auth, Storage, Realtime) |
 | API | Fastify, Docker, OpenAPI |
-
-## Roadmap
-
-| Feature | Description |
-|---------|-------------|
-| Engineering Change Requests | Track issues linked to files and ECOs |
-| ECO Dashboard | Progress tracking with blockers and milestones |
-| Product Catalog | Manage product info and BOM configurations |
-| Item Number Database | Part number serialization and revision tracking |
-| SolidWorks Add-in | Native toolbar and task pane integration |
-| SolidWorks Service | Headless exports and metadata extraction |
 
 ## License
 
