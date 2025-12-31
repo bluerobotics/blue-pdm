@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { FolderPlus, Loader2, HardDrive, WifiOff, LogIn, Check, Database, Link, User, Truck, Mail, Phone, ArrowLeft, Eye, EyeOff, RotateCw, X, AlertTriangle, LogOut, Trash2 } from 'lucide-react'
 import { usePDMStore, ConnectedVault } from '../stores/pdmStore'
-import { signInWithGoogle, signInWithEmail, signUpWithEmail, signInWithPhone, verifyPhoneOTP, isSupabaseConfigured, supabase, getAccessibleVaults } from '../lib/supabase'
+import { signInWithGoogle, signInWithEmail, signUpWithEmail, signInWithPhone, verifyPhoneOTP, isSupabaseConfigured, supabase, getAccessibleVaults, signOut as supabaseSignOut } from '../lib/supabase'
+import { clearConfig } from '../lib/supabaseConfig'
 import { getInitials } from '../types/pdm'
 import { logClick, logAuth } from '../lib/userActionLogger'
 import { LogViewer } from './LogViewer'
@@ -71,10 +72,13 @@ export function WelcomeScreen({ onOpenRecentVault, onChangeOrg }: WelcomeScreenP
     addConnectedVault,
     removeConnectedVault,
     setConnectedVaults,
+    setVaultPath,
+    setVaultConnected,
     addToast,
     vaultsRefreshKey,
     isConnecting: isAuthConnecting,  // Global auth connecting state
-    getEffectiveRole
+    getEffectiveRole,
+    permissionsLastUpdated  // Triggers vault reload when permissions change via realtime
   } = usePDMStore()
   const { t } = useTranslation()
   const isAdmin = getEffectiveRole() === 'admin'
@@ -250,6 +254,11 @@ export function WelcomeScreen({ onOpenRecentVault, onChangeOrg }: WelcomeScreenP
         // This handles the case where user reinstalls the app and already has vault folders
         // NOTE: We exclude stale vault paths since those are being removed (state update is async)
         if (window.electronAPI) {
+          uiLog('info', 'Checking for orphaned vault folders...', { 
+            serverVaultCount: vaultsData.length,
+            connectedVaultCount: connectedVaults.length 
+          })
+          
           const connectedPaths = new Set(
             connectedVaults
               .filter(cv => !staleVaultIds.has(cv.id)) // Exclude stale vaults being removed
@@ -259,44 +268,99 @@ export function WelcomeScreen({ onOpenRecentVault, onChangeOrg }: WelcomeScreenP
           for (const serverVault of vaultsData as any[]) {
             // Check if this server vault is already connected (with correct ID)
             const isConnected = connectedVaults.some(cv => cv.id === serverVault.id)
-            if (isConnected) continue
+            if (isConnected) {
+              uiLog('debug', 'Vault already connected, skipping', { vaultName: serverVault.name })
+              continue
+            }
             
             // Check if the expected folder path already exists on disk
             const expectedPath = buildVaultPath(platform, serverVault.slug)
+            uiLog('debug', 'Checking for orphaned vault folder', { 
+              vaultName: serverVault.name, 
+              slug: serverVault.slug,
+              expectedPath 
+            })
+            
             try {
-              const result = await window.electronAPI.setWorkingDir(expectedPath)
-              if (result.success && result.path) {
-                const normalizedPath = result.path.toLowerCase().replace(/\\/g, '/')
-                
-                // Check if this path isn't already connected under a different valid vault ID
-                // Note: stale vault paths are excluded from connectedPaths, so we can reconnect
-                // folders that were connected with an old/stale vault ID
-                if (!connectedPaths.has(normalizedPath)) {
-                  // Check if this was a stale vault path - if so, this is a reconnection after upgrade
-                  const wasStale = staleVaultPaths.has(normalizedPath)
-                  uiLog('info', wasStale ? 'Reconnecting vault after upgrade' : 'Found orphaned vault folder, auto-reconnecting', { 
-                    vaultName: serverVault.name, 
-                    vaultId: serverVault.id,
-                    path: result.path,
-                    wasStaleConnection: wasStale
-                  })
+              // Use fileExists to check without side effects, then createWorkingDir to get resolved path
+              const exists = await window.electronAPI.fileExists(expectedPath)
+              uiLog('debug', 'Folder exists check', { expectedPath, exists })
+              
+              if (exists) {
+                // Get the resolved path (handles ~ expansion on macOS/Linux)
+                const result = await window.electronAPI.createWorkingDir(expectedPath)
+                if (result.success && result.path) {
+                  const normalizedPath = result.path.toLowerCase().replace(/\\/g, '/')
                   
-                  // Auto-reconnect the vault with correct server ID
-                  const connectedVault: ConnectedVault = {
-                    id: serverVault.id,
-                    name: serverVault.name,
-                    localPath: result.path,
-                    isExpanded: true
+                  // Check if this path isn't already connected under a different valid vault ID
+                  if (!connectedPaths.has(normalizedPath)) {
+                    const wasStale = staleVaultPaths.has(normalizedPath)
+                    uiLog('info', wasStale ? 'Reconnecting vault after upgrade' : 'Found orphaned vault folder, auto-reconnecting', { 
+                      vaultName: serverVault.name, 
+                      vaultId: serverVault.id,
+                      path: result.path,
+                      wasStaleConnection: wasStale
+                    })
+                    
+                    // Auto-reconnect the vault with correct server ID
+                    const connectedVault: ConnectedVault = {
+                      id: serverVault.id,
+                      name: serverVault.name,
+                      localPath: result.path,
+                      isExpanded: true
+                    }
+                    addConnectedVault(connectedVault)
+                    addToast('success', wasStale 
+                      ? `Reconnected vault "${serverVault.name}" after upgrade`
+                      : `Found existing vault folder "${serverVault.name}" - reconnected!`)
                   }
-                  addConnectedVault(connectedVault)
-                  addToast('info', wasStale 
-                    ? `Reconnected vault "${serverVault.name}" after upgrade`
-                    : `Reconnected existing vault folder "${serverVault.name}"`)
                 }
               }
-            } catch {
-              // Folder doesn't exist, that's fine
+            } catch (err) {
+              uiLog('debug', 'Error checking vault folder', { expectedPath, error: String(err) })
             }
+          }
+          
+          // Also scan the BluePLM base folder for any unrecognized vault folders
+          // This catches cases where the folder name doesn't match any server vault slug
+          const basePath = platform === 'darwin' ? '~/Documents/BluePLM' : 
+                           platform === 'linux' ? '~/BluePLM' : 'C:\\BluePLM'
+          try {
+            const baseExists = await window.electronAPI.fileExists(basePath)
+            if (baseExists) {
+              const result = await window.electronAPI.listDirFiles(basePath)
+              if (result.success && result.files) {
+                // Get folder names (directories only)
+                const diskFolders = result.files
+                  .filter((f: any) => f.isDirectory)
+                  .map((f: any) => f.name.toLowerCase())
+                
+                // Get connected vault folder names
+                const connectedFolderNames = connectedVaults.map(cv => {
+                  const parts = cv.localPath.replace(/\\/g, '/').split('/')
+                  return parts[parts.length - 1].toLowerCase()
+                })
+                
+                // Get server vault slugs
+                const serverSlugs = (vaultsData as any[]).map(v => v.slug.toLowerCase())
+                
+                // Find folders that aren't connected and don't match any server slug
+                const unmatchedFolders = diskFolders.filter((folder: string) => 
+                  !connectedFolderNames.includes(folder) && !serverSlugs.includes(folder)
+                )
+                
+                if (unmatchedFolders.length > 0) {
+                  uiLog('warn', 'Found unmatched vault folders on disk', { 
+                    unmatchedFolders,
+                    serverSlugs,
+                    connectedFolderNames 
+                  })
+                  // Don't auto-connect these, but log them for debugging
+                }
+              }
+            }
+          } catch (err) {
+            uiLog('debug', 'Error scanning BluePLM folder', { error: String(err) })
           }
         }
       } catch (err) {
@@ -307,7 +371,7 @@ export function WelcomeScreen({ onOpenRecentVault, onChangeOrg }: WelcomeScreenP
     }
     
     loadOrgVaults()
-  }, [organization?.id, user?.id, vaultsRefreshKey, platform]) // Refresh when vaultsRefreshKey changes or user changes
+  }, [organization?.id, user?.id, vaultsRefreshKey, platform, permissionsLastUpdated]) // Refresh when vaultsRefreshKey changes, user changes, or permissions update via realtime
 
   const cancelSignIn = () => {
     uiLog('info', 'Sign in canceled by user')
@@ -515,26 +579,39 @@ export function WelcomeScreen({ onOpenRecentVault, onChangeOrg }: WelcomeScreenP
     setAuthError(null)
   }
 
-  // Clear all saved data and start fresh
+  // Clear all saved data and start fresh (goes back to setup screen)
   const handleStartFresh = async () => {
     uiLog('info', 'Clearing all saved data for fresh start')
     
+    // Clear ALL vault-related state FIRST before sign out (sign out triggers re-render)
+    setConnectedVaults([])
+    setVaultPath(null)
+    setVaultConnected(false)
+    resetAuth()
+    setAccountType(null)
+    
     // Sign out if there's any session
     try {
-      const { signOut: supabaseSignOut } = await import('../lib/supabase')
       await supabaseSignOut()
     } catch (err) {
       uiLog('warn', 'Error signing out during fresh start', { error: String(err) })
     }
     
-    // Clear connected vaults
-    setConnectedVaults([])
+    // Clear the Supabase config to go back to setup screen
+    clearConfig()
     
-    // Reset local auth state
-    resetAuth()
-    setAccountType(null)
+    // Also clear the zustand persisted state directly to ensure clean slate
+    try {
+      localStorage.removeItem('blue-plm-storage')
+      uiLog('info', 'Cleared zustand persisted storage')
+    } catch (err) {
+      uiLog('warn', 'Error clearing zustand storage', { error: String(err) })
+    }
     
-    addToast('info', t('welcome.dataCleared', 'Saved data cleared'))
+    // Small delay to ensure localStorage writes complete, then reload
+    setTimeout(() => {
+      window.location.reload()
+    }, 100)
   }
 
   const handleOfflineMode = () => {
@@ -705,6 +782,15 @@ export function WelcomeScreen({ onOpenRecentVault, onChangeOrg }: WelcomeScreenP
           >
             {t('common.cancel')}
           </button>
+          
+          {/* Start Fresh option - always visible on connecting screen */}
+          <button
+            onClick={handleStartFresh}
+            className="mt-3 flex items-center justify-center gap-2 text-sm text-plm-fg-muted hover:text-plm-fg transition-colors"
+          >
+            <Trash2 size={14} />
+            {t('welcome.startFresh', 'Clear saved data & start fresh')}
+          </button>
         </div>
       </div>
     )
@@ -806,18 +892,6 @@ export function WelcomeScreen({ onOpenRecentVault, onChangeOrg }: WelcomeScreenP
                 </div>
               </button>
 
-              {/* Start Fresh option - clears saved session/org data */}
-              {connectedVaults.length > 0 && (
-                <div className="pt-4 border-t border-plm-border mt-4">
-                  <button
-                    onClick={handleStartFresh}
-                    className="w-full flex items-center justify-center gap-2 text-sm text-plm-fg-muted hover:text-plm-fg transition-colors py-2"
-                  >
-                    <Trash2 size={14} />
-                    {t('welcome.startFresh', 'Clear saved data & start fresh')}
-                  </button>
-                </div>
-              )}
             </div>
           )}
 
@@ -1168,17 +1242,6 @@ export function WelcomeScreen({ onOpenRecentVault, onChangeOrg }: WelcomeScreenP
                 <WifiOff size={18} />
                 {t('welcome.workOffline')}
               </button>
-
-              {/* Start Fresh option - clears saved session/org data */}
-              {connectedVaults.length > 0 && (
-                <button
-                  onClick={handleStartFresh}
-                  className="w-full flex items-center justify-center gap-2 text-sm text-plm-fg-muted hover:text-plm-fg transition-colors py-2 mt-2"
-                >
-                  <Trash2 size={14} />
-                  {t('welcome.startFresh', 'Clear saved data & start fresh')}
-                </button>
-              )}
             </div>
           )}
 
@@ -1430,17 +1493,6 @@ export function WelcomeScreen({ onOpenRecentVault, onChangeOrg }: WelcomeScreenP
               <div className="text-center text-xs text-plm-fg-muted mt-4 pt-4 border-t border-plm-border">
                 {t('welcome.supplierInviteNote')}
               </div>
-
-              {/* Start Fresh option - clears saved session/org data */}
-              {connectedVaults.length > 0 && (
-                <button
-                  onClick={handleStartFresh}
-                  className="w-full flex items-center justify-center gap-2 text-sm text-plm-fg-muted hover:text-plm-fg transition-colors py-2 mt-2"
-                >
-                  <Trash2 size={14} />
-                  {t('welcome.startFresh', 'Clear saved data & start fresh')}
-                </button>
-              )}
             </div>
           )}
 
@@ -1449,17 +1501,24 @@ export function WelcomeScreen({ onOpenRecentVault, onChangeOrg }: WelcomeScreenP
             {t('welcome.madeWith')}
           </div>
           
-          {/* Change Organization link */}
-          {onChangeOrg && (
-            <div className="text-center mt-4">
+          {/* Start Fresh & Change Organization options */}
+          <div className="text-center mt-4 space-y-2">
+            <button
+              onClick={handleStartFresh}
+              className="flex items-center justify-center gap-1.5 text-xs text-plm-fg-muted hover:text-plm-fg transition-colors mx-auto"
+            >
+              <Trash2 size={12} />
+              {t('welcome.clearSession', 'Clear session & start fresh')}
+            </button>
+            {onChangeOrg && (
               <button
                 onClick={onChangeOrg}
                 className="text-xs text-plm-fg-muted hover:text-plm-fg transition-colors underline"
               >
                 {t('welcome.changeOrganization', 'Change Organization')}
               </button>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </div>
     )

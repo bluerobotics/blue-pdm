@@ -43,6 +43,14 @@ let filesChannel: RealtimeChannel | null = null
 let activityChannel: RealtimeChannel | null = null
 let organizationChannel: RealtimeChannel | null = null
 let colorSwatchesChannel: RealtimeChannel | null = null
+let permissionsChannel: RealtimeChannel | null = null
+
+// Callback type for permission/access changes
+type PermissionChangeCallback = (
+  changeType: 'vault_access' | 'team_vault_access' | 'team_members' | 'user_permissions',
+  eventType: 'INSERT' | 'UPDATE' | 'DELETE',
+  userId?: string
+) => void
 
 /**
  * Subscribe to real-time file changes for an organization
@@ -273,6 +281,131 @@ export function subscribeToColorSwatches(
 }
 
 /**
+ * Subscribe to permission-related changes for a user
+ * 
+ * Updates are instant for:
+ * - vault_access: Individual user vault access grants/revocations
+ * - team_vault_access: Team-level vault access changes
+ * - team_members: User added/removed from teams
+ * - user_permissions: Individual permission changes
+ * 
+ * This ensures users see access changes immediately without refreshing.
+ * The callback is fired with the change type so the app can reload the appropriate data.
+ */
+export function subscribeToPermissions(
+  userId: string,
+  _orgId: string,  // Reserved for future org-level filtering
+  onPermissionChange: PermissionChangeCallback
+): () => void {
+  // Unsubscribe from previous channel if exists
+  if (permissionsChannel) {
+    permissionsChannel.unsubscribe()
+  }
+
+  // Create a single channel that listens to multiple tables
+  // We use the org filter where available, and filter by user in the callback
+  permissionsChannel = supabase
+    .channel(`permissions:${userId}`)
+    // Individual vault access changes for this user
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'vault_access',
+        filter: `user_id=eq.${userId}`
+      },
+      (payload) => {
+        const eventType = payload.eventType as 'INSERT' | 'UPDATE' | 'DELETE'
+        console.log('[Realtime] Vault access changed for user:', eventType)
+        onPermissionChange('vault_access', eventType, userId)
+      }
+    )
+    // Team vault access changes (affects user if they're in that team)
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'team_vault_access'
+      },
+      (payload) => {
+        const eventType = payload.eventType as 'INSERT' | 'UPDATE' | 'DELETE'
+        console.log('[Realtime] Team vault access changed:', eventType)
+        // We can't filter by user at the DB level, so we notify and let the app check
+        onPermissionChange('team_vault_access', eventType)
+      }
+    )
+    // Team membership changes for this user
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'team_members',
+        filter: `user_id=eq.${userId}`
+      },
+      (payload) => {
+        const eventType = payload.eventType as 'INSERT' | 'UPDATE' | 'DELETE'
+        console.log('[Realtime] Team membership changed for user:', eventType)
+        onPermissionChange('team_members', eventType, userId)
+      }
+    )
+    // Individual permission changes for this user
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'user_permissions',
+        filter: `user_id=eq.${userId}`
+      },
+      (payload) => {
+        const eventType = payload.eventType as 'INSERT' | 'UPDATE' | 'DELETE'
+        console.log('[Realtime] User permissions changed:', eventType)
+        onPermissionChange('user_permissions', eventType, userId)
+      }
+    )
+    // Also listen for user role changes (admin making someone engineer, etc)
+    .on(
+      'postgres_changes',
+      {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'users',
+        filter: `id=eq.${userId}`
+      },
+      (payload) => {
+        const newUser = payload.new as { role?: string }
+        const oldUser = payload.old as { role?: string }
+        // Only trigger if role changed
+        if (newUser?.role !== oldUser?.role) {
+          console.log('[Realtime] User role changed:', oldUser?.role, '→', newUser?.role)
+          onPermissionChange('user_permissions', 'UPDATE', userId)
+        }
+      }
+    )
+    .subscribe((status) => {
+      console.log('[Realtime] Permissions subscription status:', status)
+    })
+
+  // Return unsubscribe function
+  return () => {
+    if (permissionsChannel) {
+      permissionsChannel.unsubscribe()
+      permissionsChannel = null
+    }
+  }
+}
+
+/**
+ * Check if permissions realtime is connected
+ */
+export function isPermissionsRealtimeConnected(): boolean {
+  return permissionsChannel !== null
+}
+
+/**
  * Unsubscribe from all realtime channels
  */
 export function unsubscribeAll() {
@@ -291,6 +424,10 @@ export function unsubscribeAll() {
   if (colorSwatchesChannel) {
     colorSwatchesChannel.unsubscribe()
     colorSwatchesChannel = null
+  }
+  if (permissionsChannel) {
+    permissionsChannel.unsubscribe()
+    permissionsChannel = null
   }
 }
 

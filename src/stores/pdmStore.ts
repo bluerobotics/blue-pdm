@@ -249,6 +249,7 @@ interface PDMState {
   userTeams: Array<{ id: string; name: string; color: string; icon: string }> | null
   userPermissions: Record<string, string[]> | null  // resource -> actions
   permissionsLoaded: boolean
+  permissionsLastUpdated: number  // Timestamp to trigger vault/permission reload via realtime
   
   // Vault (legacy single vault)
   vaultPath: string | null
@@ -798,6 +799,7 @@ export const usePDMStore = create<PDMState>()(
       userTeams: null,
       userPermissions: null,
       permissionsLoaded: false,
+      permissionsLastUpdated: 0,
       
       // Onboarding (first app boot)
       onboardingComplete: false,

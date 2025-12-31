@@ -21,7 +21,7 @@ import { supabase } from './supabase'
 
 // The schema version this app version expects
 // Increment this when releasing app updates that require schema changes
-export const EXPECTED_SCHEMA_VERSION = 7
+export const EXPECTED_SCHEMA_VERSION = 9
 
 // Minimum schema version that will still work (for soft warnings vs hard errors)
 // Set this to allow some backwards compatibility
@@ -36,6 +36,8 @@ export const VERSION_DESCRIPTIONS: Record<number, string> = {
   5: 'on_auth_user_created trigger fires on INSERT OR UPDATE (fixes invited user flow)',
   6: 'New Users team, default_new_user_team_id, join_org_by_slug RPC',
   7: 'Invited users use default team when no teams specified, migration for existing orgs',
+  8: 'RLS policy for users to see their own pending membership (fixes invite flow)',
+  9: 'Invite triggers fire on UPDATE for re-login flow',
 }
 
 export interface SchemaVersionInfo {

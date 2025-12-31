@@ -50,6 +50,8 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 --   5 = on_auth_user_created trigger fires on INSERT OR UPDATE (fixes invited user flow)
 --   6 = New Users team, default_new_user_team_id, join_org_by_slug RPC
 --   7 = apply_pending_team_memberships uses default team, migration for existing orgs
+--   8 = RLS policy for users to see their own pending membership (fixes invite flow)
+--   9 = claim_pending_membership and apply triggers fire on UPDATE too (fixes re-login invite flow)
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -62,15 +64,15 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 -- Insert initial version if table is empty (new installations get latest version)
 INSERT INTO schema_version (id, version, description, applied_at, applied_by)
-VALUES (1, 7, 'Default team for invited users, migration for existing orgs', NOW(), 'migration')
+VALUES (1, 9, 'Invite triggers fire on UPDATE for re-login flow', NOW(), 'migration')
 ON CONFLICT (id) DO NOTHING;
 
--- Upgrade existing installations to v7
+-- Upgrade existing installations to v9
 UPDATE schema_version 
-SET version = 7, 
-    description = 'Default team for invited users, migration for existing orgs',
+SET version = 9, 
+    description = 'Invite triggers fire on UPDATE for re-login flow',
     applied_at = NOW()
-WHERE version < 7;
+WHERE version < 9;
 
 -- Function to update schema version (for use in migrations)
 CREATE OR REPLACE FUNCTION update_schema_version(
@@ -1206,6 +1208,12 @@ BEGIN
     NULL; -- Already added, ignore
   END;
 END $$;
+
+-- ===========================================
+-- DROP TRIGGER before sync to prevent errors from old function version
+-- The trigger will be recreated later in the schema with the fixed function
+-- ===========================================
+DROP TRIGGER IF EXISTS apply_pending_team_memberships_trigger ON users;
 
 -- ===========================================
 -- SYNC EXISTING AUTH USERS
@@ -6215,20 +6223,34 @@ CREATE POLICY "Users can view pending members in their org"
   ON pending_org_members FOR SELECT
   USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
 
+-- CRITICAL: Allow users to see their OWN pending membership before they have an org_id
+-- This is needed because when a new user signs in via invite, they don't have an org_id yet
+-- but they need to be able to find their pending membership to claim it
+DROP POLICY IF EXISTS "Users can see their own pending membership" ON pending_org_members;
+CREATE POLICY "Users can see their own pending membership"
+  ON pending_org_members FOR SELECT
+  USING (email = (SELECT email FROM auth.users WHERE id = auth.uid()));
+
 DROP POLICY IF EXISTS "Admins can manage pending members" ON pending_org_members;
 CREATE POLICY "Admins can manage pending members"
   ON pending_org_members FOR ALL
   USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid() AND role = 'admin'));
 
 -- Function to claim pending membership on user creation/login
--- NOTE: This is a BEFORE INSERT trigger, so we can modify NEW but cannot reference 
--- the new user ID in foreign keys yet. The claimed_at/claimed_by update happens
--- in apply_pending_team_memberships which runs AFTER INSERT.
+-- Runs on BEFORE INSERT or UPDATE to handle both new users and existing users signing in
+-- The claimed_at/claimed_by update happens in apply_pending_team_memberships (AFTER trigger)
 CREATE OR REPLACE FUNCTION claim_pending_membership()
 RETURNS TRIGGER AS $$
 DECLARE
   pending RECORD;
 BEGIN
+  -- Only process if user doesn't have an org yet
+  -- On INSERT: NEW.org_id will be NULL (we're about to set it)
+  -- On UPDATE: Only process if existing org_id is NULL (user needs org assignment)
+  IF NEW.org_id IS NOT NULL THEN
+    RETURN NEW;
+  END IF;
+  
   -- Find any pending membership for this email
   SELECT * INTO pending
   FROM pending_org_members
@@ -6243,18 +6265,20 @@ BEGIN
     IF pending.full_name IS NOT NULL AND NEW.full_name IS NULL THEN
       NEW.full_name := pending.full_name;
     END IF;
-    -- NOTE: Don't update pending_org_members here - user doesn't exist yet!
-    -- The claimed_at/claimed_by is set in apply_pending_team_memberships (AFTER INSERT)
+    -- NOTE: Don't update pending_org_members here - user may not exist yet on INSERT!
+    -- The claimed_at/claimed_by is set in apply_pending_team_memberships (AFTER trigger)
   END IF;
   
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- Trigger to claim pending membership before user insert
+-- Trigger to claim pending membership before user insert OR update
+-- INSERT: New user signing up
+-- UPDATE: Existing user (created during failed attempt) signing in again
 DROP TRIGGER IF EXISTS claim_pending_membership_trigger ON users;
 CREATE TRIGGER claim_pending_membership_trigger
-  BEFORE INSERT ON users
+  BEFORE INSERT OR UPDATE ON users
   FOR EACH ROW
   EXECUTE FUNCTION claim_pending_membership();
 
@@ -6264,9 +6288,9 @@ CREATE OR REPLACE FUNCTION apply_pending_team_memberships(p_user_id UUID)
 RETURNS void AS $$
 DECLARE
   pending RECORD;
-  team_id UUID;
-  vault_id UUID;
-  role_id UUID;
+  v_team_id UUID;
+  v_vault_id UUID;
+  v_role_id UUID;
   user_email TEXT;
   user_org_id UUID;
   default_team UUID;
@@ -6290,10 +6314,10 @@ BEGIN
     -- Add user to pre-assigned teams, OR to default team if none specified
     IF pending.team_ids IS NOT NULL AND array_length(pending.team_ids, 1) > 0 THEN
       -- Invited with specific teams - add to those
-      FOREACH team_id IN ARRAY pending.team_ids
+      FOREACH v_team_id IN ARRAY pending.team_ids
       LOOP
         INSERT INTO team_members (team_id, user_id, added_by)
-        VALUES (team_id, p_user_id, pending.created_by)
+        VALUES (v_team_id, p_user_id, pending.created_by)
         ON CONFLICT (team_id, user_id) DO NOTHING;
       END LOOP;
     ELSE
@@ -6311,20 +6335,20 @@ BEGIN
     
     -- Apply vault access restrictions (if any vaults specified, restrict to those)
     IF pending.vault_ids IS NOT NULL AND array_length(pending.vault_ids, 1) > 0 THEN
-      FOREACH vault_id IN ARRAY pending.vault_ids
+      FOREACH v_vault_id IN ARRAY pending.vault_ids
       LOOP
         INSERT INTO vault_access (vault_id, user_id, granted_by)
-        VALUES (vault_id, p_user_id, pending.created_by)
+        VALUES (v_vault_id, p_user_id, pending.created_by)
         ON CONFLICT (vault_id, user_id) DO NOTHING;
       END LOOP;
     END IF;
     
     -- Apply workflow role assignments
     IF pending.workflow_role_ids IS NOT NULL AND array_length(pending.workflow_role_ids, 1) > 0 THEN
-      FOREACH role_id IN ARRAY pending.workflow_role_ids
+      FOREACH v_role_id IN ARRAY pending.workflow_role_ids
       LOOP
         INSERT INTO workflow_role_members (role_id, user_id, assigned_by)
-        VALUES (role_id, p_user_id, pending.created_by)
+        VALUES (v_role_id, p_user_id, pending.created_by)
         ON CONFLICT (role_id, user_id) DO NOTHING;
       END LOOP;
     END IF;
@@ -6348,19 +6372,23 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 GRANT EXECUTE ON FUNCTION apply_pending_team_memberships TO authenticated;
 
--- Trigger to apply team memberships after user is created
+-- Trigger to apply team memberships after user is created or updated
+-- Fires on INSERT (new user) or UPDATE when org_id changes from NULL (user just joined org)
 CREATE OR REPLACE FUNCTION apply_pending_team_memberships_trigger()
 RETURNS TRIGGER AS $$
 BEGIN
-  -- Apply team memberships for the newly created user
-  PERFORM apply_pending_team_memberships(NEW.id);
+  -- On INSERT: always apply (new user)
+  -- On UPDATE: only apply if org_id was just set (changed from NULL to non-NULL)
+  IF TG_OP = 'INSERT' OR (TG_OP = 'UPDATE' AND OLD.org_id IS NULL AND NEW.org_id IS NOT NULL) THEN
+    PERFORM apply_pending_team_memberships(NEW.id);
+  END IF;
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 DROP TRIGGER IF EXISTS apply_pending_team_memberships_trigger ON users;
 CREATE TRIGGER apply_pending_team_memberships_trigger
-  AFTER INSERT ON users
+  AFTER INSERT OR UPDATE ON users
   FOR EACH ROW
   EXECUTE FUNCTION apply_pending_team_memberships_trigger();
 

@@ -5,7 +5,7 @@ import { usePDMStore } from './stores/pdmStore'
 import { SettingsContent } from './components/SettingsContent'
 import type { SettingsTab } from './types/settings'
 import { supabase, getCurrentSession, isSupabaseConfigured, getFilesLightweight, getCheckedOutUsers, linkUserToOrganization, getUserProfile, setCurrentAccessToken, registerDeviceSession, startSessionHeartbeat, stopSessionHeartbeat, signOut, syncUserSessionsOrgId, getAccessibleVaults } from './lib/supabase'
-import { subscribeToFiles, subscribeToActivity, subscribeToOrganization, subscribeToColorSwatches, unsubscribeAll } from './lib/realtime'
+import { subscribeToFiles, subscribeToActivity, subscribeToOrganization, subscribeToColorSwatches, subscribeToPermissions, unsubscribeAll } from './lib/realtime'
 import { getBackupStatus, isThisDesignatedMachine, updateHeartbeat } from './lib/backup'
 import { MenuBar } from './components/MenuBar'
 import { ActivityBar } from './components/ActivityBar'
@@ -2220,6 +2220,34 @@ function App() {
       }
     })
     
+    // Subscribe to permission changes (vault access, team membership, etc.)
+    // This ensures users see access changes immediately when an admin modifies them
+    const currentUserId = usePDMStore.getState().user?.id
+    const unsubscribePermissions = currentUserId ? subscribeToPermissions(
+      currentUserId,
+      organization.id,
+      async (changeType, eventType) => {
+        console.log('[Realtime] Permission change:', changeType, eventType)
+        
+        // Reload user permissions from the store
+        const { loadUserPermissions } = usePDMStore.getState()
+        await loadUserPermissions()
+        
+        // Show toast to inform user their access changed
+        const messages: Record<string, string> = {
+          'vault_access': 'Your vault access has been updated',
+          'team_vault_access': 'Team vault access has been updated',
+          'team_members': 'Your team membership has been updated',
+          'user_permissions': 'Your permissions have been updated'
+        }
+        addToast('info', messages[changeType] || 'Your access has been updated')
+        
+        // Trigger a refresh of the vault list in WelcomeScreen by updating a timestamp
+        // Components watching this will know to reload
+        usePDMStore.setState({ permissionsLastUpdated: Date.now() })
+      }
+    ) : () => {}
+    
     return () => {
       console.log('[Realtime] Cleaning up subscriptions')
       // Clear any pending notification timeout
@@ -2230,6 +2258,7 @@ function App() {
       unsubscribeActivity()
       unsubscribeOrg()
       unsubscribeColorSwatches()
+      unsubscribePermissions()
       unsubscribeAll()
     }
   }, [organization, isOfflineMode, setOrganization, addToast])

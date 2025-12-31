@@ -2,6 +2,25 @@
 
 All notable changes to BluePLM will be documented in this file.
 
+## [2.18.0] - 2025-12-31
+
+### Added
+- **Realtime permissions sync**: Vault access, team membership, and permission changes now sync instantly without refresh
+  - When an admin changes your vault access, you see the update immediately
+  - Team membership changes apply in real-time
+  - Role changes (admin→engineer, etc.) reflect immediately
+  - Toast notifications inform users when their access changes
+
+### Fixed
+- **Invite flow not associating organization**: Fixed RLS policy that prevented new users from seeing their pending invite (schema v8)
+- **Pending membership not applying on re-login**: Fixed triggers to fire on UPDATE, not just INSERT, so users who failed initial login can retry (schema v9)
+- **Ambiguous column reference in triggers**: Fixed `apply_pending_team_memberships` function variable naming conflict
+
+### Changed
+- **Schema version**: Bumped to v9
+
+---
+
 ## [2.17.5] - 2025-12-31
 
 ### Added
