@@ -2,6 +2,16 @@
 
 All notable changes to BluePLM will be documented in this file.
 
+## [2.19.3] - 2025-12-31
+
+### Fixed
+- **User record not created after account deletion**: Fixed critical bug where signing in after "Delete Account" would fail to create the user record in `public.users`. The `ensure_user_org_id` RPC now creates the user record if the auth trigger failed, and applies pending team memberships
+
+### Changed
+- **Schema version**: Bumped to v19
+
+---
+
 ## [2.19.2] - 2025-12-31
 
 ### Fixed

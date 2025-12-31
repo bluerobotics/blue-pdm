@@ -61,6 +61,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 --  16 = Simplified default teams: only Administrators (mandatory) and New Users (deletable)
 --  17 = admin_remove_user RPC fully removes user from org and auth.users
 --  18 = Fix invited users being added to New Users team when they have specific teams
+--  19 = ensure_user_org_id creates user record if trigger failed (fixes invite after account deletion)
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -73,15 +74,15 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 -- Insert initial version if table is empty (new installations get latest version)
 INSERT INTO schema_version (id, version, description, applied_at, applied_by)
-VALUES (1, 18, 'Fix invited users being added to New Users when they have specific teams', NOW(), 'migration')
+VALUES (1, 19, 'ensure_user_org_id creates user if trigger failed', NOW(), 'migration')
 ON CONFLICT (id) DO NOTHING;
 
 -- Update existing installations to latest version
 UPDATE schema_version SET 
-  version = 18, 
-  description = 'Fix invited users being added to New Users when they have specific teams', 
+  version = 19, 
+  description = 'ensure_user_org_id creates user if trigger failed (fixes invite after account deletion)', 
   applied_at = NOW() 
-WHERE id = 1 AND version < 18;
+WHERE id = 1 AND version < 19;
 
 -- Upgrade existing installations to v10
 UPDATE schema_version 
@@ -483,6 +484,7 @@ CREATE TRIGGER auto_set_user_org_id
 -- ENSURE USER ORG_ID RPC
 -- ===========================================
 -- RPC function the app calls on boot to check user's org_id status.
+-- Also creates the user record if it doesn't exist (handles cases where trigger failed).
 -- No longer auto-assigns based on email domain - org comes from pending_org_members or org code.
 
 CREATE OR REPLACE FUNCTION ensure_user_org_id()
@@ -491,6 +493,9 @@ DECLARE
   current_user_id UUID;
   current_org_id UUID;
   user_email TEXT;
+  auth_user RECORD;
+  pending RECORD;
+  user_exists BOOLEAN;
 BEGIN
   current_user_id := auth.uid();
   
@@ -498,10 +503,65 @@ BEGIN
     RETURN json_build_object('success', false, 'error', 'Not authenticated');
   END IF;
   
-  -- Get user's current org_id and email
+  -- Check if user record exists
   SELECT org_id, email INTO current_org_id, user_email
   FROM users
   WHERE id = current_user_id;
+  
+  user_exists := user_email IS NOT NULL;
+  
+  -- If user record doesn't exist, create it (trigger may have failed)
+  IF NOT user_exists THEN
+    -- Get user info from auth.users
+    SELECT id, email, raw_user_meta_data INTO auth_user
+    FROM auth.users
+    WHERE id = current_user_id;
+    
+    IF auth_user.id IS NULL THEN
+      RETURN json_build_object('success', false, 'error', 'Auth user not found');
+    END IF;
+    
+    -- Check for pending membership
+    SELECT * INTO pending
+    FROM pending_org_members
+    WHERE LOWER(email) = LOWER(auth_user.email)
+      AND claimed_at IS NULL
+    LIMIT 1;
+    
+    -- Create the user record
+    INSERT INTO public.users (id, email, full_name, avatar_url, org_id, role)
+    VALUES (
+      auth_user.id,
+      auth_user.email,
+      COALESCE(auth_user.raw_user_meta_data->>'full_name', auth_user.raw_user_meta_data->>'name'),
+      COALESCE(auth_user.raw_user_meta_data->>'avatar_url', auth_user.raw_user_meta_data->>'picture'),
+      pending.org_id,  -- Will be NULL if no pending membership
+      COALESCE(pending.role, 'engineer')::user_role
+    )
+    ON CONFLICT (id) DO UPDATE SET
+      email = EXCLUDED.email,
+      full_name = COALESCE(EXCLUDED.full_name, public.users.full_name),
+      avatar_url = COALESCE(EXCLUDED.avatar_url, public.users.avatar_url),
+      org_id = COALESCE(public.users.org_id, EXCLUDED.org_id),
+      role = CASE WHEN public.users.org_id IS NULL THEN EXCLUDED.role ELSE public.users.role END;
+    
+    -- If we found a pending membership, apply team memberships
+    IF pending.id IS NOT NULL THEN
+      PERFORM apply_pending_team_memberships(current_user_id);
+    END IF;
+    
+    -- Re-fetch the user record
+    SELECT org_id, email INTO current_org_id, user_email
+    FROM users
+    WHERE id = current_user_id;
+    
+    RETURN json_build_object(
+      'success', true,
+      'created_user', true,
+      'has_org', current_org_id IS NOT NULL,
+      'org_id', current_org_id
+    );
+  END IF;
   
   -- If user has an org_id, return success
   IF current_org_id IS NOT NULL THEN

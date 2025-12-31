@@ -634,6 +634,41 @@ export async function linkUserToOrganization(userId: string, userEmail: string) 
       }
     }
     
+    // If user record still doesn't exist, call ensure_user_org_id RPC to create it
+    // This handles cases where the auth trigger failed (e.g., after account deletion)
+    if (!userProfile) {
+      authLog('info', 'User record not found after retries, calling ensure_user_org_id RPC')
+      try {
+        const ensureResponse = await fetch(`${url}/rest/v1/rpc/ensure_user_org_id`, {
+          method: 'POST',
+          headers: {
+            'apikey': key,
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json'
+          },
+          body: '{}'
+        })
+        const ensureResult = await ensureResponse.json()
+        authLog('info', 'ensure_user_org_id result', ensureResult)
+        
+        if (ensureResult?.created_user) {
+          // Re-fetch user profile now that it exists
+          const userResponse = await fetch(`${url}/rest/v1/users?select=org_id&id=eq.${userId}`, {
+            headers: {
+              'apikey': key,
+              'Authorization': `Bearer ${accessToken}`,
+              'Content-Type': 'application/json'
+            }
+          })
+          const userData = await userResponse.json()
+          userProfile = userData?.[0] || null
+          authLog('info', 'Re-fetched user profile after creation', { hasProfile: !!userProfile, orgId: userProfile?.org_id?.substring(0, 8) + '...' })
+        }
+      } catch (ensureErr) {
+        authLog('warn', 'ensure_user_org_id RPC failed', { error: String(ensureErr) })
+      }
+    }
+    
     authLog('info', 'User profile lookup result', { 
       hasProfile: !!userProfile, 
       hasOrgId: !!userProfile?.org_id,
