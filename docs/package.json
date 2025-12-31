@@ -1,5 +1,6 @@
 {
   "name": "blueplm-docs",
+  "type": "module",
   "private": true,
   "scripts": {
     "dev": "vitepress dev",
