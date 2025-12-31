@@ -8,6 +8,7 @@ You need:
 - A [Supabase](https://supabase.com) account (free tier works)
 - BluePLM installed on your computer
 - (Optional) A Google Cloud account for Google Sign-In
+- (Recommended) An email provider account ([Resend](https://resend.com) or [SendGrid](https://sendgrid.com)) for reliable invite emails
 
 ## Step 1: Create a Supabase Project
 
@@ -236,27 +237,122 @@ See the [API README](https://github.com/bluerobotics/bluePLM/tree/main/api) for:
 - Fly.io deployment
 - Self-hosted Docker
 
-## Step 11: Customize Email Templates (Optional)
+## Step 11: Configure Email Delivery (Recommended)
 
-BluePLM includes branded email templates for authentication emails.
+By default, Supabase uses their shared email domain (`noreply@mail.app.supabase.io`) which often lands in spam. Configure a custom SMTP provider for reliable email delivery.
+
+### Option A: Resend (Recommended)
+
+[Resend](https://resend.com) offers 100 free emails/day and easy setup.
+
+#### 1. Set Up Resend
+
+1. Sign up at [resend.com](https://resend.com)
+2. Go to **Domains** → **Add Domain**
+3. Enter your domain (e.g., `blueplm.io` or `yourcompany.com`)
+4. Add the DNS records Resend provides to your domain registrar
+5. Wait for verification (~5 minutes)
+6. Go to **API Keys** → **Create API Key** and copy it
+
+#### 2. Configure in Supabase
+
+1. Go to **Project Settings** → **Authentication**
+2. Scroll to **SMTP Settings** → Toggle **Enable Custom SMTP**
+3. Fill in:
+
+| Field | Value |
+|-------|-------|
+| **Host** | `smtp.resend.com` |
+| **Port** | `465` |
+| **Username** | `resend` |
+| **Password** | Your API key (e.g., `re_xxxxxxxxx...`) |
+| **Sender email** | `noreply@yourdomain.com` |
+| **Sender name** | `BluePLM` |
+
+4. Click **Save**
+
+### Option B: SendGrid
+
+[SendGrid](https://sendgrid.com) also offers a free tier (100 emails/day).
+
+1. Sign up and verify your domain
+2. Create an API key with Mail Send permissions
+3. Use these SMTP settings:
+
+| Field | Value |
+|-------|-------|
+| **Host** | `smtp.sendgrid.net` |
+| **Port** | `465` |
+| **Username** | `apikey` |
+| **Password** | Your API key |
+| **Sender email** | `noreply@yourdomain.com` |
+| **Sender name** | `BluePLM` |
+
+::: tip Test Your Configuration
+After setup, invite yourself (using a different email) to verify emails arrive in the inbox, not spam.
+:::
+
+## Step 12: Set Up Email Templates (Required for Invites)
+
+BluePLM includes branded email templates for authentication emails. **The invite template is required** — it displays the Organization Code directly in the email so invited users can copy/paste it into BluePLM.
+
+::: warning Required for User Invites
+Without the invite template, users won't see their Organization Code in the invite email. Set this up before inviting team members.
+:::
+
+### Set Up the Invite Template
 
 1. Go to **Authentication** → **Email Templates** in Supabase Dashboard
-2. For each template type, copy the HTML from [`supabase/email-templates/`](https://github.com/bluerobotics/bluePLM/tree/main/supabase/email-templates)
-3. Update the **Subject** line as noted in the [template README](https://github.com/bluerobotics/bluePLM/blob/main/supabase/email-templates/README.md)
+2. Select **Invite user**
+3. Set **Subject** to: `You've been invited to BluePLM`
+4. Copy the HTML from [`supabase/email-templates/invite-user.html`](https://github.com/bluerobotics/bluePLM/blob/main/supabase/email-templates/invite-user.html)
+5. Paste into the **Body (HTML)** field
+6. Click **Save**
 
-Available templates:
-- Confirm signup
-- Magic link
-- Change email
-- Reset password
-- Invite user
+The invite email will now show:
+- Organization name
+- **Organization Code** (copyable) — users paste this into BluePLM
+- Download instructions
+- Link to blueplm.io/downloads
+
+### Other Templates (Optional)
+
+For consistent branding, you can also update these templates from [`supabase/email-templates/`](https://github.com/bluerobotics/bluePLM/tree/main/supabase/email-templates):
+
+| Template | Subject Line |
+|----------|--------------|
+| Confirm sign up | `Confirm your BluePLM account` |
+| Magic link | `Your BluePLM sign-in link` |
+| Change email | `Confirm your new email address` |
+| Reset password | `Reset your BluePLM password` |
 
 ## Sharing with Team Members
 
-Share the **Organization Code** generated in Step 6 with your team.
+There are two ways to add team members:
 
-Team members:
-1. Download BluePLM
+### Option A: Send Invites (Recommended)
+
+Use BluePLM's invite feature in **Settings → Members & Teams**:
+
+1. Click **Invite User**
+2. Enter their email address
+3. They receive an email with:
+   - The **Organization Code** (ready to copy)
+   - Link to download BluePLM
+   - Setup instructions
+
+This is the easiest method — users get everything they need in one email.
+
+### Option B: Share Code Manually
+
+Share the **Organization Code** generated in Step 6 directly:
+
+1. Go to **Settings → Members & Teams**
+2. Click **Show Organization Code**
+3. Send the code to team members along with download link
+
+Team members then:
+1. Download BluePLM from [blueplm.io/downloads](https://blueplm.io/downloads)
 2. Select **"I have an Organization Code"**
 3. Paste the code
 4. Sign in with Google/email/phone
@@ -284,6 +380,13 @@ Regenerate the code by disconnecting and reconnecting to Supabase in BluePLM.
 
 ### Can't sign in after running admin SQL
 Make sure you signed out and back in after running the admin setup SQL.
+
+### Invite emails going to spam
+Configure custom SMTP (Step 11). Supabase's default email domain (`noreply@mail.app.supabase.io`) is often flagged as spam.
+
+### "Service key not configured" error when inviting users
+1. Verify `SUPABASE_SERVICE_KEY` is set in your Railway environment variables
+2. **Redeploy** the API service after adding the variable (Railway doesn't auto-restart)
 
 ## Next Steps
 

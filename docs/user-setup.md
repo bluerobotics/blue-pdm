@@ -5,11 +5,24 @@ This guide is for team members joining an existing BluePLM organization.
 ## What You Need
 
 - BluePLM installed on your computer
-- An **Organization Code** from your admin
+- An **Organization Code** (from invite email or your admin)
 
 ## Step 1: Get the Organization Code
 
-Your admin will provide an Organization Code. It looks like:
+You'll receive the Organization Code in one of two ways:
+
+### If You Received an Invite Email
+
+Your admin sent you an invite email containing:
+- The **Organization Code** (copy it from the email)
+- A link to download BluePLM
+- Setup instructions
+
+Just copy the code from the email and continue to Step 2.
+
+### If You Need the Code from Your Admin
+
+Ask your admin for the Organization Code. It looks like:
 
 ```
 PDM-XXXX-XXXX-XXXX...

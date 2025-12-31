@@ -22,7 +22,7 @@
                     </svg>
                   </td>
                   <td style="vertical-align: middle;">
-                    <span style="color: #f1f5f9; font-size: 22px; font-weight: 600; letter-spacing: -0.3px;">bluePLM</span>
+                    <span style="color: #f1f5f9; font-size: 22px; font-weight: 600; letter-spacing: -0.3px;">BluePLM</span>
                   </td>
                 </tr>
               </table>
@@ -31,20 +31,58 @@
           </tr>
           <!-- Body -->
           <tr>
-            <td style="padding: 0 40px 32px;">
-              <p style="margin: 0 0 24px; color: #94a3b8; font-size: 16px; line-height: 1.6;">
-                You've been invited to join your team on bluePLM — the modern way to manage engineering files, revisions, and workflows.
+            <td style="padding: 0 40px 24px;">
+              <p style="margin: 0 0 20px; color: #94a3b8; font-size: 16px; line-height: 1.6;">
+                You've been invited to join <strong style="color: #f1f5f9;">{{ .Data.org_name }}</strong> on BluePLM — the modern way to manage engineering files, revisions, and workflows.
               </p>
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+            </td>
+          </tr>
+          <!-- Organization Code -->
+          <tr>
+            <td style="padding: 0 40px 24px;">
+              <p style="margin: 0 0 8px; color: #f1f5f9; font-size: 14px; font-weight: 600;">Your Organization Code:</p>
+              <div style="background-color: rgba(0,0,0,0.3); border: 1px solid #334155; border-radius: 8px; padding: 16px; word-break: break-all;">
+                <code style="color: #60a5fa; font-family: 'SF Mono', Monaco, 'Courier New', monospace; font-size: 12px; line-height: 1.4;">{{ .Data.org_code }}</code>
+              </div>
+              <p style="margin: 8px 0 0; color: #64748b; font-size: 12px;">Copy this code — you'll paste it into BluePLM after downloading.</p>
+            </td>
+          </tr>
+          <!-- Steps -->
+          <tr>
+            <td style="padding: 0 40px 24px;">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.2); border-radius: 8px;">
                 <tr>
-                  <td align="center">
-                    <a href="{{ .ConfirmationURL }}" style="display: inline-block; background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: #ffffff; text-decoration: none; padding: 14px 32px; border-radius: 8px; font-size: 16px; font-weight: 600; box-shadow: 0 4px 14px rgba(59, 130, 246, 0.4);">Accept Invitation</a>
+                  <td style="padding: 16px;">
+                    <p style="margin: 0 0 12px; color: #f1f5f9; font-size: 14px; font-weight: 600;">Getting started:</p>
+                    <table role="presentation" cellspacing="0" cellpadding="0">
+                      <tr>
+                        <td style="padding: 4px 0; color: #94a3b8; font-size: 13px;">1. Click "Confirm & Download" below</td>
+                      </tr>
+                      <tr>
+                        <td style="padding: 4px 0; color: #94a3b8; font-size: 13px;">2. Download BluePLM for your computer</td>
+                      </tr>
+                      <tr>
+                        <td style="padding: 4px 0; color: #94a3b8; font-size: 13px;">3. Open the app and select "I have an Organization Code"</td>
+                      </tr>
+                      <tr>
+                        <td style="padding: 4px 0; color: #94a3b8; font-size: 13px;">4. Paste the code above and sign in</td>
+                      </tr>
+                    </table>
                   </td>
                 </tr>
               </table>
-              <p style="margin: 24px 0 0; color: #64748b; font-size: 14px; line-height: 1.5; text-align: center;">
-                This invitation expires in 24 hours.
-              </p>
+            </td>
+          </tr>
+          <!-- CTA Button -->
+          <tr>
+            <td style="padding: 0 40px 32px;">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                <tr>
+                  <td align="center">
+                    <a href="{{ .ConfirmationURL }}" style="display: inline-block; background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: #ffffff; text-decoration: none; padding: 14px 32px; border-radius: 8px; font-size: 16px; font-weight: 600; box-shadow: 0 4px 14px rgba(59, 130, 246, 0.4);">Confirm & Download</a>
+                  </td>
+                </tr>
+              </table>
             </td>
           </tr>
           <!-- Footer -->
@@ -54,7 +92,7 @@
                 If you weren't expecting this invitation, you can safely ignore this email.
               </p>
               <p style="margin: 0; color: #475569; font-size: 12px;">
-                © 2025 bluePLM. All rights reserved.
+                © 2025 BluePLM. All rights reserved.
               </p>
             </td>
           </tr>

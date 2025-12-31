@@ -1,17 +1,17 @@
-# bluePLM Email Templates
+# BluePLM Email Templates
 
-Email templates for Supabase Authentication. These match the bluePLM dark theme with the stacked layers logo.
+Email templates for Supabase Authentication. These match the BluePLM dark theme with the stacked layers logo.
 
 ## Templates
 
 | File | Supabase Template | Subject Line |
 |------|-------------------|--------------|
-| `confirm-signup.html` | Confirm sign up | `Confirm your bluePLM account` |
-| `invite-user.html` | Invite user | `You've been invited to bluePLM` |
-| `magic-link.html` | Magic link | `Your bluePLM sign-in link` |
+| `confirm-signup.html` | Confirm sign up | `Confirm your BluePLM account` |
+| `invite-user.html` | Invite user | `You've been invited to BluePLM` |
+| `magic-link.html` | Magic link | `Your BluePLM sign-in link` |
 | `change-email.html` | Change email address | `Confirm your new email address` |
-| `reset-password.html` | Reset password | `Reset your bluePLM password` |
-| `reauthentication.html` | Reauthentication | `Confirm your identity - bluePLM` |
+| `reset-password.html` | Reset password | `Reset your BluePLM password` |
+| `reauthentication.html` | Reauthentication | `Confirm your identity - BluePLM` |
 
 ## How to Apply
 
@@ -22,18 +22,30 @@ Email templates for Supabase Authentication. These match the bluePLM dark theme 
    - Paste into the **Body (HTML)** field
 3. Click **Save**
 
+> ⚠️ **Important**: The invite template is required for the user invite flow to work properly. It displays the Organization Code directly in the email so users can copy/paste it into BluePLM.
+
 ## Template Variables
 
 These templates use Supabase's Go template syntax:
+
+### Standard Variables (all templates)
 
 - `{{ .ConfirmationURL }}` - The confirmation/action link
 - `{{ .Token }}` - OTP code (for SMS templates)
 - `{{ .SiteURL }}` - Your site URL
 - `{{ .Email }}` - User's email address
 
+### Invite Template Variables
+
+The invite template uses custom data passed by the BluePLM API:
+
+- `{{ .Data.org_name }}` - Organization name the user is being invited to
+- `{{ .Data.org_code }}` - Organization code for BluePLM setup (PDM-XXXX-XXXX-...)
+- `{{ .Data.invited_by }}` - Name/email of the admin who sent the invite
+
 ## Preview
 
-To preview templates locally, open the HTML files in a browser. The `{{ .ConfirmationURL }}` placeholders won't work, but you can see the styling.
+To preview templates locally, open the HTML files in a browser. The `{{ .ConfirmationURL }}` and `{{ .Data.* }}` placeholders won't render, but you can see the styling.
 
 ## Customization
 

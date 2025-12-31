@@ -2,6 +2,22 @@
 
 All notable changes to BluePLM will be documented in this file.
 
+## [2.16.8] - 2025-12-30
+
+### Added
+- **Invite email includes org code**: Users now receive the Organization Code directly in their invite email — no need to ask admin
+- **Email delivery docs**: Added SMTP setup guide (Resend/SendGrid) to prevent invite emails going to spam
+
+### Fixed
+- **Re-invite users**: API now automatically cleans up stale auth users when re-inviting, fixing "user already exists" errors
+- **API startup logging**: Shows whether service key is configured for invites
+
+### Changed
+- **Invite flow**: "Confirm & Download" button redirects to blueplm.io/downloads after account confirmation
+- **Email template**: Updated invite template displays org code with copy-friendly formatting
+
+---
+
 ## [2.16.7] - 2025-12-30
 
 ### Fixed

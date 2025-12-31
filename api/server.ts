@@ -1414,6 +1414,35 @@ export async function buildServer(): Promise<FastifyInstance> {
       auth: { autoRefreshToken: false, persistSession: false }
     })
     
+    // Check if user already exists in auth.users
+    const { data: existingAuthUsers } = await adminClient.auth.admin.listUsers()
+    const existingAuthUser = existingAuthUsers?.users?.find(u => u.email?.toLowerCase() === normalizedEmail)
+    
+    // Check if user exists in our users table (fully registered)
+    const { data: existingUser } = await adminClient
+      .from('users')
+      .select('id, org_id')
+      .eq('email', normalizedEmail)
+      .single()
+    
+    if (existingUser) {
+      if (existingUser.org_id === user.org_id) {
+        return reply.code(409).send({ error: 'Conflict', message: 'User is already a member of your organization' })
+      } else if (existingUser.org_id) {
+        return reply.code(409).send({ error: 'Conflict', message: 'User belongs to a different organization' })
+      }
+      // User exists but has no org - they can be invited
+    }
+    
+    // If user exists in auth but hasn't completed signup, delete and re-invite
+    if (existingAuthUser && !existingUser) {
+      // User was invited before but never completed signup - delete old auth user
+      const { error: deleteError } = await adminClient.auth.admin.deleteUser(existingAuthUser.id)
+      if (deleteError) {
+        fastify.log.warn({ email: normalizedEmail, error: deleteError }, 'Failed to delete stale auth user')
+      }
+    }
+    
     let pendingMemberId: string | null = null
     
     // If resending, verify pending member exists for this org
@@ -1430,6 +1459,13 @@ export async function buildServer(): Promise<FastifyInstance> {
       }
       pendingMemberId = existingPending.id
     } else {
+      // Delete any existing pending record for this email/org (in case of re-invite after delete)
+      await adminClient
+        .from('pending_org_members')
+        .delete()
+        .eq('org_id', user.org_id)
+        .eq('email', normalizedEmail)
+      
       // Create pending org member record
       const { data: pendingMember, error: pendingError } = await adminClient
         .from('pending_org_members')
@@ -1456,20 +1492,35 @@ export async function buildServer(): Promise<FastifyInstance> {
       pendingMemberId = pendingMember.id
     }
     
-    // Get organization name for invite email
+    // Get organization name and slug for invite email
     const { data: org } = await adminClient
       .from('organizations')
-      .select('name')
+      .select('name, slug')
       .eq('id', user.org_id)
       .single()
     
+    // Generate organization code for the invite
+    // Format: PDM-XXXX-XXXX-... (base64 encoded JSON with URL, key, slug)
+    const orgCodePayload = {
+      v: 1,
+      u: SUPABASE_URL,
+      k: SUPABASE_KEY,
+      s: org?.slug || ''
+    }
+    const orgCodeBase64 = Buffer.from(JSON.stringify(orgCodePayload)).toString('base64')
+    const orgCodeChunks = orgCodeBase64.match(/.{1,4}/g) || []
+    const orgCode = 'PDM-' + orgCodeChunks.join('-')
+    
     // Send invite email using Supabase Auth
+    // Include org code in email data so it can be displayed in the email template
+    // Redirect to downloads page after confirmation
     const { error: inviteError } = await adminClient.auth.admin.inviteUserByEmail(normalizedEmail, {
       data: {
         org_name: org?.name || 'your organization',
-        invited_by: user.full_name || user.email
+        invited_by: user.full_name || user.email,
+        org_code: orgCode
       },
-      redirectTo: `${process.env.APP_URL || 'https://blueplm.app'}/login`
+      redirectTo: 'https://blueplm.io/downloads'
     })
     
     if (inviteError) {
@@ -5555,6 +5606,7 @@ async function start(): Promise<void> {
 ║  Server:    http://${HOST}:${PORT.toString().padEnd(38)}║
 ║  Docs:      http://${HOST}:${PORT}/docs${''.padEnd(30)}║
 ║  Supabase:  ${SUPABASE_URL ? 'Configured ✓'.padEnd(45) : 'Not configured ✗'.padEnd(45)}║
+║  Service Key: ${SUPABASE_SERVICE_KEY ? 'Configured ✓'.padEnd(42) : 'Not configured (invites disabled) ✗'.padEnd(42)}║
 ╠══════════════════════════════════════════════════════════════╣
 ║  Features:                                                   ║
 ║    ✓ OpenAPI/Swagger documentation                           ║
