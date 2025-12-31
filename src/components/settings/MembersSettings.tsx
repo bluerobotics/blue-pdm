@@ -205,7 +205,8 @@ export function MembersSettings() {
     const config = getCurrentConfig()
     if (!config || !organization) return ''
     
-    const code = generateOrgCode(config)
+    // Always include org slug for join_org_by_slug to work for users with non-matching email domains
+    const code = generateOrgCode(config, organization.slug)
     return `You've been invited to join ${organization.name} on BluePLM!
 
 BluePLM is a Product Lifecycle Management tool for everyone who builds.
@@ -509,7 +510,8 @@ See you on the team!`
                 onClick={() => {
                   const config = getCurrentConfig()
                   if (config) {
-                    const code = generateOrgCode(config)
+                    // Always include org slug for join_org_by_slug to work
+                    const code = generateOrgCode(config, organization?.slug)
                     setOrgCode(code)
                     setShowOrgCode(true)
                   }

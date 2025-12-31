@@ -1388,7 +1388,8 @@ export function TeamMembersSettings() {
               onClick={() => {
                 const config = getCurrentConfig()
                 if (config) {
-                  setOrgCode(generateOrgCode(config))
+                  // Always include org slug from current organization for join_org_by_slug to work
+                  setOrgCode(generateOrgCode(config, organization?.slug))
                   setShowOrgCode(true)
                 }
               }}
@@ -2484,7 +2485,7 @@ export function TeamMembersSettings() {
           apiUrl={apiServerUrl}
           orgCode={(() => {
             const config = getCurrentConfig()
-            return config ? generateOrgCode(config) : undefined
+            return config ? generateOrgCode(config, organization?.slug) : undefined
           })()}
         />
       )}

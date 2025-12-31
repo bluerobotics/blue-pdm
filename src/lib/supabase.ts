@@ -828,8 +828,11 @@ export async function linkUserToOrganization(userId: string, userEmail: string) 
     const { loadConfig } = await import('./supabaseConfig')
     const config = loadConfig()
     
-    if (config?.orgSlug) {
-      authLog('info', 'Found org slug in config, calling join_org_by_slug', { slug: config.orgSlug })
+    // First try the explicit org slug from config
+    const orgSlugToUse = config?.orgSlug
+    
+    if (orgSlugToUse) {
+      authLog('info', 'Found org slug in config, calling join_org_by_slug', { slug: orgSlugToUse })
       
       try {
         const rpcResponse = await fetch(`${url}/rest/v1/rpc/join_org_by_slug`, {
@@ -839,7 +842,7 @@ export async function linkUserToOrganization(userId: string, userEmail: string) 
             'Authorization': `Bearer ${accessToken}`,
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify({ p_org_slug: config.orgSlug })
+          body: JSON.stringify({ p_org_slug: orgSlugToUse })
         })
         
         const result = await rpcResponse.json()
@@ -868,7 +871,39 @@ export async function linkUserToOrganization(userId: string, userEmail: string) 
       }
     }
     
-    authLog('warn', 'No organization found for domain, pending membership, or org slug', { domain })
+    // Final fallback: if there's only ONE org in this database, join it
+    // This handles legacy org codes that don't have a slug
+    // Each organization has their own Supabase backend, so if a user has the org code,
+    // they're connecting to THAT org's backend - the only org there is the right one
+    if (allOrgs && allOrgs.length === 1) {
+      authLog('info', 'Only one org in database, attempting to join via slug', { slug: allOrgs[0].slug })
+      
+      try {
+        const rpcResponse = await fetch(`${url}/rest/v1/rpc/join_org_by_slug`, {
+          method: 'POST',
+          headers: {
+            'apikey': key,
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ p_org_slug: allOrgs[0].slug })
+        })
+        
+        const result = await rpcResponse.json()
+        authLog('info', 'join_org_by_slug (single org fallback) result', { success: result?.success, orgName: result?.org_name })
+        
+        if (result?.success && result?.org_id) {
+          authLog('info', 'User joined the only org in database', { orgName: allOrgs[0].name })
+          return { org: allOrgs[0], error: null }
+        } else if (result?.error) {
+          authLog('warn', 'join_org_by_slug (single org fallback) failed', { error: result.error })
+        }
+      } catch (rpcErr) {
+        authLog('warn', 'Failed to call join_org_by_slug for single org fallback', { error: String(rpcErr) })
+      }
+    }
+    
+    authLog('warn', 'No organization found for domain, pending membership, or org slug', { domain, orgsInDb: allOrgs?.length })
     return { org: null, error: new Error(`No organization found for @${domain}. If you were invited, please contact your administrator.`) }
   } catch (err) {
     authLog('error', 'linkUserToOrganization failed', { error: String(err) })

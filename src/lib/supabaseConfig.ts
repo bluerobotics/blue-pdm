@@ -13,12 +13,13 @@ export interface SupabaseConfig {
 
 // Generate an organization code that can be shared with team members
 // Format: base64 encoded JSON
-export function generateOrgCode(config: SupabaseConfig): string {
+// orgSlug parameter allows overriding the config's orgSlug (e.g., from current organization)
+export function generateOrgCode(config: SupabaseConfig, orgSlug?: string): string {
   const payload = {
     v: CONFIG_VERSION,
     u: config.url,
     k: config.anonKey,
-    s: config.orgSlug || ''
+    s: orgSlug || config.orgSlug || ''
   }
   
   // Encode to base64

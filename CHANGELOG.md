@@ -2,6 +2,15 @@
 
 All notable changes to BluePLM will be documented in this file.
 
+## [2.17.1] - 2025-12-31
+
+### Fixed
+- **Org code missing slug**: `generateOrgCode` now always includes the organization slug from the current org
+- **Legacy org codes without slug**: Added fallback — if org code has no slug but there's only one organization in the database, automatically join it
+- **Root cause of "no organization found"**: Users with non-matching email domains and no pending invite can now join via the org slug embedded in org codes
+
+---
+
 ## [2.17.0] - 2025-12-31
 
 ### Added
