@@ -28,11 +28,11 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Install docs dependencies
+        run: cd docs && npm ci
 
       - name: Build docs
-        run: npm run docs:build
+        run: cd docs && npm run build
 
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
