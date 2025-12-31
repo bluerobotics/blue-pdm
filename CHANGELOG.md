@@ -2,6 +2,13 @@
 
 All notable changes to BluePLM will be documented in this file.
 
+## [2.16.9] - 2025-12-30
+
+### Added
+- **API version tracking**: App now checks if deployed API version matches expected version, shows warnings in Settings → API if outdated
+
+---
+
 ## [2.16.8] - 2025-12-30
 
 ### Added

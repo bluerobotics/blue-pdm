@@ -13,11 +13,13 @@ import {
   Trash2,
   Activity,
   ExternalLink,
-  Edit2
+  Edit2,
+  AlertTriangle
 } from 'lucide-react'
 import { usePDMStore } from '../../stores/pdmStore'
 import { supabase } from '../../lib/supabase'
 import { copyToClipboard } from '../../lib/clipboard'
+import { checkApiCompatibility, EXPECTED_API_VERSION, type ApiVersionCheckResult } from '../../lib/apiVersion'
 
 // Cast supabase client to bypass known v2 type inference issues
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -49,6 +51,7 @@ export function ApiSettings() {
   const [apiStatus, setApiStatus] = useState<'unknown' | 'online' | 'offline' | 'checking'>('unknown')
   const [apiVersion, setApiVersion] = useState<string | null>(null)
   const [apiBuild, setApiBuild] = useState<string | null>(null)
+  const [versionCheck, setVersionCheck] = useState<ApiVersionCheckResult | null>(null)
   const [apiHistory, setApiHistory] = useState<ApiCallRecord[]>(() => {
     try {
       const stored = localStorage.getItem(API_HISTORY_KEY)
@@ -131,6 +134,12 @@ export function ApiSettings() {
         setApiStatus('online')
         setApiVersion(data.version || null)
         setApiBuild(data.build || null)
+        // Check version compatibility
+        const check = checkApiCompatibility(data.version || null)
+        setVersionCheck(check)
+        if (check.status !== 'current') {
+          console.log('[API] Version check:', check.status, '-', check.message)
+        }
         addApiCall('GET', '/health', response.status, duration)
       } else {
         console.log('[API] Server responded with error status:', response.status, 'latency:', duration, 'ms')
@@ -391,7 +400,16 @@ export function ApiSettings() {
                   {apiStatus === 'unknown' && 'Status Unknown'}
                 </div>
                 <div className="text-sm text-plm-fg-muted flex items-center gap-2 flex-wrap">
-                  {apiVersion && <span>v{apiVersion}</span>}
+                  {apiVersion && (
+                    <span className={versionCheck?.status === 'current' ? 'text-pdm-success' : ''}>
+                      v{apiVersion}
+                    </span>
+                  )}
+                  {versionCheck && versionCheck.status !== 'current' && (
+                    <span className="text-pdm-warning text-xs">
+                      (expected v{EXPECTED_API_VERSION})
+                    </span>
+                  )}
                   {apiBuild && (
                     <code className="px-1.5 py-0.5 bg-plm-bg-secondary rounded text-xs font-mono text-plm-accent">
                       {apiBuild}
@@ -399,6 +417,20 @@ export function ApiSettings() {
                   )}
                   {lastChecked && <span>• Checked {lastChecked.toLocaleTimeString()}</span>}
                 </div>
+                {/* Version mismatch warning */}
+                {versionCheck && versionCheck.status !== 'current' && versionCheck.status !== 'unknown' && (
+                  <div className={`mt-2 text-xs p-2 rounded flex items-start gap-2 ${
+                    versionCheck.status === 'incompatible' 
+                      ? 'bg-pdm-error/10 text-pdm-error border border-pdm-error/20' 
+                      : 'bg-pdm-warning/10 text-pdm-warning border border-pdm-warning/20'
+                  }`}>
+                    <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <div className="font-medium">{versionCheck.message}</div>
+                      {versionCheck.details && <div className="opacity-80 mt-0.5">{versionCheck.details}</div>}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
             
