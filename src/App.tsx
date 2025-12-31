@@ -37,6 +37,7 @@ import { executeTerminalCommand } from './lib/commands/parser'
 import { executeCommand } from './lib/commands'
 import { logKeyboard, logUserAction } from './lib/userActionLogger'
 import { checkSchemaCompatibility } from './lib/schemaVersion'
+import { clearConfig } from './lib/supabaseConfig'
 
 // Check if we're in performance mode (pop-out window)
 function isPerformanceMode(): boolean {
@@ -287,6 +288,16 @@ function App() {
   // Handle Supabase being configured (from SetupScreen)
   const handleSupabaseConfigured = useCallback(() => {
     setSupabaseReady(true)
+  }, [])
+
+  // Handle user wanting to change organization (go back to setup)
+  const handleChangeOrg = useCallback(async () => {
+    // Sign out first if user is signed in
+    await signOut()
+    // Clear the stored Supabase config
+    clearConfig()
+    // Reset state to show setup screen
+    setSupabaseReady(false)
   }, [])
 
   // Offline mode is a manual toggle - no automatic switching based on network status
@@ -2597,6 +2608,7 @@ function App() {
           {showWelcome ? (
             <WelcomeScreen 
               onOpenRecentVault={handleOpenRecentVault}
+              onChangeOrg={handleChangeOrg}
             />
           ) : activeView === 'settings' ? (
             /* Settings View - replaces entire main content area */

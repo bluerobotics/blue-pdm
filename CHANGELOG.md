@@ -2,6 +2,13 @@
 
 All notable changes to BluePLM will be documented in this file.
 
+## [2.17.5] - 2025-12-31
+
+### Added
+- **Change Organization option**: Added "Change Organization" link on sign-in screen to clear stored config and return to setup
+
+---
+
 ## [2.17.4] - 2025-12-31
 
 ### Changed

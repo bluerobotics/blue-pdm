@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { FolderPlus, Loader2, HardDrive, WifiOff, LogIn, Check, Database, Link, User, Truck, Mail, Phone, ArrowLeft, Eye, EyeOff, RotateCw, X, AlertTriangle, LogOut } from 'lucide-react'
+import { FolderPlus, Loader2, HardDrive, WifiOff, LogIn, Check, Database, Link, User, Truck, Mail, Phone, ArrowLeft, Eye, EyeOff, RotateCw, X, AlertTriangle, LogOut, Trash2 } from 'lucide-react'
 import { usePDMStore, ConnectedVault } from '../stores/pdmStore'
 import { signInWithGoogle, signInWithEmail, signUpWithEmail, signInWithPhone, verifyPhoneOTP, isSupabaseConfigured, supabase, getAccessibleVaults } from '../lib/supabase'
 import { getInitials } from '../types/pdm'
@@ -47,6 +47,7 @@ interface Vault {
 
 interface WelcomeScreenProps {
   onOpenRecentVault: (path: string) => void
+  onChangeOrg?: () => void
 }
 
 // Format bytes to human-readable size
@@ -58,7 +59,7 @@ function formatSize(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
 }
 
-export function WelcomeScreen({ onOpenRecentVault }: WelcomeScreenProps) {
+export function WelcomeScreen({ onOpenRecentVault, onChangeOrg }: WelcomeScreenProps) {
   const { 
     recentVaults, 
     user, 
@@ -514,6 +515,28 @@ export function WelcomeScreen({ onOpenRecentVault }: WelcomeScreenProps) {
     setAuthError(null)
   }
 
+  // Clear all saved data and start fresh
+  const handleStartFresh = async () => {
+    uiLog('info', 'Clearing all saved data for fresh start')
+    
+    // Sign out if there's any session
+    try {
+      const { signOut: supabaseSignOut } = await import('../lib/supabase')
+      await supabaseSignOut()
+    } catch (err) {
+      uiLog('warn', 'Error signing out during fresh start', { error: String(err) })
+    }
+    
+    // Clear connected vaults
+    setConnectedVaults([])
+    
+    // Reset local auth state
+    resetAuth()
+    setAccountType(null)
+    
+    addToast('info', t('welcome.dataCleared', 'Saved data cleared'))
+  }
+
   const handleOfflineMode = () => {
     setOfflineMode(true)
   }
@@ -782,6 +805,19 @@ export function WelcomeScreen({ onOpenRecentVault }: WelcomeScreenProps) {
                   </div>
                 </div>
               </button>
+
+              {/* Start Fresh option - clears saved session/org data */}
+              {connectedVaults.length > 0 && (
+                <div className="pt-4 border-t border-plm-border mt-4">
+                  <button
+                    onClick={handleStartFresh}
+                    className="w-full flex items-center justify-center gap-2 text-sm text-plm-fg-muted hover:text-plm-fg transition-colors py-2"
+                  >
+                    <Trash2 size={14} />
+                    {t('welcome.startFresh', 'Clear saved data & start fresh')}
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -1132,6 +1168,17 @@ export function WelcomeScreen({ onOpenRecentVault }: WelcomeScreenProps) {
                 <WifiOff size={18} />
                 {t('welcome.workOffline')}
               </button>
+
+              {/* Start Fresh option - clears saved session/org data */}
+              {connectedVaults.length > 0 && (
+                <button
+                  onClick={handleStartFresh}
+                  className="w-full flex items-center justify-center gap-2 text-sm text-plm-fg-muted hover:text-plm-fg transition-colors py-2 mt-2"
+                >
+                  <Trash2 size={14} />
+                  {t('welcome.startFresh', 'Clear saved data & start fresh')}
+                </button>
+              )}
             </div>
           )}
 
@@ -1383,6 +1430,17 @@ export function WelcomeScreen({ onOpenRecentVault }: WelcomeScreenProps) {
               <div className="text-center text-xs text-plm-fg-muted mt-4 pt-4 border-t border-plm-border">
                 {t('welcome.supplierInviteNote')}
               </div>
+
+              {/* Start Fresh option - clears saved session/org data */}
+              {connectedVaults.length > 0 && (
+                <button
+                  onClick={handleStartFresh}
+                  className="w-full flex items-center justify-center gap-2 text-sm text-plm-fg-muted hover:text-plm-fg transition-colors py-2 mt-2"
+                >
+                  <Trash2 size={14} />
+                  {t('welcome.startFresh', 'Clear saved data & start fresh')}
+                </button>
+              )}
             </div>
           )}
 
@@ -1390,6 +1448,18 @@ export function WelcomeScreen({ onOpenRecentVault }: WelcomeScreenProps) {
           <div className="text-center mt-12 text-xs text-plm-fg-muted">
             {t('welcome.madeWith')}
           </div>
+          
+          {/* Change Organization link */}
+          {onChangeOrg && (
+            <div className="text-center mt-4">
+              <button
+                onClick={onChangeOrg}
+                className="text-xs text-plm-fg-muted hover:text-plm-fg transition-colors underline"
+              >
+                {t('welcome.changeOrganization', 'Change Organization')}
+              </button>
+            </div>
+          )}
         </div>
       </div>
     )
