@@ -22,7 +22,7 @@ Open-source product lifecycle management for everyone who builds.
 - **ECO Management** — Engineering change orders with workflow
 - **Multi-vault** — Organize files by project, department, or client
 - **Offline Mode** — Work locally, sync when connected
-- **SolidWorks Integration** — Thumbnails, metadata, native add-in
+- **SolidWorks Integration** — Thumbnails and metadata extraction
 - **Google Drive** — Browse and edit Docs/Sheets/Slides inline
 - **REST API** — Fastify server with OpenAPI docs
 
@@ -48,16 +48,6 @@ See the [User Setup Guide](https://docs.blueplm.io/user-setup) for details.
 
 See the [Admin Setup Guide](https://docs.blueplm.io/admin-setup) for step-by-step instructions.
 
-## SolidWorks Add-in
-
-Native SolidWorks integration with toolbar buttons and task pane.
-
-1. Download `BluePLM.SolidWorks.dll` from [releases](https://github.com/bluerobotics/bluePLM/releases)
-2. Run as admin: `RegAsm.exe /codebase BluePLM.SolidWorks.dll`
-3. Restart SolidWorks and enable from Tools → Add-ins
-
-See [SolidWorks Add-in README](solidworks-addin/README.md) for details.
-
 ## Building from Source
 
 ```bash
@@ -82,7 +72,6 @@ npm run build    # Production build
 | Desktop | Electron 34, React 19, TypeScript, Tailwind, Zustand |
 | Backend | Supabase (PostgreSQL, Auth, Storage, Realtime) |
 | API | Fastify, Docker, OpenAPI |
-| SolidWorks | C#, .NET Framework 4.8 |
 
 ## Roadmap
 
@@ -92,6 +81,7 @@ npm run build    # Production build
 | ECO Dashboard | Progress tracking with blockers and milestones |
 | Product Catalog | Manage product info and BOM configurations |
 | Item Number Database | Part number serialization and revision tracking |
+| SolidWorks Add-in | Native toolbar and task pane integration |
 | SolidWorks Service | Headless exports and metadata extraction |
 
 ## License
