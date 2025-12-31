@@ -33,8 +33,8 @@ Google Sign-In provides the smoothest authentication experience. Skip this step 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
 2. Create a new project or select an existing one
 3. Navigate to **OAuth consent screen**
-   - Choose **Internal** if you have Google Workspace
-   - Choose **External** otherwise
+   - Choose **External** (recommended) — allows any Google account to sign in
+   - Choose **Internal** only if you want to restrict sign-in to your Google Workspace domain exclusively
 4. Fill in:
    - App name: "BluePLM"
    - User support email: your email
@@ -365,6 +365,9 @@ See [User Setup Guide](/user-setup) for detailed team member instructions.
 
 ### Schema SQL fails with "bucket not found"
 Create the `vault` storage bucket (Step 3) before running the schema.
+
+### Google Sign-In shows "Access blocked: org_internal"
+Your Google OAuth app is set to "Internal". Go to Google Cloud Console → **APIs & Services** → **OAuth consent screen** and change the user type to **External**. This allows any Google account to sign in, not just your Google Workspace users.
 
 ### Google Sign-In shows "redirect_uri_mismatch"
 Verify your Supabase project URL is in Google Cloud's authorized redirect URIs exactly:
