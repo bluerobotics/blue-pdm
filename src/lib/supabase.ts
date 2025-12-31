@@ -721,8 +721,9 @@ export async function linkUserToOrganization(userId: string, userEmail: string) 
     authLog('info', 'No org found by domain, checking pending_org_members...', { domain })
     
     // Check pending_org_members for this email (in case trigger didn't run)
+    // Fetch all relevant fields so we can apply the correct permissions
     const pendingResponse = await fetch(
-      `${url}/rest/v1/pending_org_members?select=org_id,role&email=eq.${encodeURIComponent(userEmail.toLowerCase())}&claimed_at=is.null&limit=1`, 
+      `${url}/rest/v1/pending_org_members?select=id,org_id,role,full_name,team_ids,vault_ids,workflow_role_ids,created_by&email=eq.${encodeURIComponent(userEmail.toLowerCase())}&claimed_at=is.null&limit=1`, 
       {
         headers: {
           'apikey': key,
@@ -735,7 +736,13 @@ export async function linkUserToOrganization(userId: string, userEmail: string) 
     const pendingMember = pendingData?.[0]
     
     if (pendingMember?.org_id) {
-      authLog('info', 'Found pending membership, linking user to org', { orgId: pendingMember.org_id?.substring(0, 8) + '...' })
+      authLog('info', 'Found pending membership, linking user to org', { 
+        orgId: pendingMember.org_id?.substring(0, 8) + '...',
+        assignedRole: pendingMember.role,
+        hasTeamIds: !!pendingMember.team_ids?.length,
+        hasVaultIds: !!pendingMember.vault_ids?.length,
+        hasWorkflowRoleIds: !!pendingMember.workflow_role_ids?.length
+      })
       
       // Fetch the organization
       const orgResponse = await fetch(`${url}/rest/v1/organizations?select=*&id=eq.${pendingMember.org_id}`, {
@@ -749,7 +756,9 @@ export async function linkUserToOrganization(userId: string, userEmail: string) 
       const pendingOrg = orgData?.[0]
       
       if (pendingOrg) {
-        // Update user's org_id and role
+        // Update user's org_id and role from pending membership
+        // IMPORTANT: Use the role from pending_org_members, default to 'viewer' only if missing
+        const assignedRole = pendingMember.role || 'viewer'
         try {
           await fetch(`${url}/rest/v1/users?id=eq.${userId}`, {
             method: 'PATCH',
@@ -759,12 +768,20 @@ export async function linkUserToOrganization(userId: string, userEmail: string) 
               'Content-Type': 'application/json',
               'Prefer': 'return=minimal'
             },
-            body: JSON.stringify({ org_id: pendingOrg.id, role: pendingMember.role || 'viewer' })
+            body: JSON.stringify({ 
+              org_id: pendingOrg.id, 
+              role: assignedRole,
+              full_name: pendingMember.full_name || undefined // Preserve name if set in invite
+            })
           })
-          authLog('info', 'Updated user org_id from pending membership')
+          authLog('info', 'Updated user from pending membership', { 
+            assignedRole, 
+            orgId: pendingOrg.id?.substring(0, 8) + '...',
+            fullNameFromInvite: pendingMember.full_name || null
+          })
           
           // Mark pending membership as claimed
-          await fetch(`${url}/rest/v1/pending_org_members?email=eq.${encodeURIComponent(userEmail.toLowerCase())}&claimed_at=is.null`, {
+          await fetch(`${url}/rest/v1/pending_org_members?id=eq.${pendingMember.id}`, {
             method: 'PATCH',
             headers: {
               'apikey': key,
@@ -774,7 +791,28 @@ export async function linkUserToOrganization(userId: string, userEmail: string) 
             },
             body: JSON.stringify({ claimed_at: new Date().toISOString(), claimed_by: userId })
           })
-          authLog('info', 'Marked pending membership as claimed')
+          authLog('info', 'Marked pending membership as claimed', { pendingMemberId: pendingMember.id?.substring(0, 8) + '...' })
+          
+          // Call RPC to apply team memberships, vault access, and workflow roles
+          // This is a backup in case the DB AFTER INSERT trigger didn't fire
+          try {
+            const rpcResponse = await fetch(`${url}/rest/v1/rpc/apply_pending_team_memberships`, {
+              method: 'POST',
+              headers: {
+                'apikey': key,
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ p_user_id: userId })
+            })
+            if (rpcResponse.ok) {
+              authLog('info', 'Applied pending team memberships via RPC')
+            } else {
+              authLog('warn', 'RPC apply_pending_team_memberships returned non-OK', { status: rpcResponse.status })
+            }
+          } catch (rpcErr) {
+            authLog('warn', 'Failed to call apply_pending_team_memberships RPC (may already be applied)', { error: String(rpcErr) })
+          }
         } catch (updateErr) {
           authLog('warn', 'Error updating user from pending membership', { error: String(updateErr) })
         }
