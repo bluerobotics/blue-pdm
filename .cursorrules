@@ -9,7 +9,9 @@
 
 ⚠️ **Sidebar text must be left-aligned.** All text in `ActivityBar.tsx` must use `text-left`. Never center-justify sidebar labels.
 
-⚠️ **ALWAYS update documentation for user-facing features.** When building new features, update the docs site (`blueplm-site` repo) with guides, screenshots, and feature descriptions. Keep docs in sync with the app.
+⚠️ **ALWAYS update documentation for user-facing features.** When building new features, update the `docs/` folder with guides and feature descriptions. Docs auto-deploy to docs.blueplm.io on release.
+
+⚠️ **ALWAYS update version before pushing a tag.** Before creating a git tag, update `package.json` version AND add a `CHANGELOG.md` entry. The tag version must match `package.json`. Run `npm install` to update lockfile if dependencies changed.
 
 ## Tech Stack
 Frontend: React 19, TypeScript, Zustand, Tailwind CSS, Vite
@@ -174,4 +176,4 @@ supabase/ - Database migrations and schema.sql
 7. Respect project choices (don't introduce Redux if Zustand works)
 8. Security first (path traversal, XSS, etc.)
 9. **Refactoring**: Be extra careful not to lose existing functionality - test thoroughly, preserve edge cases, maintain backward compatibility
-10. **Documentation**: Update `blueplm-site` docs for user-facing features (guides, screenshots, feature descriptions)
+10. **Documentation**: Update `docs/` folder for user-facing features (auto-deploys to docs.blueplm.io on release)
