@@ -1556,7 +1556,7 @@ export function TeamMembersSettings() {
                       disabled={isSavingDefaultTeam}
                       className="px-3 py-1.5 text-sm bg-plm-bg-secondary border border-plm-border rounded-lg text-plm-fg focus:outline-none focus:border-plm-accent disabled:opacity-50"
                     >
-                      <option value="">No default (unassigned)</option>
+                      <option value="">Unassigned (no team permissions)</option>
                       {teams.map(team => (
                         <option key={team.id} value={team.id}>{team.name}</option>
                       ))}
@@ -1566,6 +1566,12 @@ export function TeamMembersSettings() {
                     )}
                   </div>
                 </div>
+                {!(organization as any)?.default_new_user_team_id && (
+                  <p className="mt-2 text-xs text-yellow-500 flex items-center gap-1">
+                    <AlertTriangle size={12} />
+                    New users will have no team permissions until manually assigned
+                  </p>
+                )}
               </div>
             )}
             
@@ -4115,13 +4121,18 @@ function UserRow({
           ) : teams && teams.length > 0 && canManage && onEditTeams ? (
             <button
               onClick={() => onEditTeams(user)}
-              className="flex items-center gap-1.5 px-2 py-1 rounded text-xs bg-plm-fg-muted/10 text-plm-fg-muted border border-dashed border-plm-border hover:border-plm-accent hover:text-plm-accent transition-colors"
-              title="Add to teams"
+              className="flex items-center gap-1.5 px-2 py-1 rounded text-xs bg-yellow-500/10 text-yellow-500 border border-dashed border-yellow-500/30 hover:border-yellow-500 hover:bg-yellow-500/20 transition-colors"
+              title="Unassigned - click to add to a team"
             >
-              <Users size={12} />
-              No teams
+              <UserX size={12} />
+              Unassigned
               <ChevronDown size={12} />
             </button>
+          ) : teams && teams.length > 0 ? (
+            <span className="flex items-center gap-1.5 px-2 py-1 rounded text-xs bg-yellow-500/10 text-yellow-500">
+              <UserX size={12} />
+              Unassigned
+            </span>
           ) : null}
           
           {/* Workflow roles badge */}
