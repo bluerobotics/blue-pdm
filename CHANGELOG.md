@@ -2,6 +2,17 @@
 
 All notable changes to BluePLM will be documented in this file.
 
+## [2.17.3] - 2025-12-31
+
+### Added
+- **Unassigned users visibility**: Users without teams now show a prominent yellow "Unassigned" badge
+- **Default team warning**: Shows warning in Teams tab when no default team is set (users will have no permissions)
+
+### Improved
+- **Default team dropdown**: Clearer "Unassigned (no team permissions)" option text
+
+---
+
 ## [2.17.2] - 2025-12-31
 
 ### Added
