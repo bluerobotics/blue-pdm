@@ -106,7 +106,7 @@ interface PendingMember {
 }
 
 export function TeamMembersSettings() {
-  const { user, organization, addToast, getEffectiveRole, apiServerUrl } = usePDMStore()
+  const { user, organization, setOrganization, addToast, getEffectiveRole, apiServerUrl } = usePDMStore()
   
   const isAdmin = getEffectiveRole() === 'admin'
   
@@ -120,6 +120,7 @@ export function TeamMembersSettings() {
   const [pendingMembers, setPendingMembers] = useState<PendingMember[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState('')
+  const [isSavingDefaultTeam, setIsSavingDefaultTeam] = useState(false)
   
   // Team dialogs
   const [selectedTeam, setSelectedTeam] = useState<TeamWithDetails | null>(null)
@@ -752,6 +753,35 @@ export function TeamMembersSettings() {
       is_default: false
     })
     setCopyFromTeamId(null)
+  }
+  
+  // Update the default team for new users (joining without invite or with invite but no teams)
+  const handleSetDefaultTeam = async (teamId: string | null) => {
+    if (!organization?.id) return
+    
+    setIsSavingDefaultTeam(true)
+    try {
+      const { error } = await supabase
+        .from('organizations')
+        .update({ default_new_user_team_id: teamId })
+        .eq('id', organization.id)
+      
+      if (error) throw error
+      
+      // Update local organization state
+      setOrganization({
+        ...organization,
+        default_new_user_team_id: teamId
+      })
+      
+      const teamName = teamId ? teams.find(t => t.id === teamId)?.name : 'None'
+      addToast('success', `Default team set to "${teamName}"`)
+    } catch (err) {
+      console.error('Failed to set default team:', err)
+      addToast('error', 'Failed to update default team')
+    } finally {
+      setIsSavingDefaultTeam(false)
+    }
   }
   
   const openEditTeamDialog = (team: TeamWithDetails) => {
@@ -1503,6 +1533,41 @@ export function TeamMembersSettings() {
           {/* Teams Tab Content */}
           {activeTab === 'teams' && (
           <div className="space-y-3">
+            
+            {/* Default Team for New Users Setting */}
+            {isAdmin && teams.length > 0 && (
+              <div className="p-4 bg-plm-bg rounded-lg border border-plm-border">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-lg bg-plm-accent/10">
+                      <UserPlus size={18} className="text-plm-accent" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-medium text-plm-fg">Default Team for New Users</h4>
+                      <p className="text-xs text-plm-fg-muted">
+                        Users joining via org code (or invited without specific teams) will be added here
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={(organization as any)?.default_new_user_team_id || ''}
+                      onChange={(e) => handleSetDefaultTeam(e.target.value || null)}
+                      disabled={isSavingDefaultTeam}
+                      className="px-3 py-1.5 text-sm bg-plm-bg-secondary border border-plm-border rounded-lg text-plm-fg focus:outline-none focus:border-plm-accent disabled:opacity-50"
+                    >
+                      <option value="">No default (unassigned)</option>
+                      {teams.map(team => (
+                        <option key={team.id} value={team.id}>{team.name}</option>
+                      ))}
+                    </select>
+                    {isSavingDefaultTeam && (
+                      <Loader2 size={14} className="animate-spin text-plm-fg-muted" />
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
             
             {filteredTeams.length === 0 ? (
               <div className="text-center py-8 border border-dashed border-plm-border rounded-lg">
