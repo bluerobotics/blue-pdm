@@ -1,6 +1,6 @@
 {
   "name": "blue-plm",
-  "version": "2.20.3",
+  "version": "2.21.0",
   "description": "Product Lifecycle Management for everyone who builds",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -27,11 +27,8 @@
     "@fastify/swagger-ui": "^5.2.1",
     "@sentry/electron": "^7.5.0",
     "@supabase/supabase-js": "^2.39.0",
-    "@tanstack/react-query": "^5.14.0",
-    "@tanstack/react-table": "^8.11.0",
     "cfb": "^1.2.2",
     "chokidar": "^5.0.0",
-    "clsx": "^2.0.0",
     "date-fns": "^3.0.6",
     "electron-updater": "^6.3.9",
     "fastify": "^5.2.1",
