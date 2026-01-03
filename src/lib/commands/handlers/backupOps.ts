@@ -20,6 +20,7 @@ import {
   getRecentActivity
 } from '../../supabase'
 import { rollbackToVersion } from '../../fileService'
+import { registerTerminalCommand } from '../registry'
 import type { ParsedCommand, TerminalOutput } from '../parser'
 
 type OutputFn = (type: TerminalOutput['type'], content: string) => void
@@ -415,3 +416,83 @@ export async function handleActivity(
     addOutput('error', `Failed to get activity: ${err}`)
   }
 }
+
+// ============================================
+// Self-registration
+// ============================================
+
+registerTerminalCommand({
+  aliases: ['backup'],
+  description: 'Request backup',
+  category: 'backup'
+}, async (_parsed, _files, addOutput) => {
+  await handleBackup(addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['backup-status'],
+  description: 'Show backup status',
+  category: 'backup'
+}, async (_parsed, _files, addOutput) => {
+  await handleBackupStatus(addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['backup-history', 'snapshots'],
+  description: 'List backup snapshots',
+  category: 'backup'
+}, async (_parsed, _files, addOutput) => {
+  await handleBackupHistory(addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['trash'],
+  description: 'List deleted files',
+  category: 'backup'
+}, async (_parsed, _files, addOutput) => {
+  await handleTrash(addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['restore'],
+  description: 'Restore file from trash',
+  usage: 'restore <file-path>',
+  category: 'backup'
+}, async (parsed, _files, addOutput, onRefresh) => {
+  await handleRestore(parsed, addOutput, onRefresh)
+})
+
+registerTerminalCommand({
+  aliases: ['empty-trash'],
+  description: 'Permanently delete all trash (admin)',
+  category: 'backup'
+}, async (_parsed, _files, addOutput, onRefresh) => {
+  await handleEmptyTrash(addOutput, onRefresh)
+})
+
+registerTerminalCommand({
+  aliases: ['versions'],
+  description: 'Show version history',
+  usage: 'versions <file-path>',
+  category: 'backup'
+}, async (parsed, files, addOutput) => {
+  await handleVersions(parsed, files, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['rollback'],
+  description: 'Roll back to a version',
+  usage: 'rollback <file-path> <version>',
+  category: 'backup'
+}, async (parsed, files, addOutput, onRefresh) => {
+  await handleRollback(parsed, files, addOutput, onRefresh)
+})
+
+registerTerminalCommand({
+  aliases: ['activity'],
+  description: 'Show recent activity',
+  usage: 'activity [-n N]',
+  category: 'backup'
+}, async (parsed, _files, addOutput) => {
+  await handleActivity(parsed, addOutput)
+})

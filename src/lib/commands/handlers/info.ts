@@ -8,6 +8,7 @@
 import { usePDMStore, LocalFile } from '../../../stores/pdmStore'
 import { updateFileMetadata } from '../../supabase'
 import { formatBytes } from '../../utils'
+import { registerTerminalCommand } from '../registry'
 import type { ParsedCommand, TerminalOutput } from '../parser'
 
 type OutputFn = (type: TerminalOutput['type'], content: string) => void
@@ -410,3 +411,102 @@ export function handlePending(
   
   addOutput('info', lines.join('\n'))
 }
+
+// ============================================
+// Self-registration
+// ============================================
+
+registerTerminalCommand({
+  aliases: ['status'],
+  description: 'Show file or vault status',
+  usage: 'status [path]',
+  category: 'info'
+}, (parsed, files, addOutput) => {
+  handleStatus(parsed, files, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['info', 'props', 'properties'],
+  description: 'Show file properties',
+  usage: 'info <path>',
+  category: 'info'
+}, (parsed, files, addOutput) => {
+  handleInfo(parsed, files, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['whoami'],
+  description: 'Show current user',
+  category: 'info'
+}, (_parsed, _files, addOutput) => {
+  handleWhoami(addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['metadata'],
+  description: 'Show file metadata',
+  usage: 'metadata <file-path>',
+  category: 'info'
+}, (parsed, files, addOutput) => {
+  handleMetadata(parsed, files, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['set-metadata'],
+  description: 'Set pending metadata',
+  usage: 'set-metadata <file-path> --part="X" --desc="Y" --rev="Z"',
+  category: 'info'
+}, (parsed, files, addOutput) => {
+  handleSetMetadata(parsed, files, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['set-state'],
+  description: 'Set file state',
+  usage: 'set-state <file-path> <state>',
+  examples: ['set-state part.sldprt released'],
+  category: 'info'
+}, async (parsed, files, addOutput, onRefresh) => {
+  await handleSetState(parsed, files, addOutput, onRefresh)
+})
+
+registerTerminalCommand({
+  aliases: ['env', 'version'],
+  description: 'Show environment info',
+  category: 'info'
+}, (_parsed, _files, addOutput) => {
+  handleEnv(addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['logs'],
+  description: 'View recent logs',
+  usage: 'logs [-n N]',
+  category: 'info'
+}, async (parsed, _files, addOutput) => {
+  await handleLogs(parsed, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['export-logs'],
+  description: 'Export logs to file',
+  category: 'info'
+}, async (_parsed, _files, addOutput) => {
+  await handleExportLogs(addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['logs-dir'],
+  description: 'Open logs directory',
+  category: 'info'
+}, async (_parsed, _files, addOutput) => {
+  await handleLogsDir(addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['pending'],
+  description: 'Show pending operations',
+  category: 'info'
+}, (_parsed, files, addOutput) => {
+  handlePending(files, addOutput)
+})

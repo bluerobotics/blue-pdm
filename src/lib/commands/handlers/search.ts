@@ -5,6 +5,7 @@
  */
 
 import { usePDMStore, LocalFile } from '../../../stores/pdmStore'
+import { registerTerminalCommand } from '../registry'
 import type { ParsedCommand, TerminalOutput } from '../parser'
 
 type OutputFn = (type: TerminalOutput['type'], content: string) => void
@@ -290,3 +291,37 @@ export async function handleGrepContent(
     }
   }
 }
+
+// ============================================
+// Self-registration
+// ============================================
+
+registerTerminalCommand({
+  aliases: ['find', 'search', 'grep'],
+  description: 'Search files by name',
+  usage: 'find <query> [--type=files|folders|all]',
+  examples: ['find bracket', 'search *.sldprt', 'grep config'],
+  category: 'search'
+}, (parsed, files, addOutput) => {
+  handleFind(parsed, files, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['select', 'sel'],
+  description: 'Select files for batch operations',
+  usage: 'select <pattern|all|clear> [--add]',
+  examples: ['select all', 'select clear', 'select *.sldprt --add'],
+  category: 'search'
+}, (parsed, files, addOutput) => {
+  handleSelect(parsed, files, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['grep-content', 'fgrep', 'rg'],
+  description: 'Search text content within files',
+  usage: 'grep-content <pattern> [path] [-i]',
+  examples: ['grep-content "TODO" .', 'rg function ./src -i'],
+  category: 'search'
+}, async (parsed, files, addOutput) => {
+  await handleGrepContent(parsed, files, addOutput)
+})

@@ -18,6 +18,20 @@
 // Re-export types
 export * from './types'
 
+// Re-export terminal command registry
+export {
+  registerTerminalCommand,
+  getTerminalCommandHandler,
+  getAllTerminalCommands,
+  getTerminalCommandsByCategory,
+  isTerminalCommandRegistered,
+  getAllTerminalCommandAliases,
+  getTerminalCommandMeta,
+  type CommandHandler,
+  type CommandMeta,
+  type CommandCategory
+} from './registry'
+
 // Re-export executor
 export { 
   executeCommand, 

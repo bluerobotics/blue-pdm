@@ -15,6 +15,7 @@ import {
   getUserPermissions,
   removeUserFromOrg
 } from '../../supabase'
+import { registerTerminalCommand } from '../registry'
 import type { ParsedCommand, TerminalOutput } from '../parser'
 
 type OutputFn = (type: TerminalOutput['type'], content: string) => void
@@ -1228,3 +1229,201 @@ export async function handlePendingInvites(addOutput: OutputFn): Promise<void> {
     addOutput('error', `Failed to list pending invites: ${err instanceof Error ? err.message : err}`)
   }
 }
+
+// ============================================
+// Self-registration
+// ============================================
+
+registerTerminalCommand({
+  aliases: ['members'],
+  description: 'List organization members',
+  category: 'admin'
+}, async (_parsed, _files, addOutput) => {
+  await handleMembers(addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['invite'],
+  description: 'Invite a new member',
+  usage: 'invite <email> [--name=<name>] [--role=<role>] [--team=<team>]',
+  category: 'admin'
+}, async (parsed, _files, addOutput) => {
+  await handleInvite(parsed, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['remove-member', 'remove-user'],
+  description: 'Remove member from organization',
+  usage: 'remove-member <email>',
+  category: 'admin'
+}, async (parsed, _files, addOutput) => {
+  await handleRemoveMember(parsed, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['teams'],
+  description: 'List all teams',
+  category: 'admin'
+}, async (_parsed, _files, addOutput) => {
+  await handleTeams(addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['create-team'],
+  description: 'Create a new team',
+  usage: 'create-team <name> [--color=#hex] [--icon=IconName] [--desc="Description"]',
+  category: 'admin'
+}, async (parsed, _files, addOutput) => {
+  await handleCreateTeam(parsed, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['delete-team'],
+  description: 'Delete a team',
+  usage: 'delete-team <name>',
+  category: 'admin'
+}, async (parsed, _files, addOutput) => {
+  await handleDeleteTeam(parsed, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['add-to-team'],
+  description: 'Add user to a team',
+  usage: 'add-to-team <email> <team-name>',
+  category: 'admin'
+}, async (parsed, _files, addOutput) => {
+  await handleAddToTeam(parsed, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['remove-from-team'],
+  description: 'Remove user from team',
+  usage: 'remove-from-team <email> <team-name>',
+  category: 'admin'
+}, async (parsed, _files, addOutput) => {
+  await handleRemoveFromTeam(parsed, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['team-info'],
+  description: 'Show team details',
+  usage: 'team-info <team-name>',
+  category: 'admin'
+}, async (parsed, _files, addOutput) => {
+  await handleTeamInfo(parsed, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['roles', 'workflow-roles'],
+  description: 'List workflow roles',
+  category: 'admin'
+}, async (_parsed, _files, addOutput) => {
+  await handleRoles(addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['create-role'],
+  description: 'Create a workflow role',
+  usage: 'create-role <name> [--color=#hex] [--icon=IconName] [--desc="Description"]',
+  category: 'admin'
+}, async (parsed, _files, addOutput) => {
+  await handleCreateRole(parsed, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['delete-role'],
+  description: 'Delete a workflow role',
+  usage: 'delete-role <name>',
+  category: 'admin'
+}, async (parsed, _files, addOutput) => {
+  await handleDeleteRole(parsed, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['assign-role'],
+  description: 'Assign workflow role to user',
+  usage: 'assign-role <email> <role-name>',
+  category: 'admin'
+}, async (parsed, _files, addOutput) => {
+  await handleAssignRole(parsed, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['unassign-role'],
+  description: 'Remove workflow role from user',
+  usage: 'unassign-role <email> <role-name>',
+  category: 'admin'
+}, async (parsed, _files, addOutput) => {
+  await handleUnassignRole(parsed, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['titles', 'job-titles'],
+  description: 'List job titles',
+  category: 'admin'
+}, async (_parsed, _files, addOutput) => {
+  await handleTitles(addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['create-title'],
+  description: 'Create a job title',
+  usage: 'create-title <name> [--color=#hex] [--icon=IconName] [--desc="Description"]',
+  category: 'admin'
+}, async (parsed, _files, addOutput) => {
+  await handleCreateTitle(parsed, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['set-title'],
+  description: "Set user's job title",
+  usage: 'set-title <email> <title-name>',
+  category: 'admin'
+}, async (parsed, _files, addOutput) => {
+  await handleSetTitle(parsed, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['permissions'],
+  description: 'View team permissions',
+  usage: 'permissions <team-name>',
+  category: 'admin'
+}, async (parsed, _files, addOutput) => {
+  await handlePermissions(parsed, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['grant'],
+  description: 'Grant permission to team',
+  usage: 'grant <team-name> <resource> <action>',
+  examples: ['grant Engineering module:explorer view'],
+  category: 'admin'
+}, async (parsed, _files, addOutput) => {
+  await handleGrant(parsed, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['revoke'],
+  description: 'Revoke permission from team',
+  usage: 'revoke <team-name> <resource> [action]',
+  category: 'admin'
+}, async (parsed, _files, addOutput) => {
+  await handleRevoke(parsed, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['user-info'],
+  description: 'Show user details',
+  usage: 'user-info <email>',
+  category: 'admin'
+}, async (parsed, _files, addOutput) => {
+  await handleUserInfo(parsed, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['pending-invites'],
+  description: 'List pending invites',
+  category: 'admin'
+}, async (_parsed, _files, addOutput) => {
+  await handlePendingInvites(addOutput)
+})

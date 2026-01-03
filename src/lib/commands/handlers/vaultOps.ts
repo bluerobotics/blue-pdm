@@ -6,6 +6,7 @@
  */
 
 import { usePDMStore, LocalFile } from '../../../stores/pdmStore'
+import { registerTerminalCommand } from '../registry'
 import type { ParsedCommand, TerminalOutput } from '../parser'
 
 type OutputFn = (type: TerminalOutput['type'], content: string) => void
@@ -179,3 +180,75 @@ export function handleReloadApp(addOutput: OutputFn): void {
     await window.electronAPI?.reloadApp()
   }, 100)
 }
+
+// ============================================
+// Self-registration
+// ============================================
+
+registerTerminalCommand({
+  aliases: ['vault', 'vaults'],
+  description: 'Show connected vaults',
+  category: 'vault'
+}, (_parsed, _files, addOutput) => {
+  handleVault(addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['refresh', 'reload'],
+  description: 'Refresh file list',
+  category: 'vault'
+}, (_parsed, _files, addOutput, onRefresh) => {
+  handleRefresh(addOutput, onRefresh)
+})
+
+registerTerminalCommand({
+  aliases: ['checkouts', 'locked'],
+  description: 'List checked out files',
+  usage: 'checkouts [--mine] [--others]',
+  category: 'vault'
+}, (parsed, files, addOutput) => {
+  handleCheckouts(parsed, files, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['switch-vault', 'use'],
+  description: 'Switch active vault',
+  usage: 'switch-vault <vault-name>',
+  category: 'vault'
+}, (parsed, _files, addOutput, onRefresh) => {
+  handleSwitchVault(parsed, addOutput, onRefresh)
+})
+
+registerTerminalCommand({
+  aliases: ['disconnect-vault', 'remove-vault'],
+  description: 'Disconnect a vault',
+  usage: 'disconnect-vault <vault-name>',
+  category: 'vault'
+}, (parsed, _files, addOutput) => {
+  handleDisconnectVault(parsed, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['sign-out', 'logout'],
+  description: 'Sign out of current session',
+  category: 'vault'
+}, (_parsed, _files, addOutput) => {
+  handleSignOut(addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['offline'],
+  description: 'Toggle offline mode',
+  usage: 'offline [on|off]',
+  category: 'vault'
+}, (parsed, _files, addOutput) => {
+  handleOffline(parsed, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['reload-app', 'restart'],
+  description: 'Force full app reload',
+  category: 'vault'
+}, (_parsed, _files, addOutput) => {
+  handleReloadApp(addOutput)
+})

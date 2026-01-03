@@ -6,6 +6,7 @@
 
 import { usePDMStore, LocalFile } from '../../../stores/pdmStore'
 import { executeCommand } from '../executor'
+import { registerTerminalCommand } from '../registry'
 import type { ParsedCommand, TerminalOutput } from '../parser'
 
 type OutputFn = (type: TerminalOutput['type'], content: string) => void
@@ -171,3 +172,35 @@ export async function handleIgnore(
     addOutput('error', `Failed to add ignore pattern: ${err instanceof Error ? err.message : String(err)}`)
   }
 }
+
+// ============================================
+// Self-registration
+// ============================================
+
+registerTerminalCommand({
+  aliases: ['pin'],
+  description: 'Pin file/folder to sidebar',
+  usage: 'pin <path>',
+  category: 'pinning'
+}, async (parsed, files, addOutput, onRefresh) => {
+  await handlePin(parsed, files, addOutput, onRefresh)
+})
+
+registerTerminalCommand({
+  aliases: ['unpin'],
+  description: 'Unpin file/folder from sidebar',
+  usage: 'unpin <path>',
+  category: 'pinning'
+}, async (parsed, _files, addOutput, onRefresh) => {
+  await handleUnpin(parsed, addOutput, onRefresh)
+})
+
+registerTerminalCommand({
+  aliases: ['ignore'],
+  description: 'Add/show ignore patterns',
+  usage: 'ignore [pattern]',
+  examples: ['ignore', 'ignore *.tmp', 'ignore node_modules'],
+  category: 'pinning'
+}, async (parsed, _files, addOutput, onRefresh) => {
+  await handleIgnore(parsed, addOutput, onRefresh)
+})

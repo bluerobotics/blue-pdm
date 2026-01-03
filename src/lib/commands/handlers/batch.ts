@@ -6,6 +6,7 @@
 
 import { usePDMStore, LocalFile } from '../../../stores/pdmStore'
 import { executeCommand } from '../executor'
+import { registerTerminalCommand } from '../registry'
 import type { ParsedCommand, TerminalOutput } from '../parser'
 
 type OutputFn = (type: TerminalOutput['type'], content: string) => void
@@ -115,3 +116,32 @@ export async function handleCheckoutAll(
     addOutput('error', `Checkout failed: ${err}`)
   }
 }
+
+// ============================================
+// Self-registration
+// ============================================
+
+registerTerminalCommand({
+  aliases: ['sync-all'],
+  description: 'Sync all unsynced files',
+  category: 'batch'
+}, async (_parsed, files, addOutput, onRefresh) => {
+  await handleSyncAll(files, addOutput, onRefresh)
+})
+
+registerTerminalCommand({
+  aliases: ['checkin-all'],
+  description: 'Check in all my checkouts',
+  category: 'batch'
+}, async (_parsed, files, addOutput, onRefresh) => {
+  await handleCheckinAll(files, addOutput, onRefresh)
+})
+
+registerTerminalCommand({
+  aliases: ['checkout-all'],
+  description: 'Check out all files in folder',
+  usage: 'checkout-all <folder-path>',
+  category: 'batch'
+}, async (parsed, files, addOutput, onRefresh) => {
+  await handleCheckoutAll(parsed, files, addOutput, onRefresh)
+})

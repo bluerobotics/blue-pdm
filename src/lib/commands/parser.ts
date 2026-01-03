@@ -3,6 +3,7 @@
  * Command Parser
  * 
  * Parses text commands into command calls and delegates to appropriate handlers.
+ * Uses a registry pattern for terminal commands and direct execution for PDM commands.
  * 
  * Examples:
  *   checkout ./Parts/bracket.sldprt
@@ -17,36 +18,15 @@ import { usePDMStore, LocalFile } from '../../stores/pdmStore'
 import { executeCommand } from './executor'
 import type { CommandId, CommandResult } from './types'
 
-// Import all handlers
-import { handleLs, handlePwd, handleCd, handleTree } from './handlers/navigation'
-import { handleFind, handleSelect, handleGrepContent } from './handlers/search'
-import { handleEcho, handleHistory, handleCancel, handleSettings, handleSet, handleGet, handleHelp } from './handlers/terminal'
+// Import handlers to trigger self-registration
+import './handlers'
+
+// Import registry functions
 import { 
-  handleMkdir, handleTouch, handleRename, handleMove, handleCopy,
-  handleCat, handleHead, handleTail, handleWrite, handleAppend,
-  handleWc, handleDiff, handleSed, handleJson, handleJsonGet, handleJsonSet
-} from './handlers/fileTerminal'
-import {
-  handleStatus, handleInfo, handleWhoami, handleMetadata, handleSetMetadata,
-  handleSetState, handleEnv, handleLogs, handleExportLogs, handleLogsDir, handlePending
-} from './handlers/info'
-import {
-  handleVault, handleRefresh, handleCheckouts, handleSwitchVault,
-  handleDisconnectVault, handleSignOut, handleOffline, handleReloadApp
-} from './handlers/vaultOps'
-import { handlePin, handleUnpin, handleIgnore } from './handlers/pinning'
-import {
-  handleBackup, handleBackupStatus, handleBackupHistory,
-  handleTrash, handleRestore, handleEmptyTrash, handleVersions, handleRollback, handleActivity
-} from './handlers/backupOps'
-import {
-  handleMembers, handleInvite, handleRemoveMember, handleTeams, handleCreateTeam,
-  handleDeleteTeam, handleAddToTeam, handleRemoveFromTeam, handleTeamInfo,
-  handleRoles, handleCreateRole, handleDeleteRole, handleAssignRole, handleUnassignRole,
-  handleTitles, handleCreateTitle, handleSetTitle, handlePermissions, handleGrant,
-  handleRevoke, handleUserInfo, handlePendingInvites
-} from './handlers/admin'
-import { handleSyncAll, handleCheckinAll, handleCheckoutAll } from './handlers/batch'
+  getTerminalCommandHandler, 
+  getAllTerminalCommandAliases,
+  isTerminalCommandRegistered 
+} from './registry'
 
 export interface ParsedCommand {
   command: string
@@ -159,401 +139,26 @@ export async function executeTerminalCommand(
   const parsed = parseCommandString(input)
   const { files } = usePDMStore.getState()
   
-  // Built-in commands - delegated to handlers
-  switch (parsed.command) {
-    case '':
-      return outputs
-      
-    // Terminal commands
-    case 'help':
-    case '?':
-      handleHelp(parsed.args[0], addOutput)
-      return outputs
-      
-    case 'history':
-    case 'h':
-      handleHistory(addOutput)
-      return outputs
-    
-    case 'cancel':
-    case 'stop':
-    case 'abort':
-      handleCancel(addOutput)
-      return outputs
-      
-    case 'echo':
-      handleEcho(parsed, addOutput)
-      return outputs
-      
-    case 'clear':
-    case 'cls':
-      return [{ id: 'clear', type: 'info', content: '__CLEAR__', timestamp: new Date() }]
-      
-    case 'settings':
-      handleSettings(addOutput)
-      return outputs
-      
-    case 'set':
-      handleSet(parsed, addOutput)
-      return outputs
-      
-    case 'get':
-      handleGet(parsed, addOutput)
-      return outputs
-      
-    // Navigation commands
-    case 'ls':
-    case 'dir':
-    case 'list':
-      handleLs(parsed, files, addOutput)
-      return outputs
-      
-    case 'pwd':
-      handlePwd(addOutput)
-      return outputs
-      
-    case 'cd':
-      handleCd(parsed, files, addOutput)
-      return outputs
-      
-    case 'tree':
-      handleTree(parsed, files, addOutput)
-      return outputs
-      
-    // Search commands
-    case 'find':
-    case 'search':
-    case 'grep':
-      handleFind(parsed, files, addOutput)
-      return outputs
-      
-    case 'select':
-    case 'sel':
-      handleSelect(parsed, files, addOutput)
-      return outputs
-      
-    case 'grep-content':
-    case 'fgrep':
-    case 'rg':
-      await handleGrepContent(parsed, files, addOutput)
-      return outputs
-      
-    // Info commands
-    case 'status':
-      handleStatus(parsed, files, addOutput)
-      return outputs
-      
-    case 'info':
-    case 'props':
-    case 'properties':
-      handleInfo(parsed, files, addOutput)
-      return outputs
-      
-    case 'whoami':
-      handleWhoami(addOutput)
-      return outputs
-      
-    case 'metadata':
-      handleMetadata(parsed, files, addOutput)
-      return outputs
-      
-    case 'set-metadata':
-      handleSetMetadata(parsed, files, addOutput)
-      return outputs
-      
-    case 'set-state':
-      await handleSetState(parsed, files, addOutput, onRefresh)
-      return outputs
-      
-    case 'env':
-    case 'version':
-      handleEnv(addOutput)
-      return outputs
-      
-    case 'logs':
-      await handleLogs(parsed, addOutput)
-      return outputs
-      
-    case 'export-logs':
-      await handleExportLogs(addOutput)
-      return outputs
-      
-    case 'logs-dir':
-      await handleLogsDir(addOutput)
-      return outputs
-      
-    case 'pending':
-      handlePending(files, addOutput)
-      return outputs
-      
-    // File operations
-    case 'mkdir':
-    case 'md':
-    case 'new-folder':
-      await handleMkdir(parsed, addOutput, onRefresh)
-      return outputs
-      
-    case 'touch':
-      await handleTouch(parsed, addOutput, onRefresh)
-      return outputs
-      
-    case 'rename':
-    case 'ren':
-      await handleRename(parsed, files, addOutput, onRefresh)
-      return outputs
-      
-    case 'move':
-    case 'mv':
-      await handleMove(parsed, files, addOutput, onRefresh)
-      return outputs
-      
-    case 'copy':
-    case 'cp':
-      await handleCopy(parsed, files, addOutput, onRefresh)
-      return outputs
-      
-    case 'cat':
-    case 'type':
-      await handleCat(parsed, files, addOutput)
-      return outputs
-      
-    case 'head':
-      await handleHead(parsed, files, addOutput)
-      return outputs
-      
-    case 'tail':
-      await handleTail(parsed, files, addOutput)
-      return outputs
-      
-    case 'write':
-      await handleWrite(parsed, addOutput, onRefresh)
-      return outputs
-      
-    case 'append':
-      await handleAppend(parsed, addOutput, onRefresh)
-      return outputs
-      
-    case 'wc':
-      await handleWc(parsed, files, addOutput)
-      return outputs
-      
-    case 'diff':
-      await handleDiff(parsed, files, addOutput)
-      return outputs
-      
-    case 'sed':
-    case 'replace':
-      await handleSed(parsed, files, addOutput, onRefresh)
-      return outputs
-      
-    case 'json':
-      await handleJson(parsed, files, addOutput)
-      return outputs
-      
-    case 'json-get':
-    case 'jq':
-      await handleJsonGet(parsed, files, addOutput)
-      return outputs
-      
-    case 'json-set':
-      await handleJsonSet(parsed, files, addOutput, onRefresh)
-      return outputs
-      
-    // Vault operations
-    case 'vault':
-    case 'vaults':
-      handleVault(addOutput)
-      return outputs
-      
-    case 'refresh':
-    case 'reload':
-      handleRefresh(addOutput, onRefresh)
-      return outputs
-      
-    case 'checkouts':
-    case 'locked':
-      handleCheckouts(parsed, files, addOutput)
-      return outputs
-      
-    case 'switch-vault':
-    case 'use':
-      handleSwitchVault(parsed, addOutput, onRefresh)
-      return outputs
-      
-    case 'disconnect-vault':
-    case 'remove-vault':
-      handleDisconnectVault(parsed, addOutput)
-      return outputs
-      
-    case 'sign-out':
-    case 'logout':
-      handleSignOut(addOutput)
-      return outputs
-      
-    case 'offline':
-      handleOffline(parsed, addOutput)
-      return outputs
-      
-    case 'reload-app':
-    case 'restart':
-      handleReloadApp(addOutput)
-      return outputs
-      
-    // Pinning commands
-    case 'pin':
-      await handlePin(parsed, files, addOutput, onRefresh)
-      return outputs
-      
-    case 'unpin':
-      await handleUnpin(parsed, addOutput, onRefresh)
-      return outputs
-      
-    case 'ignore':
-      await handleIgnore(parsed, addOutput, onRefresh)
-      return outputs
-      
-    // Backup commands
-    case 'backup':
-      await handleBackup(addOutput)
-      return outputs
-      
-    case 'backup-status':
-      await handleBackupStatus(addOutput)
-      return outputs
-      
-    case 'backup-history':
-    case 'snapshots':
-      await handleBackupHistory(addOutput)
-      return outputs
-      
-    case 'trash':
-      await handleTrash(addOutput)
-      return outputs
-      
-    case 'restore':
-      await handleRestore(parsed, addOutput, onRefresh)
-      return outputs
-      
-    case 'empty-trash':
-      await handleEmptyTrash(addOutput, onRefresh)
-      return outputs
-      
-    case 'versions':
-      await handleVersions(parsed, files, addOutput)
-      return outputs
-      
-    case 'rollback':
-      await handleRollback(parsed, files, addOutput, onRefresh)
-      return outputs
-      
-    case 'activity':
-      await handleActivity(parsed, addOutput)
-      return outputs
-      
-    // Admin commands
-    case 'members':
-      await handleMembers(addOutput)
-      return outputs
-      
-    case 'invite':
-      await handleInvite(parsed, addOutput)
-      return outputs
-      
-    case 'remove-member':
-    case 'remove-user':
-      await handleRemoveMember(parsed, addOutput)
-      return outputs
-      
-    case 'user-info':
-      await handleUserInfo(parsed, addOutput)
-      return outputs
-      
-    case 'pending-invites':
-      await handlePendingInvites(addOutput)
-      return outputs
-      
-    case 'teams':
-      await handleTeams(addOutput)
-      return outputs
-      
-    case 'create-team':
-      await handleCreateTeam(parsed, addOutput)
-      return outputs
-      
-    case 'delete-team':
-      await handleDeleteTeam(parsed, addOutput)
-      return outputs
-      
-    case 'add-to-team':
-      await handleAddToTeam(parsed, addOutput)
-      return outputs
-      
-    case 'remove-from-team':
-      await handleRemoveFromTeam(parsed, addOutput)
-      return outputs
-      
-    case 'team-info':
-      await handleTeamInfo(parsed, addOutput)
-      return outputs
-      
-    case 'roles':
-    case 'workflow-roles':
-      await handleRoles(addOutput)
-      return outputs
-      
-    case 'create-role':
-      await handleCreateRole(parsed, addOutput)
-      return outputs
-      
-    case 'delete-role':
-      await handleDeleteRole(parsed, addOutput)
-      return outputs
-      
-    case 'assign-role':
-      await handleAssignRole(parsed, addOutput)
-      return outputs
-      
-    case 'unassign-role':
-      await handleUnassignRole(parsed, addOutput)
-      return outputs
-      
-    case 'titles':
-    case 'job-titles':
-      await handleTitles(addOutput)
-      return outputs
-      
-    case 'create-title':
-      await handleCreateTitle(parsed, addOutput)
-      return outputs
-      
-    case 'set-title':
-      await handleSetTitle(parsed, addOutput)
-      return outputs
-      
-    case 'permissions':
-      await handlePermissions(parsed, addOutput)
-      return outputs
-      
-    case 'grant':
-      await handleGrant(parsed, addOutput)
-      return outputs
-      
-    case 'revoke':
-      await handleRevoke(parsed, addOutput)
-      return outputs
-      
-    // Batch operations
-    case 'sync-all':
-      await handleSyncAll(files, addOutput, onRefresh)
-      return outputs
-      
-    case 'checkin-all':
-      await handleCheckinAll(files, addOutput, onRefresh)
-      return outputs
-      
-    case 'checkout-all':
-      await handleCheckoutAll(parsed, files, addOutput, onRefresh)
-      return outputs
+  // Handle empty command
+  if (!parsed.command) {
+    return outputs
+  }
+  
+  // Handle clear command specially (returns signal)
+  if (parsed.command === 'clear' || parsed.command === 'cls') {
+    return [{ id: 'clear', type: 'info', content: '__CLEAR__', timestamp: new Date() }]
+  }
+  
+  // Look up command in registry
+  const handler = getTerminalCommandHandler(parsed.command)
+  
+  if (handler) {
+    try {
+      await handler(parsed, files, addOutput, onRefresh)
+    } catch (err) {
+      addOutput('error', `Command failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    return outputs
   }
   
   // Map command aliases to command IDs
@@ -687,53 +292,26 @@ export function getAutocompleteSuggestions(input: string, files: LocalFile[]): s
   const parsed = parseCommandString(input)
   const suggestions: string[] = []
   
-  // If no command yet, suggest commands
+  // If no command yet, suggest commands from registry + PDM commands
   if (!parsed.command || (parsed.args.length === 0 && !input.includes(' '))) {
-    const commands = [
-      // PDM operations
-      'checkout', 'checkin', 'sync', 'download', 'get-latest', 'discard', 'delete', 'remove', 'force-release',
-      // SolidWorks operations
+    // Get all registered terminal commands
+    const terminalCommands = getAllTerminalCommandAliases()
+    
+    // Add PDM commands (handled separately from registry)
+    const pdmCommands = [
+      'checkout', 'co', 'checkin', 'ci', 'sync', 'upload', 'add',
+      'download', 'dl', 'get-latest', 'gl', 'update',
+      'delete', 'rm', 'remove', 'rm-local',
+      'discard', 'revert', 'force-release',
       'sync-sw-metadata', 'sw-sync',
-      // Batch operations
-      'sync-all', 'checkin-all', 'checkout-all',
-      // File management
-      'mkdir', 'rename', 'move', 'copy', 'touch',
-      // Text file operations
-      'cat', 'type', 'head', 'tail', 'wc', 'diff', 'write', 'append', 'grep-content', 'rg', 'fgrep', 'sed', 'replace',
-      // JSON operations
-      'json', 'json-get', 'jq', 'json-set',
-      // Version control
-      'versions', 'rollback', 'activity',
-      // Trash
-      'trash', 'restore', 'empty-trash',
-      // Navigation
-      'ls', 'cd', 'pwd', 'tree',
-      // Search & Select
-      'find', 'search', 'select',
-      // Info & Metadata
-      'status', 'info', 'metadata', 'set-metadata', 'set-state', 'checkouts', 'whoami',
-      // Vault management
-      'vault', 'switch-vault', 'disconnect-vault',
-      // Members & Teams
-      'members', 'invite', 'remove-member', 'remove-user', 'user-info', 'pending', 'pending-invites',
-      'teams', 'create-team', 'delete-team', 'add-to-team', 'remove-from-team', 'team-info',
-      // Roles & Permissions
-      'roles', 'workflow-roles', 'create-role', 'delete-role', 'assign-role', 'unassign-role',
-      'titles', 'job-titles', 'create-title', 'set-title',
-      'permissions', 'grant', 'revoke',
-      // Backup
-      'backup', 'backup-status', 'backup-history', 'snapshots',
-      // Settings
-      'settings', 'set', 'get',
-      // Logs
-      'logs', 'export-logs', 'logs-dir',
-      // Auth
-      'sign-out', 'offline', 'reload-app', 'restart',
-      // Utilities
-      'open', 'reveal', 'pin', 'unpin', 'ignore', 'refresh', 
-      'cancel', 'history', 'clear', 'env', 'help', 'echo'
+      'open', 'o', 'reveal', 'show',
+      'clear', 'cls'  // These are handled specially
     ]
-    return commands.filter(c => c.startsWith(parsed.command || ''))
+    
+    const allCommands = [...new Set([...terminalCommands, ...pdmCommands])]
+    return allCommands
+      .filter(c => c.startsWith(parsed.command || ''))
+      .slice(0, 30)
   }
   
   // If command is complete, suggest paths

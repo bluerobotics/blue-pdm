@@ -16,6 +16,9 @@ import type { User, Organization } from '../../types/pdm'
 // Re-export LocalFile for use by handlers
 export type LocalFile = StoreLocalFile
 
+// Re-export CommandCategory from registry for external use
+export type { CommandCategory } from './registry'
+
 // ============================================
 // Command Context - Injected into commands
 // ============================================

@@ -5,6 +5,7 @@
  */
 
 import { usePDMStore, LocalFile } from '../../../stores/pdmStore'
+import { registerTerminalCommand } from '../registry'
 import type { ParsedCommand, TerminalOutput } from '../parser'
 
 type OutputFn = (type: TerminalOutput['type'], content: string) => void
@@ -145,3 +146,44 @@ export function handleTree(
     addOutput('info', treeLines.join('\n'))
   }
 }
+
+// ============================================
+// Self-registration
+// ============================================
+
+registerTerminalCommand({
+  aliases: ['ls', 'dir', 'list'],
+  description: 'List files and folders in the current directory',
+  usage: 'ls [path] [--all]',
+  examples: ['ls', 'ls ./Parts', 'ls -a'],
+  category: 'navigation'
+}, (parsed, files, addOutput) => {
+  handleLs(parsed, files, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['pwd'],
+  description: 'Print current working directory',
+  category: 'navigation'
+}, (_parsed, _files, addOutput) => {
+  handlePwd(addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['cd'],
+  description: 'Change current directory',
+  usage: 'cd <path>',
+  examples: ['cd Parts', 'cd ..', 'cd /'],
+  category: 'navigation'
+}, (parsed, files, addOutput) => {
+  handleCd(parsed, files, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['tree'],
+  description: 'Display directory tree',
+  usage: 'tree [path] [--depth=N]',
+  category: 'navigation'
+}, (parsed, files, addOutput) => {
+  handleTree(parsed, files, addOutput)
+})

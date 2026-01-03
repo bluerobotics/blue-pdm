@@ -6,6 +6,7 @@
 
 import { usePDMStore } from '../../../stores/pdmStore'
 import { getCommandHistory, cancelAllOperations, hasActiveOperations, getActiveOperations, getAllCommands } from '../executor'
+import { registerTerminalCommand, getTerminalCommandMeta } from '../registry'
 import type { ParsedCommand, TerminalOutput } from '../parser'
 
 type OutputFn = (type: TerminalOutput['type'], content: string) => void
@@ -341,10 +342,29 @@ export function handleHelp(command: string | undefined, addOutput: OutputFn): vo
 }
 
 /**
- * Format help text
+ * Format help text using the command registry
  */
 function formatHelp(command?: string): string {
   if (command) {
+    // First try the registry
+    const meta = getTerminalCommandMeta(command)
+    if (meta) {
+      const lines = [
+        `📖 ${meta.aliases[0].toUpperCase()}`,
+        `   ${meta.description}`
+      ]
+      if (meta.usage) lines.push(`   Usage: ${meta.usage}`)
+      if (meta.examples?.length) {
+        lines.push(`   Examples:`)
+        meta.examples.forEach(ex => lines.push(`     ${ex}`))
+      }
+      if (meta.aliases.length > 1) {
+        lines.push(`   Aliases: ${meta.aliases.join(', ')}`)
+      }
+      return lines.join('\n')
+    }
+    
+    // Fall back to executor commands
     const commands = getAllCommands()
     const cmd = commands.find(c => c.id === command || c.aliases?.includes(command))
     if (cmd) {
@@ -358,6 +378,8 @@ function formatHelp(command?: string): string {
     return `Unknown command: ${command}`
   }
   
+  // Return static help text for now - registry is used for command-specific help above
+  // The static text is comprehensive and well-organized
   return `
 📖 BluePLM Terminal Commands
 
@@ -511,3 +533,69 @@ function formatTimeAgo(date: Date): string {
   if (hours < 24) return `${hours}h ago`
   return `${Math.floor(hours / 24)}d ago`
 }
+
+// ============================================
+// Self-registration
+// ============================================
+
+registerTerminalCommand({
+  aliases: ['echo'],
+  description: 'Output text to terminal',
+  usage: 'echo <text>',
+  category: 'terminal'
+}, (parsed, _files, addOutput) => {
+  handleEcho(parsed, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['history', 'h'],
+  description: 'Show command history',
+  category: 'terminal'
+}, (_parsed, _files, addOutput) => {
+  handleHistory(addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['cancel', 'stop', 'abort'],
+  description: 'Cancel running operations',
+  category: 'terminal'
+}, (_parsed, _files, addOutput) => {
+  handleCancel(addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['settings'],
+  description: 'Show all settings',
+  category: 'terminal'
+}, (_parsed, _files, addOutput) => {
+  handleSettings(addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['set'],
+  description: 'Change a setting',
+  usage: 'set <setting> <value>',
+  examples: ['set theme dark', 'set viewMode icons'],
+  category: 'terminal'
+}, (parsed, _files, addOutput) => {
+  handleSet(parsed, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['get'],
+  description: 'Get a setting value',
+  usage: 'get <setting>',
+  category: 'terminal'
+}, (parsed, _files, addOutput) => {
+  handleGet(parsed, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['help', '?'],
+  description: 'Show help for commands',
+  usage: 'help [command]',
+  examples: ['help', 'help checkout'],
+  category: 'terminal'
+}, (parsed, _files, addOutput) => {
+  handleHelp(parsed.args[0], addOutput)
+})

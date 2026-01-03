@@ -6,6 +6,7 @@
 
 import { usePDMStore, LocalFile } from '../../../stores/pdmStore'
 import { executeCommand } from '../executor'
+import { registerTerminalCommand } from '../registry'
 import type { ParsedCommand, TerminalOutput } from '../parser'
 
 type OutputFn = (type: TerminalOutput['type'], content: string) => void
@@ -1003,3 +1004,154 @@ export async function handleJsonSet(
     addOutput('error', `Failed: ${err instanceof Error ? err.message : String(err)}`)
   }
 }
+
+// ============================================
+// Self-registration
+// ============================================
+
+registerTerminalCommand({
+  aliases: ['mkdir', 'md', 'new-folder'],
+  description: 'Create a new folder',
+  usage: 'mkdir <name>',
+  category: 'file-ops'
+}, async (parsed, _files, addOutput, onRefresh) => {
+  await handleMkdir(parsed, addOutput, onRefresh)
+})
+
+registerTerminalCommand({
+  aliases: ['touch'],
+  description: 'Create empty file',
+  usage: 'touch <filename>',
+  category: 'file-ops'
+}, async (parsed, _files, addOutput, onRefresh) => {
+  await handleTouch(parsed, addOutput, onRefresh)
+})
+
+registerTerminalCommand({
+  aliases: ['rename', 'ren'],
+  description: 'Rename file or folder',
+  usage: 'rename <path> <newname>',
+  category: 'file-ops'
+}, async (parsed, files, addOutput, onRefresh) => {
+  await handleRename(parsed, files, addOutput, onRefresh)
+})
+
+registerTerminalCommand({
+  aliases: ['move', 'mv'],
+  description: 'Move files to new location',
+  usage: 'move <source...> <destination>',
+  category: 'file-ops'
+}, async (parsed, files, addOutput, onRefresh) => {
+  await handleMove(parsed, files, addOutput, onRefresh)
+})
+
+registerTerminalCommand({
+  aliases: ['copy', 'cp'],
+  description: 'Copy files',
+  usage: 'copy <source...> <destination>',
+  category: 'file-ops'
+}, async (parsed, files, addOutput, onRefresh) => {
+  await handleCopy(parsed, files, addOutput, onRefresh)
+})
+
+registerTerminalCommand({
+  aliases: ['cat', 'type'],
+  description: 'Display file contents',
+  usage: 'cat <file-path> [-n lines]',
+  category: 'file-ops'
+}, async (parsed, files, addOutput) => {
+  await handleCat(parsed, files, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['head'],
+  description: 'Show first N lines',
+  usage: 'head <file-path> [-n lines]',
+  category: 'file-ops'
+}, async (parsed, files, addOutput) => {
+  await handleHead(parsed, files, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['tail'],
+  description: 'Show last N lines',
+  usage: 'tail <file-path> [-n lines]',
+  category: 'file-ops'
+}, async (parsed, files, addOutput) => {
+  await handleTail(parsed, files, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['write'],
+  description: 'Write text to file',
+  usage: 'write <file-path> <content>',
+  examples: ['write notes.txt "Hello world"'],
+  category: 'file-ops'
+}, async (parsed, _files, addOutput, onRefresh) => {
+  await handleWrite(parsed, addOutput, onRefresh)
+})
+
+registerTerminalCommand({
+  aliases: ['append'],
+  description: 'Append text to file',
+  usage: 'append <file-path> <content>',
+  category: 'file-ops'
+}, async (parsed, _files, addOutput, onRefresh) => {
+  await handleAppend(parsed, addOutput, onRefresh)
+})
+
+registerTerminalCommand({
+  aliases: ['wc'],
+  description: 'Word/line/character count',
+  usage: 'wc <file-path>',
+  category: 'file-ops'
+}, async (parsed, files, addOutput) => {
+  await handleWc(parsed, files, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['diff'],
+  description: 'Compare two text files',
+  usage: 'diff <file1> <file2>',
+  category: 'file-ops'
+}, async (parsed, files, addOutput) => {
+  await handleDiff(parsed, files, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['sed', 'replace'],
+  description: 'Find/replace in file',
+  usage: 'sed <file-path> <find> <replace> [--all]',
+  category: 'file-ops'
+}, async (parsed, files, addOutput, onRefresh) => {
+  await handleSed(parsed, files, addOutput, onRefresh)
+})
+
+registerTerminalCommand({
+  aliases: ['json'],
+  description: 'Pretty-print JSON file',
+  usage: 'json <file-path>',
+  category: 'file-ops'
+}, async (parsed, files, addOutput) => {
+  await handleJson(parsed, files, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['json-get', 'jq'],
+  description: 'Get value from JSON by key path',
+  usage: 'json-get <file-path> [key.path]',
+  examples: ['json-get config.json name', 'jq data.json users.0.email'],
+  category: 'file-ops'
+}, async (parsed, files, addOutput) => {
+  await handleJsonGet(parsed, files, addOutput)
+})
+
+registerTerminalCommand({
+  aliases: ['json-set'],
+  description: 'Set value in JSON file',
+  usage: 'json-set <file-path> <key.path> <value>',
+  examples: ['json-set config.json name "My App"'],
+  category: 'file-ops'
+}, async (parsed, files, addOutput, onRefresh) => {
+  await handleJsonSet(parsed, files, addOutput, onRefresh)
+})
