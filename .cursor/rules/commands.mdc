@@ -1,0 +1,40 @@
+---
+description: CLI command handler conventions
+globs:
+  - src/lib/commands/**/*.ts
+---
+
+# CLI Command Development Rules
+
+## Adding a New Command
+
+1. Create handler in `src/lib/commands/handlers/`
+2. Register in `src/lib/commands/index.ts`
+3. Use `executeTerminalCommand` parser
+4. Return structured results
+
+## Handler Structure
+
+```typescript
+export async function handleMyCommand(
+  args: string[],
+  context: CommandContext
+): Promise<CommandResult> {
+  // Validate args
+  // Execute logic
+  // Return { success: boolean, message: string, data?: any }
+}
+```
+
+## Parser (`src/lib/commands/parser.ts`)
+
+- Commands parsed via `executeTerminalCommand`
+- Support flags and positional arguments
+- Provide helpful error messages for invalid input
+
+## Best Practices
+
+- Async operations with proper error handling
+- User-friendly output messages
+- Support `--help` flag for each command
+- Log command execution for debugging

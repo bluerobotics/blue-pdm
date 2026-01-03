@@ -37,7 +37,7 @@ import { Loader2 } from 'lucide-react'
 
 // Lazy loaded main content components - only loaded when their module is active
 // This saves memory when modules are disabled
-const FileBrowser = lazy(() => import('./components/FileBrowser').then(m => ({ default: m.FileBrowser })))
+const FileBrowser = lazy(() => import('./components/file-browser').then(m => ({ default: m.FileBrowser })))
 const DetailsPanel = lazy(() => import('./components/DetailsPanel').then(m => ({ default: m.DetailsPanel })))
 const RightPanel = lazy(() => import('./components/RightPanel').then(m => ({ default: m.RightPanel })))
 const GoogleDrivePanel = lazy(() => import('./components/GoogleDrivePanel').then(m => ({ default: m.GoogleDrivePanel })))

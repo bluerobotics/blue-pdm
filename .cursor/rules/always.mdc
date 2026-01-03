@@ -1,0 +1,51 @@
+---
+description: Critical rules that must always be followed - these take priority
+globs:
+alwaysApply: true
+---
+
+# CRITICAL RULES - ALWAYS FOLLOW
+
+## File Operations - USE CURSOR TOOLS ONLY
+
+**NEVER use terminal/shell commands for file operations. This is the #1 rule.**
+
+### Forbidden Commands (DO NOT USE)
+- `cat`, `head`, `tail`, `less`, `more` - Use `Read` tool instead
+- `echo "..." > file`, `printf` - Use `Write` tool instead
+- `sed`, `awk`, `perl -pe` - Use `StrReplace` tool instead
+- `grep`, `find`, `rg` in shell - Use `Grep` or `Glob` tools instead
+- `ls`, `dir` - Use `LS` tool instead
+- PowerShell: `Get-Content`, `Set-Content`, `Out-File`, `Add-Content`
+
+### Required Cursor Tools
+| Task | Tool to Use |
+|------|-------------|
+| Read file contents | `Read` |
+| Create/overwrite file | `Write` |
+| Edit existing file | `StrReplace` |
+| Search file contents | `Grep` |
+| Find files by name | `Glob` |
+| List directory | `LS` |
+
+**Why?** Terminal file commands often fail, hang, or cause infinite loops in this environment. Cursor's built-in tools are reliable and provide better output.
+
+## Schema Version Synchronization
+
+When making ANY database changes, you MUST update BOTH files:
+1. `supabase/schema.sql` - Update version in INSERT statement
+2. `src/lib/schemaVersion.ts` - Update `EXPECTED_SCHEMA_VERSION` constant
+
+These MUST stay in sync or users see "database newer/older than app" warnings.
+
+## Documentation Updates
+
+When building user-facing features, update the `docs/` folder. Docs auto-deploy to docs.blueplm.io on release.
+
+## Pre-Release Checklist
+
+Before creating a git tag:
+1. Update `package.json` version
+2. Add `CHANGELOG.md` entry
+3. Run `npm run typecheck`
+4. Ensure tag version matches package.json

@@ -1,78 +1,46 @@
-import { 
-  Trash2, 
-  Copy, 
-  Scissors, 
-  ClipboardPaste,
-  FolderOpen,
-  ExternalLink,
-  ArrowDown,
-  ArrowUp,
-  Edit,
-  FolderPlus,
-  Pin,
-  History,
-  Info,
-  EyeOff,
-  FileX,
-  FolderX,
-  Unlock,
-  AlertTriangle,
-  File,
-  Send,
-  Users,
-  Check,
-  Loader2,
-  Eye,
-  EyeOff as EyeOffIcon,
-  Link,
-  ClipboardList,
-  Calendar,
-  Monitor,
-  CloudOff,
-  RefreshCw,
-  Undo2
-} from 'lucide-react'
-import { useState, useEffect, useRef, useLayoutEffect } from 'react'
-import { usePDMStore, LocalFile } from '../stores/pdmStore'
-// Import command system instead of individual supabase functions
+// src/components/FileContextMenu.tsx
+import { useRef } from 'react'
+import { usePDMStore } from '../stores/pdmStore'
 import { 
   executeCommand,
   getSyncedFilesFromSelection,
   getUnsyncedFilesFromSelection,
   getCloudOnlyFilesFromSelection,
-  getDiscardableFilesFromSelection,
-  getFilesInFolder
+  getDiscardableFilesFromSelection
 } from '../lib/commands'
 import { 
-  getOrgUsers, 
-  createReviewRequest, 
-  requestCheckout, 
-  sendFileNotification,
   watchFile,
   unwatchFile,
-  isWatchingFile,
-  createShareLink,
-  getActiveECOs,
-  addFileToECO,
-  isMachineOnline
+  createShareLink
 } from '../lib/supabase'
 import { copyToClipboard } from '../lib/clipboard'
 
-interface FileContextMenuProps {
-  x: number
-  y: number
-  files: LocalFile[]  // All files in the vault
-  contextFiles: LocalFile[]  // Files being right-clicked
-  onClose: () => void
-  onRefresh: (silent?: boolean) => void
-  // Optional handlers for clipboard operations
-  clipboard?: { files: LocalFile[]; operation: 'copy' | 'cut' } | null
-  onCopy?: () => void
-  onCut?: () => void
-  onPaste?: () => void
-  onRename?: (file: LocalFile) => void
-  onNewFolder?: () => void
-}
+// Import from context-menu modules
+import { useMenuPosition } from './context-menu/hooks/useMenuPosition'
+import { useContextMenuState } from './context-menu/hooks/useContextMenuState'
+import { getCountLabel } from './context-menu/utils'
+
+// Menu item components
+import { ClipboardItems } from './context-menu/items/ClipboardItems'
+import { FileOperationItems } from './context-menu/items/FileOperationItems'
+import { PDMItems } from './context-menu/items/PDMItems'
+import { CollaborationItems } from './context-menu/items/CollaborationItems'
+import { NavigationItems } from './context-menu/items/NavigationItems'
+import { AdminItems } from './context-menu/items/AdminItems'
+import { DeleteItems } from './context-menu/items/DeleteItems'
+
+// Dialog components
+import { DeleteConfirmDialog } from './context-menu/dialogs/DeleteConfirmDialog'
+import { DeleteLocalConfirmDialog } from './context-menu/dialogs/DeleteLocalConfirmDialog'
+import { ForceCheckinDialog } from './context-menu/dialogs/ForceCheckinDialog'
+import { PropertiesDialog } from './context-menu/dialogs/PropertiesDialog'
+import { ReviewRequestDialog } from './context-menu/dialogs/ReviewRequestDialog'
+import { CheckoutRequestDialog } from './context-menu/dialogs/CheckoutRequestDialog'
+import { MentionDialog } from './context-menu/dialogs/MentionDialog'
+import { ShareLinkDialog } from './context-menu/dialogs/ShareLinkDialog'
+import { AddToECODialog } from './context-menu/dialogs/AddToECODialog'
+
+import type { FileContextMenuProps } from './context-menu/types'
 
 export function FileContextMenu({
   x,
@@ -88,165 +56,34 @@ export function FileContextMenu({
   onRename,
   onNewFolder
 }: FileContextMenuProps) {
-  const { user, activeVaultId, addToast, pinnedFolders, pinFolder, unpinFolder, connectedVaults, addIgnorePattern, getIgnorePatterns, serverFolderPaths, organization } = usePDMStore()
-  
-  const [showProperties, setShowProperties] = useState(false)
-  const [folderSize, setFolderSize] = useState<{ size: number; fileCount: number; folderCount: number } | null>(null)
-  const [isCalculatingSize, setIsCalculatingSize] = useState(false)
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
-  const [deleteConfirmFiles, setDeleteConfirmFiles] = useState<LocalFile[]>([])
-  const [deleteServerKeepLocal, setDeleteServerKeepLocal] = useState(false)
-  const [showDeleteLocalConfirm, setShowDeleteLocalConfirm] = useState(false)
-  const [deleteLocalCheckedOutFiles, setDeleteLocalCheckedOutFiles] = useState<LocalFile[]>([])
-  const [showForceCheckinConfirm, setShowForceCheckinConfirm] = useState(false)
-  const [forceCheckinFiles, setForceCheckinFiles] = useState<{ filesOnDifferentMachine: LocalFile[], machineNames: string[], anyMachineOnline: boolean } | null>(null)
-  const [currentMachineId, setCurrentMachineId] = useState<string | null>(null)
-  const [platform, setPlatform] = useState<string>('win32')
-  const [showIgnoreSubmenu, setShowIgnoreSubmenu] = useState(false)
-  const ignoreSubmenuTimeoutRef = useRef<NodeJS.Timeout | null>(null)
-  
-  // Review request state
-  const [showReviewModal, setShowReviewModal] = useState(false)
-  const [orgUsers, setOrgUsers] = useState<{ id: string; email: string; full_name: string | null; avatar_url: string | null }[]>([])
-  const [selectedReviewers, setSelectedReviewers] = useState<string[]>([])
-  const [reviewMessage, setReviewMessage] = useState('')
-  const [reviewDueDate, setReviewDueDate] = useState<string>('')
-  const [reviewPriority, setReviewPriority] = useState<'low' | 'normal' | 'high' | 'urgent'>('normal')
-  const [isSubmittingReview, setIsSubmittingReview] = useState(false)
-  const [loadingUsers, setLoadingUsers] = useState(false)
-  
-  // Checkout request state
-  const [showCheckoutRequestModal, setShowCheckoutRequestModal] = useState(false)
-  const [checkoutRequestMessage, setCheckoutRequestMessage] = useState('')
-  const [isSubmittingCheckoutRequest, setIsSubmittingCheckoutRequest] = useState(false)
-  
-  // Mention/notify state
-  const [showMentionModal, setShowMentionModal] = useState(false)
-  const [selectedMentionUsers, setSelectedMentionUsers] = useState<string[]>([])
-  const [mentionMessage, setMentionMessage] = useState('')
-  const [isSubmittingMention, setIsSubmittingMention] = useState(false)
-  
-  // Watch file state
-  const [isWatching, setIsWatching] = useState(false)
-  const [isTogglingWatch, setIsTogglingWatch] = useState(false)
-  
-  // Share link state
-  const [showShareModal, setShowShareModal] = useState(false)
-  const [_shareExpiresInDays, _setShareExpiresInDays] = useState<number | null>(7)
-  const [_shareMaxDownloads, _setShareMaxDownloads] = useState<number | null>(null)
-  const [_shareRequireAuth, _setShareRequireAuth] = useState(false)
-  const [generatedShareLink, setGeneratedShareLink] = useState<string | null>(null)
-  const [isCreatingShareLink, setIsCreatingShareLink] = useState(false)
-  const [copiedLink, setCopiedLink] = useState(false)
-  
-  // Add to ECO state
-  const [showECOModal, setShowECOModal] = useState(false)
-  const [activeECOs, setActiveECOs] = useState<{ id: string; eco_number: string; title: string }[]>([])
-  const [selectedECO, setSelectedECO] = useState<string | null>(null)
-  const [ecoNotes, setEcoNotes] = useState('')
-  const [loadingECOs, setLoadingECOs] = useState(false)
-  const [isAddingToECO, setIsAddingToECO] = useState(false)
-  
-  // For positioning the menu within viewport bounds
+  const { 
+    user, 
+    activeVaultId, 
+    addToast, 
+    pinnedFolders, 
+    pinFolder, 
+    unpinFolder, 
+    connectedVaults, 
+    addIgnorePattern, 
+    getIgnorePatterns, 
+    serverFolderPaths, 
+    organization 
+  } = usePDMStore()
+
   const menuRef = useRef<HTMLDivElement>(null)
-  const [adjustedPosition, setAdjustedPosition] = useState({ x, y })
-  const [submenuPosition, setSubmenuPosition] = useState<'right' | 'left'>('right')
-  
-  // Handle submenu hover with delay to prevent accidental closing
-  const handleIgnoreSubmenuEnter = () => {
-    if (ignoreSubmenuTimeoutRef.current) {
-      clearTimeout(ignoreSubmenuTimeoutRef.current)
-      ignoreSubmenuTimeoutRef.current = null
-    }
-    setShowIgnoreSubmenu(true)
-  }
-  
-  const handleIgnoreSubmenuLeave = () => {
-    ignoreSubmenuTimeoutRef.current = setTimeout(() => {
-      setShowIgnoreSubmenu(false)
-    }, 150) // Small delay to allow moving to submenu
-  }
-  
-  // Toggle submenu on click (for touch/trackpad users)
-  const handleIgnoreSubmenuClick = (e: React.MouseEvent) => {
-    e.stopPropagation()
-    setShowIgnoreSubmenu(prev => !prev)
-  }
-  
-  // Get platform for UI text
-  useEffect(() => {
-    window.electronAPI?.getPlatform().then(setPlatform)
-  }, [])
-  
-  // Load current machine ID for multi-device check-in detection
-  useEffect(() => {
-    const loadMachineId = async () => {
-      try {
-        const { getMachineId } = await import('@/lib/backup')
-        const machineId = await getMachineId()
-        setCurrentMachineId(machineId)
-      } catch {
-        setCurrentMachineId(null)
-      }
-    }
-    loadMachineId()
-  }, [])
-  
-  // Check if user is watching the file
-  useEffect(() => {
-    if (user?.id && contextFiles.length === 1 && !contextFiles[0].isDirectory && contextFiles[0].pdmData?.id) {
-      isWatchingFile(contextFiles[0].pdmData.id, user.id).then(({ watching }) => {
-        setIsWatching(watching)
-      })
-    }
-  }, [user?.id, contextFiles])
-  
-  // Clean up timeout on unmount
-  useEffect(() => {
-    return () => {
-      if (ignoreSubmenuTimeoutRef.current) {
-        clearTimeout(ignoreSubmenuTimeoutRef.current)
-      }
-    }
-  }, [])
-  
-  // Adjust menu position to stay within viewport
-  useLayoutEffect(() => {
-    if (!menuRef.current) return
-    
-    const menu = menuRef.current
-    const rect = menu.getBoundingClientRect()
-    const viewportWidth = window.innerWidth
-    const viewportHeight = window.innerHeight
-    
-    let newX = x
-    let newY = y
-    
-    // Check right overflow
-    if (x + rect.width > viewportWidth - 10) {
-      newX = viewportWidth - rect.width - 10
-    }
-    
-    // Check bottom overflow
-    if (y + rect.height > viewportHeight - 10) {
-      newY = viewportHeight - rect.height - 10
-    }
-    
-    // Ensure minimum position
-    newX = Math.max(10, newX)
-    newY = Math.max(10, newY)
-    
-    setAdjustedPosition({ x: newX, y: newY })
-    
-    // Determine submenu position based on available space
-    const spaceOnRight = viewportWidth - (newX + rect.width)
-    const submenuWidth = 220 // approximate submenu width
-    setSubmenuPosition(spaceOnRight >= submenuWidth ? 'right' : 'left')
-  }, [x, y])
-  
+
+  // Use custom hooks
+  const { position, submenuPosition } = useMenuPosition(x, y, menuRef)
+  const state = useContextMenuState({
+    userId: user?.id,
+    organizationId: organization?.id,
+    contextFiles
+  })
+
+  // Early return if no files selected
   if (contextFiles.length === 0) return null
-  
-  // Get current vault name for pinning
+
+  // Computed values
   const currentVault = connectedVaults.find(v => v.id === activeVaultId)
   const currentVaultName = currentVault?.name || 'Vault'
   
@@ -277,398 +114,42 @@ export function FileContextMenu({
   const effectiveRole = usePDMStore.getState().getEffectiveRole()
   const isAdmin = effectiveRole === 'admin'
   
-  // Discardable files - includes synced files AND 'deleted' files (checked out but removed locally)
+  // Discardable files
   const discardableFilesInSelection = getDiscardableFilesFromSelection(files, contextFiles, user?.id)
   const discardableCount = discardableFilesInSelection.length
   
-  const countLabel = multiSelect 
-    ? `(${fileCount > 0 ? `${fileCount} file${fileCount > 1 ? 's' : ''}` : ''}${fileCount > 0 && folderCount > 0 ? ', ' : ''}${folderCount > 0 ? `${folderCount} folder${folderCount > 1 ? 's' : ''}` : ''})`
-    : ''
+  const countLabel = getCountLabel(fileCount, folderCount)
   
-  // Check for cloud-only files (includes both 'cloud' and 'cloud_new')
+  // Check for cloud-only files
   const allCloudOnly = contextFiles.every(f => f.diffStatus === 'cloud' || f.diffStatus === 'cloud_new')
-  const hasUnsyncedLocalFiles = unsyncedFilesInSelection.length > 0
   const cloudOnlyCount = cloudOnlyFilesInSelection.length
   
-  // Check for empty local folders (folders that exist locally but have no files to sync/delete)
-  // These can be deleted locally even if there are no unsynced files
+  // Check for empty local folders
   const hasLocalFolders = contextFiles.some(f => f.isDirectory && f.diffStatus !== 'cloud')
   
-  // Check if any selected folders exist on server (for showing delete from server option)
+  // Check if any selected folders exist on server
   const hasFoldersOnServer = contextFiles.some(f => {
     if (!f.isDirectory) return false
     const normalizedPath = f.relativePath.replace(/\\/g, '/')
     return serverFolderPaths.has(normalizedPath)
   })
-  
+
   // ============================================
-  // Command-based handlers (much cleaner!)
+  // Handler functions
   // ============================================
   
-  const handleOpen = () => {
-    onClose()
-    executeCommand('open', { file: firstFile }, { onRefresh })
-  }
-  
-  const handleShowInExplorer = () => {
-    onClose()
-    executeCommand('show-in-explorer', { path: firstFile.path }, { onRefresh })
-  }
-  
-  const handleCheckout = () => {
-    onClose()
-    executeCommand('checkout', { files: contextFiles }, { onRefresh })
-  }
-  
-  const handleCheckin = async () => {
-    // Get files that would be checked in
-    const syncedFiles = getSyncedFilesFromSelection(files, contextFiles)
-    const filesToCheckin = syncedFiles.filter(f => f.pdmData?.checked_out_by === user?.id)
-    
-    // Check if any files are checked out on a different machine
-    const filesOnDifferentMachine = filesToCheckin.filter(f => {
-      const checkoutMachineId = f.pdmData?.checked_out_by_machine_id
-      return checkoutMachineId && currentMachineId && checkoutMachineId !== currentMachineId
-    })
-    
-    if (filesOnDifferentMachine.length > 0 && user) {
-      // Get unique machine IDs and check if any are online
-      const machineIds = [...new Set(filesOnDifferentMachine.map(f => f.pdmData?.checked_out_by_machine_id).filter(Boolean))] as string[]
-      const machineNames = [...new Set(filesOnDifferentMachine.map(f => f.pdmData?.checked_out_by_machine_name || 'another computer'))]
-      
-      // Check if any machines are online
-      const onlineStatuses = await Promise.all(machineIds.map(mid => isMachineOnline(user.id, mid)))
-      const anyMachineOnline = onlineStatuses.some(isOnline => isOnline)
-      
-      setForceCheckinFiles({ filesOnDifferentMachine, machineNames, anyMachineOnline })
-      setShowForceCheckinConfirm(true)
-      return
-    }
-    
-    onClose()
-    executeCommand('checkin', { files: contextFiles }, { onRefresh })
-  }
-  
-  const handleForceCheckin = () => {
-    setShowForceCheckinConfirm(false)
-    setForceCheckinFiles(null)
-    onClose()
-    executeCommand('checkin', { files: contextFiles }, { onRefresh })
-  }
-  
-  const handleFirstCheckin = () => {
-    onClose()
-    executeCommand('sync', { files: contextFiles }, { onRefresh })
-  }
-  
-  const handleDownload = () => {
-    onClose()
-    executeCommand('download', { files: contextFiles }, { onRefresh })
-  }
-  
-  const handleDeleteLocal = () => {
-    // Get all synced files that will be affected (including from folders)
-    const syncedFiles = getSyncedFilesFromSelection(files, contextFiles)
-    
-    // Check for files checked out by current user
-    const checkedOutByMe = syncedFiles.filter(f => f.pdmData?.checked_out_by === user?.id)
-    
-    // If there are checked out files, show confirmation dialog
-    if (checkedOutByMe.length > 0) {
-      setDeleteLocalCheckedOutFiles(checkedOutByMe)
-      setShowDeleteLocalConfirm(true)
-      return
-    }
-    
-    // No checked out files - proceed directly
-    onClose()
-    executeCommand('delete-local', { files: contextFiles }, { onRefresh })
-  }
-  
-  // Check in files first, then delete local
-  const handleCheckinThenDeleteLocal = async () => {
-    setShowDeleteLocalConfirm(false)
-    onClose()
-    // First check in all checked out files
-    await executeCommand('checkin', { files: contextFiles }, { onRefresh })
-    // Then delete local copies
-    executeCommand('delete-local', { files: contextFiles }, { onRefresh })
-  }
-  
-  // Discard checkouts and delete local copies
-  const handleDiscardAndDeleteLocal = () => {
-    setShowDeleteLocalConfirm(false)
-    onClose()
-    // The delete-local command will release checkouts automatically
-    executeCommand('delete-local', { files: contextFiles }, { onRefresh })
-  }
-  
-  const handleForceRelease = () => {
-    onClose()
-    executeCommand('force-release', { files: contextFiles }, { onRefresh })
-  }
-  
-  const handleDiscardCheckout = () => {
-    onClose()
-    executeCommand('discard', { files: contextFiles }, { onRefresh })
-  }
-  
-  // Handle delete from server (shows confirmation dialog first)
-  const handleDeleteFromServer = (keepLocal: boolean = false) => {
-    // Get all synced files to delete from server (including files inside folders)
-    const allFilesToDelete: LocalFile[] = []
-    
-    for (const item of contextFiles) {
-      if (item.isDirectory) {
-        const folderPath = item.relativePath.replace(/\\/g, '/')
-        const filesInFolder = files.filter(f => {
-          if (f.isDirectory) return false
-          if (!f.pdmData?.id) return false
-          const filePath = f.relativePath.replace(/\\/g, '/')
-          return filePath.startsWith(folderPath + '/')
-        })
-        allFilesToDelete.push(...filesInFolder)
-      } else if (item.pdmData?.id) {
-        allFilesToDelete.push(item)
-      }
-    }
-    
-    // Remove duplicates
-    const uniqueFiles = [...new Map(allFilesToDelete.map(f => [f.path, f])).values()]
-    
-    // Check for local-only folders
-    const hasLocalFolders = contextFiles.some(f => f.isDirectory && f.diffStatus !== 'cloud')
-    const hasCloudOnlyFolders = contextFiles.some(f => f.isDirectory && f.diffStatus === 'cloud')
-    
-    if (uniqueFiles.length === 0 && !hasLocalFolders) {
-      if (hasCloudOnlyFolders) {
-        // Empty cloud-only folders - delete directly without confirmation
-        onClose()
-        executeCommand('delete-server', { files: contextFiles, deleteLocal: !keepLocal }, { onRefresh })
-      } else {
-        addToast('warning', 'No files to delete from server')
-        onClose()
-      }
-      return
-    }
-    
-    // If only local folders with no server files, delete without confirmation
-    if (uniqueFiles.length === 0 && hasLocalFolders) {
-      onClose()
-      executeCommand('delete-server', { files: contextFiles, deleteLocal: !keepLocal }, { onRefresh })
-      return
-    }
-    
-    // Show confirmation dialog for server files
-    setDeleteConfirmFiles(uniqueFiles)
-    setDeleteServerKeepLocal(keepLocal)
-    setShowDeleteConfirm(true)
-  }
-  
-  // Execute server delete after confirmation
-  const executeDeleteFromServer = () => {
-    setShowDeleteConfirm(false)
-    const keepLocal = deleteServerKeepLocal
-    setDeleteServerKeepLocal(false)
-    setDeleteConfirmFiles([])
-    onClose()
-    executeCommand('delete-server', { files: contextFiles, deleteLocal: !keepLocal }, { onRefresh })
-  }
-  
-  // Request Review handlers
-  const handleOpenReviewModal = async () => {
-    if (!organization?.id) {
-      addToast('error', 'No organization connected')
-      return
-    }
-    
-    setShowReviewModal(true)
-    setLoadingUsers(true)
-    
-    const { users } = await getOrgUsers(organization.id)
-    // Filter out current user from the list
-    setOrgUsers(users.filter((u: { id: string }) => u.id !== user?.id))
-    setLoadingUsers(false)
-  }
-  
-  const handleToggleReviewer = (userId: string) => {
-    setSelectedReviewers(prev => 
-      prev.includes(userId)
-        ? prev.filter(id => id !== userId)
-        : [...prev, userId]
-    )
-  }
-  
-  const handleSubmitReviewRequest = async () => {
-    if (!user?.id || !organization?.id || !activeVaultId) {
-      addToast('error', 'Missing required information')
-      return
-    }
-    
-    if (selectedReviewers.length === 0) {
-      addToast('warning', 'Please select at least one reviewer')
-      return
-    }
-    
-    setIsSubmittingReview(true)
-    
-    // Get the first synced file for the review request
-    const syncedFile = contextFiles.find(f => f.pdmData?.id)
-    if (!syncedFile || !syncedFile.pdmData) {
-      addToast('error', 'File must be synced to request a review')
-      setIsSubmittingReview(false)
-      return
-    }
-    
-    const { error } = await createReviewRequest(
-      organization.id,
-      syncedFile.pdmData.id,
-      activeVaultId,
-      user.id,
-      selectedReviewers,
-      syncedFile.pdmData.version || 1,
-      undefined,  // title
-      reviewMessage || undefined,
-      reviewDueDate || undefined,
-      reviewPriority
-    )
-    
-    if (error) {
-      addToast('error', `Failed to create review request: ${error}`)
-    } else {
-      addToast('success', `Review request sent to ${selectedReviewers.length} reviewer${selectedReviewers.length > 1 ? 's' : ''}`)
-      setShowReviewModal(false)
-      setSelectedReviewers([])
-      setReviewMessage('')
-      setReviewDueDate('')
-      setReviewPriority('normal')
-      onClose()
-    }
-    
-    setIsSubmittingReview(false)
-  }
-  
-  // Request Checkout handlers (for files checked out by others)
-  const handleSubmitCheckoutRequest = async () => {
-    if (!user?.id || !organization?.id) {
-      addToast('error', 'Missing required information')
-      return
-    }
-    
-    const syncedFile = contextFiles.find(f => f.pdmData?.id && f.pdmData.checked_out_by && f.pdmData.checked_out_by !== user.id)
-    if (!syncedFile || !syncedFile.pdmData?.checked_out_by) {
-      addToast('error', 'File is not checked out by someone else')
-      setShowCheckoutRequestModal(false)
-      return
-    }
-    
-    setIsSubmittingCheckoutRequest(true)
-    
-    const { error } = await requestCheckout(
-      organization.id,
-      syncedFile.pdmData.id,
-      syncedFile.name,
-      user.id,
-      syncedFile.pdmData.checked_out_by,
-      checkoutRequestMessage || undefined
-    )
-    
-    if (error) {
-      addToast('error', `Failed to send request: ${error}`)
-    } else {
-      addToast('success', 'Checkout request sent')
-      setShowCheckoutRequestModal(false)
-      setCheckoutRequestMessage('')
-      onClose()
-    }
-    
-    setIsSubmittingCheckoutRequest(false)
-  }
-  
-  // Mention/Notify handlers
-  const handleOpenMentionModal = async () => {
-    if (!organization?.id) {
-      addToast('error', 'No organization connected')
-      return
-    }
-    
-    setShowMentionModal(true)
-    setLoadingUsers(true)
-    
-    const { users } = await getOrgUsers(organization.id)
-    // Filter out current user from the list
-    setOrgUsers(users.filter((u: { id: string }) => u.id !== user?.id))
-    setLoadingUsers(false)
-  }
-  
-  const handleToggleMentionUser = (userId: string) => {
-    setSelectedMentionUsers(prev => 
-      prev.includes(userId)
-        ? prev.filter(id => id !== userId)
-        : [...prev, userId]
-    )
-  }
-  
-  const handleSubmitMention = async () => {
-    if (!user?.id || !organization?.id) {
-      addToast('error', 'Missing required information')
-      return
-    }
-    
-    if (selectedMentionUsers.length === 0) {
-      addToast('warning', 'Please select at least one person to notify')
-      return
-    }
-    
-    const syncedFile = contextFiles.find(f => f.pdmData?.id)
-    if (!syncedFile || !syncedFile.pdmData) {
-      addToast('error', 'File must be synced to send notifications')
-      setIsSubmittingMention(false)
-      return
-    }
-    
-    setIsSubmittingMention(true)
-    
-    let successCount = 0
-    for (const toUserId of selectedMentionUsers) {
-      const { success } = await sendFileNotification(
-        organization.id,
-        syncedFile.pdmData.id,
-        syncedFile.name,
-        toUserId,
-        user.id,
-        'mention',
-        mentionMessage || `Check out this file: ${syncedFile.name}`
-      )
-      if (success) successCount++
-    }
-    
-    if (successCount > 0) {
-      addToast('success', `Notification sent to ${successCount} user${successCount > 1 ? 's' : ''}`)
-      setShowMentionModal(false)
-      setSelectedMentionUsers([])
-      setMentionMessage('')
-      onClose()
-    } else {
-      addToast('error', 'Failed to send notifications')
-    }
-    
-    setIsSubmittingMention(false)
-  }
-  
-  // Watch/Unwatch handlers
   const handleToggleWatch = async () => {
     if (!user?.id || !organization?.id) return
     
     const syncedFile = contextFiles.find(f => f.pdmData?.id)
     if (!syncedFile || !syncedFile.pdmData) return
     
-    setIsTogglingWatch(true)
+    state.setIsTogglingWatch(true)
     
-    if (isWatching) {
+    if (state.isWatching) {
       const { success, error } = await unwatchFile(syncedFile.pdmData.id, user.id)
       if (success) {
-        setIsWatching(false)
+        state.setIsWatching(false)
         addToast('info', `Stopped watching ${syncedFile.name}`)
       } else {
         addToast('error', error || 'Failed to unwatch file')
@@ -676,31 +157,30 @@ export function FileContextMenu({
     } else {
       const { success, error } = await watchFile(organization.id, syncedFile.pdmData.id, user.id)
       if (success) {
-        setIsWatching(true)
+        state.setIsWatching(true)
         addToast('success', `Now watching ${syncedFile.name}`)
       } else {
         addToast('error', error || 'Failed to watch file')
       }
     }
     
-    setIsTogglingWatch(false)
+    state.setIsTogglingWatch(false)
     onClose()
   }
-  
-  // Share link handler - creates link immediately and copies to clipboard
-  const handleQuickShareLink = async (file: LocalFile) => {
-    if (!user?.id || !organization?.id || !file.pdmData?.id) {
+
+  const handleQuickShareLink = async () => {
+    if (!user?.id || !organization?.id || !firstFile.pdmData?.id) {
       addToast('error', 'File must be synced to create a share link')
       return
     }
     
-    setIsCreatingShareLink(true)
+    state.setIsCreatingShareLink(true)
     
     const { link, error } = await createShareLink(
       organization.id,
-      file.pdmData.id,
+      firstFile.pdmData.id,
       user.id,
-      { expiresInDays: 7 } // Default 7 days
+      { expiresInDays: 7 }
     )
     
     if (error) {
@@ -710,93 +190,61 @@ export function FileContextMenu({
       if (result.success) {
         addToast('success', 'Share link copied! (expires in 7 days)')
       } else {
-        // If clipboard fails, show the link in a prompt
-        setGeneratedShareLink(link.downloadUrl)
-        setShowShareModal(true)
+        state.setGeneratedShareLink(link.downloadUrl)
+        state.openDialog('shareLink')
       }
     }
     
-    setIsCreatingShareLink(false)
+    state.setIsCreatingShareLink(false)
     onClose()
   }
-  
+
   const handleCopyShareLink = async () => {
-    if (!generatedShareLink) return
+    if (!state.generatedShareLink) return
     
-    const result = await copyToClipboard(generatedShareLink)
+    const result = await copyToClipboard(state.generatedShareLink)
     if (result.success) {
-      setCopiedLink(true)
+      state.setCopiedLink(true)
       addToast('success', 'Link copied to clipboard!')
-      setTimeout(() => setCopiedLink(false), 2000)
+      setTimeout(() => state.setCopiedLink(false), 2000)
     } else {
       addToast('error', 'Failed to copy link')
     }
   }
-  
-  // ECO handlers
-  const handleOpenECOModal = async () => {
-    if (!organization?.id) {
-      addToast('error', 'No organization connected')
-      return
-    }
-    
-    setShowECOModal(true)
-    setLoadingECOs(true)
-    
-    const { ecos } = await getActiveECOs(organization.id)
-    setActiveECOs(ecos)
-    setLoadingECOs(false)
-  }
-  
-  // Sync SolidWorks Metadata handler
-  const handleSyncSwMetadata = () => {
+
+  // Delete confirmation handlers
+  const handleDeleteConfirm = () => {
+    state.closeDialog('deleteConfirm')
+    const keepLocal = state.deleteServerKeepLocal
+    state.setDeleteServerKeepLocal(false)
+    state.setDeleteConfirmFiles([])
     onClose()
-    executeCommand('sync-sw-metadata', { files: contextFiles }, { onRefresh })
+    executeCommand('delete-server', { files: contextFiles, deleteLocal: !keepLocal }, { onRefresh })
   }
-  
-  // Get synced SolidWorks files (works for both files and folders)
-  const SW_EXTENSIONS = ['.sldprt', '.sldasm', '.slddrw']
-  const syncedSolidWorksFiles = syncedFilesInSelection.filter(f => 
-    SW_EXTENSIONS.includes(f.extension.toLowerCase())
-  )
-  
-  const handleAddToECO = async () => {
-    if (!user?.id || !selectedECO) {
-      addToast('warning', 'Please select an ECO')
-      return
-    }
-    
-    const syncedFile = contextFiles.find(f => f.pdmData?.id)
-    if (!syncedFile || !syncedFile.pdmData) {
-      addToast('error', 'File must be synced to add to ECO')
-      return
-    }
-    
-    setIsAddingToECO(true)
-    
-    const { success, error } = await addFileToECO(
-      syncedFile.pdmData.id,
-      selectedECO,
-      user.id,
-      ecoNotes || undefined
-    )
-    
-    if (success) {
-      const eco = activeECOs.find(e => e.id === selectedECO)
-      addToast('success', `Added to ${eco?.eco_number || 'ECO'}`)
-      setShowECOModal(false)
-      setSelectedECO(null)
-      setEcoNotes('')
-      onClose()
-    } else {
-      addToast('error', error || 'Failed to add to ECO')
-    }
-    
-    setIsAddingToECO(false)
+
+  const handleCheckinThenDeleteLocal = async () => {
+    state.closeDialog('deleteLocalConfirm')
+    onClose()
+    await executeCommand('checkin', { files: contextFiles }, { onRefresh })
+    executeCommand('delete-local', { files: contextFiles }, { onRefresh })
+  }
+
+  const handleDiscardAndDeleteLocal = () => {
+    state.closeDialog('deleteLocalConfirm')
+    onClose()
+    executeCommand('delete-local', { files: contextFiles }, { onRefresh })
+  }
+
+  const handleForceCheckin = () => {
+    state.closeDialog('forceCheckin')
+    state.setForceCheckinFiles(null)
+    onClose()
+    executeCommand('checkin', { files: contextFiles }, { onRefresh })
   }
 
   return (
     <>
+      {/* Backdrop */}
       <div 
         className="fixed inset-0 z-50" 
         onClick={onClose}
@@ -805,1386 +253,226 @@ export function FileContextMenu({
           onClose()
         }}
       />
+      
+      {/* Context Menu */}
       <div 
         ref={menuRef}
         className="context-menu z-[60]"
-        style={{ left: adjustedPosition.x, top: adjustedPosition.y }}
+        style={{ left: position.x, top: position.y }}
       >
-        {/* Download - for cloud-only files - show at TOP for cloud folders */}
-        {anyCloudOnly && (
-          <div className="context-menu-item" onClick={handleDownload}>
-            <ArrowDown size={14} className="text-plm-success" />
-            Download {cloudOnlyCount > 0 ? `${cloudOnlyCount} files` : countLabel}
-          </div>
-        )}
-        
-        {/* Open - only for local files/folders (not cloud-only) */}
-        {!multiSelect && !allCloudOnly && (
-          <div className="context-menu-item" onClick={handleOpen}>
-            <ExternalLink size={14} />
-            {isFolder ? 'Open Folder' : 'Open'}
-          </div>
-        )}
-        
-        {/* Show in Explorer/Finder */}
-        {!allCloudOnly && (
-          <div className="context-menu-item" onClick={handleShowInExplorer}>
-            <FolderOpen size={14} />
-            {platform === 'darwin' ? 'Reveal in Finder' : 'Show in Explorer'}
-          </div>
-        )}
-        
-        {/* Pin/Unpin - for files and folders */}
-        {!multiSelect && activeVaultId && (
-          (() => {
-            const isPinned = pinnedFolders.some(p => p.path === firstFile.relativePath && p.vaultId === activeVaultId)
-            return (
-              <div 
-                className="context-menu-item"
-                onClick={() => {
-                  if (isPinned) {
-                    unpinFolder(firstFile.relativePath)
-                    addToast('info', `Unpinned ${firstFile.name}`)
-                  } else {
-                    pinFolder(firstFile.relativePath, activeVaultId, currentVaultName, firstFile.isDirectory)
-                    addToast('success', `Pinned ${firstFile.name}`)
-                  }
-                  onClose()
-                }}
-              >
-                <Pin size={14} className={isPinned ? 'fill-plm-accent text-plm-accent' : ''} />
-                {isPinned ? 'Unpin' : `Pin ${isFolder ? 'Folder' : 'File'}`}
-              </div>
-            )
-          })()
-        )}
-        
-        {/* Rename - right after pin */}
-        {onRename && !multiSelect && !allCloudOnly && (
-          (() => {
-            const isSynced = !!firstFile.pdmData
-            const isCheckedOutByMe = firstFile.pdmData?.checked_out_by === user?.id
-            const canRename = !isSynced || isCheckedOutByMe
-            
-            return (
-              <div 
-                className={`context-menu-item ${!canRename ? 'disabled' : ''}`}
-                onClick={() => { 
-                  if (canRename) {
-                    onRename(firstFile)
-                    onClose()
-                  }
-                }}
-                title={!canRename ? 'Check out file first to rename' : ''}
-              >
-                <Edit size={14} />
-                Rename
-                <span className="text-xs text-plm-fg-muted ml-auto">
-                  {!canRename ? '(checkout required)' : 'F2'}
-                </span>
-              </div>
-            )
-          })()
-        )}
-        
-        {/* Clipboard operations */}
-        {(onCopy || onCut || onPaste) && (
-          <>
-            <div className="context-menu-separator" />
-            {onCopy && (
-              <div className="context-menu-item" onClick={() => { onCopy(); onClose(); }}>
-                <Copy size={14} />
-                Copy
-                <span className="text-xs text-plm-fg-muted ml-auto">Ctrl+C</span>
-              </div>
-            )}
-            {onCut && (() => {
-              const canCut = contextFiles.every(f => 
-                f.isDirectory || 
-                !f.pdmData || 
-                f.pdmData.checked_out_by === user?.id
-              )
-              return (
-                <div 
-                  className={`context-menu-item ${!canCut ? 'disabled' : ''}`}
-                  onClick={() => { if (canCut) { onCut(); onClose(); } }}
-                  title={!canCut ? 'Check out files first to move them' : undefined}
-                >
-                  <Scissors size={14} />
-                  Cut
-                  <span className="text-xs text-plm-fg-muted ml-auto">Ctrl+X</span>
-                </div>
-              )
-            })()}
-            {onPaste && (
-              <div 
-                className={`context-menu-item ${!clipboard ? 'disabled' : ''}`}
-                onClick={() => { if (clipboard) { onPaste(); onClose(); } }}
-              >
-                <ClipboardPaste size={14} />
-                Paste
-                <span className="text-xs text-plm-fg-muted ml-auto">Ctrl+V</span>
-              </div>
-            )}
-          </>
-        )}
-        
-        {/* New Folder */}
-        {onNewFolder && isFolder && !multiSelect && !allCloudOnly && (
-          <>
-            <div className="context-menu-separator" />
-            <div className="context-menu-item" onClick={() => { onNewFolder(); onClose(); }}>
-              <FolderPlus size={14} />
-              New Folder
-            </div>
-          </>
-        )}
-        
-        <div className="context-menu-separator" />
-        
-        {/* First Check In - for unsynced files */}
-        {anyUnsynced && !allCloudOnly && (
-          <div className="context-menu-item" onClick={handleFirstCheckin}>
-            <ArrowUp size={14} className="text-plm-info" />
-            First Check In {unsyncedFilesInSelection.length > 0 ? `${unsyncedFilesInSelection.length} file${unsyncedFilesInSelection.length !== 1 ? 's' : ''}` : countLabel}
-          </div>
-        )}
-        
-        {/* Check Out */}
-        <div 
-          className={`context-menu-item ${!anySynced || allCheckedOut ? 'disabled' : ''}`}
-          onClick={() => {
-            if (!anySynced || allCheckedOut) return
-            handleCheckout()
-          }}
-          title={!anySynced ? 'Download files first to enable checkout' : allCheckedOut ? 'Already checked out' : ''}
-        >
-          <ArrowDown size={14} className={!anySynced ? 'text-plm-fg-muted' : 'text-plm-warning'} />
-          Check Out {allFolders && !multiSelect && checkoutableCount > 0 ? `${checkoutableCount} files` : countLabel}
-          {!anySynced && <span className="text-xs text-plm-fg-muted ml-auto">(download first)</span>}
-          {anySynced && allCheckedOut && <span className="text-xs text-plm-fg-muted ml-auto">(already out)</span>}
-        </div>
-        
-        {/* Check In - only for synced files that exist locally (not 'deleted') */}
-        {/* Show if there are synced files, but disabled if none are checked out by me */}
-        {anySynced && (
-          <div 
-            className={`context-menu-item ${allCheckedIn || checkinableCount === 0 ? 'disabled' : ''}`}
-            onClick={() => {
-              if (allCheckedIn || checkinableCount === 0) return
-              handleCheckin()
-            }}
-            title={allCheckedIn ? 'Already checked in' : checkinableCount === 0 ? 'No files checked out by you' : ''}
-          >
-            <ArrowUp size={14} className={allCheckedIn || checkinableCount === 0 ? 'text-plm-fg-muted' : 'text-plm-success'} />
-            Check In {allFolders && !multiSelect && checkinableCount > 0 ? `${checkinableCount} files` : countLabel}
-            {allCheckedIn && <span className="text-xs text-plm-fg-muted ml-auto">(already in)</span>}
-          </div>
-        )}
-        
-        {/* Discard Checkout - for files checked out by current user */}
-        {/* Discard Checkout - for files checked out by current user */}
-        {/* Uses discardableCount which includes 'deleted' files (checked out but removed locally) */}
-        {discardableCount > 0 && (
-          <div 
-            className="context-menu-item text-plm-warning"
-            onClick={handleDiscardCheckout}
-            title="Discard local changes and revert to server version"
-          >
-            <Undo2 size={14} />
-            Discard Checkout {discardableCount > 1 ? `(${discardableCount})` : ''}
-          </div>
-        )}
-        
-        {/* Admin: Force Release */}
-        {isAdmin && checkedOutByOthersCount > 0 && (
-          <div 
-            className="context-menu-item text-plm-error"
-            onClick={handleForceRelease}
-            title="Admin: Immediately release checkout. User's unsaved changes will be orphaned."
-          >
-            <Unlock size={14} />
-            Force Release {checkedOutByOthersCount > 1 ? `(${checkedOutByOthersCount})` : ''}
-          </div>
-        )}
-        
-        <div className="context-menu-separator" />
-        
-        {/* Show History - for folders */}
-        {!multiSelect && isFolder && (
-          <div 
-            className="context-menu-item"
-            onClick={() => {
-              const { setDetailsPanelTab, detailsPanelVisible, toggleDetailsPanel } = usePDMStore.getState()
-              setDetailsPanelTab('history')
-              if (!detailsPanelVisible) toggleDetailsPanel()
-              onClose()
-            }}
-          >
-            <History size={14} />
-            Show History
-          </div>
-        )}
-        
-        {/* Show Deleted Files - for folders */}
-        {!multiSelect && isFolder && (
-          <div 
-            className="context-menu-item"
-            onClick={() => {
-              const { setActiveView, setTrashFolderFilter } = usePDMStore.getState()
-              setTrashFolderFilter(firstFile.relativePath)
-              setActiveView('trash')
-              onClose()
-            }}
-          >
-            <Trash2 size={14} />
-            Show Deleted Files
-          </div>
-        )}
-        
-        {/* Properties */}
-        <div 
-          className="context-menu-item"
-          onClick={async () => {
-            if (isFolder && !multiSelect) {
-              setIsCalculatingSize(true)
-              setShowProperties(true)
-              const filesInFolder = getFilesInFolder(files, firstFile.relativePath)
-              const foldersInFolder = files.filter(f => 
-                f.isDirectory && 
-                f.relativePath.replace(/\\/g, '/').startsWith(firstFile.relativePath.replace(/\\/g, '/') + '/') && 
-                f.relativePath !== firstFile.relativePath
-              )
-              let totalSize = 0
-              for (const f of filesInFolder) {
-                totalSize += f.size || 0
-              }
-              setFolderSize({
-                size: totalSize,
-                fileCount: filesInFolder.length,
-                folderCount: foldersInFolder.length
-              })
-              setIsCalculatingSize(false)
-            } else {
-              setShowProperties(true)
-            }
-          }}
-        >
-          <Info size={14} />
-          Properties
-        </div>
-        
-        {/* Request Review - only for synced files (not folders) */}
-        {!multiSelect && !isFolder && anySynced && firstFile.pdmData?.id && (
-          <div 
-            className="context-menu-item"
-            onClick={handleOpenReviewModal}
-          >
-            <Send size={14} className="text-plm-accent" />
-            Request Review
-          </div>
-        )}
-        
-        {/* Request Checkout - for files checked out by others */}
-        {!multiSelect && !isFolder && anySynced && firstFile.pdmData?.checked_out_by && firstFile.pdmData.checked_out_by !== user?.id && (
-          <div 
-            className="context-menu-item"
-            onClick={() => setShowCheckoutRequestModal(true)}
-          >
-            <ArrowDown size={14} className="text-plm-warning" />
-            Request Checkout
-          </div>
-        )}
-        
-        {/* Notify / Mention - for synced files */}
-        {!multiSelect && !isFolder && anySynced && firstFile.pdmData?.id && (
-          <div 
-            className="context-menu-item"
-            onClick={handleOpenMentionModal}
-          >
-            <Users size={14} className="text-plm-fg-dim" />
-            Notify Someone
-          </div>
-        )}
-        
-        {/* Watch/Unwatch - for synced files */}
-        {!multiSelect && !isFolder && anySynced && firstFile.pdmData?.id && (
-          <div 
-            className={`context-menu-item ${isTogglingWatch ? 'opacity-50' : ''}`}
-            onClick={handleToggleWatch}
-          >
-            {isTogglingWatch ? (
-              <Loader2 size={14} className="animate-spin" />
-            ) : isWatching ? (
-              <EyeOffIcon size={14} className="text-plm-fg-muted" />
-            ) : (
-              <Eye size={14} className="text-plm-accent" />
-            )}
-            {isWatching ? 'Stop Watching' : 'Watch File'}
-          </div>
-        )}
-        
-        {/* Copy Share Link - for synced files and folders */}
-        {!multiSelect && anySynced && (isFolder || firstFile.pdmData?.id) && (
-          <div 
-            className={`context-menu-item ${isCreatingShareLink ? 'opacity-50' : ''}`}
-            onClick={() => {
-              if (isFolder) {
-                addToast('info', 'Folder sharing coming soon! For now, share individual files.')
-                onClose()
-              } else if (!isCreatingShareLink) {
-                handleQuickShareLink(firstFile)
-              }
-            }}
-          >
-            {isCreatingShareLink ? (
-              <Loader2 size={14} className="animate-spin" />
-            ) : (
-              <Link size={14} className="text-plm-accent" />
-            )}
-            Copy Share Link
-          </div>
-        )}
-        
-        {/* Add to ECO - for synced files */}
-        {!multiSelect && !isFolder && anySynced && firstFile.pdmData?.id && (
-          <div 
-            className="context-menu-item"
-            onClick={handleOpenECOModal}
-          >
-            <ClipboardList size={14} className="text-plm-fg-dim" />
-            Add to ECO
-          </div>
-        )}
-        
-        {/* Sync SolidWorks Metadata - for synced SW files (works for folders too) */}
-        {syncedSolidWorksFiles.length > 0 && (
-          <div 
-            className="context-menu-item"
-            onClick={handleSyncSwMetadata}
-            title="Extract metadata (part number, description, revision) from SolidWorks file properties and update the database"
-          >
-            <RefreshCw size={14} className="text-plm-accent" />
-            Refresh Metadata {syncedSolidWorksFiles.length > 1 ? `(${syncedSolidWorksFiles.length} files)` : ''}
-          </div>
-        )}
-        
-        <div className="context-menu-separator" />
-        
-        {/* Keep Local Only (Ignore) - for unsynced files and folders */}
-        {anyUnsynced && !allCloudOnly && activeVaultId && (
-          <div 
-            className="context-menu-item relative"
-            onMouseEnter={handleIgnoreSubmenuEnter}
-            onMouseLeave={handleIgnoreSubmenuLeave}
-            onClick={handleIgnoreSubmenuClick}
-          >
-            <EyeOff size={14} />
-            Keep Local Only
-            <span className="text-xs text-plm-fg-muted ml-auto">{submenuPosition === 'right' ? '▶' : '◀'}</span>
-            
-            {/* Submenu */}
-            {showIgnoreSubmenu && (
-              <div 
-                className={`absolute top-0 min-w-[200px] bg-plm-bg-lighter border border-plm-border rounded-md py-1 shadow-lg z-[100] ${
-                  submenuPosition === 'right' ? 'left-full ml-1' : 'right-full mr-1'
-                }`}
-                style={{ marginTop: '-4px' }}
-                onMouseEnter={handleIgnoreSubmenuEnter}
-                onMouseLeave={handleIgnoreSubmenuLeave}
-              >
-                {/* Ignore this specific file/folder */}
-                <div 
-                  className="context-menu-item"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    for (const file of contextFiles) {
-                      if (file.isDirectory) {
-                        addIgnorePattern(activeVaultId, file.relativePath + '/')
-                      } else {
-                        addIgnorePattern(activeVaultId, file.relativePath)
-                      }
-                    }
-                    addToast('success', `Added ${contextFiles.length > 1 ? `${contextFiles.length} items` : contextFiles[0].name} to ignore list`)
-                    onRefresh(true)
-                    onClose()
-                  }}
-                >
-                  {isFolder ? <FolderX size={14} /> : <FileX size={14} />}
-                  This {isFolder ? 'folder' : 'file'}{multiSelect ? ` (${contextFiles.length})` : ''}
-                </div>
-                
-                {/* Ignore all files with this extension */}
-                {!isFolder && !multiSelect && firstFile.extension && (
-                  <div 
-                    className="context-menu-item"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      const pattern = `*${firstFile.extension}`
-                      addIgnorePattern(activeVaultId, pattern)
-                      addToast('success', `Now ignoring all ${firstFile.extension} files`)
-                      onRefresh(true)
-                      onClose()
-                    }}
-                  >
-                    <FileX size={14} />
-                    All *{firstFile.extension} files
-                  </div>
-                )}
-                
-                {/* Show current patterns count */}
-                {(() => {
-                  const currentPatterns = getIgnorePatterns(activeVaultId)
-                  if (currentPatterns.length > 0) {
-                    return (
-                      <>
-                        <div className="context-menu-separator" />
-                        <div className="px-3 py-1.5 text-xs text-plm-fg-muted">
-                          {currentPatterns.length} pattern{currentPatterns.length > 1 ? 's' : ''} configured
-                        </div>
-                      </>
-                    )
-                  }
-                  return null
-                })()}
-              </div>
-            )}
-          </div>
-        )}
-        
-        {/* Remove Local Copy - for synced files */}
-        {anySynced && !allCloudOnly && (
-          <div className="context-menu-item" onClick={handleDeleteLocal}>
-            <Trash2 size={14} />
-            Remove Local Copy ({syncedFilesInSelection.length} file{syncedFilesInSelection.length !== 1 ? 's' : ''})
-          </div>
-        )}
-        
-        {/* Delete Locally - for local files/folders (keeps server copy) */}
-        {(hasUnsyncedLocalFiles || hasLocalFolders) && !allCloudOnly && !anySynced && (
-          <div className="context-menu-item danger" onClick={handleDeleteLocal}>
-            <Trash2 size={14} />
-            Delete Locally ({unsyncedFilesInSelection.length} file{unsyncedFilesInSelection.length !== 1 ? 's' : ''}{folderCount > 0 ? `, ${folderCount} folder${folderCount !== 1 ? 's' : ''}` : ''})
-          </div>
-        )}
-        
-        {/* Delete from Server (Keep Local) - for synced files that have local copies */}
-        {anySynced && !allCloudOnly && (
-          <div className="context-menu-item" onClick={() => handleDeleteFromServer(true)}>
-            <CloudOff size={14} />
-            Delete from Server ({syncedFilesInSelection.length} file{syncedFilesInSelection.length !== 1 ? 's' : ''})
-          </div>
-        )}
-        
-        {/* Delete Local & Server - show if any content exists on server (synced, cloud-only, or folder exists on server) */}
-        {(anySynced || allCloudOnly || anyCloudOnly || hasFoldersOnServer) && (
-          <div className="context-menu-item danger" onClick={() => handleDeleteFromServer(false)}>
-            <Trash2 size={14} />
-            {allCloudOnly ? 'Delete from Server' : 'Delete Local & Server'} ({syncedFilesInSelection.length + cloudOnlyFilesInSelection.length} file{(syncedFilesInSelection.length + cloudOnlyFilesInSelection.length) !== 1 ? 's' : ''}{folderCount > 0 ? `, ${folderCount} folder${folderCount !== 1 ? 's' : ''}` : ''})
-          </div>
-        )}
+        {/* PDM Items (Download at top for cloud-only) */}
+        <PDMItems
+          files={files}
+          contextFiles={contextFiles}
+          syncedFilesInSelection={syncedFilesInSelection}
+          unsyncedFilesInSelection={unsyncedFilesInSelection}
+          anySynced={anySynced}
+          anyUnsynced={anyUnsynced}
+          anyCloudOnly={anyCloudOnly}
+          allCloudOnly={allCloudOnly}
+          allCheckedOut={allCheckedOut}
+          allCheckedIn={allCheckedIn}
+          checkoutableCount={checkoutableCount}
+          checkinableCount={checkinableCount}
+          discardableCount={discardableCount}
+          allFolders={allFolders}
+          multiSelect={multiSelect}
+          countLabel={countLabel}
+          cloudOnlyCount={cloudOnlyCount}
+          userId={user?.id}
+          checkForDifferentMachineCheckout={state.checkForDifferentMachineCheckout}
+          onClose={onClose}
+          onRefresh={onRefresh}
+        />
+
+        {/* File Operation Items */}
+        <FileOperationItems
+          firstFile={firstFile}
+          multiSelect={multiSelect}
+          isFolder={isFolder}
+          allCloudOnly={allCloudOnly}
+          platform={state.platform}
+          userId={user?.id}
+          onRename={onRename}
+          onNewFolder={onNewFolder}
+          onClose={onClose}
+          onRefresh={onRefresh}
+        />
+
+        {/* Navigation Items */}
+        <NavigationItems
+          firstFile={firstFile}
+          files={files}
+          multiSelect={multiSelect}
+          isFolder={isFolder}
+          activeVaultId={activeVaultId}
+          currentVaultName={currentVaultName}
+          pinnedFolders={pinnedFolders}
+          onClose={onClose}
+          openDialog={state.openDialog}
+          setFolderSize={state.setFolderSize}
+          setIsCalculatingSize={state.setIsCalculatingSize}
+          addToast={addToast}
+          pinFolder={pinFolder}
+          unpinFolder={unpinFolder}
+        />
+
+        {/* Clipboard Items */}
+        <ClipboardItems
+          contextFiles={contextFiles}
+          clipboard={clipboard}
+          userId={user?.id}
+          onCopy={onCopy}
+          onCut={onCut}
+          onPaste={onPaste}
+          onClose={onClose}
+        />
+
+        {/* Collaboration Items */}
+        <CollaborationItems
+          firstFile={firstFile}
+          multiSelect={multiSelect}
+          isFolder={isFolder}
+          anySynced={anySynced}
+          userId={user?.id}
+          isWatching={state.isWatching}
+          isTogglingWatch={state.isTogglingWatch}
+          isCreatingShareLink={state.isCreatingShareLink}
+          onToggleWatch={handleToggleWatch}
+          onQuickShareLink={handleQuickShareLink}
+          openDialog={state.openDialog}
+          onClose={onClose}
+          addToast={addToast}
+        />
+
+        {/* Admin Items */}
+        <AdminItems
+          contextFiles={contextFiles}
+          isAdmin={isAdmin}
+          checkedOutByOthersCount={checkedOutByOthersCount}
+          onClose={onClose}
+          onRefresh={onRefresh}
+        />
+
+        {/* Delete Items */}
+        <DeleteItems
+          files={files}
+          contextFiles={contextFiles}
+          syncedFilesInSelection={syncedFilesInSelection}
+          unsyncedFilesInSelection={unsyncedFilesInSelection}
+          cloudOnlyFilesInSelection={cloudOnlyFilesInSelection}
+          anySynced={anySynced}
+          anyUnsynced={anyUnsynced}
+          allCloudOnly={allCloudOnly}
+          isFolder={isFolder}
+          multiSelect={multiSelect}
+          folderCount={folderCount}
+          hasLocalFolders={hasLocalFolders}
+          hasFoldersOnServer={hasFoldersOnServer}
+          activeVaultId={activeVaultId}
+          userId={user?.id}
+          showIgnoreSubmenu={state.showIgnoreSubmenu}
+          submenuPosition={submenuPosition}
+          handleIgnoreSubmenuEnter={state.handleIgnoreSubmenuEnter}
+          handleIgnoreSubmenuLeave={state.handleIgnoreSubmenuLeave}
+          onClose={onClose}
+          onRefresh={onRefresh}
+          openDialog={state.openDialog}
+          setDeleteConfirmFiles={state.setDeleteConfirmFiles}
+          setDeleteServerKeepLocal={state.setDeleteServerKeepLocal}
+          setDeleteLocalCheckedOutFiles={state.setDeleteLocalCheckedOutFiles}
+          addIgnorePattern={addIgnorePattern}
+          getIgnorePatterns={getIgnorePatterns}
+          addToast={addToast}
+          firstFile={firstFile}
+        />
       </div>
-      
-      {/* Properties Modal */}
-      {showProperties && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center">
-          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={() => { setShowProperties(false); onClose(); }} />
-          <div className="relative bg-plm-bg-light border border-plm-border rounded-lg shadow-2xl w-[400px] max-h-[80vh] overflow-auto">
-            <div className="p-4 border-b border-plm-border flex items-center gap-3">
-              <Info size={20} className="text-plm-accent" />
-              <h3 className="font-semibold">Properties</h3>
-            </div>
-            <div className="p-4 space-y-3">
-              {/* Name */}
-              <div>
-                <div className="text-xs text-plm-fg-muted uppercase tracking-wide mb-1">Name</div>
-                <div className="text-sm">{firstFile.name}</div>
-              </div>
-              
-              {/* Type */}
-              <div>
-                <div className="text-xs text-plm-fg-muted uppercase tracking-wide mb-1">Type</div>
-                <div className="text-sm">
-                  {isFolder ? 'Folder' : (firstFile.extension ? firstFile.extension.toUpperCase() + ' File' : 'File')}
-                </div>
-              </div>
-              
-              {/* Location */}
-              <div>
-                <div className="text-xs text-plm-fg-muted uppercase tracking-wide mb-1">Location</div>
-                <div className="text-sm break-all text-plm-fg-dim">
-                  {firstFile.relativePath.includes('/') 
-                    ? firstFile.relativePath.substring(0, firstFile.relativePath.lastIndexOf('/'))
-                    : '/'}
-                </div>
-              </div>
-              
-              {/* Size */}
-              <div>
-                <div className="text-xs text-plm-fg-muted uppercase tracking-wide mb-1">Size</div>
-                <div className="text-sm">
-                  {isFolder && !multiSelect ? (
-                    isCalculatingSize ? (
-                      <span className="text-plm-fg-muted">Calculating...</span>
-                    ) : folderSize ? (
-                      <span>
-                        {formatSize(folderSize.size)}
-                        <span className="text-plm-fg-muted ml-2">
-                          ({folderSize.fileCount} file{folderSize.fileCount !== 1 ? 's' : ''}, {folderSize.folderCount} folder{folderSize.folderCount !== 1 ? 's' : ''})
-                        </span>
-                      </span>
-                    ) : '—'
-                  ) : multiSelect ? (
-                    formatSize(contextFiles.reduce((sum, f) => sum + (f.size || 0), 0))
-                  ) : (
-                    formatSize(firstFile.size || 0)
-                  )}
-                </div>
-              </div>
-              
-              {/* Status */}
-              {firstFile.pdmData && (
-                <div>
-                  <div className="text-xs text-plm-fg-muted uppercase tracking-wide mb-1">Status</div>
-                  <div className="text-sm">
-                    {firstFile.pdmData.checked_out_by 
-                      ? firstFile.pdmData.checked_out_by === user?.id 
-                        ? 'Checked out by you'
-                        : 'Checked out'
-                      : 'Available'}
-                  </div>
-                </div>
-              )}
-              
-              {/* Sync Status */}
-              <div>
-                <div className="text-xs text-plm-fg-muted uppercase tracking-wide mb-1">Sync Status</div>
-                <div className={`text-sm ${firstFile.diffStatus === 'deleted_remote' ? 'text-plm-error' : ''}`}>
-                  {firstFile.diffStatus === 'cloud' ? 'Cloud only (not downloaded)' 
-                    : firstFile.diffStatus === 'added' ? 'Local only (not synced)'
-                    : firstFile.diffStatus === 'ignored' ? 'Local only (ignored from sync)'
-                    : firstFile.diffStatus === 'modified' ? 'Modified locally'
-                    : firstFile.diffStatus === 'moved' ? 'Moved (path changed)'
-                    : firstFile.diffStatus === 'outdated' ? 'Outdated (newer version on server)'
-                    : firstFile.diffStatus === 'deleted_remote' ? 'Deleted from server (orphaned)'
-                    : firstFile.pdmData ? 'Synced' : 'Not synced'}
-                </div>
-              </div>
-              
-              {/* Modified Date */}
-              {firstFile.modifiedTime && (
-                <div>
-                  <div className="text-xs text-plm-fg-muted uppercase tracking-wide mb-1">Modified</div>
-                  <div className="text-sm">{new Date(firstFile.modifiedTime).toLocaleString()}</div>
-                </div>
-              )}
-            </div>
-            <div className="p-4 border-t border-plm-border flex justify-end">
-              <button
-                onClick={() => { setShowProperties(false); onClose(); }}
-                className="btn btn-ghost"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      
-      {/* Delete from Server Confirmation Dialog */}
-      {showDeleteConfirm && (
-        <div 
-          className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center"
-          onClick={() => { setShowDeleteConfirm(false); setDeleteServerKeepLocal(false); onClose(); }}
-        >
-          <div 
-            className="bg-plm-bg-light border border-plm-border rounded-lg p-6 max-w-md shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center gap-3 mb-4">
-              <div className={`w-10 h-10 rounded-full ${deleteServerKeepLocal ? 'bg-plm-warning/20' : 'bg-plm-error/20'} flex items-center justify-center`}>
-                <AlertTriangle size={20} className={deleteServerKeepLocal ? 'text-plm-warning' : 'text-plm-error'} />
-              </div>
-              <div>
-                <h3 className="text-lg font-semibold text-plm-fg">
-                  {deleteServerKeepLocal 
-                    ? `Delete from Server ${deleteConfirmFiles.length > 1 ? `${deleteConfirmFiles.length} Items` : 'Item'}?`
-                    : `Delete Local & Server ${deleteConfirmFiles.length > 1 ? `${deleteConfirmFiles.length} Items` : 'Item'}?`
-                  }
-                </h3>
-                <p className="text-sm text-plm-fg-muted">
-                  {deleteServerKeepLocal 
-                    ? 'Items will be deleted from the server. Local copies will be kept.'
-                    : 'Items will be deleted locally AND from the server.'
-                  }
-                </p>
-              </div>
-            </div>
-            
-            <div className="bg-plm-bg rounded border border-plm-border p-3 mb-4 max-h-40 overflow-y-auto">
-              {deleteConfirmFiles.length === 1 ? (
-                <div className="flex items-center gap-2">
-                  <File size={16} className="text-plm-fg-muted" />
-                  <span className="text-plm-fg font-medium truncate">{deleteConfirmFiles[0]?.name}</span>
-                </div>
-              ) : (
-                <>
-                  <div className="text-sm text-plm-fg mb-2">
-                    {deleteConfirmFiles.length} file{deleteConfirmFiles.length > 1 ? 's' : ''}
-                  </div>
-                  <div className="space-y-1">
-                    {deleteConfirmFiles.slice(0, 5).map((f, i) => (
-                      <div key={i} className="flex items-center gap-2 text-sm">
-                        <File size={14} className="text-plm-fg-muted" />
-                        <span className="text-plm-fg-dim truncate">{f.name}</span>
-                      </div>
-                    ))}
-                    {deleteConfirmFiles.length > 5 && (
-                      <div className="text-xs text-plm-fg-muted">
-                        ...and {deleteConfirmFiles.length - 5} more
-                      </div>
-                    )}
-                  </div>
-                </>
-              )}
-            </div>
-            
-            {/* Warning */}
-            <div className={`${deleteServerKeepLocal ? 'bg-plm-info/10 border-plm-info/30' : 'bg-plm-warning/10 border-plm-warning/30'} border rounded p-3 mb-4`}>
-              <p className={`text-sm ${deleteServerKeepLocal ? 'text-plm-info' : 'text-plm-warning'} font-medium`}>
-                {deleteServerKeepLocal 
-                  ? `ℹ️ ${deleteConfirmFiles.length} file${deleteConfirmFiles.length > 1 ? 's' : ''} will be removed from the server. Local copies will become unsynced.`
-                  : `⚠️ ${deleteConfirmFiles.length} synced file${deleteConfirmFiles.length > 1 ? 's' : ''} will be deleted from the server.`
-                }
-              </p>
-              <p className="text-xs text-plm-fg-muted mt-1">Files can be recovered from trash within 30 days.</p>
-            </div>
-            
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={() => { setShowDeleteConfirm(false); setDeleteServerKeepLocal(false); onClose(); }}
-                className="btn btn-ghost"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={executeDeleteFromServer}
-                className={`btn ${deleteServerKeepLocal ? 'bg-plm-warning hover:bg-plm-warning/80' : 'bg-plm-error hover:bg-plm-error/80'} text-white`}
-              >
-                {deleteServerKeepLocal ? <CloudOff size={14} /> : <Trash2 size={14} />}
-                {deleteServerKeepLocal 
-                  ? `Delete from Server ${deleteConfirmFiles.length > 1 ? `(${deleteConfirmFiles.length})` : ''}`
-                  : `Delete Local & Server ${deleteConfirmFiles.length > 1 ? `(${deleteConfirmFiles.length})` : ''}`
-                }
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      
-      {/* Delete Local Confirmation Dialog - only when files are checked out */}
-      {showDeleteLocalConfirm && (
-        <div 
-          className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center"
-          onClick={() => { setShowDeleteLocalConfirm(false); onClose(); }}
-        >
-          <div 
-            className="bg-plm-bg-light border border-plm-border rounded-lg p-6 max-w-md shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-full bg-plm-warning/20 flex items-center justify-center">
-                <AlertTriangle size={20} className="text-plm-warning" />
-              </div>
-              <div>
-                <h3 className="text-lg font-semibold text-plm-fg">
-                  Files Are Checked Out
-                </h3>
-                <p className="text-sm text-plm-fg-muted">
-                  {deleteLocalCheckedOutFiles.length} file{deleteLocalCheckedOutFiles.length > 1 ? 's are' : ' is'} currently checked out by you.
-                </p>
-              </div>
-            </div>
-            
-            <div className="bg-plm-bg rounded border border-plm-border p-3 mb-4 max-h-40 overflow-y-auto">
-              <div className="space-y-1">
-                {deleteLocalCheckedOutFiles.slice(0, 5).map((f, i) => (
-                  <div key={i} className="flex items-center gap-2 text-sm">
-                    <File size={14} className="text-plm-warning" />
-                    <span className="text-plm-fg truncate">{f.name}</span>
-                  </div>
-                ))}
-                {deleteLocalCheckedOutFiles.length > 5 && (
-                  <div className="text-xs text-plm-fg-muted">
-                    ...and {deleteLocalCheckedOutFiles.length - 5} more
-                  </div>
-                )}
-              </div>
-            </div>
-            
-            {/* Info */}
-            <div className="bg-plm-accent/10 border border-plm-accent/30 rounded p-3 mb-4">
-              <p className="text-sm text-plm-fg">
-                What would you like to do with your changes?
-              </p>
-            </div>
-            
-            <div className="flex flex-col gap-2">
-              <button
-                onClick={handleCheckinThenDeleteLocal}
-                className="btn bg-plm-success hover:bg-plm-success/80 text-white w-full justify-center"
-              >
-                <ArrowUp size={14} />
-                Check In First, Then Remove Local
-              </button>
-              <button
-                onClick={handleDiscardAndDeleteLocal}
-                className="btn bg-plm-warning hover:bg-plm-warning/80 text-white w-full justify-center"
-              >
-                <Trash2 size={14} />
-                Discard Changes & Remove Local
-              </button>
-              <button
-                onClick={() => { setShowDeleteLocalConfirm(false); onClose(); }}
-                className="btn btn-ghost w-full justify-center"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      
-      {/* Force Check-in Confirmation Dialog */}
-      {showForceCheckinConfirm && forceCheckinFiles && (
-        <div 
-          className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center"
-          onClick={() => { setShowForceCheckinConfirm(false); setForceCheckinFiles(null); onClose(); }}
-        >
-          <div 
-            className="bg-plm-bg-light border border-plm-border rounded-lg p-6 max-w-md shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center gap-3 mb-4">
-              <div className={`w-10 h-10 rounded-full flex items-center justify-center ${forceCheckinFiles.anyMachineOnline ? 'bg-plm-warning/20' : 'bg-plm-error/20'}`}>
-                {forceCheckinFiles.anyMachineOnline ? (
-                  <Monitor size={20} className="text-plm-warning" />
-                ) : (
-                  <CloudOff size={20} className="text-plm-error" />
-                )}
-              </div>
-              <div>
-                <h3 className="text-lg font-semibold text-plm-fg">
-                  {forceCheckinFiles.anyMachineOnline ? 'Check In From Different Computer' : 'Cannot Check In - Machine Offline'}
-                </h3>
-                <p className="text-sm text-plm-fg-muted">
-                  {forceCheckinFiles.filesOnDifferentMachine.length} file{forceCheckinFiles.filesOnDifferentMachine.length > 1 ? 's are' : ' is'} checked out on {forceCheckinFiles.machineNames.join(', ')}.
-                </p>
-              </div>
-            </div>
-            
-            <div className="bg-plm-bg rounded border border-plm-border p-3 mb-4 max-h-40 overflow-y-auto">
-              <div className="space-y-1">
-                {forceCheckinFiles.filesOnDifferentMachine.slice(0, 5).map((f, i) => (
-                  <div key={i} className="flex items-center gap-2 text-sm">
-                    <File size={14} className={forceCheckinFiles.anyMachineOnline ? 'text-plm-warning' : 'text-plm-error'} />
-                    <span className="text-plm-fg truncate">{f.name}</span>
-                  </div>
-                ))}
-                {forceCheckinFiles.filesOnDifferentMachine.length > 5 && (
-                  <div className="text-xs text-plm-fg-muted">
-                    ...and {forceCheckinFiles.filesOnDifferentMachine.length - 5} more
-                  </div>
-                )}
-              </div>
-            </div>
-            
-            {/* Warning/Info based on online status */}
-            {forceCheckinFiles.anyMachineOnline ? (
-              <div className="bg-plm-warning/10 border border-plm-warning/30 rounded p-3 mb-4">
-                <p className="text-sm text-plm-fg">
-                  Are you sure you want to check in from here? Any unsaved changes on {forceCheckinFiles.machineNames.length === 1 ? 'that' : 'those'} computer{forceCheckinFiles.machineNames.length > 1 ? 's' : ''} will be lost.
-                </p>
-                <p className="text-xs text-plm-fg-muted mt-2">
-                  The other computer{forceCheckinFiles.machineNames.length > 1 ? 's' : ''} will be notified.
-                </p>
-              </div>
-            ) : (
-              <div className="bg-plm-error/10 border border-plm-error/30 rounded p-3 mb-4">
-                <p className="text-sm text-plm-fg">
-                  You can only check in files from another machine when that machine is <strong>online</strong>.
-                </p>
-                <p className="text-xs text-plm-fg-muted mt-2">
-                  This ensures no unsaved work is lost. Please check in from the original computer, or wait for it to come online.
-                </p>
-              </div>
-            )}
-            
-            <div className="flex flex-col gap-2">
-              {forceCheckinFiles.anyMachineOnline ? (
-                <>
-                  <button
-                    onClick={handleForceCheckin}
-                    className="btn bg-plm-warning hover:bg-plm-warning/80 text-white w-full justify-center"
-                  >
-                    <ArrowUp size={14} />
-                    Force Check In
-                  </button>
-                  <button
-                    onClick={() => { setShowForceCheckinConfirm(false); setForceCheckinFiles(null); onClose(); }}
-                    className="btn btn-ghost w-full justify-center"
-                  >
-                    Cancel
-                  </button>
-                </>
-              ) : (
-                <button
-                  onClick={() => { setShowForceCheckinConfirm(false); setForceCheckinFiles(null); onClose(); }}
-                  className="btn btn-primary w-full justify-center"
-                >
-                  OK
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-      
-      {/* Review Request Modal */}
-      {showReviewModal && (
-        <div 
-          className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center"
-          onClick={() => { setShowReviewModal(false); setSelectedReviewers([]); setReviewMessage(''); }}
-        >
-          <div 
-            className="bg-plm-bg-light border border-plm-border rounded-lg p-6 max-w-md w-full shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-full bg-plm-accent/20 flex items-center justify-center">
-                <Send size={20} className="text-plm-accent" />
-              </div>
-              <div>
-                <h3 className="text-lg font-semibold text-plm-fg">
-                  Request Review
-                </h3>
-                <p className="text-sm text-plm-fg-muted">
-                  {firstFile.name}
-                </p>
-              </div>
-            </div>
-            
-            {/* File info */}
-            <div className="bg-plm-bg rounded border border-plm-border p-3 mb-4">
-              <div className="flex items-center gap-2">
-                <File size={16} className="text-plm-fg-muted" />
-                <span className="text-plm-fg font-medium truncate">{firstFile.name}</span>
-                {firstFile.pdmData?.version && (
-                  <span className="text-xs text-plm-fg-muted">v{firstFile.pdmData.version}</span>
-                )}
-              </div>
-            </div>
-            
-            {/* Reviewers selection */}
-            <div className="mb-4">
-              <label className="block text-xs text-plm-fg-muted uppercase tracking-wide mb-2">
-                Select Reviewers
-              </label>
-              {loadingUsers ? (
-                <div className="flex items-center justify-center p-4">
-                  <Loader2 size={20} className="animate-spin text-plm-accent" />
-                </div>
-              ) : orgUsers.length === 0 ? (
-                <p className="text-sm text-plm-fg-muted p-2">No other users in your organization</p>
-              ) : (
-                <div className="max-h-48 overflow-y-auto border border-plm-border rounded bg-plm-bg">
-                  {orgUsers.map(orgUser => (
-                    <label 
-                      key={orgUser.id}
-                      className="flex items-center gap-3 p-2 hover:bg-plm-highlight cursor-pointer"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={selectedReviewers.includes(orgUser.id)}
-                        onChange={() => handleToggleReviewer(orgUser.id)}
-                        className="w-4 h-4 rounded border-plm-border text-plm-accent focus:ring-plm-accent"
-                      />
-                      {orgUser.avatar_url ? (
-                        <img 
-                          src={orgUser.avatar_url} 
-                          alt="" 
-                          className="w-6 h-6 rounded-full"
-                          referrerPolicy="no-referrer"
-                        />
-                      ) : (
-                        <div className="w-6 h-6 rounded-full bg-plm-accent/20 flex items-center justify-center">
-                          <Users size={12} className="text-plm-accent" />
-                        </div>
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <div className="text-sm text-plm-fg truncate">
-                          {orgUser.full_name || orgUser.email}
-                        </div>
-                        {orgUser.full_name && (
-                          <div className="text-xs text-plm-fg-muted truncate">
-                            {orgUser.email}
-                          </div>
-                        )}
-                      </div>
-                      {selectedReviewers.includes(orgUser.id) && (
-                        <Check size={16} className="text-plm-accent flex-shrink-0" />
-                      )}
-                    </label>
-                  ))}
-                </div>
-              )}
-            </div>
-            
-            {/* Due Date and Priority */}
-            <div className="grid grid-cols-2 gap-3 mb-4">
-              <div>
-                <label className="block text-xs text-plm-fg-muted uppercase tracking-wide mb-2">
-                  <Calendar size={12} className="inline mr-1" />
-                  Due Date (optional)
-                </label>
-                <input
-                  type="date"
-                  value={reviewDueDate}
-                  onChange={(e) => setReviewDueDate(e.target.value)}
-                  min={new Date().toISOString().split('T')[0]}
-                  className="w-full px-3 py-2 text-sm bg-plm-bg border border-plm-border rounded focus:outline-none focus:border-plm-accent"
-                />
-              </div>
-              <div>
-                <label className="block text-xs text-plm-fg-muted uppercase tracking-wide mb-2">
-                  Priority
-                </label>
-                <select
-                  value={reviewPriority}
-                  onChange={(e) => setReviewPriority(e.target.value as any)}
-                  className="w-full px-3 py-2 text-sm bg-plm-bg border border-plm-border rounded focus:outline-none focus:border-plm-accent"
-                >
-                  <option value="low">Low</option>
-                  <option value="normal">Normal</option>
-                  <option value="high">High</option>
-                  <option value="urgent">Urgent</option>
-                </select>
-              </div>
-            </div>
-            
-            {/* Message */}
-            <div className="mb-4">
-              <label className="block text-xs text-plm-fg-muted uppercase tracking-wide mb-2">
-                Message (optional)
-              </label>
-              <textarea
-                value={reviewMessage}
-                onChange={(e) => setReviewMessage(e.target.value)}
-                placeholder="Add a message for the reviewers..."
-                className="w-full px-3 py-2 text-sm bg-plm-bg border border-plm-border rounded resize-none focus:outline-none focus:border-plm-accent"
-                rows={2}
-              />
-            </div>
-            
-            {/* Actions */}
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={() => { setShowReviewModal(false); setSelectedReviewers([]); setReviewMessage(''); setReviewDueDate(''); setReviewPriority('normal'); }}
-                className="btn btn-ghost"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSubmitReviewRequest}
-                disabled={selectedReviewers.length === 0 || isSubmittingReview}
-                className="btn bg-plm-accent hover:bg-plm-accent/90 text-white disabled:opacity-50"
-              >
-                {isSubmittingReview ? (
-                  <Loader2 size={14} className="animate-spin" />
-                ) : (
-                  <Send size={14} />
-                )}
-                Send Request {selectedReviewers.length > 0 && `(${selectedReviewers.length})`}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      
-      {/* Checkout Request Modal */}
-      {showCheckoutRequestModal && (
-        <div 
-          className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center"
-          onClick={() => { setShowCheckoutRequestModal(false); setCheckoutRequestMessage(''); }}
-        >
-          <div 
-            className="bg-plm-bg-light border border-plm-border rounded-lg p-6 max-w-md w-full shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-full bg-plm-warning/20 flex items-center justify-center">
-                <ArrowDown size={20} className="text-plm-warning" />
-              </div>
-              <div>
-                <h3 className="text-lg font-semibold text-plm-fg">
-                  Request Checkout
-                </h3>
-                <p className="text-sm text-plm-fg-muted">
-                  Ask to check out this file
-                </p>
-              </div>
-            </div>
-            
-            {/* File info */}
-            <div className="bg-plm-bg rounded border border-plm-border p-3 mb-4">
-              <div className="flex items-center gap-2">
-                <File size={16} className="text-plm-fg-muted" />
-                <span className="text-plm-fg font-medium truncate">{firstFile.name}</span>
-              </div>
-              <div className="mt-2 text-xs text-plm-fg-muted">
-                Currently checked out - a notification will be sent to the user who has this file.
-              </div>
-            </div>
-            
-            {/* Message */}
-            <div className="mb-4">
-              <label className="block text-xs text-plm-fg-muted uppercase tracking-wide mb-2">
-                Message (optional)
-              </label>
-              <textarea
-                value={checkoutRequestMessage}
-                onChange={(e) => setCheckoutRequestMessage(e.target.value)}
-                placeholder="Why do you need this file? Any deadline?"
-                className="w-full px-3 py-2 text-sm bg-plm-bg border border-plm-border rounded resize-none focus:outline-none focus:border-plm-accent"
-                rows={3}
-              />
-            </div>
-            
-            {/* Actions */}
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={() => { setShowCheckoutRequestModal(false); setCheckoutRequestMessage(''); }}
-                className="btn btn-ghost"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSubmitCheckoutRequest}
-                disabled={isSubmittingCheckoutRequest}
-                className="btn bg-plm-warning hover:bg-plm-warning/90 text-white disabled:opacity-50"
-              >
-                {isSubmittingCheckoutRequest ? (
-                  <Loader2 size={14} className="animate-spin" />
-                ) : (
-                  <Send size={14} />
-                )}
-                Send Request
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      
-      {/* Notify/Mention Modal */}
-      {showMentionModal && (
-        <div 
-          className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center"
-          onClick={() => { setShowMentionModal(false); setSelectedMentionUsers([]); setMentionMessage(''); }}
-        >
-          <div 
-            className="bg-plm-bg-light border border-plm-border rounded-lg p-6 max-w-md w-full shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-full bg-plm-accent/20 flex items-center justify-center">
-                <Users size={20} className="text-plm-accent" />
-              </div>
-              <div>
-                <h3 className="text-lg font-semibold text-plm-fg">
-                  Notify Someone
-                </h3>
-                <p className="text-sm text-plm-fg-muted">
-                  Send a notification about this file
-                </p>
-              </div>
-            </div>
-            
-            {/* File info */}
-            <div className="bg-plm-bg rounded border border-plm-border p-3 mb-4">
-              <div className="flex items-center gap-2">
-                <File size={16} className="text-plm-fg-muted" />
-                <span className="text-plm-fg font-medium truncate">{firstFile.name}</span>
-                {firstFile.pdmData?.version && (
-                  <span className="text-xs text-plm-fg-muted">v{firstFile.pdmData.version}</span>
-                )}
-              </div>
-            </div>
-            
-            {/* User selection */}
-            <div className="mb-4">
-              <label className="block text-xs text-plm-fg-muted uppercase tracking-wide mb-2">
-                Select People to Notify
-              </label>
-              {loadingUsers ? (
-                <div className="flex items-center justify-center p-4">
-                  <Loader2 size={20} className="animate-spin text-plm-accent" />
-                </div>
-              ) : orgUsers.length === 0 ? (
-                <p className="text-sm text-plm-fg-muted p-2">No other users in your organization</p>
-              ) : (
-                <div className="max-h-48 overflow-y-auto border border-plm-border rounded bg-plm-bg">
-                  {orgUsers.map(orgUser => (
-                    <label 
-                      key={orgUser.id}
-                      className="flex items-center gap-3 p-2 hover:bg-plm-highlight cursor-pointer"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={selectedMentionUsers.includes(orgUser.id)}
-                        onChange={() => handleToggleMentionUser(orgUser.id)}
-                        className="w-4 h-4 rounded border-plm-border text-plm-accent focus:ring-plm-accent"
-                      />
-                      {orgUser.avatar_url ? (
-                        <img 
-                          src={orgUser.avatar_url} 
-                          alt="" 
-                          className="w-6 h-6 rounded-full"
-                          referrerPolicy="no-referrer"
-                        />
-                      ) : (
-                        <div className="w-6 h-6 rounded-full bg-plm-accent/20 flex items-center justify-center">
-                          <Users size={12} className="text-plm-accent" />
-                        </div>
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <div className="text-sm text-plm-fg truncate">
-                          {orgUser.full_name || orgUser.email}
-                        </div>
-                        {orgUser.full_name && (
-                          <div className="text-xs text-plm-fg-muted truncate">
-                            {orgUser.email}
-                          </div>
-                        )}
-                      </div>
-                      {selectedMentionUsers.includes(orgUser.id) && (
-                        <Check size={16} className="text-plm-accent flex-shrink-0" />
-                      )}
-                    </label>
-                  ))}
-                </div>
-              )}
-            </div>
-            
-            {/* Message */}
-            <div className="mb-4">
-              <label className="block text-xs text-plm-fg-muted uppercase tracking-wide mb-2">
-                Message
-              </label>
-              <textarea
-                value={mentionMessage}
-                onChange={(e) => setMentionMessage(e.target.value)}
-                placeholder="What do you want to tell them about this file?"
-                className="w-full px-3 py-2 text-sm bg-plm-bg border border-plm-border rounded resize-none focus:outline-none focus:border-plm-accent"
-                rows={3}
-              />
-            </div>
-            
-            {/* Actions */}
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={() => { setShowMentionModal(false); setSelectedMentionUsers([]); setMentionMessage(''); }}
-                className="btn btn-ghost"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSubmitMention}
-                disabled={selectedMentionUsers.length === 0 || isSubmittingMention}
-                className="btn bg-plm-accent hover:bg-plm-accent/90 text-white disabled:opacity-50"
-              >
-                {isSubmittingMention ? (
-                  <Loader2 size={14} className="animate-spin" />
-                ) : (
-                  <Send size={14} />
-                )}
-                Send {selectedMentionUsers.length > 0 && `(${selectedMentionUsers.length})`}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      
-      {/* Share Link Modal - fallback if clipboard fails */}
-      {showShareModal && generatedShareLink && (
-        <div 
-          className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center"
-          onClick={() => { setShowShareModal(false); setGeneratedShareLink(null); }}
-        >
-          <div 
-            className="bg-plm-bg-light border border-plm-border rounded-lg p-6 max-w-md w-full shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-full bg-plm-accent/20 flex items-center justify-center">
-                <Link size={20} className="text-plm-accent" />
-              </div>
-              <div>
-                <h3 className="text-lg font-semibold text-plm-fg">Share Link Created</h3>
-                <p className="text-sm text-plm-fg-muted">Copy the link below</p>
-              </div>
-            </div>
-            
-            <div className="space-y-4">
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={generatedShareLink}
-                  readOnly
-                  className="flex-1 px-3 py-2 text-sm bg-plm-bg border border-plm-border rounded focus:outline-none"
-                />
-                <button
-                  onClick={handleCopyShareLink}
-                  className="btn bg-plm-accent hover:bg-plm-accent/90 text-white"
-                >
-                  {copiedLink ? <Check size={14} /> : <Copy size={14} />}
-                </button>
-              </div>
-              <p className="text-xs text-plm-fg-muted">Expires in 7 days • Anyone with link can download</p>
-              
-              <div className="flex justify-end">
-                <button
-                  onClick={() => { setShowShareModal(false); setGeneratedShareLink(null); onClose(); }}
-                  className="btn bg-plm-accent hover:bg-plm-accent/90 text-white"
-                >
-                  Done
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-      
-      {/* Add to ECO Modal */}
-      {showECOModal && (
-        <div 
-          className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-sm flex items-center justify-center"
-          onClick={() => { setShowECOModal(false); setSelectedECO(null); setEcoNotes(''); }}
-        >
-          <div 
-            className="bg-plm-bg-light border border-plm-border rounded-lg p-6 max-w-md w-full shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-full bg-plm-accent/20 flex items-center justify-center">
-                <ClipboardList size={20} className="text-plm-accent" />
-              </div>
-              <div>
-                <h3 className="text-lg font-semibold text-plm-fg">
-                  Add to ECO
-                </h3>
-                <p className="text-sm text-plm-fg-muted">
-                  Add file to Engineering Change Order
-                </p>
-              </div>
-            </div>
-            
-            {/* File info */}
-            <div className="bg-plm-bg rounded border border-plm-border p-3 mb-4">
-              <div className="flex items-center gap-2">
-                <File size={16} className="text-plm-fg-muted" />
-                <span className="text-plm-fg font-medium truncate">{firstFile.name}</span>
-              </div>
-            </div>
-            
-            {/* ECO selection */}
-            <div className="mb-4">
-              <label className="block text-xs text-plm-fg-muted uppercase tracking-wide mb-2">
-                Select ECO
-              </label>
-              {loadingECOs ? (
-                <div className="flex items-center justify-center p-4">
-                  <Loader2 size={20} className="animate-spin text-plm-accent" />
-                </div>
-              ) : activeECOs.length === 0 ? (
-                <p className="text-sm text-plm-fg-muted p-2">No active ECOs found. Create one in the ECO Manager first.</p>
-              ) : (
-                <div className="max-h-48 overflow-y-auto border border-plm-border rounded bg-plm-bg">
-                  {activeECOs.map(eco => (
-                    <label 
-                      key={eco.id}
-                      className="flex items-center gap-3 p-2 hover:bg-plm-highlight cursor-pointer"
-                    >
-                      <input
-                        type="radio"
-                        name="eco"
-                        value={eco.id}
-                        checked={selectedECO === eco.id}
-                        onChange={() => setSelectedECO(eco.id)}
-                        className="w-4 h-4 border-plm-border text-plm-accent focus:ring-plm-accent"
-                      />
-                      <div className="flex-1 min-w-0">
-                        <div className="text-sm text-plm-fg font-medium">
-                          {eco.eco_number}
-                        </div>
-                        {eco.title && (
-                          <div className="text-xs text-plm-fg-muted truncate">
-                            {eco.title}
-                          </div>
-                        )}
-                      </div>
-                    </label>
-                  ))}
-                </div>
-              )}
-            </div>
-            
-            {/* Notes */}
-            <div className="mb-4">
-              <label className="block text-xs text-plm-fg-muted uppercase tracking-wide mb-2">
-                Notes (optional)
-              </label>
-              <textarea
-                value={ecoNotes}
-                onChange={(e) => setEcoNotes(e.target.value)}
-                placeholder="Why is this file part of this ECO?"
-                className="w-full px-3 py-2 text-sm bg-plm-bg border border-plm-border rounded resize-none focus:outline-none focus:border-plm-accent"
-                rows={2}
-              />
-            </div>
-            
-            {/* Actions */}
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={() => { setShowECOModal(false); setSelectedECO(null); setEcoNotes(''); }}
-                className="btn btn-ghost"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleAddToECO}
-                disabled={!selectedECO || isAddingToECO}
-                className="btn bg-plm-accent hover:bg-plm-accent/90 text-white disabled:opacity-50"
-              >
-                {isAddingToECO ? (
-                  <Loader2 size={14} className="animate-spin" />
-                ) : (
-                  <ClipboardList size={14} />
-                )}
-                Add to ECO
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+
+      {/* ============================================ */}
+      {/* Dialogs */}
+      {/* ============================================ */}
+
+      <DeleteConfirmDialog
+        isOpen={state.dialogs.deleteConfirm}
+        onClose={() => { state.closeDialog('deleteConfirm'); state.setDeleteServerKeepLocal(false); onClose(); }}
+        files={state.deleteConfirmFiles}
+        keepLocal={state.deleteServerKeepLocal}
+        onConfirm={handleDeleteConfirm}
+      />
+
+      <DeleteLocalConfirmDialog
+        isOpen={state.dialogs.deleteLocalConfirm}
+        onClose={() => { state.closeDialog('deleteLocalConfirm'); onClose(); }}
+        checkedOutFiles={state.deleteLocalCheckedOutFiles}
+        onCheckinThenDelete={handleCheckinThenDeleteLocal}
+        onDiscardAndDelete={handleDiscardAndDeleteLocal}
+      />
+
+      <ForceCheckinDialog
+        isOpen={state.dialogs.forceCheckin}
+        onClose={() => { state.closeDialog('forceCheckin'); state.setForceCheckinFiles(null); onClose(); }}
+        filesOnDifferentMachine={state.forceCheckinFiles?.filesOnDifferentMachine || []}
+        machineNames={state.forceCheckinFiles?.machineNames || []}
+        anyMachineOnline={state.forceCheckinFiles?.anyMachineOnline || false}
+        onForceCheckin={handleForceCheckin}
+      />
+
+      <PropertiesDialog
+        isOpen={state.dialogs.properties}
+        onClose={() => { state.closeDialog('properties'); onClose(); }}
+        file={firstFile}
+        isFolder={isFolder}
+        multiSelect={multiSelect}
+        contextFiles={contextFiles}
+        userId={user?.id}
+        folderSize={state.folderSize}
+        isCalculatingSize={state.isCalculatingSize}
+      />
+
+      <ReviewRequestDialog
+        isOpen={state.dialogs.reviewRequest}
+        onClose={() => state.closeDialog('reviewRequest')}
+        file={firstFile}
+        organizationId={organization?.id}
+        userId={user?.id}
+        vaultId={activeVaultId}
+        onSuccess={onClose}
+      />
+
+      <CheckoutRequestDialog
+        isOpen={state.dialogs.checkoutRequest}
+        onClose={() => state.closeDialog('checkoutRequest')}
+        file={firstFile}
+        organizationId={organization?.id}
+        userId={user?.id}
+        onSuccess={onClose}
+      />
+
+      <MentionDialog
+        isOpen={state.dialogs.mention}
+        onClose={() => state.closeDialog('mention')}
+        file={firstFile}
+        organizationId={organization?.id}
+        userId={user?.id}
+        onSuccess={onClose}
+      />
+
+      <ShareLinkDialog
+        isOpen={state.dialogs.shareLink}
+        onClose={() => { state.closeDialog('shareLink'); state.setGeneratedShareLink(null); onClose(); }}
+        generatedLink={state.generatedShareLink}
+        onCopyLink={handleCopyShareLink}
+        copiedLink={state.copiedLink}
+      />
+
+      <AddToECODialog
+        isOpen={state.dialogs.addToECO}
+        onClose={() => state.closeDialog('addToECO')}
+        file={firstFile}
+        organizationId={organization?.id}
+        userId={user?.id}
+        onSuccess={onClose}
+      />
     </>
   )
-}
-
-// Helper function to format file size
-function formatSize(bytes: number): string {
-  if (bytes === 0) return '0 B'
-  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
-  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${bytes} B`
 }

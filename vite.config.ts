@@ -15,7 +15,8 @@ export default defineConfig({
       {
         entry: 'electron/main.ts',
         onstart(args) {
-          args.startup()
+          // Enable remote debugging on port 9222 for Chrome DevTools Protocol
+          args.startup(['.', '--remote-debugging-port=9222'])
         },
         vite: {
           build: {

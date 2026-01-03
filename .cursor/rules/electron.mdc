@@ -1,0 +1,42 @@
+---
+description: Electron main process and IPC rules
+globs:
+  - electron/**/*.ts
+  - src/electron.d.ts
+---
+
+# Electron Development Rules
+
+## IPC Communication
+
+- All IPC goes through `window.electronAPI` (defined in `src/electron.d.ts`)
+- **Renderer → Main**: Promise-based calls (e.g., `listWorkingFiles()`)
+- **Main → Renderer**: Event listeners (e.g., `onUpdateAvailable`)
+
+## Security Requirements
+
+- **NEVER expose Node.js APIs directly to renderer**
+- Context isolation must remain enabled
+- Validate all IPC messages in main process
+- Sanitize file paths to prevent directory traversal
+
+## Preload Script (`electron/preload.ts`)
+
+- Only expose safe, validated APIs
+- Use `contextBridge.exposeInMainWorld`
+- Keep exposed API surface minimal
+
+## Main Process (`electron/main.ts`)
+
+- Handle all file system operations here
+- Implement proper error handling for IPC handlers
+- Log errors with structured logging
+
+## Testing
+
+Run UI tests with test mode to bypass single-instance lock:
+```bash
+npm run dev -- -- --test-mode
+# or
+BLUEPLM_TEST=1 npm run dev
+```

@@ -1,10 +1,8 @@
 import { useState, useEffect, useMemo } from 'react'
 import { 
   Loader2, 
-  Save,
   Package,
   FileOutput,
-  Info,
   Eye,
   RotateCcw,
   User,
@@ -174,8 +172,8 @@ export function ExportSettings() {
         export_settings: settings
       }
       
-      const { data, error } = await supabase
-        .from('organizations')
+      const { error } = await (supabase
+        .from('organizations') as any)
         .update({ settings: newSettings })
         .eq('id', organization.id)
         .select()

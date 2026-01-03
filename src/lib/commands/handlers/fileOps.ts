@@ -1,42 +1,31 @@
 /**
  * File Operations Commands
  * 
- * - rename: Rename a file or folder
- * - move: Move files to a new location
- * - copy: Copy files to a new location
- * - new-folder: Create a new folder
+ * Commands: rename, move, copy, new-folder
+ * These are registered commands for programmatic use.
  */
 
-import type { 
-  Command, 
-  RenameParams,
-  MoveParams,
-  CopyParams,
-  NewFolderParams,
-  CommandResult
-} from '../types'
+import type { Command, RenameParams, MoveParams, CopyParams, NewFolderParams, CommandResult } from '../types'
+import { ProgressTracker } from '../executor'
 import { updateFilePath, updateFolderPath } from '../../supabase'
 
-// ============================================
-// Rename Command
-// ============================================
-
+/**
+ * Rename Command - Rename a file or folder
+ */
 export const renameCommand: Command<RenameParams> = {
   id: 'rename',
   name: 'Rename',
   description: 'Rename a file or folder',
-  aliases: ['mv', 'ren'],
-  usage: 'rename <path> <newname>',
+  aliases: ['ren'],
+  usage: 'rename <old-name> <new-name>',
   
-  validate({ file, newName }, ctx) {
+  validate({ file, newName }) {
     if (!file) {
-      return 'No file specified'
+      return 'No file selected'
     }
-    if (!newName || !newName.trim()) {
-      return 'New name is required'
-    }
-    if (newName === file.name) {
-      return 'New name is the same as current name'
+    
+    if (!newName || newName.trim() === '') {
+      return 'New name cannot be empty'
     }
     
     // Check for invalid characters
@@ -45,68 +34,38 @@ export const renameCommand: Command<RenameParams> = {
       return 'Name contains invalid characters'
     }
     
-    // For synced files, must be checked out by current user
-    if (file.pdmData && !file.isDirectory) {
-      if (file.pdmData.checked_out_by !== ctx.user?.id) {
-        return 'File must be checked out to rename'
-      }
-    }
-    
-    if (!ctx.vaultPath) {
-      return 'No vault path'
-    }
-    
     return null
   },
   
   async execute({ file, newName }, ctx): Promise<CommandResult> {
-    if (!ctx.vaultPath) {
-      return {
-        success: false,
-        message: 'No vault path',
-        total: 1,
-        succeeded: 0,
-        failed: 1
-      }
-    }
-    
     try {
-      // Build paths
-      const isWindows = ctx.vaultPath.includes('\\')
-      const sep = isWindows ? '\\' : '/'
-      
-      // Get parent directory from relative path
-      const relativePath = file.relativePath.replace(/\\/g, '/')
-      const parentDir = relativePath.includes('/') 
-        ? relativePath.substring(0, relativePath.lastIndexOf('/'))
-        : ''
-      
+      // Rename locally first
       const oldPath = file.path
-      const newRelativePath = parentDir ? `${parentDir}/${newName}` : newName
-      const newPath = `${ctx.vaultPath}${sep}${newRelativePath.replace(/\//g, sep)}`
+      const sep = file.path.includes('\\') ? '\\' : '/'
+      const parentDir = oldPath.substring(0, oldPath.lastIndexOf(sep))
+      const newPath = `${parentDir}${sep}${newName}`
       
-      // Perform local rename
-      const result = await window.electronAPI?.renameItem(oldPath, newPath)
-      
-      if (!result?.success) {
-        ctx.addToast('error', result?.error || 'Failed to rename')
+      const renameResult = await window.electronAPI?.renameItem(oldPath, newPath)
+      if (!renameResult?.success) {
         return {
           success: false,
-          message: result?.error || 'Failed to rename',
+          message: renameResult?.error || 'Failed to rename locally',
           total: 1,
           succeeded: 0,
           failed: 1
         }
       }
       
-      // Update server if synced
+      // For synced files, update server path
       if (file.pdmData?.id) {
+        const oldRelPath = file.relativePath
+        const relParentDir = oldRelPath.substring(0, oldRelPath.lastIndexOf('/'))
+        const newRelPath = relParentDir ? `${relParentDir}/${newName}` : newName
+        
         if (file.isDirectory) {
-          // Update all files in folder on server
-          await updateFolderPath(file.relativePath, newRelativePath)
+          await updateFolderPath(oldRelPath, newRelPath)
         } else {
-          // Update single file path on server
-          await updateFilePath(file.pdmData.id, newRelativePath)
+          await updateFilePath(file.pdmData.id, newRelPath)
         }
       }
       
@@ -121,11 +80,9 @@ export const renameCommand: Command<RenameParams> = {
         failed: 0
       }
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : 'Unknown error'
-      ctx.addToast('error', `Failed to rename: ${errorMsg}`)
       return {
         success: false,
-        message: `Failed to rename: ${errorMsg}`,
+        message: err instanceof Error ? err.message : 'Unknown error',
         total: 1,
         succeeded: 0,
         failed: 1
@@ -134,54 +91,32 @@ export const renameCommand: Command<RenameParams> = {
   }
 }
 
-// ============================================
-// Move Command
-// ============================================
-
+/**
+ * Move Command - Move files to a new location
+ */
 export const moveCommand: Command<MoveParams> = {
   id: 'move',
   name: 'Move',
   description: 'Move files to a new location',
   aliases: ['mv'],
-  usage: 'move <files...> <destination>',
+  usage: 'move <source...> <destination>',
   
-  validate({ files, targetFolder }, ctx) {
+  validate({ files, targetFolder }) {
     if (!files || files.length === 0) {
-      return 'No files specified'
-    }
-    if (!targetFolder && targetFolder !== '') {
-      return 'No destination folder specified'
+      return 'No files selected'
     }
     
-    // For synced files, must be checked out by current user
-    for (const file of files) {
-      if (file.pdmData && !file.isDirectory) {
-        if (file.pdmData.checked_out_by !== ctx.user?.id) {
-          return `${file.name} must be checked out to move`
-        }
-      }
-    }
-    
-    if (!ctx.vaultPath) {
-      return 'No vault path'
+    if (targetFolder === undefined) {
+      return 'No target folder specified'
     }
     
     return null
   },
   
   async execute({ files, targetFolder }, ctx): Promise<CommandResult> {
-    if (!ctx.vaultPath) {
-      return {
-        success: false,
-        message: 'No vault path',
-        total: files.length,
-        succeeded: 0,
-        failed: files.length
-      }
-    }
-    
-    const isWindows = ctx.vaultPath.includes('\\')
-    const sep = isWindows ? '\\' : '/'
+    const toastId = `move-${Date.now()}`
+    const total = files.length
+    const progress = new ProgressTracker(ctx, 'move', toastId, `Moving ${total} file${total > 1 ? 's' : ''}...`, total)
     
     let succeeded = 0
     let failed = 0
@@ -189,90 +124,87 @@ export const moveCommand: Command<MoveParams> = {
     
     for (const file of files) {
       try {
-        const newRelativePath = targetFolder 
-          ? `${targetFolder}/${file.name}` 
-          : file.name
-        const destPath = `${ctx.vaultPath}${sep}${newRelativePath.replace(/\//g, sep)}`
+        // Move locally
+        const sep = file.path.includes('\\') ? '\\' : '/'
+        const vaultPath = ctx.vaultPath || ''
+        const newPath = targetFolder 
+          ? `${vaultPath}${sep}${targetFolder.replace(/\//g, sep)}${sep}${file.name}`
+          : `${vaultPath}${sep}${file.name}`
         
-        const result = await window.electronAPI?.moveFile(file.path, destPath)
-        
-        if (result?.success) {
-          // Update server path if synced
-          if (file.pdmData?.id) {
-            if (file.isDirectory) {
-              await updateFolderPath(file.relativePath, newRelativePath)
-            } else {
-              await updateFilePath(file.pdmData.id, newRelativePath)
-            }
-          }
-          succeeded++
-        } else {
+        const moveResult = await window.electronAPI?.renameItem(file.path, newPath)
+        if (!moveResult?.success) {
           failed++
-          errors.push(`${file.name}: ${result?.error || 'Failed to move'}`)
+          errors.push(`${file.name}: ${moveResult?.error || 'Failed to move'}`)
+          progress.update()
+          continue
         }
+        
+        // Update server if synced
+        if (file.pdmData?.id) {
+          const newRelPath = targetFolder ? `${targetFolder}/${file.name}` : file.name
+          if (file.isDirectory) {
+            await updateFolderPath(file.relativePath, newRelPath)
+          } else {
+            await updateFilePath(file.pdmData.id, newRelPath)
+          }
+        }
+        
+        succeeded++
       } catch (err) {
         failed++
         errors.push(`${file.name}: ${err instanceof Error ? err.message : 'Unknown error'}`)
       }
+      progress.update()
     }
     
-    if (succeeded > 0) {
-      ctx.addToast('success', `Moved ${succeeded} item${succeeded !== 1 ? 's' : ''}`)
-    }
+    const { duration } = progress.finish()
+    
     if (failed > 0) {
-      ctx.addToast('error', `Failed to move ${failed} item${failed !== 1 ? 's' : ''}`)
+      ctx.addToast('error', `Moved ${succeeded}/${total} files`)
+    } else {
+      ctx.addToast('success', `Moved ${succeeded} file${succeeded > 1 ? 's' : ''}`)
     }
     
     ctx.onRefresh?.(true)
     
     return {
       success: failed === 0,
-      message: `Moved ${succeeded} of ${files.length} items`,
-      total: files.length,
+      message: failed > 0 ? `Moved ${succeeded}/${total} files` : `Moved ${succeeded} file${succeeded > 1 ? 's' : ''}`,
+      total,
       succeeded,
       failed,
-      errors: errors.length > 0 ? errors : undefined
+      errors: errors.length > 0 ? errors : undefined,
+      duration
     }
   }
 }
 
-// ============================================
-// Copy Command
-// ============================================
-
+/**
+ * Copy Command - Copy files to a new location
+ */
 export const copyCommand: Command<CopyParams> = {
   id: 'copy',
   name: 'Copy',
   description: 'Copy files to a new location',
   aliases: ['cp'],
-  usage: 'copy <files...> <destination>',
+  usage: 'copy <source...> <destination>',
   
-  validate({ files, targetFolder }, ctx) {
+  validate({ files, targetFolder }) {
     if (!files || files.length === 0) {
-      return 'No files specified'
+      return 'No files selected'
     }
-    if (!targetFolder && targetFolder !== '') {
-      return 'No destination folder specified'
+    
+    if (targetFolder === undefined) {
+      return 'No target folder specified'
     }
-    if (!ctx.vaultPath) {
-      return 'No vault path'
-    }
+    
     return null
   },
   
   async execute({ files, targetFolder }, ctx): Promise<CommandResult> {
-    if (!ctx.vaultPath) {
-      return {
-        success: false,
-        message: 'No vault path',
-        total: files.length,
-        succeeded: 0,
-        failed: files.length
-      }
-    }
-    
-    const isWindows = ctx.vaultPath.includes('\\')
-    const sep = isWindows ? '\\' : '/'
+    const toastId = `copy-${Date.now()}`
+    const total = files.length
+    const progress = new ProgressTracker(ctx, 'copy', toastId, `Copying ${total} file${total > 1 ? 's' : ''}...`, total)
     
     let succeeded = 0
     let failed = 0
@@ -280,64 +212,62 @@ export const copyCommand: Command<CopyParams> = {
     
     for (const file of files) {
       try {
-        // Generate unique destination path (handle name collisions)
-        const destPath = await getUniqueDestPath(
-          ctx.vaultPath,
-          targetFolder,
-          file.name,
-          sep
-        )
+        // Copy locally
+        const sep = file.path.includes('\\') ? '\\' : '/'
+        const vaultPath = ctx.vaultPath || ''
+        const newPath = targetFolder 
+          ? `${vaultPath}${sep}${targetFolder.replace(/\//g, sep)}${sep}${file.name}`
+          : `${vaultPath}${sep}${file.name}`
         
-        const result = await window.electronAPI?.copyFile(file.path, destPath)
-        
-        if (result?.success) {
-          // Note: Copied files are NOT synced - they become new local files
-          // User must explicitly sync them
-          succeeded++
-        } else {
+        const copyResult = await window.electronAPI?.copyFile(file.path, newPath)
+        if (!copyResult?.success) {
           failed++
-          errors.push(`${file.name}: ${result?.error || 'Failed to copy'}`)
+          errors.push(`${file.name}: ${copyResult?.error || 'Failed to copy'}`)
+        } else {
+          succeeded++
         }
       } catch (err) {
         failed++
         errors.push(`${file.name}: ${err instanceof Error ? err.message : 'Unknown error'}`)
       }
+      progress.update()
     }
     
-    if (succeeded > 0) {
-      ctx.addToast('success', `Copied ${succeeded} item${succeeded !== 1 ? 's' : ''}`)
-    }
+    const { duration } = progress.finish()
+    
     if (failed > 0) {
-      ctx.addToast('error', `Failed to copy ${failed} item${failed !== 1 ? 's' : ''}`)
+      ctx.addToast('error', `Copied ${succeeded}/${total} files`)
+    } else {
+      ctx.addToast('success', `Copied ${succeeded} file${succeeded > 1 ? 's' : ''}`)
     }
     
     ctx.onRefresh?.(true)
     
     return {
       success: failed === 0,
-      message: `Copied ${succeeded} of ${files.length} items`,
-      total: files.length,
+      message: failed > 0 ? `Copied ${succeeded}/${total} files` : `Copied ${succeeded} file${succeeded > 1 ? 's' : ''}`,
+      total,
       succeeded,
       failed,
-      errors: errors.length > 0 ? errors : undefined
+      errors: errors.length > 0 ? errors : undefined,
+      duration
     }
   }
 }
 
-// ============================================
-// New Folder Command
-// ============================================
-
+/**
+ * New Folder Command - Create a new folder
+ */
 export const newFolderCommand: Command<NewFolderParams> = {
   id: 'new-folder',
   name: 'New Folder',
   description: 'Create a new folder',
   aliases: ['mkdir', 'md'],
-  usage: 'new-folder <parent> <name>',
+  usage: 'mkdir <name>',
   
-  validate({ parentPath: _parentPath, folderName }, ctx) {
-    if (!folderName || !folderName.trim()) {
-      return 'Folder name is required'
+  validate({ folderName }, ctx) {
+    if (!folderName || folderName.trim() === '') {
+      return 'Folder name cannot be empty'
     }
     
     // Check for invalid characters
@@ -347,70 +277,22 @@ export const newFolderCommand: Command<NewFolderParams> = {
     }
     
     if (!ctx.vaultPath) {
-      return 'No vault path'
+      return 'No vault connected'
     }
     
     return null
   },
   
   async execute({ parentPath, folderName }, ctx): Promise<CommandResult> {
-    if (!ctx.vaultPath) {
-      return {
-        success: false,
-        message: 'No vault path',
-        total: 1,
-        succeeded: 0,
-        failed: 1
-      }
-    }
-    
     try {
-      const isWindows = ctx.vaultPath.includes('\\')
-      const sep = isWindows ? '\\' : '/'
-      
-      // Generate unique folder name if it already exists
-      let finalFolderName = folderName
-      let newFolderRelPath = parentPath 
-        ? `${parentPath}/${finalFolderName}`
-        : finalFolderName
-      let fullPath = `${ctx.vaultPath}${sep}${newFolderRelPath.replace(/\//g, sep)}`
-      
-      // Check if folder exists and generate unique name
-      let counter = 1
-      console.log('[NewFolder] Checking path:', fullPath)
-      let exists = await window.electronAPI?.fileExists(fullPath)
-      console.log('[NewFolder] Exists:', exists)
-      
-      while (exists) {
-        finalFolderName = `${folderName} (${counter})`
-        newFolderRelPath = parentPath 
-          ? `${parentPath}/${finalFolderName}`
-          : finalFolderName
-        fullPath = `${ctx.vaultPath}${sep}${newFolderRelPath.replace(/\//g, sep)}`
-        console.log('[NewFolder] Trying path:', fullPath)
-        exists = await window.electronAPI?.fileExists(fullPath)
-        console.log('[NewFolder] Exists:', exists)
-        counter++
-        
-        // Safety limit
-        if (counter > 100) {
-          ctx.addToast('error', 'Too many folders with the same name')
-          return {
-            success: false,
-            message: 'Too many folders with the same name',
-            total: 1,
-            succeeded: 0,
-            failed: 1
-          }
-        }
-      }
-      
-      console.log('[NewFolder] Creating:', fullPath, 'as:', finalFolderName)
+      const vaultPath = ctx.vaultPath!
+      const sep = vaultPath.includes('\\') ? '\\' : '/'
+      const fullPath = parentPath 
+        ? `${vaultPath}${sep}${parentPath.replace(/\//g, sep)}${sep}${folderName}`
+        : `${vaultPath}${sep}${folderName}`
       
       const result = await window.electronAPI?.createFolder(fullPath)
-      
       if (!result?.success) {
-        ctx.addToast('error', result?.error || 'Failed to create folder')
         return {
           success: false,
           message: result?.error || 'Failed to create folder',
@@ -420,22 +302,20 @@ export const newFolderCommand: Command<NewFolderParams> = {
         }
       }
       
-      ctx.addToast('success', `Created folder: ${finalFolderName}`)
+      ctx.addToast('success', `Created folder: ${folderName}`)
       ctx.onRefresh?.(true)
       
       return {
         success: true,
-        message: `Created folder: ${finalFolderName}`,
+        message: `Created folder: ${folderName}`,
         total: 1,
         succeeded: 1,
         failed: 0
       }
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : 'Unknown error'
-      ctx.addToast('error', `Failed to create folder: ${errorMsg}`)
       return {
         success: false,
-        message: `Failed to create folder: ${errorMsg}`,
+        message: err instanceof Error ? err.message : 'Unknown error',
         total: 1,
         succeeded: 0,
         failed: 1
@@ -443,44 +323,3 @@ export const newFolderCommand: Command<NewFolderParams> = {
     }
   }
 }
-
-// ============================================
-// Utility Functions
-// ============================================
-
-/**
- * Generate a unique destination path, handling name collisions
- * by appending (1), (2), etc.
- */
-async function getUniqueDestPath(
-  vaultPath: string,
-  targetFolder: string,
-  fileName: string,
-  sep: string
-): Promise<string> {
-  const basePath = targetFolder 
-    ? `${vaultPath}${sep}${targetFolder.replace(/\//g, sep)}${sep}` 
-    : `${vaultPath}${sep}`
-  
-  let destPath = `${basePath}${fileName}`
-  let counter = 1
-  
-  // Check if file exists
-  while (await window.electronAPI?.fileExists(destPath)) {
-    // Split name and extension
-    const lastDot = fileName.lastIndexOf('.')
-    const nameWithoutExt = lastDot > 0 ? fileName.substring(0, lastDot) : fileName
-    const ext = lastDot > 0 ? fileName.substring(lastDot) : ''
-    
-    destPath = `${basePath}${nameWithoutExt} (${counter})${ext}`
-    counter++
-    
-    // Safety limit
-    if (counter > 100) {
-      throw new Error('Too many files with the same name')
-    }
-  }
-  
-  return destPath
-}
-

@@ -1,0 +1,38 @@
+---
+description: Database schema and migration rules
+globs:
+  - supabase/**/*.sql
+  - src/lib/schemaVersion.ts
+  - src/types/database.ts
+---
+
+# Database Change Rules
+
+## Schema Version Workflow
+
+When modifying database schema, ALWAYS update these files together:
+
+### 1. Update `supabase/schema.sql` (Source of Truth)
+- Update version history comment at top
+- Change the INSERT statement to new version number
+- Add UPDATE statement for migrations from previous version
+
+### 2. Update `src/lib/schemaVersion.ts`
+- Bump `EXPECTED_SCHEMA_VERSION` constant
+- Add entry to `VERSION_DESCRIPTIONS` object
+
+### 3. Update Types (if schema changes)
+- Regenerate or manually update `src/types/database.ts`
+
+## Supabase Best Practices
+
+- Use `.select()` with explicit columns (avoid `select('*')`)
+- Always check `error` field in responses
+- Use `.range()` for pagination on large datasets
+- Test RLS policies with different user roles
+- Use signed URLs for private storage files
+
+## Migration File Naming
+
+Use descriptive names: `YYYYMMDD-description.sql`
+Example: `20240115-add-workflow-status.sql`

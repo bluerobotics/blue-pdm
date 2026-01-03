@@ -1,0 +1,42 @@
+---
+description: React component conventions and styling rules
+globs:
+  - src/components/**/*.tsx
+  - src/App.tsx
+---
+
+# React Component Rules
+
+## Styling
+
+- **Tailwind CSS only** - No CSS modules, styled-components, or inline styles
+- **PDM Theme classes**: `pdm-bg`, `pdm-fg`, `pdm-accent`, `pdm-border`
+- **Status colors**: `pdm-success`, `pdm-warning`, `pdm-error`, `pdm-info`
+- **Sidebar text must be left-aligned** - Use `text-left` class in ActivityBar.tsx
+
+## Component Patterns
+
+- Functional components with hooks only (no class components)
+- One component per file, co-locate related components
+- Default exports for components, named exports for utilities
+- TypeScript with explicit prop types
+
+## State Management
+
+- `useState` for local UI state
+- `usePDMStore` (Zustand) for global state
+- Never mutate Zustand state directly - use `set` function
+- Use selectors to avoid unnecessary re-renders
+
+## Hooks Rules
+
+- Hooks at top level only
+- Custom hooks must start with `use`
+- `useEffect`: Always include cleanup, include all dependencies
+- `useMemo`/`useCallback`: Only for expensive computations
+
+## Import Order
+
+1. External packages (react, etc.)
+2. Internal modules (@/lib, @/stores)
+3. Relative imports (./Component)
