@@ -1,37 +1,15 @@
-import { useEffect, useState, useCallback, useRef, lazy, Suspense } from 'react'
-import { setAnalyticsUser, clearAnalyticsUser } from '@/lib/analytics'
+import { useEffect, useState, useRef } from 'react'
 import { usePDMStore } from './stores/pdmStore'
-import { SettingsContent } from './components/SettingsContent'
-import type { SettingsTab } from './types/settings'
-import { supabase, getCurrentSession, isSupabaseConfigured, getFilesLightweight, getCheckedOutUsers, linkUserToOrganization, getUserProfile, setCurrentAccessToken, signOut, syncUserSessionsOrgId, getAccessibleVaults, updateLastOnline } from './lib/supabase'
-import { MenuBar } from './components/MenuBar'
-import { ActivityBar } from './components/ActivityBar'
-import { Sidebar } from './components/Sidebar'
-// StatusBar removed - zoom now in MenuBar
-import { WelcomeScreen } from './components/WelcomeScreen'
 import { SetupScreen } from './components/SetupScreen'
 import { OnboardingScreen } from './components/OnboardingScreen'
-import { Toast } from './components/Toast'
-import { OrphanedCheckoutsContainer } from './components/OrphanedCheckoutDialog'
-import { StagedCheckinConflictDialog } from './components/StagedCheckinConflictDialog'
-import type { StagedCheckin } from './stores/pdmStore'
-import { MissingStorageFilesContainer } from './components/MissingStorageFilesDialog'
-import { ChristmasEffects } from './components/ChristmasEffects'
-import { HalloweenEffects } from './components/HalloweenEffects'
-import { WeatherEffects } from './components/WeatherEffects'
-import { VaultNotFoundDialog } from './components/VaultNotFoundDialog'
 import { PerformanceWindow } from './components/PerformanceWindow'
-import { ImpersonationBanner } from './components/ImpersonationBanner'
-import { UpdateModal } from './components/UpdateModal'
-import { TabBar } from './components/TabBar'
 import { TabWindow, isTabWindowMode, parseTabWindowParams } from './components/TabWindow'
+import { AppShell } from './components/layout'
 import { executeTerminalCommand } from './lib/commands/parser'
-import { executeCommand } from './lib/commands'
-import { buildFullPath } from './lib/commands/types'
 import { logUserAction } from './lib/userActionLogger'
 import { checkSchemaCompatibility } from './lib/schemaVersion'
-import { clearConfig } from './lib/supabaseConfig'
-import { Loader2 } from 'lucide-react'
+import { getAccessibleVaults } from './lib/supabase'
+import type { SettingsTab } from './types/settings'
 import {
   useTheme,
   useLanguage,
@@ -41,32 +19,18 @@ import {
   useSolidWorksAutoStart,
   useAutoUpdater,
   useKeyboardShortcuts,
+  useLoadFiles,
+  useAuth,
+  useStagedCheckins,
+  useAutoDownload,
+  useVaultManagement,
 } from './hooks'
-
-// Lazy loaded main content components - only loaded when their module is active
-// This saves memory when modules are disabled
-const FileBrowser = lazy(() => import('./components/file-browser').then(m => ({ default: m.FileBrowser })))
-const DetailsPanel = lazy(() => import('./components/DetailsPanel').then(m => ({ default: m.DetailsPanel })))
-const RightPanel = lazy(() => import('./components/RightPanel').then(m => ({ default: m.RightPanel })))
-const GoogleDrivePanel = lazy(() => import('./components/GoogleDrivePanel').then(m => ({ default: m.GoogleDrivePanel })))
-const WorkflowsView = lazy(() => import('./components/sidebar/WorkflowsView').then(m => ({ default: m.WorkflowsView })))
-
-// Loading fallback for lazy-loaded components
-function ContentLoading() {
-  return (
-    <div className="flex-1 flex items-center justify-center bg-plm-bg">
-      <Loader2 size={24} className="animate-spin text-plm-fg-muted" />
-    </div>
-  )
-}
 
 // Check if we're in performance mode (pop-out window)
 function isPerformanceMode(): boolean {
   const params = new URLSearchParams(window.location.search)
   return params.get('mode') === 'performance'
 }
-
-// Note: useTheme and useLanguage hooks are now in src/hooks/
 
 function App() {
   // Check for performance mode (pop-out window) early
@@ -95,67 +59,11 @@ function App() {
     })
   }, [])
   
-  const {
-    user,
-    organization,
-    isOfflineMode,
-    setOfflineMode,
-    vaultPath,
-    isVaultConnected,
-    connectedVaults,
-    activeVaultId,
-    activeView,
-    sidebarVisible,
-    setSidebarWidth,
-    toggleSidebar,
-    detailsPanelVisible,
-    toggleDetailsPanel,
-    setDetailsPanelHeight,
-    rightPanelVisible,
-    setRightPanelWidth,
-    rightPanelTabs,
-    setVaultPath,
-    setVaultConnected,
-    setFiles,
-    setServerFiles,
-    setServerFolderPaths,
-    setIsLoading,
-    statusMessage,
-    setStatusMessage,
-    setFilesLoaded,
-    addRecentVault,
-    setUser,
-    setOrganization,
-    setIsConnecting,
-    addToast,
-    apiServerUrl,
-    setApiServerUrl,
-    stagedCheckins,
-    unstageCheckin,
-    getEffectiveRole,
-  } = usePDMStore()
+  // Get onboarding state
+  const onboardingComplete = usePDMStore(s => s.onboardingComplete)
   
-  // Get current vault ID (from activeVaultId or first connected vault)
-  const currentVaultId = activeVaultId || connectedVaults[0]?.id
-  
-  // Consider vault connected if either legacy or new multi-vault system is connected
-  const hasVaultConnected = isVaultConnected || connectedVaults.length > 0
-
-  const [isResizingSidebar, setIsResizingSidebar] = useState(false)
-  const [isResizingDetails, setIsResizingDetails] = useState(false)
-  const [isResizingRightPanel, setIsResizingRightPanel] = useState(false)
+  // Settings tab state
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('profile')
-  
-  // Vault not found dialog state
-  const [vaultNotFoundPath, setVaultNotFoundPath] = useState<string | null>(null)
-  const [vaultNotFoundName, setVaultNotFoundName] = useState<string | undefined>(undefined)
-  
-  // Staged check-in conflict dialog state
-  const [stagedConflicts, setStagedConflicts] = useState<Array<{
-    staged: StagedCheckin
-    serverVersion: number
-    localPath: string
-  }>>([])
   
   // Listen for settings tab navigation from MenuBar buttons
   useEffect(() => {
@@ -166,247 +74,68 @@ function App() {
     return () => window.removeEventListener('navigate-settings-tab', handleNavigateSettingsTab as EventListener)
   }, [])
   
-  // Track if Supabase is configured (can change at runtime)
-  const [supabaseReady, setSupabaseReady] = useState(() => isSupabaseConfigured())
+  // Auth hook - handles authentication state and Supabase initialization
+  const { supabaseReady, handleSupabaseConfigured, handleChangeOrg } = useAuth()
   
-  // Get onboarding state
-  const onboardingComplete = usePDMStore(s => s.onboardingComplete)
+  // Vault management hook
+  const {
+    handleOpenVault,
+    handleOpenRecentVault,
+    handleVaultNotFoundBrowse,
+    handleVaultNotFoundSettings,
+    handleCloseVaultNotFound,
+    vaultNotFoundPath,
+    vaultNotFoundName,
+    lastLoadKey,
+  } = useVaultManagement(setSettingsTab)
   
-  // Handle Supabase being configured (from SetupScreen)
-  const handleSupabaseConfigured = useCallback(() => {
-    setSupabaseReady(true)
-  }, [])
-
-  // Handle user wanting to change organization (go back to setup)
-  const handleChangeOrg = useCallback(async () => {
-    // Sign out first if user is signed in
-    await signOut()
-    // Clear the stored Supabase config
-    clearConfig()
-    // Reset state to show setup screen
-    setSupabaseReady(false)
-  }, [])
-
-  // Offline mode is a manual toggle - no automatic switching based on network status
-  // User controls when to work offline and when to go back online
-  // This prevents unexpected syncs and gives user full control over when data is uploaded
-
-  // Track previous offline mode to detect transition (ref updated later in staged check-in effect)
-  const prevOfflineModeRef = useRef(isOfflineMode)
-
-  // Initialize auth state (runs in background, doesn't block UI)
-  useEffect(() => {
-    if (!supabaseReady) {
-      console.log('[Auth] Supabase not configured, waiting...')
-      return
-    }
-
-    console.log('[Auth] Supabase ready, setting up auth listener...')
-
-    // Check for existing session
-    getCurrentSession().then(async ({ session }) => {
-      if (session?.user) {
-        console.log('[Auth] Found existing session:', session.user.email)
-        
-        // Store access token for raw fetch calls
-        setCurrentAccessToken(session.access_token)
-        
-        try {
-          // NOTE: ensureUserOrgId() removed - it used client.rpc() which hangs
-          // linkUserToOrganization() handles org_id setup correctly as fallback
-          
-          // Fetch user profile from database to get role
-          const { profile, error: profileError } = await getUserProfile(session.user.id)
-          if (profileError) {
-            console.log('[Auth] Error fetching profile:', profileError)
-          }
-          const userProfile = profile as { full_name?: string; avatar_url?: string; custom_avatar_url?: string; job_title?: string; org_id?: string; role?: string; last_sign_in?: string } | null
-          
-          // Set user from profile (includes role) or fallback to session data
-          // Note: Google OAuth stores avatar as 'picture' in user_metadata, not 'avatar_url'
-          const userData = {
-            id: session.user.id,
-            email: session.user.email || '',
-            full_name: userProfile?.full_name || session.user.user_metadata?.full_name || session.user.user_metadata?.name || null,
-            avatar_url: userProfile?.avatar_url || session.user.user_metadata?.avatar_url || session.user.user_metadata?.picture || null,
-            custom_avatar_url: userProfile?.custom_avatar_url || null,
-            job_title: userProfile?.job_title || null,
-            org_id: userProfile?.org_id || null,
-            role: (userProfile?.role || 'engineer') as 'admin' | 'engineer' | 'viewer',
-            created_at: session.user.created_at,
-            last_sign_in: userProfile?.last_sign_in || null
-          }
-          setUser(userData)
-          logUserAction('auth', 'User authenticated', { email: userData.email, role: userData.role })
-          console.log('[Auth] User profile loaded:', { email: userData.email, role: userData.role })
-          
-          // Update last_online timestamp
-          updateLastOnline().catch(err => console.warn('[Auth] Failed to update last_online:', err))
-          
-          // Set user for Sentry analytics (uses hashed IDs for privacy)
-          setAnalyticsUser(userData.id, userData.org_id || undefined)
-          
-          // Then load organization using the working linkUserToOrganization function
-          console.log('[Auth] Loading organization for:', session.user.email)
-          const { org, error } = await linkUserToOrganization(session.user.id, session.user.email || '')
-          if (org) {
-            console.log('[Auth] Organization loaded:', (org as any).name)
-            window.electronAPI?.log?.('info', `[Auth] Organization loaded: ${(org as any).name}`)
-            window.electronAPI?.log?.('info', `[Auth] Organization settings keys: ${Object.keys((org as any).settings || {}).join(', ')}`)
-            window.electronAPI?.log?.('info', `[Auth] DM License key in settings: ${(org as any).settings?.solidworks_dm_license_key ? 'PRESENT (' + (org as any).settings.solidworks_dm_license_key.length + ' chars)' : 'NOT PRESENT'}`)
-            setOrganization(org as any)
-            
-            // Update user's org_id in store if it wasn't set (triggers session re-registration with correct org_id)
-            if (!userData.org_id) {
-              console.log('[Auth] Updating user org_id in store:', (org as any).id)
-              setUser({ ...userData, org_id: (org as any).id })
-              // Update analytics user with org_id
-              setAnalyticsUser(userData.id, (org as any).id)
-            }
-            
-            // Sync all user sessions to have the correct org_id (fixes sessions created before org was linked)
-            syncUserSessionsOrgId(session.user.id, (org as any).id)
-          } else if (error) {
-            console.log('[Auth] No organization found:', error)
-          }
-        } catch (err) {
-          console.error('[Auth] Error loading user profile:', err)
-        }
-      } else {
-        console.log('[Auth] No existing session')
-      }
-    }).catch(err => {
-      console.error('[Auth] Error checking session:', err)
-    })
-
-    // Listen for auth state changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
-        console.log('[Auth] Auth state changed:', event, { hasSession: !!session, hasUser: !!session?.user })
-        
-        if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') && session?.user) {
-          // Show connecting state while loading organization
-          // Add timeout to prevent infinite hanging if network/db is slow
-          let connectingTimeout: ReturnType<typeof setTimeout> | null = null
-          if (event === 'SIGNED_IN') {
-            setIsConnecting(true)
-            // Safety timeout: clear isConnecting after 30s to prevent infinite hang
-            connectingTimeout = setTimeout(() => {
-              console.warn('[Auth] Organization loading timeout - clearing connecting state')
-              setIsConnecting(false)
-              addToast('warning', 'Connection timed out. You may need to sign in again.')
-            }, 30000)
-          }
-          
-          // Store access token for raw fetch calls (Supabase client methods hang)
-          setCurrentAccessToken(session.access_token)
-          
-          try {
-            // NOTE: ensureUserOrgId() removed - it used client.rpc() which hangs
-            // linkUserToOrganization() handles org_id setup correctly as fallback
-            
-            // Fetch user profile from database to get role
-            console.log('[Auth] Fetching user profile...')
-            const { profile, error: profileError } = await getUserProfile(session.user.id)
-            console.log('[Auth] Profile fetch result:', { hasProfile: !!profile, error: profileError?.message })
-            
-            const userProfile = profile as { full_name?: string; avatar_url?: string; custom_avatar_url?: string; job_title?: string; org_id?: string; role?: string; last_sign_in?: string } | null
-            
-            // Set user from profile (includes role) or fallback to session data
-            // Note: Google OAuth stores avatar as 'picture' in user_metadata, not 'avatar_url'
-            setUser({
-              id: session.user.id,
-              email: session.user.email || '',
-              full_name: userProfile?.full_name || session.user.user_metadata?.full_name || session.user.user_metadata?.name || null,
-              avatar_url: userProfile?.avatar_url || session.user.user_metadata?.avatar_url || session.user.user_metadata?.picture || null,
-              custom_avatar_url: userProfile?.custom_avatar_url || null,
-              job_title: userProfile?.job_title || null,
-              org_id: userProfile?.org_id || null,
-              role: (userProfile?.role || 'engineer') as 'admin' | 'engineer' | 'viewer',
-              created_at: session.user.created_at,
-              last_sign_in: userProfile?.last_sign_in || null
-            })
-            console.log('[Auth] User set:', { email: session.user.email, role: userProfile?.role || 'engineer' })
-            
-            // Update last_online timestamp
-            updateLastOnline().catch(err => console.warn('[Auth] Failed to update last_online:', err))
-            
-            // Set user for Sentry analytics (uses hashed IDs for privacy)
-            setAnalyticsUser(session.user.id, userProfile?.org_id || undefined)
-            
-            if (event === 'SIGNED_IN') {
-              setStatusMessage(`Welcome, ${session.user.user_metadata?.full_name || session.user.email}!`)
-              setTimeout(() => setStatusMessage(''), 3000)
-              
-              // Disable offline mode when user signs in (they're now authenticated)
-              // Use getState() to get current value, not stale closure value
-              const currentOfflineMode = usePDMStore.getState().isOfflineMode
-              if (currentOfflineMode && navigator.onLine) {
-                console.log('[Auth] Disabling offline mode after sign-in')
-                setOfflineMode(false)
-                addToast('success', 'Back online')
-              }
-            }
-            
-            // Load organization (setOrganization will clear isConnecting)
-            console.log('[Auth] Loading organization...')
-            const { org, error: orgError } = await linkUserToOrganization(session.user.id, session.user.email || '')
-            if (org) {
-              console.log('[Auth] Organization loaded:', (org as any).name)
-              window.electronAPI?.log?.('info', `[Auth] Organization loaded: ${(org as any).name}`)
-              window.electronAPI?.log?.('info', `[Auth] Organization settings keys: ${Object.keys((org as any).settings || {}).join(', ')}`)
-              window.electronAPI?.log?.('info', `[Auth] DM License key in settings: ${(org as any).settings?.solidworks_dm_license_key ? 'PRESENT (' + (org as any).settings.solidworks_dm_license_key.length + ' chars)' : 'NOT PRESENT'}`)
-              if (connectingTimeout) clearTimeout(connectingTimeout)
-              setOrganization(org as any)
-              
-              // Update user's org_id in store if it wasn't set (triggers session re-registration with correct org_id)
-              // This fixes the "no other users showing online" bug where sessions were registered with org_id=null
-              const currentUser = usePDMStore.getState().user
-              if (currentUser && !currentUser.org_id) {
-                console.log('[Auth] Updating user org_id in store:', (org as any).id)
-                setUser({ ...currentUser, org_id: (org as any).id })
-                // Update analytics user with org_id
-                setAnalyticsUser(currentUser.id, (org as any).id)
-              }
-              
-              // Sync all user sessions to have the correct org_id (fixes sessions created before org was linked)
-              syncUserSessionsOrgId(session.user.id, (org as any).id)
-            } else {
-              console.log('[Auth] No organization found:', orgError)
-              if (connectingTimeout) clearTimeout(connectingTimeout)
-              setIsConnecting(false)
-              // Show a toast with helpful message
-              addToast('warning', orgError?.message || 'No organization found. Please enter an organization code or contact your administrator.')
-            }
-          } catch (err) {
-            console.error('[Auth] Error in auth state handler:', err)
-            if (connectingTimeout) clearTimeout(connectingTimeout)
-            setIsConnecting(false)
-          }
-        } else if (event === 'SIGNED_OUT') {
-          logUserAction('auth', 'User signed out')
-          console.log('[Auth] Signed out')
-          clearAnalyticsUser()
-          setUser(null)
-          setOrganization(null)
-          setVaultConnected(false)
-          setIsConnecting(false)
-          setStatusMessage('Signed out')
-          setTimeout(() => setStatusMessage(''), 3000)
-        }
-      }
-    )
-
-    return () => {
-      subscription.unsubscribe()
-    }
-  }, [supabaseReady, setUser, setOrganization, setStatusMessage, setVaultConnected, setIsConnecting])
+  // Load files hook
+  const { loadFiles } = useLoadFiles()
+  
+  // Staged check-ins hook
+  const { stagedConflicts, clearStagedConflicts } = useStagedCheckins(loadFiles)
+  
+  // Auto-download trigger hook
+  useAutoDownload()
+  
+  // Get store values needed for effects and computed values
+  const {
+    user,
+    organization,
+    isOfflineMode,
+    vaultPath,
+    isVaultConnected,
+    connectedVaults,
+    activeVaultId,
+    statusMessage,
+    toggleSidebar,
+    toggleDetailsPanel,
+    setApiServerUrl,
+    apiServerUrl,
+    addToast,
+    setIsLoading,
+    setStatusMessage,
+    setVaultPath,
+    setVaultConnected,
+    getEffectiveRole,
+  } = usePDMStore()
+  
+  // Get current vault ID (from activeVaultId or first connected vault)
+  const currentVaultId = activeVaultId || connectedVaults[0]?.id
+  
+  // Consider vault connected if either legacy or new multi-vault system is connected
+  const hasVaultConnected = isVaultConnected || connectedVaults.length > 0
+  
+  // Existing extracted hooks
+  useRealtimeSubscriptions(organization, isOfflineMode)
+  useSessionHeartbeat(user, organization)
+  useBackupHeartbeat(organization?.id)
+  useSolidWorksAutoStart(organization)
+  useAutoUpdater()
+  useKeyboardShortcuts({ onOpenVault: handleOpenVault, onRefresh: loadFiles })
 
   // Sync API URL from organization settings to store (which handles localStorage persistence)
-  // This ensures the API URL is restored on app launch, not just when opening Settings → REST API
-  // Also syncs when admin clears the URL (org value takes precedence over local cache)
   useEffect(() => {
-    // Normalize both values to compare - treat undefined, null, and empty string as null
     const orgApiUrl = organization?.settings?.api_url || null
     const currentApiUrl = apiServerUrl || null
     
@@ -427,7 +156,6 @@ function App() {
   }, [user?.id, organization?.id])
 
   // Validate connected vault IDs after organization loads
-  // This cleans up stale vaults that no longer exist on the server or that user lost access to
   useEffect(() => {
     const validateVaults = async () => {
       if (!organization || !user || connectedVaults.length === 0) return
@@ -435,7 +163,6 @@ function App() {
       console.log('[VaultValidation] Checking', connectedVaults.length, 'connected vaults against accessible vaults')
       
       try {
-        // Fetch vaults the user has access to (filters by permissions)
         const { vaults: serverVaults, error } = await getAccessibleVaults(
           user.id,
           organization.id,
@@ -450,24 +177,20 @@ function App() {
         const serverVaultIds = new Set((serverVaults || []).map((v) => v.id))
         console.log('[VaultValidation] User has access to', serverVaultIds.size, 'vaults:', Array.from(serverVaultIds))
         
-        // Find stale vaults (connected but not on server)
         const staleVaults = connectedVaults.filter(cv => !serverVaultIds.has(cv.id))
         
         if (staleVaults.length > 0) {
           console.warn('[VaultValidation] Found', staleVaults.length, 'stale vault(s):', staleVaults.map(v => ({ id: v.id, name: v.name })))
           
-          // Remove stale vaults
           const store = usePDMStore.getState()
           staleVaults.forEach(v => {
             console.log('[VaultValidation] Removing stale vault:', v.name, v.id)
             store.removeConnectedVault(v.id)
           })
           
-          // If we removed the active vault, try to reconnect to a server vault
           if (staleVaults.some(v => v.id === currentVaultId) && serverVaults && serverVaults.length > 0) {
             const defaultVault = (serverVaults as any[]).find((v: any) => v.is_default) || serverVaults[0]
             console.log('[VaultValidation] Active vault was stale, will need to reconnect to:', (defaultVault as any).name)
-            // Clear vault connected state to trigger reconnection flow
             setVaultConnected(false)
             setVaultPath(null)
           }
@@ -480,16 +203,14 @@ function App() {
     }
     
     validateVaults()
-  }, [organization, user?.id, connectedVaults, currentVaultId, setVaultConnected, setVaultPath])
+  }, [organization, user?.id, connectedVaults, currentVaultId, setVaultConnected, setVaultPath, getEffectiveRole])
 
-  // Track if we've already shown the schema warning this session (prevent duplicate toasts)
+  // Track if we've already shown the schema warning this session
   const schemaCheckDoneRef = useRef(false)
   
   // Check schema compatibility after organization loads
-  // Warns users if the database schema is outdated compared to what the app expects
   useEffect(() => {
     const checkSchema = async () => {
-      // Only check once per session, and only when we have an org
       if (!organization?.id || isOfflineMode || schemaCheckDoneRef.current) return
       
       schemaCheckDoneRef.current = true
@@ -499,23 +220,16 @@ function App() {
         console.log('[SchemaVersion] Check result:', result)
         
         if (result.status === 'missing') {
-          // Schema version table doesn't exist - older database
           addToast('warning', `${result.message}: ${result.details}`, 15000)
         } else if (result.status === 'incompatible') {
-          // Critical - database too old, might cause errors
-          addToast('error', `${result.message}: ${result.details}`, 0) // Don't auto-dismiss
+          addToast('error', `${result.message}: ${result.details}`, 0)
         } else if (result.status === 'outdated') {
-          // Soft warning - some features might not work
-          // Check if the app is outdated vs database is outdated
           if (result.dbVersion && result.dbVersion > result.expectedVersion) {
-            // Database is newer than app - user should update the app
             addToast('info', `${result.message}. ${result.details}`, 10000)
           } else {
-            // Database is older than app - admin should run migrations
             addToast('warning', `${result.message}. ${result.details}`, 10000)
           }
         }
-        // 'current' status = no toast needed, everything is fine
       } catch (err) {
         console.error('[SchemaVersion] Error checking schema:', err)
       }
@@ -524,886 +238,6 @@ function App() {
     checkSchema()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [organization?.id, isOfflineMode])
-
-  // Load files from working directory and merge with PDM data
-  // silent = true means no loading spinner (for background refreshes after downloads/uploads)
-  const loadFiles = useCallback(async (silent: boolean = false) => {
-    // Capture vault context at start - used to detect if vault changed during async operations
-    const loadingForVaultId = currentVaultId
-    const loadingForVaultPath = vaultPath
-    
-    window.electronAPI?.log('info', '[LoadFiles] Called with', { vaultPath: loadingForVaultPath, currentVaultId: loadingForVaultId, silent })
-    if (!window.electronAPI || !loadingForVaultPath) return
-    
-    if (!silent) {
-      setIsLoading(true)
-      setStatusMessage('Loading files...')
-      // Yield to UI thread so loading state renders before heavy work
-      await new Promise(resolve => setTimeout(resolve, 0))
-    }
-    
-    // Helper to check if vault changed during async operation
-    const isVaultStale = () => {
-      const currentState = usePDMStore.getState()
-      const currentActive = currentState.activeVaultId || currentState.connectedVaults[0]?.id
-      return currentActive !== loadingForVaultId
-    }
-    
-    try {
-      // Run local file scan and server fetch in PARALLEL for faster boot
-      // Note: listWorkingFiles now returns FAST (no blocking hash computation)
-      // Hashes are computed in background after initial display
-      const shouldFetchServer = organization && !isOfflineMode && currentVaultId
-      
-      if (!silent) {
-        setStatusMessage(shouldFetchServer ? 'Loading local & cloud files...' : 'Scanning local files...')
-      }
-      
-      // Start both operations at once
-      const localPromise = window.electronAPI.listWorkingFiles()
-      const serverPromise = shouldFetchServer 
-        ? getFilesLightweight(organization.id, currentVaultId)
-        : Promise.resolve({ files: null, error: null })
-      
-      // Wait for both to complete
-      const [localResult, serverResult] = await Promise.all([localPromise, serverPromise])
-      
-      // Process local files
-      if (!localResult.success || !localResult.files) {
-        const errorMsg = localResult.error || 'Failed to load files'
-        window.electronAPI?.log('error', '[LoadFiles] Local file scan failed', { errorMsg, vaultPath, hasWorkingDir: !!localResult })
-        setStatusMessage(errorMsg)
-        return
-      }
-      
-      window.electronAPI?.log('info', '[LoadFiles] Scanned local items', { count: localResult.files.length })
-      window.electronAPI?.log('info', '[LoadFiles] Server query params', { 
-        orgId: organization?.id, 
-        vaultId: currentVaultId,
-        shouldFetchServer,
-        serverFileCount: serverResult.files?.length || 0,
-        serverError: serverResult.error?.message 
-      })
-      
-      // Debug: Log first few paths for comparison (helps debug path matching issues)
-      if (serverResult.files && serverResult.files.length > 0) {
-        const sampleServer = serverResult.files.slice(0, 5).map((f: any) => f.file_path)
-        const sampleLocal = localResult.files.filter((f: any) => !f.isDirectory).slice(0, 5).map((f: any) => f.relativePath)
-        window.electronAPI?.log('info', '[LoadFiles] Sample SERVER paths', sampleServer)
-        window.electronAPI?.log('info', '[LoadFiles] Sample LOCAL paths', sampleLocal)
-        
-        // Try to find a matching file by name and compare full paths
-        const firstServerFile = serverResult.files[0] as any
-        if (firstServerFile) {
-          const serverFileName = firstServerFile.file_name || firstServerFile.file_path.split('/').pop()
-          const matchingLocal = localResult.files.find((f: any) => f.name === serverFileName)
-          if (matchingLocal) {
-            window.electronAPI?.log('info', '[LoadFiles] PATH COMPARISON', {
-              fileName: serverFileName,
-              serverPath: firstServerFile.file_path,
-              localPath: matchingLocal.relativePath,
-              serverLower: firstServerFile.file_path.toLowerCase(),
-              localLower: matchingLocal.relativePath.toLowerCase(),
-              pathsEqual: firstServerFile.file_path.toLowerCase() === matchingLocal.relativePath.toLowerCase()
-            })
-          } else {
-            window.electronAPI?.log('warn', '[LoadFiles] Could not find local file with name', { serverFileName })
-          }
-        }
-      }
-      
-      // Map hash to localHash for comparison
-      let localFiles = localResult.files.map((f: any) => ({
-        ...f,
-        localHash: f.hash
-      }))
-      
-      // Get ignored paths checker for later use (don't filter, just mark as ignored)
-      const isIgnoredPath = currentVaultId 
-        ? (path: string) => usePDMStore.getState().isPathIgnored(currentVaultId, path)
-        : () => false
-      
-      // 2. If connected to Supabase, merge PDM data
-      if (shouldFetchServer) {
-        const pdmFiles = serverResult.files
-        const pdmError = serverResult.error
-        
-        if (pdmError) {
-          window.electronAPI?.log('warn', '[LoadFiles] Failed to fetch PDM data', { error: pdmError })
-        } else if (pdmFiles && Array.isArray(pdmFiles)) {
-          if (!silent) {
-            setStatusMessage(`Merging ${pdmFiles.length} files...`)
-          }
-          
-          // Create a map of pdm data by file path (case-insensitive for Windows compatibility)
-          // Windows filesystems are case-insensitive, so we normalize to lowercase for matching
-          const pdmMap = new Map(pdmFiles.map((f: any) => [f.file_path.toLowerCase(), f]))
-          
-          // Debug: verify pdmMap keys
-          const pdmMapKeys = Array.from(pdmMap.keys()).slice(0, 3)
-          window.electronAPI?.log('info', '[LoadFiles] pdmMap sample keys (lowercase)', pdmMapKeys)
-          
-          // Store server files for tracking deletions
-          const serverFilesList = pdmFiles.map((f: any) => ({
-            id: f.id,
-            file_path: f.file_path,
-            name: f.name,
-            extension: f.extension,
-            content_hash: f.content_hash || ''
-          }))
-          setServerFiles(serverFilesList)
-          
-          // Clean up auto-download exclusions for files that no longer exist on the server
-          if (currentVaultId) {
-            const serverFilePaths = new Set(pdmFiles.map((f: any) => f.file_path))
-            usePDMStore.getState().cleanupStaleExclusions(currentVaultId, serverFilePaths)
-          }
-          
-          // Compute all folder paths that exist on the server
-          const serverFolderPathsSet = new Set<string>()
-          for (const file of pdmFiles as any[]) {
-            const pathParts = file.file_path.split('/')
-            let currentPath = ''
-            for (let i = 0; i < pathParts.length - 1; i++) {
-              currentPath = currentPath ? `${currentPath}/${pathParts[i]}` : pathParts[i]
-              serverFolderPathsSet.add(currentPath)
-            }
-          }
-          setServerFolderPaths(serverFolderPathsSet)
-          
-          // Create set of local file paths for deletion detection (case-insensitive)
-          const localPathSet = new Set(localFiles.map(f => f.relativePath.toLowerCase()))
-          
-          // Create a map of existing files' localActiveVersion to preserve rollback state
-          // Use getState() to get current files at execution time (not stale closure value)
-          const currentFiles = usePDMStore.getState().files
-          const existingLocalActiveVersions = new Map<string, number>()
-          for (const f of currentFiles) {
-            if (f.localActiveVersion !== undefined) {
-              existingLocalActiveVersions.set(f.path, f.localActiveVersion)
-            }
-          }
-          
-          // Create a map of files checked out by me, keyed by content hash for move detection
-          // This allows us to detect moved files (same content, different path) and preserve their pdmData
-          // IMPORTANT: Only track checked-out-by-me files - if a file isn't checked out by me,
-          // I couldn't have moved it, so matching hashes should be treated as new files, not moves.
-          const checkedOutByMeByHash = new Map<string, any>()
-          for (const pdmFile of pdmFiles as any[]) {
-            if (pdmFile.content_hash && pdmFile.checked_out_by === user?.id) {
-              checkedOutByMeByHash.set(pdmFile.content_hash, pdmFile)
-            }
-          }
-          
-          // Merge PDM data into local files and compute diff status
-          let matchedCount = 0
-          let unmatchedCount = 0
-          const unmatchedSamples: string[] = []
-          
-          localFiles = localFiles.map(localFile => {
-            if (localFile.isDirectory) return localFile
-            
-            // Use lowercase for case-insensitive matching (Windows compatibility)
-            const lookupKey = localFile.relativePath.toLowerCase()
-            let pdmData = pdmMap.get(lookupKey)
-            let isMovedFile = false
-            
-            // Debug: track match/unmatch counts
-            if (pdmData) {
-              matchedCount++
-            } else {
-              unmatchedCount++
-              if (unmatchedSamples.length < 5) {
-                unmatchedSamples.push(lookupKey)
-              }
-            }
-            
-            // If no path match but file has same hash as a file CHECKED OUT BY ME,
-            // this MIGHT be a moved file - but only if the original path no longer exists locally.
-            // If the original path still has a file, then this is a COPY, not a move.
-            // IMPORTANT: Only detect moves for files checked out by me - otherwise a new file
-            // with the same content as some random server file would be incorrectly detected as moved.
-            if (!pdmData && localFile.localHash) {
-              const movedFromFile = checkedOutByMeByHash.get(localFile.localHash)
-              if (movedFromFile) {
-                // Check if the original file path still exists locally (case-insensitive)
-                // If it does, this is a copy/duplicate, not a move
-                const originalPathStillExists = localPathSet.has(movedFromFile.file_path.toLowerCase())
-                
-                if (!originalPathStillExists) {
-                  // Original location is empty - this IS a move
-                  pdmData = movedFromFile
-                  isMovedFile = true
-                }
-                // If originalPathStillExists, leave pdmData as undefined - this is a new file (copy)
-              }
-            }
-            
-            // Preserve localActiveVersion from existing file (for rollback state)
-            const existingLocalActiveVersion = existingLocalActiveVersions.get(localFile.path)
-            
-            // Determine diff status
-            let diffStatus: 'added' | 'modified' | 'outdated' | 'moved' | 'ignored' | undefined
-            if (!pdmData) {
-              // File exists locally but not on server
-              // Check if it's in the ignore list (keep local only)
-              if (isIgnoredPath(localFile.relativePath)) {
-                diffStatus = 'ignored'
-              } else {
-                diffStatus = 'added'
-              }
-            } else if (isMovedFile) {
-              // File was moved - needs check-in to update server path (but no version increment)
-              diffStatus = 'moved'
-            } else if (pdmData.content_hash && localFile.localHash) {
-              // File exists both places - check if modified or outdated
-              if (pdmData.content_hash !== localFile.localHash) {
-                // Hashes differ - determine if local is newer or cloud is newer
-                const localModTime = new Date(localFile.modifiedTime).getTime()
-                const cloudUpdateTime = pdmData.updated_at ? new Date(pdmData.updated_at).getTime() : 0
-                
-                if (localModTime > cloudUpdateTime) {
-                  // Local file was modified more recently - local changes
-                  diffStatus = 'modified'
-                } else {
-                  // Cloud was updated more recently - need to pull
-                  diffStatus = 'outdated'
-                  // Debug: Log outdated file details
-                  window.electronAPI?.log('debug', '[LoadFiles] File marked as OUTDATED', {
-                    name: localFile.name,
-                    relativePath: localFile.relativePath,
-                    localHash: localFile.localHash?.substring(0, 16),
-                    serverHash: pdmData.content_hash?.substring(0, 16),
-                    localModTime: new Date(localModTime).toISOString(),
-                    cloudUpdateTime: new Date(cloudUpdateTime).toISOString(),
-                    fileId: pdmData.id,
-                    version: pdmData.version,
-                    checkedOutBy: pdmData.checked_out_by
-                  })
-                }
-              }
-            } else if (pdmData.content_hash && !localFile.localHash) {
-              // Debug: Log files waiting for hash computation
-              window.electronAPI?.log('debug', '[LoadFiles] File waiting for hash computation', {
-                name: localFile.name,
-                relativePath: localFile.relativePath,
-                hasServerHash: !!pdmData.content_hash,
-                hasLocalHash: !!localFile.localHash
-              })
-            }
-            // NOTE: If cloud has hash but local doesn't have one yet, leave diffStatus undefined
-            // The background hash computation will set the proper status once hashes are computed
-            
-            return {
-              ...localFile,
-              pdmData: pdmData || undefined,
-              isSynced: !!pdmData,
-              diffStatus,
-              // Preserve rollback state if it exists
-              localActiveVersion: existingLocalActiveVersion
-            }
-          })
-          
-          // Debug: Log match statistics
-          window.electronAPI?.log('info', '[LoadFiles] MATCH STATS', {
-            matched: matchedCount,
-            unmatched: unmatchedCount,
-            serverTotal: pdmFiles.length,
-            unmatchedSamples
-          })
-          
-          // Add cloud-only files (exist on server but not locally) as "cloud" or "deleted" entries
-          // "cloud" = available for download (muted)
-          // "deleted" = was checked out by me but removed locally (red) - indicates moved/deleted file
-          // Note: if a file was MOVED (same content hash exists locally), don't show the deleted ghost
-          const cloudFolders = new Set<string>()
-          
-          // Create a set of local content hashes to detect moved files
-          const localContentHashes = new Set(
-            localFiles.filter(f => !f.isDirectory && f.localHash).map(f => f.localHash)
-          )
-          
-          for (const pdmFile of pdmFiles as any[]) {
-            if (!localPathSet.has(pdmFile.file_path.toLowerCase())) {
-              // Check if this file was MOVED (same content exists at a different location locally)
-              const isCheckedOutByMe = pdmFile.checked_out_by === user?.id
-              const wasMoved = pdmFile.content_hash && localContentHashes.has(pdmFile.content_hash)
-              
-              // If moved, don't show the ghost at the old location - the file is handled at the new location
-              if (wasMoved) {
-                continue
-              }
-              
-              // If checked out by me but not moved, it was truly deleted locally
-              const isDeletedByMe = isCheckedOutByMe
-              
-              // Add cloud parent folders for this file
-              const pathParts = pdmFile.file_path.split('/')
-              let currentPath = ''
-              for (let i = 0; i < pathParts.length - 1; i++) {
-                currentPath = currentPath ? `${currentPath}/${pathParts[i]}` : pathParts[i]
-                if (!localPathSet.has(currentPath.toLowerCase()) && !cloudFolders.has(currentPath)) {
-                  cloudFolders.add(currentPath)
-                }
-              }
-              
-              // Add the cloud-only file (not synced locally)
-              localFiles.push({
-                name: pdmFile.file_name,
-                path: buildFullPath(vaultPath, pdmFile.file_path),
-                relativePath: pdmFile.file_path,
-                isDirectory: false,
-                extension: pdmFile.extension,
-                size: pdmFile.file_size || 0,
-                modifiedTime: pdmFile.updated_at || '',
-                pdmData: pdmFile,
-                isSynced: false, // Not synced locally
-                diffStatus: isDeletedByMe ? 'deleted' : 'cloud' // Deleted if I moved/removed it, otherwise cloud
-              })
-            }
-          }
-          
-          // Add cloud folders (folders that exist on server but not locally)
-          for (const folderPath of cloudFolders) {
-            const folderName = folderPath.split('/').pop() || folderPath
-            localFiles.push({
-              name: folderName,
-              path: buildFullPath(vaultPath, folderPath),
-              relativePath: folderPath,
-              isDirectory: true,
-              extension: '',
-              size: 0,
-              modifiedTime: '',
-              diffStatus: 'cloud'
-            })
-          }
-          
-          // Debug: Log merge summary
-          const syncedCount = localFiles.filter(f => !f.isDirectory && f.isSynced).length
-          const addedCount = localFiles.filter(f => !f.isDirectory && f.diffStatus === 'added').length
-          const cloudCount = localFiles.filter(f => !f.isDirectory && f.diffStatus === 'cloud').length
-          window.electronAPI?.log('info', '[LoadFiles] Merge summary', {
-            serverFiles: pdmFiles.length,
-            localFilesAfterMerge: localFiles.filter(f => !f.isDirectory).length,
-            synced: syncedCount,
-            added: addedCount,
-            cloudOnly: cloudCount,
-          })
-        }
-      } else {
-        // Offline mode or no org - local files are "added" unless ignored
-        localFiles = localFiles.map(f => ({
-          ...f,
-          diffStatus: f.isDirectory ? undefined : (isIgnoredPath(f.relativePath) ? 'ignored' as const : 'added' as const)
-        }))
-      }
-      
-      // Update folder diffStatus based on contents
-      // A folder should be 'cloud' if all its contents are cloud-only AND it has some cloud content
-      // Empty folders that exist locally should NOT be marked as cloud
-      // Process folders bottom-up (deepest first) so parent folders see updated child statuses
-      const folders = localFiles.filter(f => f.isDirectory)
-      
-      // Sort folders by depth (deepest first)
-      folders.sort((a, b) => {
-        const depthA = a.relativePath.split(/[/\\]/).length
-        const depthB = b.relativePath.split(/[/\\]/).length
-        return depthB - depthA
-      })
-      
-      // Check each folder from deepest to shallowest
-      for (const folder of folders) {
-        const normalizedFolder = folder.relativePath.replace(/\\/g, '/')
-        
-        // Get direct children of this folder
-        const directChildren = localFiles.filter(f => {
-          if (f.relativePath === folder.relativePath) return false // Skip self
-          const normalizedPath = f.relativePath.replace(/\\/g, '/')
-          
-          // Check if it's a direct child (not nested deeper)
-          if (!normalizedPath.startsWith(normalizedFolder + '/')) return false
-          const remainder = normalizedPath.slice(normalizedFolder.length + 1)
-          if (remainder.includes('/')) return false // It's nested deeper, not direct child
-          
-          return true
-        })
-        
-        const hasLocalContent = directChildren.some(f => f.diffStatus !== 'cloud')
-        const hasCloudContent = directChildren.some(f => f.diffStatus === 'cloud')
-        
-        // Only mark as cloud if folder has cloud content AND no local content
-        // Empty local folders should stay as normal folders
-        if (!hasLocalContent && hasCloudContent) {
-          // Update this folder to cloud status
-          const folderInList = localFiles.find(f => f.relativePath === folder.relativePath)
-          if (folderInList) {
-            folderInList.diffStatus = 'cloud'
-          }
-        }
-      }
-      
-      // Check if vault changed during async operations - if so, skip setting files
-      // This prevents race conditions when auto-connect switches vaults during initial load
-      if (isVaultStale()) {
-        window.electronAPI?.log('info', '[LoadFiles] Skipping setFiles - vault changed during load', { 
-          loadedFor: loadingForVaultId, 
-          currentVault: usePDMStore.getState().activeVaultId 
-        })
-        return
-      }
-      
-      setFiles(localFiles)
-      setFilesLoaded(true)  // Mark that initial load is complete
-      const totalFiles = localFiles.filter(f => !f.isDirectory).length
-      const syncedCount = localFiles.filter(f => !f.isDirectory && f.pdmData).length
-      const folderCount = localFiles.filter(f => f.isDirectory).length
-      setStatusMessage(`Loaded ${totalFiles} files, ${folderCount} folders${syncedCount > 0 ? ` (${syncedCount} synced)` : ''}`)
-      
-      // Background tasks (non-blocking) - run after UI renders
-      if (user && window.electronAPI) {
-        setTimeout(async () => {
-          // Skip background tasks if vault changed
-          if (isVaultStale()) {
-            window.electronAPI?.log('info', '[LoadFiles] Skipping background tasks - vault changed')
-            return
-          }
-          
-          // 1. Set read-only status on synced files
-          for (const file of localFiles) {
-            if (file.isDirectory || !file.pdmData) continue
-            const isCheckedOutByMe = file.pdmData.checked_out_by === user.id
-            window.electronAPI.setReadonly(file.path, !isCheckedOutByMe)
-          }
-          
-          // 2. Lazy-load checked out user info for UI display
-          // This adds user names/emails without blocking initial render
-          const checkedOutFileIds = localFiles
-            .filter(f => !f.isDirectory && f.pdmData?.checked_out_by)
-            .map(f => f.pdmData!.id)
-          
-          if (checkedOutFileIds.length > 0 && organization) {
-            const { users: userInfo } = await getCheckedOutUsers(checkedOutFileIds)
-            const userInfoMap = userInfo as Record<string, { email: string; full_name: string; avatar_url?: string }>
-            if (Object.keys(userInfoMap).length > 0 && !isVaultStale()) {
-              // Update files in store with user info
-              const currentFiles = usePDMStore.getState().files
-              const updatedFiles = currentFiles.map(f => {
-                const fileId = f.pdmData?.id
-                if (fileId && fileId in userInfoMap && f.pdmData) {
-                  return {
-                    ...f,
-                    pdmData: {
-                      ...f.pdmData,
-                      checked_out_user: userInfoMap[fileId]
-                    }
-                  } as typeof f
-                }
-                return f
-              })
-              setFiles(updatedFiles)
-            }
-          }
-          
-          // 3. Background hash computation for files without hashes
-          // This runs progressively without blocking the UI
-          const filesNeedingHash = localFiles.filter(f => 
-            !f.isDirectory && !f.localHash && f.pdmData?.content_hash
-          )
-          
-          if (filesNeedingHash.length > 0 && window.electronAPI.computeFileHashes) {
-            window.electronAPI?.log('info', '[LoadFiles] Computing hashes for', { count: filesNeedingHash.length })
-            setStatusMessage(`Checking ${filesNeedingHash.length} files for changes...`)
-            
-            // Prepare file list for hash computation
-            const hashRequests = filesNeedingHash.map(f => ({
-              path: f.path,
-              relativePath: f.relativePath,
-              size: f.size,
-              mtime: new Date(f.modifiedTime).getTime()
-            }))
-            
-            try {
-              // Compute hashes in background (with progress updates via IPC)
-              const { results } = await window.electronAPI.computeFileHashes(hashRequests)
-              
-              if (results && results.length > 0 && !isVaultStale()) {
-                // Create a map for quick lookup
-                const hashMap = new Map(results.map(r => [r.relativePath, r.hash]))
-                
-                // Update files with computed hashes and recompute diff status
-                const currentFiles = usePDMStore.getState().files
-                const updatedFiles = currentFiles.map(f => {
-                  if (f.isDirectory) return f
-                  
-                  const computedHash = hashMap.get(f.relativePath)
-                  if (!computedHash) return f
-                  
-                  // Recompute diff status with the new hash
-                  let newDiffStatus = f.diffStatus
-                  if (f.pdmData?.content_hash && computedHash) {
-                    if (f.pdmData.content_hash !== computedHash) {
-                      // Hashes differ - check which is newer
-                      const localModTime = new Date(f.modifiedTime).getTime()
-                      const cloudUpdateTime = f.pdmData.updated_at ? new Date(f.pdmData.updated_at).getTime() : 0
-                      newDiffStatus = localModTime > cloudUpdateTime ? 'modified' : 'outdated'
-                      // Debug: log hash mismatches to help identify stale data issues
-                      window.electronAPI?.log('warn', '[HashCompute] Hash mismatch detected', {
-                        file: f.name,
-                        localHash: computedHash.substring(0, 12),
-                        serverHash: f.pdmData.content_hash.substring(0, 12),
-                        localModTime: new Date(localModTime).toISOString(),
-                        serverUpdatedAt: f.pdmData.updated_at,
-                        result: newDiffStatus,
-                        checkedOut: !!f.pdmData.checked_out_by
-                      })
-                    } else {
-                      // Hashes match - no diff
-                      newDiffStatus = undefined
-                    }
-                  }
-                  
-                  return {
-                    ...f,
-                    localHash: computedHash,
-                    diffStatus: newDiffStatus
-                  }
-                })
-                
-                setFiles(updatedFiles)
-                window.electronAPI?.log('info', '[LoadFiles] Hash computation complete', { updated: results.length })
-              }
-            } catch (err) {
-              window.electronAPI?.log('error', '[LoadFiles] Hash computation failed', { error: String(err) })
-            }
-            
-            // Clear the status message after hash computation
-            setStatusMessage('')
-          }
-          
-          // 4. Auto-download cloud files and updates (if enabled)
-          // Run after hash computation so we have accurate diff statuses
-          // IMPORTANT: Skip on silent refreshes to prevent infinite loops
-          // (silent refreshes are triggered by download/update commands completing)
-          if (silent) {
-            window.electronAPI?.log('info', '[AutoDownload] Skipping - silent refresh')
-          }
-          
-          const { autoDownloadCloudFiles, autoDownloadUpdates, addToast, autoDownloadExcludedFiles, activeVaultId } = usePDMStore.getState()
-          
-          // Skip auto-download if vault changed during async operations
-          if (isVaultStale()) {
-            window.electronAPI?.log('info', '[AutoDownload] Skipping - vault changed during load')
-            return
-          }
-          
-          if (!silent && (autoDownloadCloudFiles || autoDownloadUpdates) && organization && !isOfflineMode) {
-            const latestFiles = usePDMStore.getState().files
-            
-            // Get exclusion list for current vault
-            const excludedPaths = activeVaultId ? (autoDownloadExcludedFiles[activeVaultId] || []) : []
-            const excludedPathsSet = new Set(excludedPaths)
-            
-            // Auto-download cloud-only files
-            if (autoDownloadCloudFiles) {
-              const cloudOnlyFiles = latestFiles.filter(f => 
-                !f.isDirectory && 
-                f.diffStatus === 'cloud' && 
-                f.pdmData?.content_hash &&
-                // Exclude files that were intentionally removed locally
-                !excludedPathsSet.has(f.relativePath)
-              )
-              
-              if (cloudOnlyFiles.length > 0) {
-                window.electronAPI?.log('info', '[AutoDownload] Downloading cloud files', { count: cloudOnlyFiles.length })
-                try {
-                  // Don't pass onRefresh - we already skipped auto-download on silent refreshes,
-                  // and the download command will update the store. User can manually refresh if needed.
-                  const result = await executeCommand('download', { files: cloudOnlyFiles })
-                  if (result.succeeded > 0) {
-                    addToast('success', `Auto-downloaded ${result.succeeded} cloud file${result.succeeded > 1 ? 's' : ''}`)
-                  }
-                  if (result.failed > 0) {
-                    window.electronAPI?.log('warn', '[AutoDownload] Some downloads failed', { failed: result.failed, errors: result.errors })
-                  }
-                } catch (err) {
-                  window.electronAPI?.log('error', '[AutoDownload] Failed to download cloud files', { error: String(err) })
-                }
-              }
-            }
-            
-            // Auto-download updates for outdated files
-            if (autoDownloadUpdates) {
-              // Debug: Log all files with outdated status before filtering
-              const allOutdatedStatus = latestFiles.filter(f => f.diffStatus === 'outdated')
-              window.electronAPI?.log('debug', '[AutoDownload] Files with outdated status', {
-                count: allOutdatedStatus.length,
-                files: allOutdatedStatus.map(f => ({
-                  name: f.name,
-                  relativePath: f.relativePath,
-                  isDirectory: f.isDirectory,
-                  hasContentHash: !!f.pdmData?.content_hash,
-                  contentHash: f.pdmData?.content_hash?.substring(0, 12),
-                  localHash: f.localHash?.substring(0, 12),
-                  fileId: f.pdmData?.id,
-                  checkedOutBy: f.pdmData?.checked_out_by
-                }))
-              })
-              
-              const outdatedFiles = latestFiles.filter(f => 
-                !f.isDirectory && f.diffStatus === 'outdated' && f.pdmData?.content_hash
-              )
-              
-              // Debug: Log files that were filtered out
-              const filteredOut = allOutdatedStatus.filter(f => 
-                f.isDirectory || !f.pdmData?.content_hash
-              )
-              if (filteredOut.length > 0) {
-                window.electronAPI?.log('warn', '[AutoDownload] Outdated files FILTERED OUT (no content_hash or is directory)', {
-                  count: filteredOut.length,
-                  files: filteredOut.map(f => ({
-                    name: f.name,
-                    isDirectory: f.isDirectory,
-                    hasContentHash: !!f.pdmData?.content_hash
-                  }))
-                })
-              }
-              
-              if (outdatedFiles.length > 0) {
-                window.electronAPI?.log('info', '[AutoDownload] Updating outdated files', { 
-                  count: outdatedFiles.length,
-                  files: outdatedFiles.map(f => ({
-                    name: f.name,
-                    relativePath: f.relativePath,
-                    localHash: f.localHash?.substring(0, 12),
-                    serverHash: f.pdmData?.content_hash?.substring(0, 12),
-                    fileId: f.pdmData?.id
-                  }))
-                })
-                try {
-                  // Don't pass onRefresh - same reason as above
-                  const result = await executeCommand('get-latest', { files: outdatedFiles })
-                  window.electronAPI?.log('info', '[AutoDownload] Update result', {
-                    total: result.total,
-                    succeeded: result.succeeded,
-                    failed: result.failed,
-                    errors: result.errors
-                  })
-                  if (result.succeeded > 0) {
-                    addToast('success', `Auto-updated ${result.succeeded} file${result.succeeded > 1 ? 's' : ''}`)
-                  }
-                  if (result.failed > 0) {
-                    window.electronAPI?.log('warn', '[AutoDownload] Some updates failed', { failed: result.failed, errors: result.errors })
-                  }
-                } catch (err) {
-                  window.electronAPI?.log('error', '[AutoDownload] Failed to update outdated files', { error: String(err) })
-                }
-              }
-            }
-          }
-        }, 50) // Small delay to let React render first
-      }
-    } catch (err) {
-      if (!silent) {
-        setStatusMessage('Error loading files')
-      }
-      console.error(err)
-    } finally {
-      if (!silent) {
-        setIsLoading(false)
-        setTimeout(() => setStatusMessage(''), 3000)
-      }
-    }
-  }, [vaultPath, organization, isOfflineMode, currentVaultId, setFiles, setIsLoading, setStatusMessage, setFilesLoaded])
-
-  // Process staged check-ins when going back online
-  const processStagedCheckins = useCallback(async () => {
-    if (stagedCheckins.length === 0 || !organization || !user || !vaultPath) {
-      return
-    }
-    
-    console.log('[StagedCheckins] Processing', stagedCheckins.length, 'staged check-ins')
-    
-    // Get current files to find the staged ones
-    const { files } = usePDMStore.getState()
-    
-    // Collect conflicts for dialog
-    const conflicts: Array<{
-      staged: StagedCheckin
-      serverVersion: number
-      localPath: string
-    }> = []
-    
-    let successCount = 0
-    
-    for (const staged of stagedCheckins) {
-      const file = files.find(f => f.relativePath === staged.relativePath)
-      if (!file) {
-        console.warn('[StagedCheckins] File not found:', staged.relativePath)
-        unstageCheckin(staged.relativePath)
-        continue
-      }
-      
-      // Check for conflict: server version changed since we staged
-      const serverVersionChanged = staged.serverVersion !== undefined && 
-        file.pdmData?.version !== undefined && 
-        file.pdmData.version > staged.serverVersion
-      
-      if (serverVersionChanged) {
-        // Conflict detected - add to conflicts list for dialog
-        console.log('[StagedCheckins] Conflict detected for:', staged.fileName, {
-          stagedVersion: staged.serverVersion,
-          currentVersion: file.pdmData?.version
-        })
-        conflicts.push({
-          staged,
-          serverVersion: file.pdmData?.version || 0,
-          localPath: file.path
-        })
-        continue
-      }
-      
-      try {
-        // For new files, use sync (first check-in)
-        // For existing files, use checkout + checkin
-        if (!file.pdmData) {
-          // New file - first check-in
-          await executeCommand('sync', { files: [file] }, { silent: true })
-        } else {
-          // Existing file - checkout then checkin
-          await executeCommand('checkout', { files: [file] }, { silent: true })
-          await executeCommand('checkin', { files: [file], comment: staged.comment || 'Offline changes' }, { silent: true })
-        }
-        
-        // Remove from staged
-        unstageCheckin(staged.relativePath)
-        successCount++
-        console.log('[StagedCheckins] Successfully processed:', staged.fileName)
-      } catch (err) {
-        console.error('[StagedCheckins] Failed to process:', staged.fileName, err)
-        addToast('error', `Failed to check in "${staged.fileName}": ${err instanceof Error ? err.message : 'Unknown error'}`)
-      }
-    }
-    
-    // Show success message for processed files
-    if (successCount > 0) {
-      addToast('success', `Successfully checked in ${successCount} staged file${successCount > 1 ? 's' : ''}`)
-    }
-    
-    // Show conflict dialog if there are conflicts
-    if (conflicts.length > 0) {
-      setStagedConflicts(conflicts)
-    }
-    
-    // Refresh files after processing
-    loadFiles(true)
-  }, [stagedCheckins, organization, user, vaultPath, addToast, unstageCheckin, loadFiles])
-  
-  // Handle staged check-ins when going back online
-  useEffect(() => {
-    const wasOffline = prevOfflineModeRef.current
-    const isNowOnline = !isOfflineMode
-    
-    // Update ref for next render
-    prevOfflineModeRef.current = isOfflineMode
-    
-    // Only process when transitioning from offline to online
-    if (wasOffline && isNowOnline && stagedCheckins.length > 0) {
-      console.log('[StagedCheckins] Going online with', stagedCheckins.length, 'staged check-ins')
-      
-      // Show notification about staged check-ins
-      addToast(
-        'info',
-        `Processing ${stagedCheckins.length} staged file${stagedCheckins.length > 1 ? 's' : ''} for check-in...`,
-        8000
-      )
-      
-      // Process staged check-ins in the background
-      processStagedCheckins()
-    }
-  }, [isOfflineMode, stagedCheckins.length, addToast, processStagedCheckins])
-
-  // Auto-download trigger when settings are toggled ON
-  // This effect runs the download logic immediately when the user enables auto-download
-  const autoDownloadCloudFiles = usePDMStore(s => s.autoDownloadCloudFiles)
-  const autoDownloadUpdates = usePDMStore(s => s.autoDownloadUpdates)
-  const prevAutoDownloadCloudFiles = useRef(autoDownloadCloudFiles)
-  const prevAutoDownloadUpdates = useRef(autoDownloadUpdates)
-  
-  useEffect(() => {
-    const cloudFilesJustEnabled = autoDownloadCloudFiles && !prevAutoDownloadCloudFiles.current
-    const updatesJustEnabled = autoDownloadUpdates && !prevAutoDownloadUpdates.current
-    
-    // Update refs for next comparison
-    prevAutoDownloadCloudFiles.current = autoDownloadCloudFiles
-    prevAutoDownloadUpdates.current = autoDownloadUpdates
-    
-    // Only proceed if a setting was just toggled ON
-    if (!cloudFilesJustEnabled && !updatesJustEnabled) return
-    
-    // Need organization, vault, and not offline to download
-    if (!organization || isOfflineMode || !currentVaultId) return
-    
-    const runAutoDownload = async () => {
-      const { files, autoDownloadExcludedFiles, addToast, activeVaultId } = usePDMStore.getState()
-      
-      // Get exclusion list for current vault
-      const excludedPaths = activeVaultId ? (autoDownloadExcludedFiles[activeVaultId] || []) : []
-      const excludedPathsSet = new Set(excludedPaths)
-      
-      // Auto-download cloud-only files (if just enabled)
-      if (cloudFilesJustEnabled) {
-        const cloudOnlyFiles = files.filter(f => 
-          !f.isDirectory && 
-          f.diffStatus === 'cloud' && 
-          f.pdmData?.content_hash &&
-          !excludedPathsSet.has(f.relativePath)
-        )
-        
-        if (cloudOnlyFiles.length > 0) {
-          window.electronAPI?.log('info', '[AutoDownload] Setting toggled ON - downloading cloud files', { count: cloudOnlyFiles.length })
-          try {
-            const result = await executeCommand('download', { files: cloudOnlyFiles })
-            if (result.succeeded > 0) {
-              addToast('success', `Auto-downloaded ${result.succeeded} cloud file${result.succeeded > 1 ? 's' : ''}`)
-            }
-            if (result.failed > 0) {
-              window.electronAPI?.log('warn', '[AutoDownload] Some downloads failed', { failed: result.failed, errors: result.errors })
-            }
-          } catch (err) {
-            window.electronAPI?.log('error', '[AutoDownload] Failed to download cloud files', { error: String(err) })
-          }
-        } else {
-          window.electronAPI?.log('info', '[AutoDownload] Setting toggled ON - no cloud files to download')
-        }
-      }
-      
-      // Auto-download updates for outdated files (if just enabled)
-      if (updatesJustEnabled) {
-        const outdatedFiles = files.filter(f => 
-          !f.isDirectory && f.diffStatus === 'outdated' && f.pdmData?.content_hash
-        )
-        
-        if (outdatedFiles.length > 0) {
-          window.electronAPI?.log('info', '[AutoDownload] Setting toggled ON - updating outdated files', { count: outdatedFiles.length })
-          try {
-            const result = await executeCommand('get-latest', { files: outdatedFiles })
-            if (result.succeeded > 0) {
-              addToast('success', `Auto-updated ${result.succeeded} file${result.succeeded > 1 ? 's' : ''}`)
-            }
-            if (result.failed > 0) {
-              window.electronAPI?.log('warn', '[AutoDownload] Some updates failed', { failed: result.failed, errors: result.errors })
-            }
-          } catch (err) {
-            window.electronAPI?.log('error', '[AutoDownload] Failed to update outdated files', { error: String(err) })
-          }
-        } else {
-          window.electronAPI?.log('info', '[AutoDownload] Setting toggled ON - no outdated files to update')
-        }
-      }
-    }
-    
-    runAutoDownload()
-  }, [autoDownloadCloudFiles, autoDownloadUpdates, organization, isOfflineMode, currentVaultId])
 
   // CLI command listener - always active so CLI works even when terminal is hidden
   useEffect(() => {
@@ -1415,7 +249,6 @@ function App() {
       try {
         const results = await executeTerminalCommand(command, loadFiles)
         
-        // Handle clear command
         if (results.length === 1 && results[0].content === '__CLEAR__') {
           window.electronAPI?.sendCliResponse(requestId, { 
             outputs: [{ type: 'info', content: 'Cleared' }] 
@@ -1434,272 +267,6 @@ function App() {
     
     return () => unsubscribe()
   }, [loadFiles])
-
-  // Open working directory
-  const handleOpenVault = useCallback(async () => {
-    if (!window.electronAPI) return
-    
-    const result = await window.electronAPI.selectWorkingDir()
-    if (result.success && result.path) {
-      // Clear existing file state to avoid stale data
-      setFiles([])
-      setServerFiles([])
-      setFilesLoaded(false)
-      
-      setVaultPath(result.path)
-      setVaultConnected(true)
-      addRecentVault(result.path)
-      setStatusMessage(`Opened: ${result.path}`)
-      setTimeout(() => setStatusMessage(''), 3000)
-    }
-  }, [setVaultPath, setVaultConnected, addRecentVault, setStatusMessage, setFiles, setServerFiles, setFilesLoaded])
-
-  // Handle vault not found - browse for new path
-  const handleVaultNotFoundBrowse = useCallback(async () => {
-    if (!window.electronAPI || !vaultNotFoundPath) return
-    
-    const result = await window.electronAPI.selectWorkingDir()
-    if (result.success && result.path) {
-      // Find the vault that had the broken path and update it
-      const brokenVault = connectedVaults.find(v => v.localPath === vaultNotFoundPath)
-      if (brokenVault) {
-        // Update the vault's local path
-        const { updateConnectedVault } = usePDMStore.getState()
-        updateConnectedVault(brokenVault.id, { localPath: result.path })
-        addToast('success', `Vault "${brokenVault.name}" path updated to: ${result.path}`)
-      }
-      
-      // Clear existing file state
-      setFiles([])
-      setServerFiles([])
-      setFilesLoaded(false)
-      
-      // Set the new path
-      setVaultPath(result.path)
-      setVaultConnected(true)
-      setVaultNotFoundPath(null)
-      setVaultNotFoundName(undefined)
-    }
-  }, [vaultNotFoundPath, connectedVaults, setVaultPath, setVaultConnected, setFiles, setServerFiles, setFilesLoaded, addToast])
-
-  // Handle vault not found - open settings to vaults tab where vaults are managed
-  const handleVaultNotFoundSettings = useCallback(() => {
-    const { setActiveView } = usePDMStore.getState()
-    setSettingsTab('vaults')
-    setActiveView('settings')
-    setVaultNotFoundPath(null)
-    setVaultNotFoundName(undefined)
-  }, [])
-
-  // Open recent vault
-  const handleOpenRecentVault = useCallback(async (path: string) => {
-    if (!window.electronAPI) return
-    
-    const result = await window.electronAPI.setWorkingDir(path)
-    if (result.success) {
-      // Clear existing file state to avoid stale data
-      setFiles([])
-      setServerFiles([])
-      setFilesLoaded(false)
-      
-      setVaultPath(path)
-      setVaultConnected(true)
-      addRecentVault(path)
-      
-      // Find matching connected vault and activate it
-      const normalizedPath = path.toLowerCase().replace(/\\/g, '/')
-      const currentVaults = usePDMStore.getState().connectedVaults
-      const matchingVault = currentVaults.find(v => 
-        v.localPath.toLowerCase().replace(/\\/g, '/') === normalizedPath
-      )
-      if (matchingVault) {
-        usePDMStore.getState().setActiveVault(matchingVault.id)
-        // Ensure vault is expanded so files show
-        if (!matchingVault.isExpanded) {
-          usePDMStore.getState().toggleVaultExpanded(matchingVault.id)
-        }
-      }
-      
-      setStatusMessage(`Opened: ${path}`)
-      setTimeout(() => setStatusMessage(''), 3000)
-    } else {
-      setStatusMessage(result.error || 'Failed to open folder')
-      setTimeout(() => setStatusMessage(''), 3000)
-    }
-  }, [setVaultPath, setVaultConnected, addRecentVault, setStatusMessage, setFiles, setServerFiles, setFilesLoaded])
-
-  // Track what configuration we last loaded to avoid duplicate loads
-  const lastLoadKey = useRef<string>('')
-  const mountedRef = useRef(false)
-  
-  // Reset state on component mount (handles HMR and stale loading state)
-  useEffect(() => {
-    // Force fresh load on mount
-    lastLoadKey.current = ''
-    
-    // Clear any stale loading state from previous HMR
-    // Use the store directly to check state at mount time
-    const state = usePDMStore.getState()
-    if (state.isLoading || state.statusMessage === 'Loading organization...' || state.statusMessage === 'Loading files...') {
-      setIsLoading(false)
-      setStatusMessage('')
-    }
-    
-    mountedRef.current = true
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []) // Only run on mount
-  
-  // Reset lastLoadKey when vault is disconnected so reconnecting triggers a fresh load
-  useEffect(() => {
-    if (!isVaultConnected) {
-      lastLoadKey.current = ''
-    }
-  }, [isVaultConnected])
-
-  // Initialize working directory on startup
-  // This runs BEFORE auth to ensure electron's workingDirectory is set when we have persisted vaults
-  // This prevents files from showing as "cloud" on startup before auth completes
-  useEffect(() => {
-    const initWorkingDir = async () => {
-      if (!window.electronAPI) return
-      
-      // Get the path from vaultPath (which is synced from activeVault in store merge)
-      // If no vaultPath but we have connected vaults, use the ACTIVE vault's path (matching activeVaultId)
-      // This ensures consistency between working directory and activeVaultId
-      const activeVault = connectedVaults.find(v => v.id === activeVaultId) || connectedVaults[0]
-      // CRITICAL: Prefer active vault's path over vaultPath to avoid showing wrong vault's files
-      // This fixes the issue where vaultPath might be stale after vault switch
-      const pathToUse = activeVault?.localPath || vaultPath
-      if (!pathToUse) {
-        console.log('[Init] No vault path available')
-        return
-      }
-      
-      console.log('[Init] Setting working directory:', pathToUse, 'activeVaultId:', activeVaultId)
-      const result = await window.electronAPI.setWorkingDir(pathToUse)
-      
-      if (result.success) {
-        console.log('[Init] Working directory set successfully')
-        // Clear any vault not found state
-        setVaultNotFoundPath(null)
-        setVaultNotFoundName(undefined)
-        // Only set vault connected if we have auth (user) or offline mode
-        // This ensures loadFiles waits for org data when online
-        if (user || isOfflineMode) {
-          setVaultConnected(true)
-        }
-        // Update vaultPath to match active vault (ensures consistency)
-        if (activeVault?.localPath && vaultPath !== activeVault.localPath) {
-          setVaultPath(activeVault.localPath)
-        }
-      } else {
-        console.error('[Init] Failed to set working directory:', result.error)
-        // Only handle if user is authenticated (to avoid race on startup)
-        if (user || isOfflineMode) {
-          // Check if the error is because the path doesn't exist
-          if (result.error?.includes('not exist') || result.error?.includes('Path does not exist')) {
-            // Show the vault not found dialog
-            const vaultName = connectedVaults.find(v => v.localPath === pathToUse)?.name
-            setVaultNotFoundPath(pathToUse)
-            setVaultNotFoundName(vaultName)
-          }
-          setVaultPath(null)
-          setVaultConnected(false)
-        }
-      }
-    }
-    
-    initWorkingDir()
-  // IMPORTANT: Include activeVaultId so working directory updates when vault changes
-  }, [user, isOfflineMode, vaultPath, connectedVaults, activeVaultId, setVaultPath, setVaultConnected])
-
-  // Load files when ready - wait for organization to be loaded when online
-  // This prevents double-loading (once without org, once with org)
-  useEffect(() => {
-    if (!isVaultConnected || !vaultPath) return
-    
-    // When online, wait for organization to be loaded before first load
-    // This prevents the "add diff spam" from loading without org data
-    if (!isOfflineMode && user && !organization) {
-      // Show loading state while waiting for org
-      setIsLoading(true)
-      setStatusMessage('Loading organization...')
-      return // Wait for org to load
-    }
-    
-    // Clear loading state once organization is ready (handles HMR race conditions)
-    if (organization) {
-      // Don't show "Loading organization..." anymore - org is loaded
-      // The loadFiles call below will set proper loading state
-    }
-    
-    // Create a key to track what we've loaded for
-    // Include vaultPath so switching vaults triggers a new load
-    // Include isOfflineMode so going online/offline triggers a fresh load
-    const loadKey = `${vaultPath}:${currentVaultId || 'none'}:${organization?.id || 'none'}:${isOfflineMode ? 'offline' : 'online'}`
-    
-    console.log('[LoadEffect] loadKey:', loadKey, 'lastLoadKey:', lastLoadKey.current)
-    
-    // Skip if we've already loaded for this exact configuration
-    if (lastLoadKey.current === loadKey) {
-      // Clear stale loading state if we're skipping (handles HMR)
-      console.log('[LoadEffect] Skipping - same loadKey')
-      setIsLoading(false)
-      if (statusMessage === 'Loading organization...' || statusMessage === 'Loading files...') {
-        setStatusMessage('')
-      }
-      return
-    }
-    
-    console.log('[LoadEffect] Triggering loadFiles for new loadKey')
-    lastLoadKey.current = loadKey
-    loadFiles()
-  }, [isVaultConnected, vaultPath, isOfflineMode, user, organization, currentVaultId, loadFiles, setIsLoading, setStatusMessage, statusMessage])
-
-  // Handle sidebar, details panel, and right panel resize
-  useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (isResizingSidebar) {
-        const newWidth = e.clientX - 48
-        setSidebarWidth(newWidth)
-      }
-      if (isResizingDetails) {
-        // Calculate height from bottom of window
-        const windowHeight = window.innerHeight
-        const statusBarHeight = 24 // Approximate status bar height
-        const newHeight = windowHeight - e.clientY - statusBarHeight
-        // Allow up to 80% of window height
-        setDetailsPanelHeight(Math.max(100, Math.min(windowHeight * 0.8, newHeight)))
-      }
-      if (isResizingRightPanel) {
-        // Calculate width from right edge
-        const windowWidth = window.innerWidth
-        const newWidth = windowWidth - e.clientX
-        // Allow up to 70% of window width
-        setRightPanelWidth(Math.max(200, Math.min(windowWidth * 0.7, newWidth)))
-      }
-    }
-
-    const handleMouseUp = () => {
-      setIsResizingSidebar(false)
-      setIsResizingDetails(false)
-      setIsResizingRightPanel(false)
-    }
-
-    if (isResizingSidebar || isResizingDetails || isResizingRightPanel) {
-      document.addEventListener('mousemove', handleMouseMove)
-      document.addEventListener('mouseup', handleMouseUp)
-      document.body.style.cursor = (isResizingSidebar || isResizingRightPanel) ? 'col-resize' : 'row-resize'
-      document.body.style.userSelect = 'none'
-    }
-
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove)
-      document.removeEventListener('mouseup', handleMouseUp)
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-    }
-  }, [isResizingSidebar, isResizingDetails, isResizingRightPanel, setSidebarWidth, setDetailsPanelHeight, setRightPanelWidth])
 
   // Menu event handlers
   useEffect(() => {
@@ -1726,61 +293,63 @@ function App() {
   }, [handleOpenVault, toggleSidebar, toggleDetailsPanel, loadFiles])
 
   // File change watcher - auto-refresh when files change externally
-  // Completely disabled during sync operations for smooth performance
   useEffect(() => {
     if (!window.electronAPI || !vaultPath) return
     
     let refreshTimeout: NodeJS.Timeout | null = null
     
     const cleanup = window.electronAPI.onFilesChanged((changedFiles) => {
-      // Completely skip ALL updates during sync operations or delete operations
       const { syncProgress, processingFolders } = usePDMStore.getState()
       if (syncProgress.isActive || processingFolders.size > 0) {
-        return // Silent skip - no logging, no processing
+        return
       }
       
       console.log('[FileWatcher] Files changed:', changedFiles.length, 'files')
       
-      // Debounce - wait for changes to settle
       if (refreshTimeout) {
         clearTimeout(refreshTimeout)
       }
       
       refreshTimeout = setTimeout(() => {
-        // Check again before refreshing in case a delete started during debounce
         const currentState = usePDMStore.getState()
         if (currentState.syncProgress.isActive || currentState.processingFolders.size > 0) {
           return
         }
-        loadFiles(true) // Silent refresh
+        loadFiles(true)
         refreshTimeout = null
-      }, 1000) // Wait 1 second after last change
+      }, 1000)
     })
     
     return cleanup
   }, [vaultPath, loadFiles])
 
-  // Realtime subscription - instant updates from other users (extracted to hook)
-  useRealtimeSubscriptions(organization, isOfflineMode)
-
-  // Start backup heartbeat and scheduler when user and org are available
-  // Backup services removed - all backup operations are now handled directly via restic
-  // when the user clicks "Backup Now" or "Restore" in the BackupPanel
-
-  // Register device session and start heartbeat when user is logged in (extracted to hook)
-  useSessionHeartbeat(user, organization)
-
-  // Backup machine heartbeat - keeps designated_machine_last_seen updated (extracted to hook)
-  useBackupHeartbeat(organization?.id)
-
-  // Auto-start SolidWorks service if enabled and SolidWorks is installed (extracted to hook)
-  useSolidWorksAutoStart(organization)
-
-  // Auto-updater event listeners (extracted to hook)
-  useAutoUpdater()
-
-  // Keyboard shortcuts (extracted to hook)
-  useKeyboardShortcuts({ onOpenVault: handleOpenVault, onRefresh: loadFiles })
+  // Load files when ready - wait for organization to be loaded when online
+  useEffect(() => {
+    if (!isVaultConnected || !vaultPath) return
+    
+    if (!isOfflineMode && user && !organization) {
+      setIsLoading(true)
+      setStatusMessage('Loading organization...')
+      return
+    }
+    
+    const loadKey = `${vaultPath}:${currentVaultId || 'none'}:${organization?.id || 'none'}:${isOfflineMode ? 'offline' : 'online'}`
+    
+    console.log('[LoadEffect] loadKey:', loadKey, 'lastLoadKey:', lastLoadKey.current)
+    
+    if (lastLoadKey.current === loadKey) {
+      console.log('[LoadEffect] Skipping - same loadKey')
+      setIsLoading(false)
+      if (statusMessage === 'Loading organization...' || statusMessage === 'Loading files...') {
+        setStatusMessage('')
+      }
+      return
+    }
+    
+    console.log('[LoadEffect] Triggering loadFiles for new loadKey')
+    lastLoadKey.current = loadKey
+    loadFiles()
+  }, [isVaultConnected, vaultPath, isOfflineMode, user, organization, currentVaultId, loadFiles, setIsLoading, setStatusMessage, statusMessage, lastLoadKey])
 
   // Determine if we should show the welcome screen
   const showWelcome = (!user && !isOfflineMode) || !hasVaultConnected
@@ -1803,161 +372,23 @@ function App() {
   }
 
   return (
-    <div className="h-screen flex flex-col bg-plm-bg overflow-hidden relative">
-      {/* 🎄 Christmas Effects - snow, sleigh, stars when theme is active */}
-      <ChristmasEffects />
-      
-      {/* 🎃 Halloween Effects - bats, ghosts, pumpkins when theme is active */}
-      <HalloweenEffects />
-      
-      {/* 🌤️ Weather Effects - dynamic theme based on local weather */}
-      <WeatherEffects />
-      
-      <MenuBar
-        onOpenVault={handleOpenVault}
-        onRefresh={loadFiles}
-        minimal={isSignInScreen}
-      />
-      
-      {/* Role impersonation banner (dev tools) */}
-      <ImpersonationBanner />
-
-      {/* Main content area */}
-      <div className="flex-1 flex overflow-hidden min-h-0">
-        {!showWelcome && <ActivityBar />}
-
-        {sidebarVisible && !showWelcome && activeView !== 'workflows' && (
-          <>
-            <Sidebar 
-              onOpenVault={handleOpenVault}
-              onOpenRecentVault={handleOpenRecentVault}
-              onRefresh={loadFiles}
-              settingsTab={settingsTab}
-              onSettingsTabChange={setSettingsTab}
-            />
-            {/* Resize handle for non-settings views, simple border for settings */}
-            {activeView === 'settings' ? (
-              <div className="w-px bg-plm-border flex-shrink-0" />
-            ) : (
-              <div
-                className="w-1.5 bg-plm-border hover:bg-plm-accent cursor-col-resize transition-colors flex-shrink-0 relative group"
-                onMouseDown={() => setIsResizingSidebar(true)}
-              >
-                {/* Wider invisible hit area for easier grabbing */}
-                <div className="absolute inset-y-0 -left-1 -right-1 cursor-col-resize" />
-              </div>
-            )}
-          </>
-        )}
-
-        {/* Main Content */}
-        <div className={`flex-1 flex flex-col overflow-hidden min-w-0 ${isResizingSidebar || isResizingRightPanel ? 'pointer-events-none' : ''}`}>
-          {/* Tab bar (browser-like tabs) - only shown when tabs are enabled and in file explorer view */}
-          {!showWelcome && activeView === 'explorer' && <TabBar />}
-          
-          {showWelcome ? (
-            <WelcomeScreen 
-              onOpenRecentVault={handleOpenRecentVault}
-              onChangeOrg={handleChangeOrg}
-            />
-          ) : activeView === 'settings' ? (
-            /* Settings View - replaces entire main content area */
-            <SettingsContent activeTab={settingsTab} />
-          ) : activeView === 'google-drive' ? (
-            /* Google Drive View - replaces entire main content area (lazy loaded) */
-            <Suspense fallback={<ContentLoading />}>
-              <GoogleDrivePanel />
-            </Suspense>
-          ) : activeView === 'workflows' ? (
-            /* Workflows View - replaces entire main content area (full screen, lazy loaded) */
-            <Suspense fallback={<ContentLoading />}>
-              <WorkflowsView />
-            </Suspense>
-          ) : (
-            <>
-              {/* File Browser (lazy loaded) */}
-              <div className="flex-1 flex flex-col overflow-hidden min-h-0 min-w-0">
-                <Suspense fallback={<ContentLoading />}>
-                  <FileBrowser onRefresh={loadFiles} />
-                </Suspense>
-              </div>
-
-              {/* Details Panel (lazy loaded) */}
-              {detailsPanelVisible && (
-                <>
-                  <div
-                    className="h-1.5 bg-plm-border hover:bg-plm-accent cursor-row-resize transition-colors flex-shrink-0 relative z-10"
-                    onMouseDown={(e) => {
-                      e.preventDefault()
-                      e.stopPropagation()
-                      setIsResizingDetails(true)
-                    }}
-                  >
-                    {/* Taller invisible hit area for easier grabbing - prevents file drag from taking over */}
-                    <div className="absolute inset-x-0 -top-2 -bottom-2 cursor-row-resize" />
-                  </div>
-                  <Suspense fallback={<ContentLoading />}>
-                    <DetailsPanel />
-                  </Suspense>
-                </>
-              )}
-            </>
-          )}
-        </div>
-
-        {/* Right Panel (lazy loaded) */}
-        {rightPanelVisible && rightPanelTabs.length > 0 && !showWelcome && activeView !== 'workflows' && (
-          <>
-            <div
-              className="w-1.5 bg-plm-border hover:bg-plm-accent cursor-col-resize transition-colors flex-shrink-0 relative"
-              onMouseDown={() => setIsResizingRightPanel(true)}
-            >
-              {/* Wider invisible hit area for easier grabbing */}
-              <div className="absolute inset-y-0 -left-1 -right-1 cursor-col-resize" />
-            </div>
-            <div className={isResizingSidebar || isResizingRightPanel ? 'pointer-events-none' : ''}>
-              <Suspense fallback={<ContentLoading />}>
-                <RightPanel />
-              </Suspense>
-            </div>
-          </>
-        )}
-      </div>
-
-      <Toast />
-      
-      {/* Update Modal */}
-      <UpdateModal />
-      
-      {/* Orphaned Checkouts Dialog */}
-      <OrphanedCheckoutsContainer onRefresh={loadFiles} />
-      
-      {/* Staged Check-in Conflict Dialog */}
-      {stagedConflicts.length > 0 && (
-        <StagedCheckinConflictDialog
-          conflicts={stagedConflicts}
-          onClose={() => setStagedConflicts([])}
-          onRefresh={loadFiles}
-        />
-      )}
-      
-      {/* Missing Storage Files Dialog */}
-      <MissingStorageFilesContainer onRefresh={loadFiles} />
-      
-      {/* Vault Not Found Dialog */}
-      {vaultNotFoundPath && (
-        <VaultNotFoundDialog
-          vaultPath={vaultNotFoundPath}
-          vaultName={vaultNotFoundName}
-          onClose={() => {
-            setVaultNotFoundPath(null)
-            setVaultNotFoundName(undefined)
-          }}
-          onOpenSettings={handleVaultNotFoundSettings}
-          onBrowseNewPath={handleVaultNotFoundBrowse}
-        />
-      )}
-    </div>
+    <AppShell
+      showWelcome={showWelcome}
+      isSignInScreen={isSignInScreen}
+      settingsTab={settingsTab}
+      onSettingsTabChange={setSettingsTab}
+      onOpenVault={handleOpenVault}
+      onOpenRecentVault={handleOpenRecentVault}
+      onChangeOrg={handleChangeOrg}
+      loadFiles={loadFiles}
+      stagedConflicts={stagedConflicts}
+      onClearStagedConflicts={clearStagedConflicts}
+      vaultNotFoundPath={vaultNotFoundPath}
+      vaultNotFoundName={vaultNotFoundName}
+      onCloseVaultNotFound={handleCloseVaultNotFound}
+      onVaultNotFoundSettings={handleVaultNotFoundSettings}
+      onVaultNotFoundBrowse={handleVaultNotFoundBrowse}
+    />
   )
 }
 
