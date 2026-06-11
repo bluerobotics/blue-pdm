@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 -- Insert initial version for new installations
 INSERT INTO schema_version (id, version, description, applied_at, applied_by)
-VALUES (1, 61, 'Added rename_folder_files RPC for bulk folder path updates', NOW(), 'migration')
+VALUES (1, 62, 'Opt-in vault access: invite vault_ids granted on claim (no grants = no vaults)', NOW(), 'migration')
 ON CONFLICT (id) DO UPDATE SET 
   version = EXCLUDED.version,
   description = EXCLUDED.description,
@@ -1363,6 +1363,7 @@ RETURNS VOID AS $$
 DECLARE
   v_pending RECORD;
   v_team_id UUID;
+  v_vault_id UUID;
   v_org_id UUID;
   v_default_team_id UUID;
 BEGIN
@@ -1392,6 +1393,16 @@ BEGIN
       VALUES (v_default_team_id, p_user_id, v_pending.invited_by)
       ON CONFLICT (team_id, user_id) DO NOTHING;
     END IF;
+  END IF;
+  
+  -- Opt-in vault access: grant the vaults selected on the invite (if any)
+  IF v_pending.vault_ids IS NOT NULL AND array_length(v_pending.vault_ids, 1) > 0 THEN
+    FOREACH v_vault_id IN ARRAY v_pending.vault_ids
+    LOOP
+      INSERT INTO vault_access (vault_id, user_id, granted_by)
+      VALUES (v_vault_id, p_user_id, v_pending.invited_by)
+      ON CONFLICT (vault_id, user_id) DO NOTHING;
+    END LOOP;
   END IF;
   
   UPDATE pending_org_members

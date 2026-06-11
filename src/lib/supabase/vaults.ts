@@ -175,9 +175,11 @@ export async function setUserVaultAccess(
 }
 
 /**
- * Check if a user has access to a specific vault
- * Admins always have access to all vaults
- * If no vault_access records exist for a vault, everyone has access (legacy behavior)
+ * Check if a user has access to a specific vault (opt-in model)
+ * - Admins always have access to all vaults
+ * - Everyone else must have been explicitly granted access, either directly
+ *   (vault_access) or through one of their teams (team_vault_access)
+ * - No grant means no access
  */
 export async function checkVaultAccess(
   userId: string,
@@ -189,37 +191,14 @@ export async function checkVaultAccess(
     return { hasAccess: true }
   }
 
-  const client = getSupabaseClient()
-
-  // Check if any access records exist for this vault
-  const { data: allAccess, error: checkError } = await client
-    .from('vault_access')
-    .select('id')
-    .eq('vault_id', vaultId)
-    .limit(1)
-
-  if (checkError) {
-    return { hasAccess: false, error: checkError.message }
-  }
-
-  // If no access records exist, everyone has access (vault is unrestricted)
-  if (!allAccess || allAccess.length === 0) {
-    return { hasAccess: true }
-  }
-
-  // Check if user has specific access
-  const { data, error } = await client
-    .from('vault_access')
-    .select('id')
-    .eq('vault_id', vaultId)
-    .eq('user_id', userId)
-    .limit(1)
+  // Resolve the user's effective access (individual + team grants)
+  const { vaultIds, error } = await getEffectiveUserVaultAccess(userId)
 
   if (error) {
-    return { hasAccess: false, error: error.message }
+    return { hasAccess: false, error }
   }
 
-  return { hasAccess: (data?.length || 0) > 0 }
+  return { hasAccess: vaultIds.includes(vaultId) }
 }
 
 /**
@@ -242,10 +221,11 @@ export async function getEffectiveUserVaultAccess(
 }
 
 /**
- * Get accessible vaults for a user in their organization
+ * Get accessible vaults for a user in their organization (opt-in model)
  * - Admins see all vaults
- * - If user has no vault restrictions (empty result from get_user_vault_access), they see all vaults
- * - Otherwise, only returns vaults they have been granted access to
+ * - Non-admin users only see vaults they have been explicitly granted access to
+ *   (via individual vault_access or their teams' team_vault_access)
+ * - If a user has no grants, they see no vaults
  */
 export async function getAccessibleVaults(
   userId: string,
@@ -293,9 +273,9 @@ export async function getAccessibleVaults(
     return { vaults: [], error: accessError }
   }
 
-  // If no restrictions exist for this user, they can see all vaults
+  // Opt-in model: no grants means no accessible vaults
   if (accessibleVaultIds.length === 0) {
-    return { vaults: allVaults }
+    return { vaults: [] }
   }
 
   // Filter vaults to only those the user has access to

@@ -4,6 +4,20 @@ All notable changes to BluePLM will be documented in this file.
 
 ![1774273238438](image/CHANGELOG/1774273238438.png)
 
+## [3.20.0] - 2026-06-11
+
+### Changed
+- **Vault access is now opt-in** — previously a user with no vault grants implicitly saw *all* organization vaults (opt-out). Now non-admin users only see vaults they have been explicitly granted access to, via individual `vault_access` or one of their teams' `team_vault_access`; with no grants they see no vaults. Admins continue to see all vaults. `getAccessibleVaults` no longer falls back to "all vaults" on an empty grant set, and `checkVaultAccess` now resolves effective access (individual + team) and denies by default instead of treating a vault with no access rows as unrestricted.
+  - **Breaking for existing orgs**: this is a hard cutover. After upgrading the schema, any non-admin user whose effective vault set is empty (in no team, or only in teams without `team_vault_access` such as the default "New Users" team) loses access until an admin grants it. Users already covered by team or individual grants are unaffected.
+
+### Fixed
+- **Invite vault selections are now applied** — `pending_org_members.vault_ids` chosen when inviting a member were stored and shown in the admin UI but never written to `vault_access` on signup. `apply_pending_team_memberships` now grants those vaults when the invite is claimed, so invite-time vault scoping actually takes effect under the opt-in model.
+
+### Schema
+- Bumped to schema version **62** (`EXPECTED_SCHEMA_VERSION`). Admins must apply the latest `supabase/core.sql` for the invite-grant behavior to take effect.
+
+---
+
 ## [3.19.2] - 2026-06-11
 
 ### Fixed

@@ -172,7 +172,7 @@ export function EditPendingMemberDialog({
             <div
               className={`p-3 rounded-lg border mb-2 ${
                 pendingMemberForm.vault_ids.length === 0
-                  ? 'bg-plm-success/10 border-plm-success/30'
+                  ? 'bg-plm-warning/10 border-plm-warning/30'
                   : 'bg-plm-bg border-plm-border'
               }`}
             >
@@ -181,15 +181,15 @@ export function EditPendingMemberDialog({
                   size={16}
                   className={
                     pendingMemberForm.vault_ids.length === 0
-                      ? 'text-plm-success'
+                      ? 'text-plm-warning'
                       : 'text-plm-fg-muted'
                   }
                 />
                 <span
-                  className={`text-sm ${pendingMemberForm.vault_ids.length === 0 ? 'text-plm-success' : 'text-plm-fg-muted'}`}
+                  className={`text-sm ${pendingMemberForm.vault_ids.length === 0 ? 'text-plm-warning' : 'text-plm-fg-muted'}`}
                 >
                   {pendingMemberForm.vault_ids.length === 0
-                    ? 'All vaults (no restrictions)'
+                    ? 'No vault access — select vaults to grant access'
                     : `${pendingMemberForm.vault_ids.length} of ${orgVaults.length} vaults selected`}
                 </span>
               </div>

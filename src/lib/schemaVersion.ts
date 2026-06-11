@@ -26,7 +26,7 @@ import { supabase } from './supabase'
 
 // The schema version this app version expects
 // Increment this when releasing app updates that require schema changes
-export const EXPECTED_SCHEMA_VERSION = 61
+export const EXPECTED_SCHEMA_VERSION = 62
 
 // Minimum schema version that will still work (for soft warnings vs hard errors)
 // Set this to allow some backwards compatibility
@@ -95,6 +95,7 @@ export const VERSION_DESCRIPTIONS: Record<number, string> = {
   59: 'Removed org roles from team reviewers; simplified to user + workflow_role types only',
   60: 'Removed WooCommerce integration tables (woocommerce_saved_configs, woocommerce_product_mappings)',
   61: 'Added rename_folder_files RPC for bulk folder path updates',
+  62: 'Opt-in vault access: invite vault_ids granted on claim, no grants means no vaults',
   // Note: Process templates module (v26+) is optional - see modules/process-templates.sql
 }
 

@@ -45,8 +45,8 @@ export function VaultAccessDialog({
     ? 'Select which vaults this team can access.'
     : `Select which vaults ${entityName} can access.`
   const defaultAccessText = isTeam
-    ? 'By default, teams have access to all organization vaults'
-    : 'By default, users have access to all organization vaults'
+    ? 'No vaults selected — this team has no vault access. Select vaults to grant access.'
+    : 'No vaults selected — this user has no vault access. Select vaults to grant access.'
 
   return (
     <div
@@ -70,24 +70,24 @@ export function VaultAccessDialog({
           {isTeam && description}
         </p>
 
-        {/* All vaults indicator */}
+        {/* Vault access indicator */}
         <div
           className={`p-3 rounded-lg border mb-3 ${
             pendingVaultAccess.length === 0
-              ? 'bg-plm-success/10 border-plm-success/30'
+              ? 'bg-plm-warning/10 border-plm-warning/30'
               : 'bg-plm-bg border-plm-border'
           }`}
         >
           <div className="flex items-center gap-2">
             <Database
               size={16}
-              className={pendingVaultAccess.length === 0 ? 'text-plm-success' : 'text-plm-fg-muted'}
+              className={pendingVaultAccess.length === 0 ? 'text-plm-warning' : 'text-plm-fg-muted'}
             />
             <span
-              className={`text-sm ${pendingVaultAccess.length === 0 ? 'text-plm-success' : 'text-plm-fg-muted'}`}
+              className={`text-sm ${pendingVaultAccess.length === 0 ? 'text-plm-warning' : 'text-plm-fg-muted'}`}
             >
               {pendingVaultAccess.length === 0
-                ? 'All vaults (no restrictions)'
+                ? 'No vault access'
                 : `${pendingVaultAccess.length} of ${orgVaults.length} vaults selected`}
             </span>
           </div>

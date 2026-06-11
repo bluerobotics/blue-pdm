@@ -106,7 +106,7 @@ export const en: TranslationDict = {
     organizationVaults: 'Organization Vaults',
     noVaultsCreated: 'No Vaults Created',
     noVaultsAdminMsg: 'Create a vault in Settings → Organization to get started.',
-    noVaultsUserMsg: 'Ask an organization admin to create a vault.',
+    noVaultsUserMsg: 'Ask an organization admin to grant you access to a vault.',
     advancedOptions: 'Or use the advanced options below to connect manually.',
     localVault: 'Local Vault',
 
