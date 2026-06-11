@@ -334,14 +334,23 @@ export async function undoCheckout(fileId: string, userId: string) {
   const client = getSupabaseClient()
 
   // Verify the user has the file checked out (or is admin)
+  // Use maybeSingle() so a missing/deleted row doesn't throw "Cannot coerce the
+  // result to a single JSON object". The file may have been deleted server-side
+  // (e.g. a ghost left in the cache), in which case the checkout is already gone.
   const { data: file, error: fetchError } = await client
     .from('files')
     .select('*, org_id')
     .eq('id', fileId)
-    .single()
+    .maybeSingle()
 
   if (fetchError) {
     return { success: false, error: fetchError.message }
+  }
+
+  // No row found - the file is already gone, so the user's goal (releasing the
+  // checkout / clearing the ghost) is already achieved. Treat as success.
+  if (!file) {
+    return { success: true, file: null, error: null }
   }
 
   if (file.checked_out_by !== userId) {

@@ -35,6 +35,7 @@ import { processWithConcurrency, CONCURRENT_OPERATIONS } from '../../concurrency
 import { log } from '@/lib/logger'
 import { FileOperationTracker } from '../../fileOperationTracker'
 import { removeFromSyncIndex } from '../../cache/localSyncIndex'
+import { clearVaultCache } from '../../cache/vaultFileCache'
 
 // Helper for timing-based logging
 function logDelete(
@@ -1185,6 +1186,15 @@ export const deleteServerCommand: Command<DeleteServerParams> = {
           })
         })
       }
+
+      // Invalidate the vault cache so the next load rebuilds without the deleted
+      // files. Without this, soft-deleted files linger in the IndexedDB cache as
+      // unrecoverable "ghosts" (their server row is no longer visible to queries).
+      clearVaultCache(ctx.activeVaultId).catch((error) => {
+        logDelete('warn', 'Failed to clear vault cache after delete-server', {
+          error: String(error),
+        })
+      })
     }
 
     // Fire-and-forget: Delete selected folders from server

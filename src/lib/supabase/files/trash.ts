@@ -34,12 +34,16 @@ export async function softDeleteFile(
     }
   }
 
-  // Soft delete - set deleted_at and deleted_by
+  // Soft delete - set deleted_at and deleted_by.
+  // Also bump updated_at so the watermark-based delta sync (get_vault_files_delta)
+  // surfaces the deletion to other clients even if the deployed RPC keys off
+  // updated_at. Without this, other machines keep the row cached as a "ghost".
   const { data: deletedFile, error } = await client
     .from('files')
     .update({
       deleted_at: new Date().toISOString(),
       deleted_by: userId,
+      updated_at: new Date().toISOString(),
     })
     .eq('id', fileId)
     .select()

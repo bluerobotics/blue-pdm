@@ -4,6 +4,16 @@ All notable changes to BluePLM will be documented in this file.
 
 ![1774273238438](image/CHANGELOG/1774273238438.png)
 
+## [3.19.2] - 2026-06-11
+
+### Fixed
+- **Ghost file after server delete (unrecoverable cache entry)** — deleting a file from the server left a stale entry in the IndexedDB vault cache that no recovery action could clear: check-in failed with `File not found` and discard failed with `Cannot coerce the result to a single JSON object`, because both referenced a file id whose server row was already soft-deleted (and thus invisible to normal queries). Three fixes:
+  - `delete-server` now invalidates the vault cache (`clearVaultCache`) after a successful server delete, just like discard does, so the next load rebuilds cleanly instead of resurrecting the deleted file as a ghost.
+  - `undoCheckout` (used by Discard) now uses `.maybeSingle()` and treats a missing/already-deleted row as success, instead of throwing PostgREST `PGRST116`. This makes Discard a reliable "clear ghost" escape hatch for any pre-existing stuck entries.
+  - `softDeleteFile` now bumps `updated_at` alongside `deleted_at` so the watermark-based delta sync (`get_vault_files_delta`) reliably surfaces the deletion to other clients.
+
+---
+
 ## [3.19.1] - 2026-05-28
 
 ### Fixed
