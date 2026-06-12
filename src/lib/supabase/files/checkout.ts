@@ -6,6 +6,30 @@ import { getCurrentUserEmail } from '../auth'
 // ============================================
 
 /**
+ * Value sent to checkin_file for a metadata field the user intentionally cleared.
+ *
+ * The checkin_file RPC uses COALESCE(p_field, field), so a NULL/omitted parameter
+ * means "leave the existing value unchanged". An empty string is non-NULL, so
+ * COALESCE keeps it and the field is decisively cleared in the database.
+ */
+const CLEARED_METADATA_VALUE = ''
+
+/**
+ * Map a clearable metadata field (part_number/description) to the value passed
+ * to the checkin_file RPC, distinguishing three states:
+ *   - undefined  -> user never touched the field -> omit (RPC keeps existing value)
+ *   - null / ''  -> user intentionally cleared it -> send '' (RPC writes empty)
+ *   - value      -> user set a value             -> send value
+ *
+ * Without this, `value ?? undefined` collapses an intentional clear (null) into
+ * undefined, which JSON-RPC drops, so the cleared value never reaches the server.
+ */
+function toClearableRpcValue(value: string | null | undefined): string | undefined {
+  if (value === undefined) return undefined
+  return value ?? CLEARED_METADATA_VALUE
+}
+
+/**
  * Checkout a file using atomic RPC to prevent race conditions
  * Note: userEmail parameter is kept for API compatibility but no longer used
  * (RPC handles activity logging internally)
@@ -139,8 +163,10 @@ export async function checkinFile(
     p_new_content_hash: options?.newContentHash,
     p_new_file_size: options?.newFileSize,
     p_comment: options?.comment,
-    p_part_number: options?.pendingMetadata?.part_number ?? undefined,
-    p_description: options?.pendingMetadata?.description ?? undefined,
+    // Use a clear-aware mapping so an intentional clear (null) is sent as '' and
+    // decisively written, instead of being collapsed to undefined (= "no change").
+    p_part_number: toClearableRpcValue(options?.pendingMetadata?.part_number),
+    p_description: toClearableRpcValue(options?.pendingMetadata?.description),
     p_revision: options?.pendingMetadata?.revision,
     p_local_active_version: options?.localActiveVersion,
     p_custom_properties: customPropsUpdate,

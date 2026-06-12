@@ -4,6 +4,15 @@ All notable changes to BluePLM will be documented in this file.
 
 ![1774273238438](image/CHANGELOG/1774273238438.png)
 
+## [3.21.0-beta.2] - 2026-06-12
+
+> Beta prerelease — available to beta-channel testers only.
+
+### Fixed
+- **Clearing a description (or item number) now persists through check-in** — emptying a description or item number and then checking the file in reverted the field to its previous value. The check-in path collapsed an intentional clear (`null`) into `undefined`, so the `checkin_file` RPC's `COALESCE` treated it as "no change." Cleared fields are now sent as an explicit empty string and stay empty after check-in.
+
+---
+
 ## [3.21.0-beta.1] - 2026-06-12
 
 > Beta prerelease — available to beta-channel testers only.
