@@ -1103,6 +1103,15 @@ namespace BluePLM.SolidWorksService
             {
                 try
                 {
+                    // Empty value = clear the property entirely (decisive delete).
+                    // Setting an empty value leaves a stale property that reads drop, so the old
+                    // value would survive and "bounce back".
+                    if (string.IsNullOrWhiteSpace(prop.Value))
+                    {
+                        try { manager.Delete2(prop.Key); } catch { }
+                        Console.Error.WriteLine($"[SW-API] Deleted property '{prop.Key}' on {configLabel} (empty value)");
+                        continue;
+                    }
                     // Try to set existing property first, then add if it doesn't exist
                     var result = manager.Set2(prop.Key, prop.Value);
                     if (result != (int)swCustomInfoSetResult_e.swCustomInfoSetResult_OK)

@@ -12,6 +12,7 @@
  * - Version 1.2.1: Use STA fallback in GetOpenDocuments for reliable COM reconnection
  * - Version 1.2.2: Add process detection when COM connection fails
  * - Version 1.2.3: Unified COM connection with caching/retry, add resetComConnection command
+ * - Version 1.2.4: DM-first for file-level-only property writes (avoid SW cold start), SW fallback
  *
  * When making service changes:
  * 1. Increment SERVICE_VERSION in Program.cs
@@ -21,7 +22,7 @@
 
 // The SolidWorks service version this app version expects
 // Uses semver: MAJOR.MINOR.PATCH
-export const EXPECTED_SW_SERVICE_VERSION = '1.2.3'
+export const EXPECTED_SW_SERVICE_VERSION = '1.2.4'
 
 // Minimum service version that will still work (for soft warnings vs hard errors)
 // Breaking changes should bump the major version and update this
@@ -35,6 +36,7 @@ export const SW_SERVICE_VERSION_DESCRIPTIONS: Record<string, string> = {
   '1.2.1': 'Use STA fallback in GetOpenDocuments for reliable COM reconnection after PLM restart',
   '1.2.2': 'Add process detection when COM connection fails',
   '1.2.3': 'Unified COM connection with caching/retry, add resetComConnection command',
+  '1.2.4': 'DM-first for file-level-only property writes (avoid SolidWorks cold start), SW fallback',
 }
 
 export interface SwServiceVersionCheckResult {

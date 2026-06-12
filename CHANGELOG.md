@@ -4,6 +4,18 @@ All notable changes to BluePLM will be documented in this file.
 
 ![1774273238438](image/CHANGELOG/1774273238438.png)
 
+## [3.21.0-beta.1] - 2026-06-12
+
+> Beta prerelease — available to beta-channel testers only.
+
+### Fixed
+- **Clearing a description now sticks** — emptying a part/assembly description (or item number) wrote correctly but then bounced back to the old value on the next read. Decisive write handling now persists cleared/blank values instead of treating them as "no change," so an empty description stays empty.
+
+### Changed
+- **SolidWorks write performance & reliability** — file-level metadata edits no longer trigger a SolidWorks cold start: the service now writes file-level-only properties via the Document Manager API first and only falls back to the full SolidWorks COM API when needed (service bumped to **1.2.4**). Description-only edits skip redundant config writes, and service health pings are calmer (less polling churn).
+
+---
+
 ## [3.20.0] - 2026-06-11
 
 ### Changed

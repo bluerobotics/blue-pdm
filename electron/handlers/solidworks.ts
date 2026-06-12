@@ -45,6 +45,21 @@ const STATUS_PING_TIMEOUT_MS = 2000
 /** Ping cache TTL (ms) - avoid redundant status checks */
 const PING_CACHE_TTL_MS = 1000
 
+/**
+ * Extended ping cache TTL (ms) used when the last status resolved to "busy".
+ * Reusing a known-busy result for longer prevents pollers from re-probing a
+ * service that is clearly occupied every single cycle.
+ */
+const BUSY_PING_CACHE_TTL_MS = 3000
+
+/**
+ * Maximum continuous in-flight window (ms) during which the status handler
+ * synthesizes a "busy" result instead of issuing a real ping. An in-flight
+ * command is itself proof of liveness, but this bound ensures a genuinely hung
+ * (alive but unresponsive) SolidWorks is still eventually probed.
+ */
+const SYNTHESIZED_BUSY_MAX_MS = 30_000
+
 // ============================================
 // Module State
 // ============================================
@@ -98,6 +113,14 @@ interface QueuedCommand {
 const commandQueue: QueuedCommand[] = []
 let activeCommandCount = 0
 
+/**
+ * Timestamp (ms) of when the current continuous in-flight burst began, i.e. when
+ * activeCommandCount last transitioned from 0 to a positive value. Null while
+ * idle. Used to bound the synthesized-busy window in the status handler so a
+ * wedged operation cannot mask itself as "busy" forever.
+ */
+let inFlightSince: number | null = null
+
 // ============================================
 // Ping Cache State
 // ============================================
@@ -108,6 +131,14 @@ interface PingCacheEntry {
 }
 
 let pingCache: PingCacheEntry | null = null
+
+/**
+ * Single-flight guard for the status ping. Concurrent status pollers
+ * (useIntegrationStatus ~5s, useSolidWorksStatus ~15s, the settings screen)
+ * await the same in-flight ping instead of each issuing their own, collapsing
+ * duplicate probes into one.
+ */
+let pendingStatusPing: Promise<SwServiceResult> | null = null
 
 // ============================================
 // Orphaned Process Watchdog State
@@ -510,6 +541,7 @@ function clearServiceState(reason: string, force: boolean = false): void {
   }
   commandQueue.length = 0
   activeCommandCount = 0
+  inFlightSince = null
 
   // Invalidate ping cache
   pingCache = null
@@ -600,18 +632,28 @@ function processQueue(): void {
       )
     }
 
+    // Mark the start of a continuous in-flight burst (0 -> 1 transition)
+    if (activeCommandCount === 0) {
+      inFlightSince = Date.now()
+    }
     activeCommandCount++
 
     // Execute the command directly (bypassing queue since we're already processing)
     executeCommandDirect(queued.command, queued.options)
       .then((result) => {
         activeCommandCount--
+        if (activeCommandCount === 0) {
+          inFlightSince = null
+        }
         queued.resolve(result)
         // Continue processing queue
         processQueue()
       })
       .catch((error) => {
         activeCommandCount--
+        if (activeCommandCount === 0) {
+          inFlightSince = null
+        }
         logError(`[SolidWorks Queue] ${action} execution failed: ${error}`)
         queued.resolve({ success: false, error: 'Command execution failed' })
         processQueue()
@@ -2274,9 +2316,45 @@ export function registerSolidWorksHandlers(
       return { success: true, data: { running: false, installed: swInstalled, ...queueStats } }
     }
 
-    // Check ping cache to avoid redundant checks
     const now = Date.now()
-    if (pingCache && now - pingCache.timestamp < PING_CACHE_TTL_MS) {
+
+    // Suppress the ping while a real command is in flight. The C# service reads
+    // commands on a single thread, so it cannot answer a ping until the in-flight
+    // operation returns anyway - and the in-flight command is itself proof of
+    // liveness. Synthesize a "busy" status from the cached capabilities instead.
+    // Bounded by SYNTHESIZED_BUSY_MAX_MS so a genuinely hung op is still probed.
+    const commandInFlight = activeCommandCount > 0 || commandQueue.length > 0
+    const withinBusyWindow =
+      inFlightSince !== null && now - inFlightSince < SYNTHESIZED_BUSY_MAX_MS
+    if (commandInFlight && withinBusyWindow) {
+      const cachedData = pingCache?.result.data as Record<string, unknown> | undefined
+      const dmAvailable = (cachedData?.documentManagerAvailable as boolean) ?? false
+      const swApiAvailable = ((cachedData?.swInstalled as boolean) ?? false) && swInstalled
+      return {
+        success: true,
+        data: {
+          running: true,
+          busy: true,
+          installed: swInstalled,
+          // Indicate the ping was deliberately skipped (in-flight op proves liveness)
+          pingSkipped: true,
+          version: cachedData?.version || cachedServiceVersion,
+          swInstalled: cachedData?.swInstalled,
+          swApiAvailable,
+          documentManagerAvailable: cachedData?.documentManagerAvailable,
+          documentManagerError: cachedData?.documentManagerError,
+          fastModeEnabled: cachedData?.fastModeEnabled,
+          mode: getMode(dmAvailable, swApiAvailable),
+          ...queueStats,
+        },
+      }
+    }
+
+    // Check ping cache to avoid redundant checks. A known-busy result is reused
+    // for longer (BUSY_PING_CACHE_TTL_MS) so pollers don't re-probe every cycle.
+    const cacheTtl =
+      pingCache && !pingCache.result.success ? BUSY_PING_CACHE_TTL_MS : PING_CACHE_TTL_MS
+    if (pingCache && now - pingCache.timestamp < cacheTtl) {
       const cachedData = pingCache.result.data as Record<string, unknown> | undefined
       const dmAvailable = (cachedData?.documentManagerAvailable as boolean) ?? false
       const swApiAvailable = ((cachedData?.swInstalled as boolean) ?? false) && swInstalled
@@ -2299,11 +2377,23 @@ export function registerSolidWorksHandlers(
       }
     }
 
-    // Ping with short timeout (2s) to avoid blocking status checks
-    const result = await sendSWCommand(
-      { action: 'ping' },
-      { timeoutMs: STATUS_PING_TIMEOUT_MS, bypassQueue: true },
-    )
+    // Ping with short timeout (2s) to avoid blocking status checks.
+    // Single-flight: concurrent status callers share one outstanding ping so the
+    // two pollers (5s + 15s) and the settings screen can't stack duplicate probes.
+    let pingPromise = pendingStatusPing
+    if (!pingPromise) {
+      pingPromise = sendSWCommand(
+        { action: 'ping' },
+        { timeoutMs: STATUS_PING_TIMEOUT_MS, bypassQueue: true },
+      )
+      pendingStatusPing = pingPromise
+      void pingPromise.finally(() => {
+        if (pendingStatusPing === pingPromise) {
+          pendingStatusPing = null
+        }
+      })
+    }
+    const result = await pingPromise
 
     // Cache the ping result
     pingCache = { result, timestamp: now }

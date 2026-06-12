@@ -1335,6 +1335,16 @@ namespace BluePLM.SolidWorksService
                     {
                         try
                         {
+                            // Empty value = clear the property entirely (decisive delete).
+                            // SetCustomProperty("", ...) is unreliable and reads drop empty values,
+                            // so the old value would otherwise survive and "bounce back".
+                            if (string.IsNullOrWhiteSpace(kvp.Value))
+                            {
+                                try { dynDoc.DeleteCustomProperty(kvp.Key); } catch { }
+                                propsSet++;
+                                Console.Error.WriteLine($"[DM] Deleted file property '{kvp.Key}' (empty value)");
+                                continue;
+                            }
                             // Try SetCustomProperty first (works if property exists)
                             // This is safer than Delete+Add which can lose data if Add fails
                             try 
@@ -1375,6 +1385,16 @@ namespace BluePLM.SolidWorksService
                     {
                         try
                         {
+                            // Empty value = clear the property entirely (decisive delete).
+                            // SetCustomProperty("", ...) is unreliable and reads drop empty values,
+                            // so the old value would otherwise survive and "bounce back".
+                            if (string.IsNullOrWhiteSpace(kvp.Value))
+                            {
+                                try { config.DeleteCustomProperty(kvp.Key); } catch { }
+                                propsSet++;
+                                Console.Error.WriteLine($"[DM] Deleted config property '{kvp.Key}' (empty value)");
+                                continue;
+                            }
                             // Try SetCustomProperty first (works if property exists)
                             // This is safer than Delete+Add which can lose data if Add fails
                             try 

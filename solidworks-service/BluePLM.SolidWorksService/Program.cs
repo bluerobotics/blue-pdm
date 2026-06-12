@@ -33,7 +33,7 @@ namespace BluePLM.SolidWorksService
         /// Service version - bump this when making changes that affect functionality.
         /// The app checks this version and warns if there's a mismatch.
         /// </summary>
-        private const string SERVICE_VERSION = "1.2.3";
+        private const string SERVICE_VERSION = "1.2.4";
         
         private static DocumentManagerAPI? _dmApi;
         private static SolidWorksAPI? _swApi;
@@ -675,9 +675,32 @@ namespace BluePLM.SolidWorksService
 
         static CommandResult SetPropertiesFast(string? filePath, System.Collections.Generic.Dictionary<string, string>? properties, string? configuration)
         {
-            // Always use the full SolidWorks COM API for property writes.
-            // The DM API's AddCustomProperty silently fails for config-level properties
-            // on newer file formats, so we bypass it entirely.
+            // File-level-only writes (no configuration) for a file that is NOT currently open in
+            // SolidWorks can go through the Document Manager API, which writes properties without
+            // launching SolidWorks. This removes the SolidWorks cold start from the critical path
+            // for the common file-level metadata edit (e.g. description / number).
+            //
+            // Config-level writes stay on the full SW COM path: the DM API's AddCustomProperty
+            // silently fails for config-level properties on newer file formats, so DM is only
+            // trusted for file-level writes here. If the file IS open in SW, the SW path is used
+            // too (no cold start anyway, and DM touching an open file can foul the document).
+            bool fileLevelOnly = string.IsNullOrEmpty(configuration);
+            bool fileOpenInSw = _swApi != null && !string.IsNullOrEmpty(filePath) && _swApi.IsFileOpenInSolidWorks(filePath!);
+
+            if (fileLevelOnly && !fileOpenInSw && (_dmApi?.IsAvailable ?? false))
+            {
+                Console.Error.WriteLine($"[Service] DM-first file-level property write for: {(filePath != null ? Path.GetFileName(filePath) : "(null)")}");
+                var dmResult = _dmApi!.SetCustomProperties(filePath, properties, null);
+                if (dmResult.Success)
+                {
+                    return dmResult;
+                }
+
+                // DM failed - fall back to the full SolidWorks COM API (may cold-start SW),
+                // preserving the previous behavior and error handling.
+                Console.Error.WriteLine($"[Service] DM file-level write failed ({dmResult.Error}); falling back to SolidWorks COM API");
+            }
+
             return _swApi!.SetCustomProperties(filePath, properties, configuration);
         }
 

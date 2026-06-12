@@ -691,8 +691,13 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
         const tabValidationOptions = getTabValidationOptions(serSettings)
 
         // Get current values (pending or existing)
-        const baseNumber = pm.part_number ?? file.pdmData?.part_number ?? ''
-        const baseDesc = pm.description ?? file.pdmData?.description ?? ''
+        // Distinguish "intentionally edited/cleared" (pending key present, possibly null) from
+        // "not edited" (pending key absent). A cleared field is null and must NOT fall back to the
+        // old value, otherwise the deletion is silently resurrected ("bounce back").
+        const itemNumberEdited = pm.part_number !== undefined
+        const descriptionEdited = pm.description !== undefined
+        const baseNumber = itemNumberEdited ? pm.part_number ?? '' : file.pdmData?.part_number ?? ''
+        const baseDesc = descriptionEdited ? pm.description ?? '' : file.pdmData?.description ?? ''
         const revision = pm.revision ?? file.pdmData?.revision ?? ''
         const fileTabNumber = sanitizeTabNumber(pm.tab_number, tabValidationOptions) // Sanitize based on settings
 
@@ -730,11 +735,23 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
                 : baseNumber
               props['Base Item Number'] = baseNumber // Always write base separately
               if (configTab) props['Tab Number'] = configTab
+            } else if (itemNumberEdited) {
+              // Item number was intentionally cleared - emit empty so the backend deletes it
+              props['Number'] = ''
+              props['Base Item Number'] = ''
             }
 
-            // Description - use config-specific if available, otherwise base
-            const configDesc = pendingDescs[config.name] ?? config.description ?? baseDesc
-            if (configDesc) props['Description'] = configDesc
+            // Description - use config-specific override if edited, otherwise base.
+            // Only fall back to the existing config.description when neither the config nor the
+            // base description was edited, so a cleared description is not resurrected.
+            const configDescEdited = pendingDescs[config.name] !== undefined
+            const configDesc = configDescEdited
+              ? pendingDescs[config.name] ?? ''
+              : descriptionEdited
+                ? baseDesc
+                : config.description ?? baseDesc
+            // Emit Description even when empty (cleared) so the backend can delete it
+            if (configDescEdited || descriptionEdited || configDesc) props['Description'] = configDesc
 
             if (revision) props['Revision'] = revision
 
@@ -776,8 +793,13 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
               : baseNumber
             props['Base Item Number'] = baseNumber
             if (fileTabNumber) props['Tab Number'] = fileTabNumber
+          } else if (itemNumberEdited) {
+            // Item number was intentionally cleared - emit empty so the backend deletes it
+            props['Number'] = ''
+            props['Base Item Number'] = ''
           }
-          if (baseDesc) props['Description'] = baseDesc
+          // Emit Description even when empty (cleared) so the backend can delete it
+          if (descriptionEdited || baseDesc) props['Description'] = baseDesc
           if (revision) props['Revision'] = revision
 
           // PDM parity properties - always write Date and DrawnBy
@@ -791,8 +813,11 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
                 successCount++
 
                 // After successful file-level write, propagate base number to ALL configs
-                // This ensures drawings that reference specific configs get the updated base number
-                if (baseNumber) {
+                // This ensures drawings that reference specific configs get the updated base number.
+                // Only run when the base/item number was actually edited in THIS save
+                // (itemNumberEdited). A description-only edit leaves the base number unchanged, so
+                // the ~13x getConfigurations + per-config write fan-out is pure waste and is skipped.
+                if (itemNumberEdited && baseNumber) {
                   try {
                     // Fetch all configurations from the file (includes properties for each config)
                     const configResult = await window.electronAPI?.solidworks?.getConfigurations(
