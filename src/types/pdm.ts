@@ -401,6 +401,7 @@ export type CADExtension = (typeof CAD_EXTENSIONS)[number]
 export interface PDMFile {
   id: string
   org_id: string
+  vault_id: string | null // Vault this file belongs to (files table column)
 
   // File identity
   file_path: string // Relative path in vault

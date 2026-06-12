@@ -1142,7 +1142,7 @@ export const createFilesSlice: StateCreator<
 
   // Actions - Realtime Updates (incremental without full refresh)
   addCloudFile: (pdmFile) => {
-    const { files, vaultPath } = get()
+    const { files, vaultPath, activeVaultId } = get()
     if (!vaultPath) {
       window.electronAPI?.log(
         'warn',
@@ -1153,6 +1153,19 @@ export const createFilesSlice: StateCreator<
           fileName: pdmFile.file_name,
         },
       )
+      return
+    }
+
+    // Defense in depth against cross-vault realtime leaks: never materialize a
+    // file (or its parent folders) that belongs to a different vault than the
+    // one currently open. Without this, an off-vault event would fabricate ghost
+    // "cloud" folders in the active vault.
+    if (activeVaultId && pdmFile.vault_id && pdmFile.vault_id !== activeVaultId) {
+      log.debug('[filesSlice]', 'addCloudFile SKIP: file for other vault', {
+        fileId: pdmFile.id,
+        fileVaultId: pdmFile.vault_id,
+        activeVaultId,
+      })
       return
     }
 
@@ -1458,17 +1471,26 @@ export const createFilesSlice: StateCreator<
   batchUpdateFileLocationsFromServer: (updates: FileLocationUpdate[]) => {
     if (updates.length === 0) return
 
-    const { vaultPath } = get()
+    const { vaultPath, activeVaultId } = get()
     if (!vaultPath) return
 
+    // Defense in depth against cross-vault realtime leaks: only apply location
+    // updates for files in the currently open vault. An off-vault move would
+    // otherwise recreate parent folders (e.g. a ghost WLC folder) in this vault.
+    const scopedUpdates = activeVaultId
+      ? updates.filter((u) => !u.pdmData.vault_id || u.pdmData.vault_id === activeVaultId)
+      : updates
+    if (scopedUpdates.length === 0) return
+
     log.info('[filesSlice]', 'batchUpdateFileLocationsFromServer', {
-      updateCount: updates.length,
-      fileIds: updates.map((u) => u.fileId).slice(0, 5),
+      updateCount: scopedUpdates.length,
+      skippedCount: updates.length - scopedUpdates.length,
+      fileIds: scopedUpdates.map((u) => u.fileId).slice(0, 5),
     })
 
     set((state) => {
       // Build a map of fileId -> update for O(1) lookups
-      const updateMap = new Map(updates.map((u) => [u.fileId, u]))
+      const updateMap = new Map(scopedUpdates.map((u) => [u.fileId, u]))
 
       // Collect all new folders that need to be created
       const newFolders: LocalFile[] = []
@@ -1484,7 +1506,7 @@ export const createFilesSlice: StateCreator<
       const oldPathToNewPath = new Map<string, string>()
 
       // Pre-create all parent folders needed (only if they truly don't exist)
-      for (const update of updates) {
+      for (const update of scopedUpdates) {
         const pathParts = update.newRelativePath.split('/')
         let currentPath = ''
         for (let i = 0; i < pathParts.length - 1; i++) {

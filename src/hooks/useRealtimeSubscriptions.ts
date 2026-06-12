@@ -217,7 +217,23 @@ export function useRealtimeSubscriptions(
     // Subscribe to file changes
     const unsubscribeFiles = subscribeToFiles(organization.id, (eventType, newFile, oldFile) => {
       // Skip updates caused by current user (we handle those locally)
-      const currentUserId = usePDMStore.getState().user?.id
+      const { user, activeVaultId } = usePDMStore.getState()
+      const currentUserId = user?.id
+
+      // The files subscription is org-wide, so it delivers events for every vault
+      // in the organization. Drop events that belong to a different vault than the
+      // one currently open, otherwise off-vault moves/inserts fabricate ghost
+      // "cloud" folders in the active vault (e.g. a WLC folder leaking across vaults).
+      const eventVaultId = newFile?.vault_id ?? oldFile?.vault_id
+      if (eventVaultId && activeVaultId && eventVaultId !== activeVaultId) {
+        log.debug('[Realtime]', 'SKIP: event for other vault', {
+          eventType,
+          eventVaultId,
+          activeVaultId,
+          fileId: newFile?.id ?? oldFile?.id,
+        })
+        return
+      }
 
       switch (eventType) {
         case 'INSERT':
