@@ -4,6 +4,15 @@ All notable changes to BluePLM will be documented in this file.
 
 ![1774273238438](image/CHANGELOG/1774273238438.png)
 
+## [3.21.0-beta.3] - 2026-06-15
+
+> Beta prerelease — available to beta-channel testers only.
+
+### Fixed
+- **Removing a local copy now clears cached metadata** — "Remove Local Copy" deleted the file from disk but left locally persisted pending metadata (per-config descriptions, part number/description/revision edits) in `localStorage`. Re-downloading from the server could resurrect those stale values, causing different users to see different per-config descriptions for the same part. Deleting a local copy now wipes the persisted metadata for those files so a fresh download pulls clean metadata from the server.
+
+---
+
 ## [3.21.0-beta.2] - 2026-06-12
 
 > Beta prerelease — available to beta-channel testers only.

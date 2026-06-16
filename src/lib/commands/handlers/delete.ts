@@ -486,6 +486,9 @@ export const deleteLocalCommand: Command<DeleteLocalParams> = {
     const failedPaths = new Set(batchResult.results.filter((r) => !r.success).map((r) => r.path))
 
     // Successfully deleted synced files -> update to cloud-only status
+    // Clearing pendingMetadata (and the persisted copy below) ensures a fresh
+    // re-download pulls clean metadata from the server instead of resurrecting
+    // stale local edits like per-config descriptions.
     const deletedSyncedFiles = syncedFiles.filter((f) => !failedPaths.has(f.path))
     const syncedFileUpdates = deletedSyncedFiles.map((f) => ({
       path: f.path,
@@ -494,6 +497,7 @@ export const deleteLocalCommand: Command<DeleteLocalParams> = {
         localHash: undefined,
         localMtime: undefined,
         localSize: undefined,
+        pendingMetadata: undefined,
       },
     }))
 
@@ -556,6 +560,14 @@ export const deleteLocalCommand: Command<DeleteLocalParams> = {
       ctx.removeFilesFromStore(allPathsToRemove)
     }
 
+    // Clear persisted pending metadata for every successfully removed file so
+    // re-downloading from the server yields fresh metadata (e.g. per-config
+    // descriptions) rather than restoring stale local edits from localStorage.
+    const clearedMetadataPaths = [...deletedSyncedFiles.map((f) => f.path), ...deletedUnsyncedPaths]
+    if (clearedMetadataPaths.length > 0) {
+      ctx.clearPersistedPendingMetadataForPaths(clearedMetadataPaths)
+    }
+
     ctx.setLastOperationCompletedAt(Date.now())
 
     logDelete('info', 'Store updated after deletion', {
@@ -563,6 +575,7 @@ export const deleteLocalCommand: Command<DeleteLocalParams> = {
       unsyncedRemoved: deletedUnsyncedPaths.length,
       foldersUpdated: folderUpdates.length,
       foldersRemoved: foldersToRemoveFromStore.length,
+      metadataCleared: clearedMetadataPaths.length,
       failedCount: failedPaths.size,
     })
 
