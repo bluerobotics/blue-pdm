@@ -4,42 +4,15 @@ All notable changes to BluePLM will be documented in this file.
 
 ![1774273238438](image/CHANGELOG/1774273238438.png)
 
-## [3.21.0-beta.4] - 2026-06-16
-
-> Beta prerelease — available to beta-channel testers only.
-
-### Fixed
-- **Cold-start version/hash detection no longer reports false changes** — on a cold start (when only the IndexedDB sync index is available), local version and hash lookups missed entries because the seed maps were keyed only by the original-case path while the IndexedDB index uses a lowercase key space. Persisted `localVersion`/`localHash` values are now mirrored under a lowercase key and looked up with a lowercase fallback, so cold-start and warm-refresh loads share a key space and stop surfacing spurious "modified" files.
-
----
-
-## [3.21.0-beta.3] - 2026-06-15
-
-> Beta prerelease — available to beta-channel testers only.
-
-### Fixed
-- **Removing a local copy now clears cached metadata** — "Remove Local Copy" deleted the file from disk but left locally persisted pending metadata (per-config descriptions, part number/description/revision edits) in `localStorage`. Re-downloading from the server could resurrect those stale values, causing different users to see different per-config descriptions for the same part. Deleting a local copy now wipes the persisted metadata for those files so a fresh download pulls clean metadata from the server.
-
----
-
-## [3.21.0-beta.2] - 2026-06-12
-
-> Beta prerelease — available to beta-channel testers only.
-
-### Fixed
-- **Clearing a description (or item number) now persists through check-in** — emptying a description or item number and then checking the file in reverted the field to its previous value. The check-in path collapsed an intentional clear (`null`) into `undefined`, so the `checkin_file` RPC's `COALESCE` treated it as "no change." Cleared fields are now sent as an explicit empty string and stay empty after check-in.
-
----
-
-## [3.21.0-beta.1] - 2026-06-12
-
-> Beta prerelease — available to beta-channel testers only.
-
-### Fixed
-- **Clearing a description now sticks** — emptying a part/assembly description (or item number) wrote correctly but then bounced back to the old value on the next read. Decisive write handling now persists cleared/blank values instead of treating them as "no change," so an empty description stays empty.
+## [3.21.0] - 2026-06-16
 
 ### Changed
 - **SolidWorks write performance & reliability** — file-level metadata edits no longer trigger a SolidWorks cold start: the service now writes file-level-only properties via the Document Manager API first and only falls back to the full SolidWorks COM API when needed (service bumped to **1.2.4**). Description-only edits skip redundant config writes, and service health pings are calmer (less polling churn).
+
+### Fixed
+- **Clearing a description (or item number) now sticks through check-in** — emptying a part/assembly description or item number wrote correctly but then bounced back to the old value on the next read, and emptying-then-checking-in reverted the field entirely. Decisive write handling now persists cleared/blank values instead of treating them as "no change," and the check-in path sends an explicit empty string instead of collapsing an intentional clear (`null`) into `undefined` (which the `checkin_file` RPC's `COALESCE` treated as "no change"). Cleared fields stay empty.
+- **Removing a local copy now clears cached metadata** — "Remove Local Copy" deleted the file from disk but left locally persisted pending metadata (per-config descriptions, part number/description/revision edits) in `localStorage`. Re-downloading from the server could resurrect those stale values, causing different users to see different per-config descriptions for the same part. Deleting a local copy now wipes the persisted metadata for those files so a fresh download pulls clean metadata from the server.
+- **Cold-start version/hash detection no longer reports false changes** — on a cold start (when only the IndexedDB sync index is available), local version and hash lookups missed entries because the seed maps were keyed only by the original-case path while the IndexedDB index uses a lowercase key space. Persisted `localVersion`/`localHash` values are now mirrored under a lowercase key and looked up with a lowercase fallback, so cold-start and warm-refresh loads share a key space and stop surfacing spurious "modified" files.
 
 ---
 
