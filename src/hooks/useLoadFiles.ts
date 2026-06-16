@@ -369,6 +369,9 @@ export function useLoadFiles() {
               if (f.localVersion !== undefined) {
                 existingLocalVersions.set(f.path, f.localVersion)
                 existingLocalVersions.set(f.relativePath, f.localVersion)
+                // Mirror the lowercase convention used by the IndexedDB sync index
+                // so cold-start (IndexedDB-only) and warm-refresh lookups share a key space.
+                existingLocalVersions.set(f.relativePath.toLowerCase(), f.localVersion)
               }
             }
 
@@ -388,6 +391,9 @@ export function useLoadFiles() {
               if (f.localHash) {
                 existingLocalHashes.set(f.path, f.localHash)
                 existingLocalHashes.set(f.relativePath, f.localHash)
+                // Mirror the lowercase convention used by the IndexedDB sync index
+                // so cold-start (IndexedDB-only) and warm-refresh lookups share a key space.
+                existingLocalHashes.set(f.relativePath.toLowerCase(), f.localHash)
               }
             }
 
@@ -653,9 +659,12 @@ export function useLoadFiles() {
                 existingLocalActiveVersions.get(localFile.relativePath)
 
               // Preserve localVersion from existing file (tracks actual version on disk)
+              // The lowercase fallback matches the IndexedDB sync index key space, which is
+              // the only seed available on cold start.
               const existingLocalVersion =
                 existingLocalVersions.get(localFile.path) ||
-                existingLocalVersions.get(localFile.relativePath)
+                existingLocalVersions.get(localFile.relativePath) ||
+                existingLocalVersions.get(localFile.relativePath.toLowerCase())
 
               // Debug: log when localActiveVersion is being preserved (helps diagnose rollback issues)
               if (existingLocalActiveVersion !== undefined) {
@@ -671,7 +680,8 @@ export function useLoadFiles() {
               // persisted hash from a previous app session is always reachable.
               const existingLocalHash =
                 existingLocalHashes.get(localFile.path) ||
-                existingLocalHashes.get(localFile.relativePath)
+                existingLocalHashes.get(localFile.relativePath) ||
+                existingLocalHashes.get(localFile.relativePath.toLowerCase())
               const effectiveLocalHash = localFile.localHash || existingLocalHash
 
               // PRIMARY: Inode-based rename detection

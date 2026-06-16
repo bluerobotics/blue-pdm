@@ -4,6 +4,15 @@ All notable changes to BluePLM will be documented in this file.
 
 ![1774273238438](image/CHANGELOG/1774273238438.png)
 
+## [3.21.0-beta.4] - 2026-06-16
+
+> Beta prerelease — available to beta-channel testers only.
+
+### Fixed
+- **Cold-start version/hash detection no longer reports false changes** — on a cold start (when only the IndexedDB sync index is available), local version and hash lookups missed entries because the seed maps were keyed only by the original-case path while the IndexedDB index uses a lowercase key space. Persisted `localVersion`/`localHash` values are now mirrored under a lowercase key and looked up with a lowercase fallback, so cold-start and warm-refresh loads share a key space and stop surfacing spurious "modified" files.
+
+---
+
 ## [3.21.0-beta.3] - 2026-06-15
 
 > Beta prerelease — available to beta-channel testers only.
