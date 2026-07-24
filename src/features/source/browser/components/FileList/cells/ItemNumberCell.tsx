@@ -14,6 +14,8 @@ import { Sparkles, Loader2, Check, ArrowLeft, Box } from 'lucide-react'
 import { useFilePaneContext, useFilePaneHandlers } from '../../../context'
 import { usePDMStore } from '@/stores/pdmStore'
 import { getNextSerialNumber, previewNextSerialNumber } from '@/lib/serialization'
+import { useCellSlowHighlight } from '../../../hooks/useCellSlowHighlight'
+import { CopyHighlightInput } from './CopyHighlightInput'
 import type { CellRendererBaseProps } from './types'
 
 export function ItemNumberCell({ file }: CellRendererBaseProps): React.ReactNode {
@@ -47,6 +49,10 @@ export function ItemNumberCell({ file }: CellRendererBaseProps): React.ReactNode
 
   // Local state for generation
   const [isGenerating, setIsGenerating] = useState(false)
+
+  // Read-only "highlight for copying" mode (shown when the value can't be edited)
+  const [isHighlighting, setIsHighlighting] = useState(false)
+  const handleSlowHighlightClick = useCellSlowHighlight(() => setIsHighlighting(true))
 
   // Confirmation state for inline BR number generation
   const [confirmingGenerate, setConfirmingGenerate] = useState(false)
@@ -293,11 +299,18 @@ export function ItemNumberCell({ file }: CellRendererBaseProps): React.ReactNode
     )
   }
 
+  // Read-only highlight mode for copying (only for non-editable cells with a value)
+  if (isHighlighting && !canEditItemNumber && hasValue) {
+    return <CopyHighlightInput value={displayValue} onExit={() => setIsHighlighting(false)} />
+  }
+
   // Get appropriate tooltip
   const getTooltip = () => {
     if (isDrawingLocked) return 'Drawing item number is inherited from the referenced model'
     if (canEditItemNumber) return 'Click to edit'
-    if (file.pdmData?.id) return 'Check out file to edit'
+    if (file.pdmData?.id) {
+      return hasValue ? `${displayValue} • Check out file to edit` : 'Check out file to edit'
+    }
     return 'Sign in to edit'
   }
 
@@ -305,6 +318,13 @@ export function ItemNumberCell({ file }: CellRendererBaseProps): React.ReactNode
     <div
       className="group/cell flex items-center h-full gap-1"
       data-no-drag
+      onClick={(e) => {
+        // Non-editable values: slow double-click opens read-only copy box
+        // (fast double-click still bubbles to the row to open the file)
+        if (!canEditItemNumber && hasValue) {
+          handleSlowHighlightClick(e)
+        }
+      }}
       onMouseDown={(e) => {
         // Only stop propagation for editable cells to prevent row selection during edit
         // For non-editable cells, allow native text selection

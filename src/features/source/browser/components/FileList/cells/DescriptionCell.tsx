@@ -8,9 +8,12 @@
  * NOTE: Drawing files can have their description locked via settings because
  * it typically comes from the referenced model, not from editable properties.
  */
+import { useState } from 'react'
 import { ArrowLeft, Box } from 'lucide-react'
 import { usePDMStore } from '@/stores/pdmStore'
 import { useFilePaneContext, useFilePaneHandlers } from '../../../context'
+import { useCellSlowHighlight } from '../../../hooks/useCellSlowHighlight'
+import { CopyHighlightInput } from './CopyHighlightInput'
 import type { CellRendererBaseProps } from './types'
 
 export function DescriptionCell({ file }: CellRendererBaseProps): React.ReactNode {
@@ -23,6 +26,10 @@ export function DescriptionCell({ file }: CellRendererBaseProps): React.ReactNod
 
   // Drawing lockout setting
   const lockDrawingDescription = usePDMStore((s) => s.lockDrawingDescription)
+
+  // Read-only "highlight for copying" mode (shown when the value can't be edited)
+  const [isHighlighting, setIsHighlighting] = useState(false)
+  const handleSlowHighlightClick = useCellSlowHighlight(() => setIsHighlighting(true))
 
   if (file.isDirectory) return ''
 
@@ -63,11 +70,16 @@ export function DescriptionCell({ file }: CellRendererBaseProps): React.ReactNod
       : file.pdmData?.description || '-'
   const hasValue = displayValue !== '-'
 
+  // Read-only highlight mode for copying (only for non-editable cells with a value)
+  if (isHighlighting && !canEditDescription && hasValue) {
+    return <CopyHighlightInput value={displayValue} onExit={() => setIsHighlighting(false)} />
+  }
+
   // Get appropriate tooltip
   const getTooltip = () => {
     if (isDrawingLocked) return 'Drawing description is inherited from the referenced model'
     if (canEditDescription) return displayValue !== '-' ? displayValue : 'Click to edit'
-    return 'Check out file to edit'
+    return hasValue ? `${displayValue} • Check out file to edit` : 'Check out file to edit'
   }
 
   return (
@@ -79,8 +91,11 @@ export function DescriptionCell({ file }: CellRendererBaseProps): React.ReactNod
           e.stopPropagation()
           e.preventDefault()
           handleStartCellEdit(file, 'description')
+        } else if (hasValue) {
+          // Non-editable values: slow double-click opens read-only copy box
+          // (fast double-click still bubbles to the row to open the file)
+          handleSlowHighlightClick(e)
         }
-        // Allow click through for text selection when not editable
       }}
       onMouseDown={(e) => {
         // Only stop propagation for editable cells to prevent row selection during edit
