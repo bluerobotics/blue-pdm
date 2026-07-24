@@ -666,6 +666,7 @@ export function PendingView({ onRefresh }: PendingViewProps) {
     expandedFolders,
     hideSolidworksTempFiles,
     setSelectedFiles: setStoreSelectedFiles,
+    setPendingScrollToFile,
     expandedPendingSections,
     togglePendingSection,
   } = usePDMStore()
@@ -969,13 +970,15 @@ export function PendingView({ onRefresh }: PendingViewProps) {
         setCurrentFolder(parentPath)
         // Highlight/select the file in the file browser
         setStoreSelectedFiles([localFile.path])
+        // Scroll the file list to bring the selected file into view
+        setPendingScrollToFile(localFile.path)
         return
       }
 
       // Fallback: show in system explorer
       window.electronAPI?.showInExplorer(filePath)
     },
-    [expandedFolders, toggleFolder, setCurrentFolder, setStoreSelectedFiles],
+    [expandedFolders, toggleFolder, setCurrentFolder, setStoreSelectedFiles, setPendingScrollToFile],
   )
 
   // Toggle expand/collapse for assembly groups with on-demand reference loading
@@ -1225,8 +1228,10 @@ export function PendingView({ onRefresh }: PendingViewProps) {
       setCurrentFolder(parentPath)
       // Highlight the file in the file browser
       setStoreSelectedFiles([file.path])
+      // Scroll the file list to bring the selected file into view
+      setPendingScrollToFile(file.path)
     },
-    [expandedFolders, toggleFolder, setCurrentFolder, setStoreSelectedFiles],
+    [expandedFolders, toggleFolder, setCurrentFolder, setStoreSelectedFiles, setPendingScrollToFile],
   )
 
   const selectAll = useCallback(() => {
