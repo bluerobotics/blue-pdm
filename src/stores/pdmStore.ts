@@ -410,13 +410,27 @@ export const usePDMStore = create<PDMStoreState>()(
           // Ensure Christmas sleigh direction has default (new field for existing users)
           christmasSleighDirection:
             (persisted.christmasSleighDirection as 'push' | 'pull') || 'push',
-          // Ensure columns have all fields
-          columns: currentState.columns.map((defaultCol) => {
-            const persistedCol = ((persisted.columns as typeof currentState.columns) || []).find(
-              (c) => c.id === defaultCol.id,
-            )
-            return persistedCol ? { ...defaultCol, ...persistedCol } : defaultCol
-          }),
+          // Restore columns in the user's saved order (not the default order),
+          // merging in any fixed fields (label/sortable) from the current defaults.
+          // Widths/visibility come from the persisted config; new built-in columns
+          // added since the user last saved are appended at the end.
+          columns: (() => {
+            const persistedColumns =
+              (persisted.columns as typeof currentState.columns) || []
+            const persistedIds = new Set(persistedColumns.map((c) => c.id))
+            const ordered = persistedColumns
+              .map((persistedCol) => {
+                const defaultCol = currentState.columns.find((c) => c.id === persistedCol.id)
+                return defaultCol ? { ...defaultCol, ...persistedCol } : null
+              })
+              .filter((c): c is (typeof currentState.columns)[number] => c !== null)
+            for (const defaultCol of currentState.columns) {
+              if (!persistedIds.has(defaultCol.id)) {
+                ordered.push(defaultCol)
+              }
+            }
+            return ordered.length > 0 ? ordered : currentState.columns
+          })(),
           // Ensure cardViewFields have all fields (merge persisted with defaults for new fields)
           cardViewFields: defaultCardViewFields.map((defaultField) => {
             const persistedField = ((persisted.cardViewFields as CardViewFieldConfig[]) || []).find(
