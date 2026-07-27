@@ -1,4 +1,4 @@
-import { memo } from 'react'
+import { memo, useRef } from 'react'
 import { ChevronUp, ChevronDown, GripVertical } from 'lucide-react'
 import type { ColumnConfig } from '../../types'
 
@@ -42,6 +42,25 @@ export const ColumnHeaders = memo(function ColumnHeaders({
 }: ColumnHeadersProps) {
   const visibleColumns = columns.filter((c) => c.visible)
 
+  // A resize drag ends with a mouseup that the browser turns into a click on the
+  // header. Without this guard that click would sort the column. We flag the
+  // resize interaction and skip the trailing sort click.
+  const suppressSortRef = useRef(false)
+
+  const handleResizeMouseDown = (e: React.MouseEvent, columnId: string) => {
+    suppressSortRef.current = true
+    onResize(e, columnId)
+
+    const clearOnMouseUp = () => {
+      // Defer past the click event that fires immediately after mouseup
+      window.setTimeout(() => {
+        suppressSortRef.current = false
+      }, 0)
+      document.removeEventListener('mouseup', clearOnMouseUp)
+    }
+    document.addEventListener('mouseup', clearOnMouseUp)
+  }
+
   return (
     <thead>
       <tr>
@@ -55,7 +74,10 @@ export const ColumnHeaders = memo(function ColumnHeaders({
               ${draggingColumn === column.id ? 'dragging opacity-50' : ''} 
               ${dragOverColumn === column.id ? 'drag-over bg-plm-accent/10' : ''}
             `}
-            onClick={() => column.sortable && onSort(column.id)}
+            onClick={() => {
+              if (suppressSortRef.current) return
+              if (column.sortable) onSort(column.id)
+            }}
             onContextMenu={onContextMenu}
             onDragOver={(e) => onDragOver(e, column.id)}
             onDragLeave={onDragLeave}
@@ -77,7 +99,7 @@ export const ColumnHeaders = memo(function ColumnHeaders({
             </div>
             <div
               className={`column-resize-handle ${resizingColumn === column.id ? 'resizing' : ''}`}
-              onMouseDown={(e) => onResize(e, column.id)}
+              onMouseDown={(e) => handleResizeMouseDown(e, column.id)}
             />
           </th>
         ))}
