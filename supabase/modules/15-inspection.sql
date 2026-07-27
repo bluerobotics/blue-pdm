@@ -188,4 +188,6 @@ END $$;
 -- SCHEMA VERSION
 -- ===========================================
 
-SELECT update_schema_version(71, 'Add item_images table for Item Browser per-item image overrides');
+-- Inspection module head (characteristics + version snapshots + methods). This is a
+-- no-op via GREATEST() when core.sql has already stamped a higher head version.
+SELECT update_schema_version(66, 'Inspection module: inspection_characteristics + per-version snapshots + inspection_methods');

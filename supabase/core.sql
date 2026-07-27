@@ -55,9 +55,14 @@ CREATE OR REPLACE FUNCTION update_schema_version(
   new_description TEXT DEFAULT NULL
 ) RETURNS VOID AS $$
 BEGIN
+  -- Monotonic: the recorded version only ever moves forward. Optional modules are
+  -- installed AFTER core.sql (which stamps the current head), and some modules call
+  -- this with their own lower version number. Without this guard, installing such a
+  -- module would roll schema_version backwards and trigger a false "database older
+  -- than app" mismatch warning. GREATEST() makes a lower stamp a no-op.
   UPDATE schema_version
-  SET version = new_version,
-      description = COALESCE(new_description, description),
+  SET version = GREATEST(version, new_version),
+      description = CASE WHEN new_version >= version THEN COALESCE(new_description, description) ELSE description END,
       applied_at = NOW(),
       applied_by = 'migration'
   WHERE id = 1;
