@@ -10,6 +10,13 @@ const MAX_RETRY_ATTEMPTS = 3
 /** Base delay for exponential backoff (ms) */
 const RETRY_BASE_DELAY_MS = 2000
 
+/**
+ * Delay before pre-warming SolidWorks after the service is ready.
+ * Gives the vault load / initial reads room to breathe before the (heavy,
+ * single-threaded) hidden SolidWorks launch occupies the service.
+ */
+const WARMUP_DELAY_MS = 8000
+
 /** Reason for auto-start failure - used for debugging */
 type FailureReason =
   | 'not_installed'
@@ -69,6 +76,12 @@ export function useSolidWorksAutoStart(organization: Organization | null) {
   // Track if we have an in-flight retry scheduled
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Track a scheduled background pre-warm so we can cancel it on unmount/org change
+  const warmupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Track org we've already warmed to avoid repeated launches
+  const warmedOrgRef = useRef<string | null>(null)
+
   const log = useCallback((level: 'info' | 'warn' | 'error', message: string) => {
     // Extract category and message from prefixed message format "[SolidWorks] ..."
     const match = message.match(/^(\[[^\]]+\])\s*(.*)$/)
@@ -113,6 +126,55 @@ export function useSolidWorksAutoStart(organization: Organization | null) {
     }
   }, [log, showToast])
 
+  /**
+   * Pre-warm a hidden SolidWorks instance in the background (org-wide setting,
+   * default ON) so the first property edit is instant instead of a ~40s cold-start.
+   * Fire-and-forget: failures are logged, never surfaced as errors (SW may not be
+   * installed on every seat). No window is shown (SW launches hidden).
+   */
+  const scheduleWarmup = useCallback(
+    (swInstalled: boolean, orgId: string) => {
+      // Org-wide opt-out (default ON when the setting is undefined)
+      if (organization?.settings?.solidworks_prewarm_full_app === false) {
+        log('info', '[SolidWorks] Background warmup disabled for this organization, skipping')
+        return
+      }
+
+      if (!swInstalled) {
+        // No full SolidWorks on this machine - nothing to warm (DM-only mode)
+        return
+      }
+
+      if (warmedOrgRef.current === orgId) return
+      if (!window.electronAPI?.solidworks?.warmup) return
+
+      if (warmupTimeoutRef.current) {
+        clearTimeout(warmupTimeoutRef.current)
+      }
+
+      warmupTimeoutRef.current = setTimeout(() => {
+        warmupTimeoutRef.current = null
+        warmedOrgRef.current = orgId
+        log('info', '[SolidWorks] Pre-warming hidden SolidWorks instance in background...')
+        window.electronAPI!.solidworks!.warmup!()
+          .then((result) => {
+            if (result?.success) {
+              log('info', '[SolidWorks] Background warmup complete - edits will be fast')
+            } else {
+              log('warn', `[SolidWorks] Background warmup did not complete: ${result?.error ?? 'unknown'}`)
+              // Allow a retry on the next successful status cycle
+              warmedOrgRef.current = null
+            }
+          })
+          .catch((error) => {
+            log('warn', `[SolidWorks] Background warmup error: ${error}`)
+            warmedOrgRef.current = null
+          })
+      }, WARMUP_DELAY_MS)
+    },
+    [organization, log],
+  )
+
   useEffect(() => {
     // Cleanup any pending retry on unmount or dependency change
     return () => {
@@ -120,8 +182,39 @@ export function useSolidWorksAutoStart(organization: Organization | null) {
         clearTimeout(retryTimeoutRef.current)
         retryTimeoutRef.current = null
       }
+      if (warmupTimeoutRef.current) {
+        clearTimeout(warmupTimeoutRef.current)
+        warmupTimeoutRef.current = null
+      }
     }
   }, [organization, autoStartSolidworksService, solidworksIntegrationEnabled])
+
+  // Push the current auto-start policy to the main process so it can launch the
+  // SolidWorks service at app-ready on the NEXT boot, in parallel with (and no
+  // longer starved by) the renderer's heavy initial vault load. Runs whenever the
+  // relevant settings change so disabling auto-start is respected too.
+  useEffect(() => {
+    if (!hasHydrated) return
+    if (!window.electronAPI?.solidworks?.setAutoStartConfig) return
+
+    window.electronAPI.solidworks
+      .setAutoStartConfig({
+        autoStartEnabled: autoStartSolidworksService,
+        integrationEnabled: solidworksIntegrationEnabled,
+        dmLicenseKey: organization?.settings?.solidworks_dm_license_key || undefined,
+        verboseLogging: solidworksServiceVerboseLogging,
+      })
+      .catch((error) => {
+        log('warn', `[SolidWorks] Failed to persist auto-start config: ${error}`)
+      })
+  }, [
+    hasHydrated,
+    autoStartSolidworksService,
+    solidworksIntegrationEnabled,
+    solidworksServiceVerboseLogging,
+    organization,
+    log,
+  ])
 
   useEffect(() => {
     const dmLicenseKey = organization?.settings?.solidworks_dm_license_key
@@ -212,6 +305,9 @@ export function useSolidWorksAutoStart(organization: Organization | null) {
 
       // Set flag to prevent integration status checks from overwriting our results
       usePDMStore.getState().setSolidworksAutoStartInProgress(true)
+      // Surface a "connecting" state immediately so the UI shows progress instead
+      // of a stale "not running" while the (idempotent) start/confirm completes.
+      usePDMStore.getState().setIntegrationStatus('solidworks', 'checking')
 
       /**
        * Handle failure: set reason, schedule retry or show toast
@@ -233,6 +329,11 @@ export function useSolidWorksAutoStart(organization: Organization | null) {
         } else {
           log('error', `[SolidWorks] All ${MAX_RETRY_ATTEMPTS} attempts failed`)
           showToast('error', userMessage)
+          // Resolve the "connecting" state to a terminal status so the UI doesn't
+          // spin forever after we've exhausted retries.
+          usePDMStore
+            .getState()
+            .setIntegrationStatus('solidworks', dmLicenseKey ? 'offline' : 'not-configured')
           // Clear the in-progress flag since we're done trying
           usePDMStore.getState().setSolidworksAutoStartInProgress(false)
         }
@@ -304,6 +405,9 @@ export function useSolidWorksAutoStart(organization: Organization | null) {
 
           // Check service version and warn if mismatched
           checkServiceVersion()
+
+          // Pre-warm hidden SolidWorks so the first edit is instant (org-wide, default on)
+          scheduleWarmup(data.installed, orgId)
         } else if (dmLicenseKey && !data.documentManagerAvailable) {
           log(
             'info',
@@ -336,6 +440,9 @@ export function useSolidWorksAutoStart(organization: Organization | null) {
 
           // Check service version and warn if mismatched
           checkServiceVersion()
+
+          // Pre-warm hidden SolidWorks so the first edit is instant (org-wide, default on)
+          scheduleWarmup(data.installed, orgId)
         } else {
           log('info', '[SolidWorks] Service already running, no action needed')
           state.succeeded = true
@@ -347,6 +454,9 @@ export function useSolidWorksAutoStart(organization: Organization | null) {
 
           // Check service version and warn if mismatched
           checkServiceVersion()
+
+          // Pre-warm hidden SolidWorks so the first edit is instant (org-wide, default on)
+          scheduleWarmup(data.installed, orgId)
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
@@ -364,5 +474,6 @@ export function useSolidWorksAutoStart(organization: Organization | null) {
     log,
     showToast,
     checkServiceVersion,
+    scheduleWarmup,
   ])
 }

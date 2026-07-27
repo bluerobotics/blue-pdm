@@ -71,6 +71,7 @@ export const createSettingsSlice: StateCreator<
     showOrg: true,
     showSearch: true,
     showOnlineUsers: true,
+    showSolidworks: true,
     showUserName: true,
     showPanelToggles: true,
   },

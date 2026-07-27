@@ -46,6 +46,30 @@ export {
 export type { AuthProviders } from './organizations'
 
 // ============================================
+// Item Definition (Item Browser) exports
+// ============================================
+export {
+  getItemDefinitionSettings,
+  updateItemDefinitionSettings,
+  getOrgWorkflowStages,
+} from './itemDefinition'
+
+export {
+  getItemImages,
+  uploadItemImage,
+  setItemIcon,
+  resetItemImage,
+} from './itemImages'
+
+export {
+  getItemDesignations,
+  upsertItemDesignation,
+  deleteItemDesignation,
+  getItemDesignationAssignments,
+  setItemDesignationAssignment,
+} from './itemDesignations'
+
+// ============================================
 // File exports
 // ============================================
 export {
@@ -87,6 +111,14 @@ export {
   updateVersionNote,
   getFileReferenceDiagnostics,
   getVaultFilesForDiagnostics,
+  // Inspection table operations
+  getInspectionRows,
+  getInspectionRowsForVersion,
+  saveInspectionRows,
+  getInspectionMethods,
+  addInspectionMethod,
+  updateInspectionMethod,
+  deleteInspectionMethod,
   // Folder operations
   syncFolder,
   getVaultFolders,
@@ -102,6 +134,9 @@ export type {
   FileReferenceDiagnostic,
   VaultFileSummary,
   FolderRecord,
+  InspectionRowValues,
+  InspectionRowInput,
+  InspectionMethodOption,
 } from './files'
 
 // ============================================

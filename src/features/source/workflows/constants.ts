@@ -17,6 +17,7 @@ export const WAYPOINT_HANDLE_SIZE = 6
 // Transition path generation
 export const STRAIGHT_LENGTH = 20 // Length of straight perpendicular segments at box edges
 export const ELBOW_TURN_OFFSET = 30 // Minimum distance to travel before turning for elbow paths
+export const PARALLEL_EDGE_OFFSET = 14 // Perpendicular shift for opposite-direction transition pairs
 
 // Default snap settings
 export const DEFAULT_SNAP_SETTINGS = {

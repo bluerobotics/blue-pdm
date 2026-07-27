@@ -9,3 +9,5 @@ export {
 } from './geometry'
 export { getBezierMidpoint, getControlPointFromMidpoint, findInsertionIndex } from './pathHelpers'
 export { generateSplinePath, getPointOnSpline, generateElbowPath } from './pathGeneration'
+export { useStableCallback } from './useStableCallback'
+export { useRafThrottle } from './useRafThrottle'

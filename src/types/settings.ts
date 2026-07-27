@@ -13,6 +13,7 @@ export type SettingsTab =
   | 'export'
   | 'rfq'
   | 'metadata-columns'
+  | 'item-designations'
   | 'backup'
   | 'solidworks'
   | 'google-drive'

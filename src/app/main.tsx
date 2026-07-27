@@ -1,4 +1,3 @@
-import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { App } from './App'
 import { ErrorBoundary } from '@/components/core'
@@ -63,6 +62,13 @@ console.warn = (...args: unknown[]) => {
   // Call original so dev tools still work
   originalConsoleWarn.apply(console, args)
 
+  // Skip forwarding warns over IPC in dev: the dev React build emits a high
+  // volume of warnings, and shipping each one to the main process slows
+  // navigation. They are still visible in DevTools via the original above.
+  if (import.meta.env.DEV) {
+    return
+  }
+
   // Forward to app logs
   try {
     const message = args
@@ -85,9 +91,7 @@ console.warn = (...args: unknown[]) => {
 }
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <ErrorBoundary>
-      <App />
-    </ErrorBoundary>
-  </React.StrictMode>,
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>,
 )

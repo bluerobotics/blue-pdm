@@ -27,6 +27,10 @@ export function ServiceTab() {
     setAutoStartSolidworksService,
     solidworksServiceVerboseLogging,
     setSolidworksServiceVerboseLogging,
+    isAdmin,
+    prewarmSolidworks,
+    isSavingPrewarm,
+    handleTogglePrewarm,
     overallStatus,
     overallStatusConfig,
     syncedSwFiles,
@@ -319,6 +323,34 @@ export function ServiceTab() {
               <div
                 className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
                   autoStartSolidworksService ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+
+          {/* Background warmup toggle (org-wide, admin only) */}
+          <div className="flex items-center justify-between pt-2 border-t border-plm-border">
+            <div>
+              <div className="text-sm text-plm-fg">
+                Keep SolidWorks warm in background
+                <span className="ml-2 text-xs text-plm-fg-dim">(organization-wide)</span>
+              </div>
+              <div className="text-xs text-plm-fg-muted">
+                Pre-launches a hidden SolidWorks instance so the first property edit is instant
+                instead of a ~40s cold-start. No window is shown.
+                {!isAdmin && ' Only admins can change this.'}
+              </div>
+            </div>
+            <button
+              onClick={() => handleTogglePrewarm(!prewarmSolidworks)}
+              disabled={!isAdmin || isSavingPrewarm}
+              className={`relative w-11 h-6 rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                prewarmSolidworks ? 'bg-plm-accent' : 'bg-plm-bg-secondary'
+              }`}
+            >
+              <div
+                className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
+                  prewarmSolidworks ? 'translate-x-6' : 'translate-x-1'
                 }`}
               />
             </button>

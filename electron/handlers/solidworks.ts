@@ -140,6 +140,14 @@ let pingCache: PingCacheEntry | null = null
  */
 let pendingStatusPing: Promise<SwServiceResult> | null = null
 
+/**
+ * True while a background pre-warm (hidden SolidWorks launch) is in progress.
+ * During this window the service is single-threaded launching SolidWorks (~40s),
+ * so pings will time out. We use this flag to report "busy" in status checks
+ * without spamming ping timeouts / error logs while the launch completes.
+ */
+let swWarmupInProgress = false
+
 // ============================================
 // Orphaned Process Watchdog State
 // ============================================
@@ -1130,6 +1138,100 @@ async function sendSWCommand(
     // Trigger queue processing
     processQueue()
   })
+}
+
+// ============================================
+// Auto-start Config Cache (main-process early boot)
+// ============================================
+
+/**
+ * Persisted config that lets the MAIN process start the SolidWorks service at
+ * app-ready, in parallel with the (heavy, single-threaded) renderer vault load.
+ * Without this, the renderer-driven auto-start can be starved for tens of seconds
+ * during boot, delaying the service and freezing status on stale "not running".
+ */
+interface SwAutoStartConfig {
+  autoStartEnabled: boolean
+  integrationEnabled: boolean
+  dmLicenseKey?: string
+  verboseLogging?: boolean
+}
+
+function getAutoStartConfigPath(): string {
+  return path.join(app.getPath('userData'), 'sw-autostart.json')
+}
+
+function readAutoStartConfig(): SwAutoStartConfig | null {
+  try {
+    const configPath = getAutoStartConfigPath()
+    if (!fs.existsSync(configPath)) return null
+    return JSON.parse(fs.readFileSync(configPath, 'utf-8')) as SwAutoStartConfig
+  } catch (error) {
+    logWarn(`[SolidWorks] Failed to read auto-start config: ${error}`)
+    return null
+  }
+}
+
+/**
+ * Merge a partial patch into the persisted auto-start config. Enabled flags come
+ * exclusively from the renderer's explicit set-autostart-config call; the
+ * start-service IPC only patches license/verbose so a manual "Start service"
+ * while auto-start is off never flips the persisted enabled flags on.
+ */
+function updateAutoStartConfig(patch: Partial<SwAutoStartConfig>): void {
+  try {
+    const existing = readAutoStartConfig() ?? {
+      autoStartEnabled: false,
+      integrationEnabled: false,
+    }
+    const merged: SwAutoStartConfig = { ...existing, ...patch }
+    fs.writeFileSync(getAutoStartConfigPath(), JSON.stringify(merged, null, 2), 'utf-8')
+  } catch (error) {
+    logWarn(`[SolidWorks] Failed to write auto-start config: ${error}`)
+  }
+}
+
+/**
+ * Start the SolidWorks service from the MAIN process using the cached config.
+ * Fire-and-forget: called at app-ready (parallel to renderer boot) so the service
+ * is ready in ~2s regardless of vault-load contention. No-op when no cache exists
+ * (first-ever boot) or when auto-start/integration is disabled; startSWService is
+ * idempotent, so the renderer's own auto-start becomes a cheap confirmation.
+ */
+export async function autoStartServiceFromCache(): Promise<void> {
+  const config = readAutoStartConfig()
+  if (!config) {
+    log('[SolidWorks] No cached auto-start config - deferring to renderer auto-start')
+    return
+  }
+
+  if (!config.autoStartEnabled || !config.integrationEnabled) {
+    log('[SolidWorks] Cached config disables auto-start - skipping main-process early start')
+    return
+  }
+
+  if (!isSolidWorksInstalled()) {
+    log('[SolidWorks] SolidWorks not installed - skipping main-process early start (DM-only)')
+    // Still start the service so the DM API is available immediately.
+  }
+
+  log('[SolidWorks] Main-process early start: launching service in parallel with renderer boot')
+  try {
+    const result = await startSWService(
+      config.dmLicenseKey || undefined,
+      false,
+      config.verboseLogging,
+    )
+    if (result.success) {
+      log('[SolidWorks] Main-process early start succeeded')
+    } else {
+      logWarn(
+        `[SolidWorks] Main-process early start did not succeed: ${result.error ?? 'unknown error'}`,
+      )
+    }
+  } catch (error) {
+    logWarn(`[SolidWorks] Main-process early start error: ${error}`)
+  }
 }
 
 /**
@@ -2223,7 +2325,37 @@ export function registerSolidWorksHandlers(
       log(
         `[SolidWorks] IPC: start-service received (cleanupOrphans: ${cleanupOrphans}, verboseLogging: ${verboseLogging})`,
       )
+      // Persist license/verbose so the main process can pre-start on the next boot.
+      // Enabled flags are owned by set-autostart-config, so only patch known fields.
+      const patch: Partial<SwAutoStartConfig> = {}
+      if (dmLicenseKey !== undefined) patch.dmLicenseKey = dmLicenseKey
+      if (verboseLogging !== undefined) patch.verboseLogging = verboseLogging
+      if (Object.keys(patch).length > 0) updateAutoStartConfig(patch)
       return startSWService(dmLicenseKey, cleanupOrphans, verboseLogging)
+    },
+  )
+
+  // Persist the renderer's auto-start policy so the main process can decide whether
+  // to launch the service at app-ready (before the renderer is even responsive).
+  ipcMain.handle(
+    'solidworks:set-autostart-config',
+    async (
+      _,
+      config: {
+        autoStartEnabled: boolean
+        integrationEnabled: boolean
+        dmLicenseKey?: string
+        verboseLogging?: boolean
+      },
+    ) => {
+      const patch: Partial<SwAutoStartConfig> = {
+        autoStartEnabled: config.autoStartEnabled,
+        integrationEnabled: config.integrationEnabled,
+      }
+      if (config.dmLicenseKey !== undefined) patch.dmLicenseKey = config.dmLicenseKey
+      if (config.verboseLogging !== undefined) patch.verboseLogging = config.verboseLogging
+      updateAutoStartConfig(patch)
+      return { success: true }
     },
   )
 
@@ -2316,6 +2448,33 @@ export function registerSolidWorksHandlers(
       return { success: true, data: { running: false, installed: swInstalled, ...queueStats } }
     }
 
+    // While a background pre-warm is launching SolidWorks, the service can't answer
+    // pings (~40s). Report "busy" immediately instead of firing pings that will time
+    // out and spam error logs. Reuse the last known capabilities from the ping cache.
+    if (swWarmupInProgress) {
+      const cachedData = pingCache?.result.data as Record<string, unknown> | undefined
+      const dmAvailable = (cachedData?.documentManagerAvailable as boolean) ?? false
+      const swApiAvailable = ((cachedData?.swInstalled as boolean) ?? false) && swInstalled
+      return {
+        success: true,
+        data: {
+          running: false,
+          busy: true,
+          warmingUp: true,
+          installed: swInstalled,
+          version: cachedData?.version || cachedServiceVersion,
+          swInstalled: cachedData?.swInstalled,
+          swApiAvailable,
+          documentManagerAvailable: cachedData?.documentManagerAvailable,
+          documentManagerError: cachedData?.documentManagerError,
+          fastModeEnabled: cachedData?.fastModeEnabled,
+          mode: getMode(dmAvailable, swApiAvailable),
+          ...queueStats,
+        },
+      }
+    }
+
+    // Check ping cache to avoid redundant checks
     const now = Date.now()
 
     // Suppress the ping while a real command is in flight. The C# service reads
@@ -2529,6 +2688,38 @@ export function registerSolidWorksHandlers(
     return sendSWCommand({ action: 'getReferences', filePath })
   })
 
+  // Pre-warm: launch a hidden SolidWorks instance in the background so the first
+  // property write (setProperties) doesn't pay the ~40s cold-start. No-op if SW is
+  // already running. Guarded so only one warmup runs at a time.
+  ipcMain.handle('solidworks:warmup', async () => {
+    if (swWarmupInProgress) {
+      return { success: true, data: { alreadyWarming: true } }
+    }
+    if (!swServiceProcess?.stdin) {
+      return { success: false, error: 'SolidWorks service not running. Start it first.' }
+    }
+    log('[SolidWorks] IPC: warmup received - pre-launching hidden SolidWorks')
+    swWarmupInProgress = true
+    try {
+      // Long timeout: a cold SolidWorks launch can take ~40s. bypassQueue so the
+      // launch doesn't consume a shared queue slot for its full duration.
+      const result = await sendSWCommand(
+        { action: 'warmup' },
+        { timeoutMs: getOperationTimeout('warmup'), bypassQueue: true },
+      )
+      if (result.success) {
+        log('[SolidWorks] Warmup complete - SolidWorks is ready for fast edits')
+      } else {
+        log(`[SolidWorks] Warmup did not complete: ${result.error ?? 'unknown error'}`)
+      }
+      return result
+    } finally {
+      swWarmupInProgress = false
+      // Invalidate ping cache so the next status check reflects the now-running SW.
+      pingCache = null
+    }
+  })
+
   ipcMain.handle('solidworks:get-preview', async (_, filePath: string, configuration?: string) => {
     return sendSWCommand({ action: 'getPreview', filePath, configuration })
   })
@@ -2537,6 +2728,21 @@ export function registerSolidWorksHandlers(
     'solidworks:get-mass-properties',
     async (_, filePath: string, configuration?: string) => {
       return sendSWCommand({ action: 'getMassProperties', filePath, configuration })
+    },
+  )
+
+  ipcMain.handle('solidworks:get-inspection-characteristics', async (_, filePath: string) => {
+    return sendSWCommand({ action: 'getInspectionCharacteristics', filePath })
+  })
+
+  ipcMain.handle(
+    'solidworks:set-inspection-characteristics',
+    async (
+      _,
+      filePath: string,
+      characteristics: Array<Record<string, string | null>>,
+    ) => {
+      return sendSWCommand({ action: 'setInspectionCharacteristics', filePath, characteristics })
     },
   )
 
@@ -2964,6 +3170,7 @@ export function unregisterSolidWorksHandlers(): void {
     'solidworks:extract-thumbnail',
     'solidworks:extract-preview',
     'solidworks:start-service',
+    'solidworks:set-autostart-config',
     'solidworks:stop-service',
     'solidworks:force-restart',
     'solidworks:reset-com-connection',

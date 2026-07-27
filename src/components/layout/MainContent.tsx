@@ -23,6 +23,9 @@ const WorkflowsView = lazy(() =>
 const ReviewPreviewPane = lazy(() =>
   import('@/features/source/reviews').then((m) => ({ default: m.ReviewPreviewPane })),
 )
+const ItemBrowserView = lazy(() =>
+  import('@/features/items/itemBrowser').then((m) => ({ default: m.ItemBrowserView })),
+)
 
 // Loading fallback for lazy-loaded components
 function ContentLoading() {
@@ -74,7 +77,9 @@ export function MainContent({
     >
       {/* Tab bar (browser-like tabs) - shown when FilePane is visible (not settings, google-drive, workflows, or reviews) */}
       {!showWelcome &&
-        !['settings', 'google-drive', 'workflows', 'reviews'].includes(activeView) && <TabBar />}
+        !['settings', 'google-drive', 'workflows', 'reviews', 'items'].includes(activeView) && (
+          <TabBar />
+        )}
 
       {showWelcome ? (
         <WelcomeScreen onOpenRecentVault={handleOpenRecentVault} onChangeOrg={handleChangeOrg} />
@@ -90,6 +95,11 @@ export function MainContent({
         /* Workflows View - replaces entire main content area (full screen, lazy loaded) */
         <Suspense fallback={<ContentLoading />}>
           <WorkflowsView />
+        </Suspense>
+      ) : activeView === 'items' ? (
+        /* Item Browser (Quality) - replaces entire main content area (full width, lazy loaded) */
+        <Suspense fallback={<ContentLoading />}>
+          <ItemBrowserView />
         </Suspense>
       ) : activeView === 'reviews' ? (
         /* Reviews View - full-screen PDF preview or empty state */

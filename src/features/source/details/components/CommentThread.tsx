@@ -419,6 +419,10 @@ export function CommentThread({
       role="button"
       tabIndex={0}
       onKeyDown={(e) => {
+        // Only activate the thread when the wrapper itself is focused. Without this
+        // guard, Space/Enter typed in the nested reply or edit textareas bubble up
+        // here and get preventDefault()'d — which blocks spaces from being inserted.
+        if (e.target !== e.currentTarget) return
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault()
           onClick?.()

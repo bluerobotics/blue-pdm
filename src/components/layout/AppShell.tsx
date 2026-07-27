@@ -53,6 +53,7 @@ export function AppShell({ showWelcome, isSignInScreen, handleChangeOrg }: AppSh
     rightPanelVisible,
     setRightPanelWidth,
     rightPanelTabs,
+    itemPanel,
   } = usePDMStore()
 
   // Call hooks directly instead of receiving as props
@@ -132,7 +133,7 @@ export function AppShell({ showWelcome, isSignInScreen, handleChangeOrg }: AppSh
       <div className="flex-1 flex overflow-hidden min-h-0">
         {!showWelcome && <ActivityBar />}
 
-        {sidebarVisible && !showWelcome && activeView !== 'workflows' && (
+        {sidebarVisible && !showWelcome && activeView !== 'workflows' && activeView !== 'items' && (
           <>
             <Sidebar />
             {/* Resize handle for non-settings views, simple border for settings */}
@@ -159,10 +160,12 @@ export function AppShell({ showWelcome, isSignInScreen, handleChangeOrg }: AppSh
         />
 
         {/* Right Panel (lazy loaded) */}
-        {rightPanelVisible &&
-          rightPanelTabs.length > 0 &&
-          !showWelcome &&
-          activeView !== 'workflows' && (
+        {((activeView === 'items' && !!itemPanel) ||
+          (activeView !== 'items' &&
+            activeView !== 'workflows' &&
+            rightPanelVisible &&
+            rightPanelTabs.length > 0)) &&
+          !showWelcome && (
             <>
               <ResizeHandle
                 direction="horizontal"

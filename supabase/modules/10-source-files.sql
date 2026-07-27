@@ -123,6 +123,14 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
+-- Migration: ensure 'kicked_back' exists on review_status for databases created
+-- before it was added to the CREATE TYPE above. The DO/EXCEPTION block only runs
+-- CREATE TYPE for brand-new databases, so pre-existing enums never received this
+-- value (causing "invalid input value for enum review_status: kicked_back").
+-- ALTER TYPE ... ADD VALUE must be a top-level statement (it cannot run inside a
+-- DO/function block) and IF NOT EXISTS makes it idempotent.
+ALTER TYPE review_status ADD VALUE IF NOT EXISTS 'kicked_back';
+
 -- Advanced workflow enums
 DO $$ BEGIN
   CREATE TYPE state_permission_type AS ENUM (
@@ -210,6 +218,24 @@ DO $$ BEGIN
     "letter_prefix": "",
     "keepout_zones": [],
     "auto_apply_extensions": []
+  }'::jsonb; 
+EXCEPTION WHEN duplicate_column THEN NULL; 
+END $$;
+
+-- Migration: Add item_definition_settings column to organizations
+-- Defines what constitutes an "item" for the Item Browser module:
+--   anyStage / workflowStageIds - which workflow_states qualify (empty + anyStage = all)
+--   anyType / fileTypes - which file_type values qualify (empty + anyType = all)
+--   requirePartNumber - only count files that have a part number
+--   matchOrgFormat - only show item numbers matching the org serialization format
+DO $$ BEGIN 
+  ALTER TABLE organizations ADD COLUMN item_definition_settings JSONB DEFAULT '{
+    "anyStage": true,
+    "workflowStageIds": [],
+    "anyType": true,
+    "fileTypes": [],
+    "requirePartNumber": true,
+    "matchOrgFormat": true
   }'::jsonb; 
 EXCEPTION WHEN duplicate_column THEN NULL; 
 END $$;
@@ -357,6 +383,11 @@ CREATE TABLE IF NOT EXISTS files (
   content_hash TEXT,
   file_size BIGINT DEFAULT 0,
   
+  -- Inspection table content fingerprint (drawings).
+  -- Hash of the inspection_characteristics rows; used to detect inspection edits
+  -- so they trigger a new version on check-in (see checkin_file).
+  inspection_hash TEXT,
+  
   -- Workflow state
   workflow_state_id UUID REFERENCES workflow_states(id),
   state TEXT DEFAULT 'WIP', -- Legacy field for backwards compatibility
@@ -440,6 +471,12 @@ DO $$ BEGIN
 EXCEPTION WHEN others THEN NULL;
 END $$;
 
+-- Migration: Add inspection_hash column to files (inspection table fingerprint)
+DO $$ BEGIN
+  ALTER TABLE files ADD COLUMN inspection_hash TEXT;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
 -- ===========================================
 -- FILE VERSIONS
 -- ===========================================
@@ -456,6 +493,7 @@ CREATE TABLE IF NOT EXISTS file_versions (
   comment TEXT,
   part_number TEXT,      -- Snapshot of part number at time of version
   description TEXT,      -- Snapshot of description at time of version
+  inspection_hash TEXT,  -- Snapshot of inspection table fingerprint at time of version
   created_at TIMESTAMPTZ DEFAULT NOW(),
   created_by UUID NOT NULL REFERENCES users(id),
   
@@ -475,6 +513,12 @@ EXCEPTION WHEN duplicate_column THEN NULL;
 END $$;
 DO $$ BEGIN 
   ALTER TABLE file_versions ADD COLUMN description TEXT; 
+EXCEPTION WHEN duplicate_column THEN NULL; 
+END $$;
+
+-- Migration: Add inspection_hash column to file_versions (inspection table snapshot fingerprint)
+DO $$ BEGIN 
+  ALTER TABLE file_versions ADD COLUMN inspection_hash TEXT; 
 EXCEPTION WHEN duplicate_column THEN NULL; 
 END $$;
 
@@ -603,6 +647,11 @@ CREATE TABLE IF NOT EXISTS workflow_transitions (
 CREATE INDEX IF NOT EXISTS idx_workflow_transitions_workflow_id ON workflow_transitions(workflow_id);
 CREATE INDEX IF NOT EXISTS idx_workflow_transitions_from_state ON workflow_transitions(from_state_id);
 CREATE INDEX IF NOT EXISTS idx_workflow_transitions_to_state ON workflow_transitions(to_state_id);
+
+-- Migration (v64): transitions are single-direction only. Convert any legacy
+-- bidirectional arrowheads to a normal end arrow. Admins should add a separate
+-- transition for the reverse direction. Idempotent.
+UPDATE workflow_transitions SET line_arrow_head = 'end' WHERE line_arrow_head = 'both';
 
 -- ===========================================
 -- WORKFLOW GATES
@@ -2113,7 +2162,9 @@ CREATE OR REPLACE FUNCTION checkin_file(
   p_custom_properties JSONB DEFAULT NULL,
   -- Path/name updates (previously required separate UPDATE query)
   p_new_file_path TEXT DEFAULT NULL,
-  p_new_file_name TEXT DEFAULT NULL
+  p_new_file_name TEXT DEFAULT NULL,
+  -- Inspection table fingerprint (drawings); change triggers a version increment
+  p_inspection_hash TEXT DEFAULT NULL
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -2122,8 +2173,11 @@ AS $$
 DECLARE
   v_file RECORD;
   v_new_version INT;
+  v_new_file_version_id UUID;
   v_content_changed BOOLEAN;
   v_metadata_changed BOOLEAN;
+  v_inspection_changed BOOLEAN;
+  v_current_inspection_hash TEXT;
   v_version_switched BOOLEAN;
   v_path_changed BOOLEAN;
   v_should_increment BOOLEAN;
@@ -2173,6 +2227,40 @@ BEGIN
     (p_custom_properties IS NOT NULL)  -- custom_properties change triggers version
   );
   
+  -- Inspection table edits trigger a version increment (no binary re-upload required).
+  -- The authoritative fingerprint is computed server-side from the live inspection rows so
+  -- any edit made during the checkout session is detected automatically at check-in. A
+  -- caller may still override it via p_inspection_hash. NULL means "no inspection table".
+  SELECT md5(string_agg(
+    coalesce(sort_order::text, '') || '|' ||
+    coalesce(balloon_number, '') || '|' ||
+    coalesce(char_id, '') || '|' ||
+    coalesce(zone, '') || '|' ||
+    coalesce(char_type, '') || '|' ||
+    coalesce(sub_type, '') || '|' ||
+    coalesce(nominal_value, '') || '|' ||
+    coalesce(unit, '') || '|' ||
+    coalesce(plus_tolerance, '') || '|' ||
+    coalesce(minus_tolerance, '') || '|' ||
+    coalesce(upper_limit, '') || '|' ||
+    coalesce(lower_limit, '') || '|' ||
+    coalesce(classification, '') || '|' ||
+    coalesce(inspection_method, '') || '|' ||
+    coalesce(operation, '') || '|' ||
+    coalesce(aql, '') || '|' ||
+    coalesce(sample_size::text, '') || '|' ||
+    coalesce(supplier_inspection_rate::text, '') || '|' ||
+    coalesce(internal_inspection_rate::text, '') || '|' ||
+    coalesce(reference, '') || '|' ||
+    coalesce(comments, ''),
+    chr(10) ORDER BY sort_order, id))
+  INTO v_current_inspection_hash
+  FROM inspection_characteristics
+  WHERE file_id = p_file_id;
+  
+  v_current_inspection_hash := COALESCE(p_inspection_hash, v_current_inspection_hash);
+  v_inspection_changed := (v_current_inspection_hash IS DISTINCT FROM v_file.inspection_hash);
+  
   -- Path/name changes now handled in RPC (eliminates separate UPDATE query)
   v_path_changed := (
     (p_new_file_path IS NOT NULL AND p_new_file_path IS DISTINCT FROM v_file.file_path) OR
@@ -2209,7 +2297,7 @@ BEGIN
   -- 1. There are actual changes (content, metadata, or version switch)
   -- 2. We're not restoring an exact previous version
   -- 3. No version was already created during this checkout session
-  v_should_increment := (v_content_changed OR v_metadata_changed OR v_version_switched) 
+  v_should_increment := (v_content_changed OR v_metadata_changed OR v_inspection_changed OR v_version_switched) 
                         AND NOT v_restoring_exact_version
                         AND v_versions_created_during_checkout = 0;
   
@@ -2243,6 +2331,7 @@ BEGIN
     part_number = COALESCE(p_part_number, part_number),
     description = COALESCE(p_description, description),
     revision = COALESCE(p_revision, revision),
+    inspection_hash = v_current_inspection_hash,
     custom_properties = v_merged_custom_props,
     version = v_new_version,
     file_path = COALESCE(p_new_file_path, file_path),
@@ -2253,7 +2342,7 @@ BEGIN
   
   -- Create version record ONLY if version incremented
   IF v_should_increment THEN
-    INSERT INTO file_versions (file_id, version, revision, content_hash, file_size, workflow_state_id, state, created_by, comment, part_number, description)
+    INSERT INTO file_versions (file_id, version, revision, content_hash, file_size, workflow_state_id, state, created_by, comment, part_number, description, inspection_hash)
     SELECT p_file_id, v_new_version, 
            COALESCE(p_revision, v_file.revision),
            COALESCE(p_new_content_hash, v_file.content_hash),
@@ -2263,7 +2352,25 @@ BEGIN
            p_user_id, 
            p_comment,
            COALESCE(p_part_number, v_file.part_number),  -- Snapshot current or new part_number
-           COALESCE(p_description, v_file.description);  -- Snapshot current or new description
+           COALESCE(p_description, v_file.description),  -- Snapshot current or new description
+           v_current_inspection_hash  -- Snapshot inspection fingerprint
+    RETURNING id INTO v_new_file_version_id;
+
+    -- Snapshot the live inspection table into the immutable per-version table so the
+    -- inspection characteristics can be reconstructed exactly as they were at this version.
+    INSERT INTO inspection_characteristic_versions (
+      file_version_id, org_id, sort_order, balloon_number, char_id, zone,
+      char_type, sub_type, nominal_value, unit, plus_tolerance, minus_tolerance,
+      upper_limit, lower_limit, classification, inspection_method, operation,
+      aql, sample_size, supplier_inspection_rate, internal_inspection_rate, reference, comments
+    )
+    SELECT
+      v_new_file_version_id, org_id, sort_order, balloon_number, char_id, zone,
+      char_type, sub_type, nominal_value, unit, plus_tolerance, minus_tolerance,
+      upper_limit, lower_limit, classification, inspection_method, operation,
+      aql, sample_size, supplier_inspection_rate, internal_inspection_rate, reference, comments
+    FROM inspection_characteristics
+    WHERE file_id = p_file_id;
   END IF;
   
   -- Log activity
@@ -2279,6 +2386,7 @@ BEGIN
     jsonb_build_object(
       'content_changed', v_content_changed,
       'metadata_changed', v_metadata_changed,
+      'inspection_changed', v_inspection_changed,
       'version_incremented', v_should_increment,
       'version_restored', v_restoring_exact_version,
       'old_version', v_file.version,
@@ -2308,6 +2416,7 @@ BEGIN
     'new_version', v_new_version,
     'content_changed', v_content_changed,
     'metadata_changed', v_metadata_changed,
+    'inspection_changed', v_inspection_changed,
     'version_incremented', v_should_increment
   )
   INTO v_result
@@ -2317,8 +2426,8 @@ BEGIN
 END;
 $$;
 
--- Grant for signature with custom_properties, file_path, file_name parameters
-GRANT EXECUTE ON FUNCTION checkin_file(UUID, UUID, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, INT, JSONB, TEXT, TEXT) TO authenticated;
+-- Grant for signature with custom_properties, file_path, file_name, inspection_hash parameters
+GRANT EXECUTE ON FUNCTION checkin_file(UUID, UUID, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, INT, JSONB, TEXT, TEXT, TEXT) TO authenticated;
 
 -- ===========================================
 -- REALTIME
@@ -2522,6 +2631,388 @@ END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 GRANT EXECUTE ON FUNCTION update_serialization_settings_safe(UUID, JSONB) TO authenticated;
+
+-- ===========================================
+-- ITEM DEFINITION FUNCTIONS (Item Browser)
+-- ===========================================
+
+-- Get the org's item definition settings (returns defaults if unset)
+DROP FUNCTION IF EXISTS get_item_definition_settings(UUID) CASCADE;
+CREATE OR REPLACE FUNCTION get_item_definition_settings(p_org_id UUID)
+RETURNS JSONB AS $$
+DECLARE
+  settings JSONB;
+BEGIN
+  SELECT item_definition_settings INTO settings
+  FROM organizations WHERE id = p_org_id;
+
+  RETURN COALESCE(settings, '{
+    "anyStage": true,
+    "workflowStageIds": [],
+    "anyType": true,
+    "fileTypes": [],
+    "requirePartNumber": true,
+    "matchOrgFormat": true
+  }'::jsonb);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION get_item_definition_settings(UUID) TO authenticated;
+
+-- Update the org's item definition settings
+DROP FUNCTION IF EXISTS update_item_definition_settings(UUID, JSONB) CASCADE;
+CREATE OR REPLACE FUNCTION update_item_definition_settings(
+  p_org_id UUID,
+  p_settings JSONB
+)
+RETURNS BOOLEAN AS $$
+BEGIN
+  UPDATE organizations
+  SET item_definition_settings = p_settings
+  WHERE id = p_org_id;
+
+  RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION update_item_definition_settings(UUID, JSONB) TO authenticated;
+
+-- ===========================================
+-- ITEM IMAGES (Item Browser per-item visual override)
+-- ===========================================
+
+-- Per-item (part_number) image override, shared org-wide. The absence of a row
+-- means the item falls back to the default SolidWorks preview.
+CREATE TABLE IF NOT EXISTS item_images (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  part_number TEXT NOT NULL,
+  image_type TEXT NOT NULL DEFAULT 'preview' CHECK (image_type IN ('preview', 'icon', 'image')),
+  icon_name TEXT,
+  icon_color TEXT,
+  image_storage_path TEXT,
+  updated_by UUID REFERENCES users(id),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+
+  UNIQUE(org_id, part_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_item_images_org_id ON item_images(org_id);
+
+ALTER TABLE item_images ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can view org item images" ON item_images;
+CREATE POLICY "Users can view org item images"
+  ON item_images FOR SELECT
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+DROP POLICY IF EXISTS "Members can insert item images" ON item_images;
+CREATE POLICY "Members can insert item images"
+  ON item_images FOR INSERT
+  WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('module:items', 'edit'));
+
+DROP POLICY IF EXISTS "Members can update item images" ON item_images;
+CREATE POLICY "Members can update item images"
+  ON item_images FOR UPDATE
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('module:items', 'edit'));
+
+DROP POLICY IF EXISTS "Members can delete item images" ON item_images;
+CREATE POLICY "Members can delete item images"
+  ON item_images FOR DELETE
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('module:items', 'edit'));
+
+-- Get all per-item image overrides for an org (preview items have no row)
+DROP FUNCTION IF EXISTS get_item_images(UUID) CASCADE;
+CREATE OR REPLACE FUNCTION get_item_images(p_org_id UUID)
+RETURNS SETOF item_images AS $$
+BEGIN
+  RETURN QUERY
+  SELECT * FROM item_images WHERE org_id = p_org_id;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION get_item_images(UUID) TO authenticated;
+
+-- Upsert a per-item image override (icon or uploaded image)
+DROP FUNCTION IF EXISTS upsert_item_image(UUID, TEXT, TEXT, TEXT, TEXT, TEXT) CASCADE;
+CREATE OR REPLACE FUNCTION upsert_item_image(
+  p_org_id UUID,
+  p_part_number TEXT,
+  p_image_type TEXT,
+  p_icon_name TEXT DEFAULT NULL,
+  p_icon_color TEXT DEFAULT NULL,
+  p_image_storage_path TEXT DEFAULT NULL
+)
+RETURNS item_images AS $$
+DECLARE
+  v_row item_images;
+BEGIN
+  IF p_org_id NOT IN (SELECT org_id FROM users WHERE id = auth.uid()) THEN
+    RAISE EXCEPTION 'Not authorized for this organization';
+  END IF;
+
+  INSERT INTO item_images (
+    org_id, part_number, image_type, icon_name, icon_color, image_storage_path, updated_by, updated_at
+  )
+  VALUES (
+    p_org_id, p_part_number, p_image_type, p_icon_name, p_icon_color, p_image_storage_path, auth.uid(), NOW()
+  )
+  ON CONFLICT (org_id, part_number) DO UPDATE
+    SET image_type = EXCLUDED.image_type,
+        icon_name = EXCLUDED.icon_name,
+        icon_color = EXCLUDED.icon_color,
+        image_storage_path = EXCLUDED.image_storage_path,
+        updated_by = auth.uid(),
+        updated_at = NOW()
+  RETURNING * INTO v_row;
+
+  RETURN v_row;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION upsert_item_image(UUID, TEXT, TEXT, TEXT, TEXT, TEXT) TO authenticated;
+
+-- Remove a per-item image override (revert to the default SolidWorks preview)
+DROP FUNCTION IF EXISTS reset_item_image(UUID, TEXT) CASCADE;
+CREATE OR REPLACE FUNCTION reset_item_image(
+  p_org_id UUID,
+  p_part_number TEXT
+)
+RETURNS BOOLEAN AS $$
+BEGIN
+  IF p_org_id NOT IN (SELECT org_id FROM users WHERE id = auth.uid()) THEN
+    RAISE EXCEPTION 'Not authorized for this organization';
+  END IF;
+
+  DELETE FROM item_images WHERE org_id = p_org_id AND part_number = p_part_number;
+  RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION reset_item_image(UUID, TEXT) TO authenticated;
+
+-- ===========================================
+-- ITEM DESIGNATIONS (Item Browser part/assembly classification)
+-- ===========================================
+
+-- Org-configurable list of item designations (e.g. Part, Assembly, Packed
+-- Assembly). Admins manage the list from Settings; every org is seeded with a
+-- default set on first read (see get_item_designations).
+CREATE TABLE IF NOT EXISTS item_designations (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  created_by UUID REFERENCES users(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_item_designations_org_id ON item_designations(org_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_item_designations_org_name
+  ON item_designations(org_id, lower(name));
+
+ALTER TABLE item_designations ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can view org item designations" ON item_designations;
+CREATE POLICY "Users can view org item designations"
+  ON item_designations FOR SELECT
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+DROP POLICY IF EXISTS "Admins manage item designations" ON item_designations;
+CREATE POLICY "Admins manage item designations"
+  ON item_designations FOR ALL
+  USING (
+    org_id IN (SELECT org_id FROM users WHERE id = auth.uid())
+    AND (is_org_admin() OR user_has_team_permission('system:item-designations', 'edit'))
+  )
+  WITH CHECK (
+    org_id IN (SELECT org_id FROM users WHERE id = auth.uid())
+    AND (is_org_admin() OR user_has_team_permission('system:item-designations', 'edit'))
+  );
+
+-- Per-item designation assignment (override of the type-derived default),
+-- keyed by vault + part number. Absence of a row means the default applies.
+CREATE TABLE IF NOT EXISTS item_designation_assignments (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  vault_id UUID NOT NULL REFERENCES vaults(id) ON DELETE CASCADE,
+  part_number TEXT NOT NULL,
+  designation_id UUID NOT NULL REFERENCES item_designations(id) ON DELETE CASCADE,
+  updated_by UUID REFERENCES users(id),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+
+  UNIQUE(org_id, vault_id, part_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_item_designation_assignments_org
+  ON item_designation_assignments(org_id, vault_id);
+
+ALTER TABLE item_designation_assignments ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Users can view org designation assignments" ON item_designation_assignments;
+CREATE POLICY "Users can view org designation assignments"
+  ON item_designation_assignments FOR SELECT
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+DROP POLICY IF EXISTS "Permitted users manage designation assignments" ON item_designation_assignments;
+CREATE POLICY "Permitted users manage designation assignments"
+  ON item_designation_assignments FOR ALL
+  USING (
+    org_id IN (SELECT org_id FROM users WHERE id = auth.uid())
+    AND (is_org_admin() OR user_has_team_permission('system:item-designations', 'edit'))
+  )
+  WITH CHECK (
+    org_id IN (SELECT org_id FROM users WHERE id = auth.uid())
+    AND (is_org_admin() OR user_has_team_permission('system:item-designations', 'edit'))
+  );
+
+-- List the org's item designations, seeding defaults on first access.
+DROP FUNCTION IF EXISTS get_item_designations(UUID) CASCADE;
+CREATE OR REPLACE FUNCTION get_item_designations(p_org_id UUID)
+RETURNS SETOF item_designations AS $$
+BEGIN
+  IF p_org_id NOT IN (SELECT org_id FROM users WHERE id = auth.uid()) THEN
+    RAISE EXCEPTION 'Not authorized for this organization';
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM item_designations WHERE org_id = p_org_id) THEN
+    INSERT INTO item_designations (org_id, name, sort_order, created_by)
+    VALUES
+      (p_org_id, 'Part', 0, auth.uid()),
+      (p_org_id, 'Assembly', 1, auth.uid()),
+      (p_org_id, 'Packed Assembly', 2, auth.uid())
+    ON CONFLICT DO NOTHING;
+  END IF;
+
+  RETURN QUERY
+  SELECT * FROM item_designations
+  WHERE org_id = p_org_id
+  ORDER BY sort_order, name;
+END;
+$$ LANGUAGE plpgsql VOLATILE SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION get_item_designations(UUID) TO authenticated;
+
+-- Create or update an item designation (admin or system:item-designations edit).
+DROP FUNCTION IF EXISTS upsert_item_designation(UUID, TEXT, UUID, INTEGER) CASCADE;
+CREATE OR REPLACE FUNCTION upsert_item_designation(
+  p_org_id UUID,
+  p_name TEXT,
+  p_id UUID DEFAULT NULL,
+  p_sort_order INTEGER DEFAULT NULL
+)
+RETURNS item_designations AS $$
+DECLARE
+  v_row item_designations;
+  v_sort INTEGER;
+BEGIN
+  IF p_org_id NOT IN (SELECT org_id FROM users WHERE id = auth.uid())
+     OR NOT (is_org_admin() OR user_has_team_permission('system:item-designations', 'edit')) THEN
+    RAISE EXCEPTION 'Not authorized to manage item designations';
+  END IF;
+
+  IF p_id IS NULL THEN
+    v_sort := COALESCE(
+      p_sort_order,
+      (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM item_designations WHERE org_id = p_org_id)
+    );
+    INSERT INTO item_designations (org_id, name, sort_order, created_by)
+    VALUES (p_org_id, p_name, v_sort, auth.uid())
+    RETURNING * INTO v_row;
+  ELSE
+    UPDATE item_designations
+    SET name = p_name,
+        sort_order = COALESCE(p_sort_order, sort_order)
+    WHERE id = p_id AND org_id = p_org_id
+    RETURNING * INTO v_row;
+  END IF;
+
+  RETURN v_row;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION upsert_item_designation(UUID, TEXT, UUID, INTEGER) TO authenticated;
+
+-- Delete an item designation (admin or system:item-designations edit).
+DROP FUNCTION IF EXISTS delete_item_designation(UUID, UUID) CASCADE;
+CREATE OR REPLACE FUNCTION delete_item_designation(
+  p_org_id UUID,
+  p_id UUID
+)
+RETURNS BOOLEAN AS $$
+BEGIN
+  IF p_org_id NOT IN (SELECT org_id FROM users WHERE id = auth.uid())
+     OR NOT (is_org_admin() OR user_has_team_permission('system:item-designations', 'edit')) THEN
+    RAISE EXCEPTION 'Not authorized to manage item designations';
+  END IF;
+
+  DELETE FROM item_designations WHERE id = p_id AND org_id = p_org_id;
+  RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION delete_item_designation(UUID, UUID) TO authenticated;
+
+-- Load all per-item designation assignments for a vault.
+DROP FUNCTION IF EXISTS get_item_designation_assignments(UUID, UUID) CASCADE;
+CREATE OR REPLACE FUNCTION get_item_designation_assignments(
+  p_org_id UUID,
+  p_vault_id UUID
+)
+RETURNS SETOF item_designation_assignments AS $$
+BEGIN
+  IF p_org_id NOT IN (SELECT org_id FROM users WHERE id = auth.uid()) THEN
+    RAISE EXCEPTION 'Not authorized for this organization';
+  END IF;
+
+  RETURN QUERY
+  SELECT * FROM item_designation_assignments
+  WHERE org_id = p_org_id AND vault_id = p_vault_id;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION get_item_designation_assignments(UUID, UUID) TO authenticated;
+
+-- Set (or clear, when p_designation_id is NULL) an item's designation override.
+DROP FUNCTION IF EXISTS set_item_designation_assignment(UUID, UUID, TEXT, UUID) CASCADE;
+CREATE OR REPLACE FUNCTION set_item_designation_assignment(
+  p_org_id UUID,
+  p_vault_id UUID,
+  p_part_number TEXT,
+  p_designation_id UUID DEFAULT NULL
+)
+RETURNS item_designation_assignments AS $$
+DECLARE
+  v_row item_designation_assignments;
+BEGIN
+  IF p_org_id NOT IN (SELECT org_id FROM users WHERE id = auth.uid())
+     OR NOT (is_org_admin() OR user_has_team_permission('system:item-designations', 'edit')) THEN
+    RAISE EXCEPTION 'Not authorized to edit item designations';
+  END IF;
+
+  IF p_designation_id IS NULL THEN
+    DELETE FROM item_designation_assignments
+    WHERE org_id = p_org_id AND vault_id = p_vault_id AND part_number = p_part_number;
+    RETURN NULL;
+  END IF;
+
+  INSERT INTO item_designation_assignments (
+    org_id, vault_id, part_number, designation_id, updated_by, updated_at
+  )
+  VALUES (
+    p_org_id, p_vault_id, p_part_number, p_designation_id, auth.uid(), NOW()
+  )
+  ON CONFLICT (org_id, vault_id, part_number) DO UPDATE
+    SET designation_id = EXCLUDED.designation_id,
+        updated_by = auth.uid(),
+        updated_at = NOW()
+  RETURNING * INTO v_row;
+
+  RETURN v_row;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION set_item_designation_assignment(UUID, UUID, TEXT, UUID) TO authenticated;
 
 -- ===========================================
 -- PERFORMANCE: Fast Vault File Queries

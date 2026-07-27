@@ -57,6 +57,12 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_column THEN NULL; 
 END $$;
 
+-- Google Drive folder holding inspection sheet templates (FAIR / incoming material review)
+DO $$ BEGIN 
+  ALTER TABLE organizations ADD COLUMN google_drive_inspection_template_folder_id TEXT; 
+EXCEPTION WHEN duplicate_column THEN NULL; 
+END $$;
+
 -- ===========================================
 -- ORGANIZATION INTEGRATIONS
 -- ===========================================
@@ -459,8 +465,10 @@ LANGUAGE sql STABLE AS $$
 $$;
 
 -- Google Drive settings (only if user is in org)
+-- Recreate to add inspection_template_folder_id to the return signature
+DROP FUNCTION IF EXISTS get_google_drive_settings(UUID);
 CREATE OR REPLACE FUNCTION get_google_drive_settings(p_org_id UUID)
-RETURNS TABLE (client_id TEXT, client_secret TEXT, enabled BOOLEAN) 
+RETURNS TABLE (client_id TEXT, client_secret TEXT, enabled BOOLEAN, inspection_template_folder_id TEXT) 
 SECURITY DEFINER AS $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM users WHERE id = auth.uid() AND org_id = p_org_id) THEN
@@ -468,13 +476,16 @@ BEGIN
   END IF;
   
   RETURN QUERY
-  SELECT o.google_drive_client_id, o.google_drive_client_secret, o.google_drive_enabled
+  SELECT o.google_drive_client_id, o.google_drive_client_secret, o.google_drive_enabled,
+         o.google_drive_inspection_template_folder_id
   FROM organizations o WHERE o.id = p_org_id;
 END;
 $$ LANGUAGE plpgsql;
 
+DROP FUNCTION IF EXISTS update_google_drive_settings(UUID, TEXT, TEXT, BOOLEAN);
 CREATE OR REPLACE FUNCTION update_google_drive_settings(
-  p_org_id UUID, p_client_id TEXT, p_client_secret TEXT, p_enabled BOOLEAN
+  p_org_id UUID, p_client_id TEXT, p_client_secret TEXT, p_enabled BOOLEAN,
+  p_inspection_template_folder_id TEXT DEFAULT NULL
 ) RETURNS BOOLEAN SECURITY DEFINER AS $$
 DECLARE
   v_user_role TEXT;
@@ -492,7 +503,8 @@ BEGIN
   UPDATE organizations
   SET google_drive_client_id = p_client_id,
       google_drive_client_secret = p_client_secret,
-      google_drive_enabled = p_enabled
+      google_drive_enabled = p_enabled,
+      google_drive_inspection_template_folder_id = p_inspection_template_folder_id
   WHERE id = p_org_id;
   
   RETURN TRUE;
@@ -500,7 +512,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 GRANT EXECUTE ON FUNCTION get_google_drive_settings(UUID) TO authenticated;
-GRANT EXECUTE ON FUNCTION update_google_drive_settings(UUID, TEXT, TEXT, BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION update_google_drive_settings(UUID, TEXT, TEXT, BOOLEAN, TEXT) TO authenticated;
 
 -- ===========================================
 -- TRIGGERS

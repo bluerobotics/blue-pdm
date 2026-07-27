@@ -4,6 +4,29 @@ All notable changes to BluePLM will be documented in this file.
 
 ![1774273238438](image/CHANGELOG/1774273238438.png)
 
+## [3.22.0] - Unreleased
+
+### Added
+- **Copy Item Number / Description via highlight box** — a slow double-click on a non-editable Item Number or Description cell now opens a read-only, auto-selected highlight box (mirroring the Name column) so the value can be copied cleanly. Editing stays gated on checkout, and a fast double-click still opens the file.
+- **Pending panel scrolls the file into view** — clicking a file in the Pending panel (Open Files, checked out, new files) selected it but didn't scroll it into view. It now reuses the existing `pendingScrollToFile` mechanism so the file list scrolls to the selected file.
+- **SolidWorks service status indicator in the top bar** — a CAD glyph next to the org/online-users cluster shows the live service state: a spinner while connecting, a green check when running (with Document Manager), yellow for DM-only, red when stopped, gray when unconfigured. Hover shows service stats (running, SolidWorks installed, DM availability, version, queue depth) and clicking opens Settings → SolidWorks. Toggle it via the top-bar config dropdown ("SolidWorks Status").
+- **Keep SolidWorks warm in the background (organization-wide)** — an admin setting that pre-launches a hidden SolidWorks instance so the first property edit is instant instead of paying a ~40s cold-start. No window is shown. Default on, switchable off per organization.
+
+### Changed
+- **SolidWorks service now starts from the Electron main process at app launch** — the service is launched in parallel with the renderer's initial vault load using a cached auto-start policy, so it's ready in ~2s instead of waiting behind the boot work. The renderer's auto-start becomes an idempotent confirmation. (Takes effect from the second launch after upgrading, once the policy cache is written.)
+
+### Fixed
+- **SolidWorks service booted ~22s late and status was stuck on "not running"** — on large vaults the renderer thread was saturated by the initial vault load (tens of thousands of IndexedDB sync/inode/version reads plus a synchronous file merge), which starved the renderer-driven service auto-start; meanwhile status polling was suppressed for the whole window, so the UI showed a stale "not running." The service now starts from the main process at app-ready (see Changed), and auto-start surfaces a "connecting" state instead of freezing on the last value.
+- **Top-bar toggles reset to defaults for pre-existing configs** — the store's rehydrate merge replaced the entire persisted `topbarConfig`, so newly added toggles (e.g. the SolidWorks Status indicator) resolved to `undefined` and were hidden. The merge now layers the saved config over the defaults so new toggles backfill correctly.
+- **File explorer column order not persisted across restarts** — column widths and visibility already persisted, but the store's rehydrate merge rebuilt columns in the default order and dropped the user's saved ordering. Columns are now rebuilt in the persisted order, with any new built-in columns appended at the end.
+- **Column resize triggered a sort** — releasing the resize handle fired a click on the header that sorted the column. The resize interaction is now flagged so the trailing sort click is skipped (header click still sorts, drag-to-reorder still works).
+- **PDF comments — can't type spaces in a reply or edit** — the comment thread wrapper is a `role="button"` element that calls `preventDefault()` on Space/Enter so it can be keyboard-activated, but the reply and edit textareas are nested inside it. Every keystroke bubbled up to the wrapper, so Space was swallowed (no space character inserted) and Enter doubled as a thread click. The wrapper's `onKeyDown` now ignores events that originate from nested inputs (`e.target !== e.currentTarget`).
+- **PDF comments — editing or deleting a reply did nothing in the UI** — the annotations store holds a threaded tree, but `updateAnnotationInStore` and `removeAnnotation` only scanned top-level threads, so optimistic edits/deletes of nested replies (and realtime reply deletions from other users) silently missed and the stale reply stayed on screen until a full reload. Both now recurse into nested `replies`.
+- **PDF comments — a failed reply discarded the typed text** — `handleReply` swallowed save errors, so the input closed and cleared even when the reply failed to persist. It now surfaces the error and keeps the input open with the text intact for retry.
+- **Review kickback — "invalid input value for enum review_status: kicked_back"** — the `kicked_back` value was added to the `review_status` enum (schema v55) by editing the `CREATE TYPE` statement, which only runs for brand-new databases; pre-existing databases never received the value, so kicking a review back failed. Added an idempotent `ALTER TYPE review_status ADD VALUE IF NOT EXISTS 'kicked_back'` backfill that repairs existing databases.
+
+---
+
 ## [3.21.0] - 2026-06-16
 
 ### Changed

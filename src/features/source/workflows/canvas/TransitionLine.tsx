@@ -37,6 +37,10 @@ export interface TransitionLineProps {
   labelOffset: Point | null
   pinnedLabelPosition: Point | null
 
+  // Perpendicular offset applied when an opposite-direction transition exists,
+  // so A->B and B->A render as two clearly separated lines instead of overlapping.
+  parallelOffset?: number
+
   // Curve control state
   draggingCurveControl: string | null
   draggingWaypointIndex: number | null
@@ -49,9 +53,9 @@ export interface TransitionLineProps {
   // Mouse position
   mousePos: Point
 
-  // Canvas transform
-  pan: Point
-  zoom: number
+  // Canvas transform - viewport read via ref so panning/zooming does not
+  // re-render every transition; handlers use the always-current value.
+  viewportRef: React.RefObject<{ pan: Point; zoom: number }>
   canvasRef: React.RefObject<HTMLDivElement | null>
 
   // Event handlers
@@ -65,11 +69,11 @@ export interface TransitionLineProps {
     startEdge: string,
     endEdge: string,
   ) => void
-  onShowWaypointContextMenu: (e: React.MouseEvent, clickX: number, clickY: number) => void
+  onShowContextMenu: (clientX: number, clientY: number, canvasX: number, canvasY: number) => void
   addToast: (type: 'success' | 'error' | 'info', message: string) => void
 }
 
-export function TransitionLine({
+function TransitionLineComponent({
   transition,
   states,
   gates,
@@ -86,20 +90,20 @@ export function TransitionLine({
   waypoints: storedWaypoints,
   labelOffset: storedLabelOffset,
   pinnedLabelPosition: pinnedPosition,
+  parallelOffset = 0,
   draggingCurveControl,
   draggingWaypointIndex,
   tempCurvePos,
   draggingLabel,
   tempLabelPos,
   mousePos,
-  pan,
-  zoom,
+  viewportRef,
   canvasRef,
   onSelect,
   onHoverChange,
   onShowToolbar,
   onAddWaypoint,
-  onShowWaypointContextMenu,
+  onShowContextMenu,
   addToast,
 }: TransitionLineProps) {
   const fromState = states.find((s) => s.id === transition.from_state_id)
@@ -225,10 +229,26 @@ export function TransitionLine({
     endPoint = fixedEndPoint
   }
 
-  const startX = startPoint.x
-  const startY = startPoint.y
-  const endX = endPoint.x
-  const endY = endPoint.y
+  let startX = startPoint.x
+  let startY = startPoint.y
+  let endX = endPoint.x
+  let endY = endPoint.y
+
+  // Separate opposing transitions (A->B and B->A) by shifting the whole line
+  // perpendicular to its direction so the two never overlap.
+  if (parallelOffset !== 0 && draggingEndpoint === null) {
+    const dx = endX - startX
+    const dy = endY - startY
+    const len = Math.hypot(dx, dy)
+    if (len > 0.0001) {
+      const perpX = -dy / len
+      const perpY = dx / len
+      startX += perpX * parallelOffset
+      startY += perpY * parallelOffset
+      endX += perpX * parallelOffset
+      endY += perpY * parallelOffset
+    }
+  }
 
   // Line midpoint
   const lineMidX = (startX + endX) / 2
@@ -255,10 +275,13 @@ export function TransitionLine({
     effectiveWaypoints[draggingWaypointIndex] = { x: tempCurvePos.x, y: tempCurvePos.y }
   }
 
-  // Generate path based on path type
+  // Generate path based on path type. While actively dragging an endpoint, draw
+  // a straight rubber-band line to the cursor so the arrowhead always points
+  // along the drag direction (a curved preview with a fixed perpendicular stub
+  // can make the auto-oriented arrow appear to reverse).
   const start = { x: startX, y: startY, edge: startPoint.edge }
   const end = { x: endX, y: endY, edge: endPoint.edge }
-  const pathType = transition.line_path_type || 'spline'
+  const pathType = draggingEndpoint !== null ? 'straight' : transition.line_path_type || 'spline'
 
   let pathD: string
   let curveMid: { x: number; y: number }
@@ -419,18 +442,14 @@ export function TransitionLine({
   let markerEnd: string | undefined
 
   if (isSelected || isDraggingThisTransition) {
-    if (arrowHead === 'end' || arrowHead === 'both') markerEnd = 'url(#arrowhead-selected)'
-    if (arrowHead === 'start' || arrowHead === 'both')
-      markerStart = 'url(#arrowhead-start-selected)'
+    if (arrowHead === 'end') markerEnd = 'url(#arrowhead-selected)'
+    if (arrowHead === 'start') markerStart = 'url(#arrowhead-start-selected)'
   } else if (isHoveredLine) {
-    if (arrowHead === 'end' || arrowHead === 'both')
-      markerEnd = `url(#arrowhead-hover-${transition.id})`
-    if (arrowHead === 'start' || arrowHead === 'both')
-      markerStart = `url(#arrowhead-start-hover-${transition.id})`
+    if (arrowHead === 'end') markerEnd = `url(#arrowhead-hover-${transition.id})`
+    if (arrowHead === 'start') markerStart = `url(#arrowhead-start-hover-${transition.id})`
   } else {
-    if (arrowHead === 'end' || arrowHead === 'both') markerEnd = `url(#arrowhead-${transition.id})`
-    if (arrowHead === 'start' || arrowHead === 'both')
-      markerStart = `url(#arrowhead-start-${transition.id})`
+    if (arrowHead === 'end') markerEnd = `url(#arrowhead-${transition.id})`
+    if (arrowHead === 'start') markerStart = `url(#arrowhead-start-${transition.id})`
   }
 
   const handleClick = (e: React.MouseEvent) => {
@@ -446,6 +465,7 @@ export function TransitionLine({
     const rect = canvasRef.current?.getBoundingClientRect()
     if (!rect) return
 
+    const { pan, zoom } = viewportRef.current ?? { pan: { x: 0, y: 0 }, zoom: 1 }
     const clickX = (e.clientX - rect.left - pan.x) / zoom
     const clickY = (e.clientY - rect.top - pan.y) / zoom
 
@@ -459,12 +479,11 @@ export function TransitionLine({
     onSelect()
 
     const rect = canvasRef.current?.getBoundingClientRect()
-    if (!rect) return
+    const { pan, zoom } = viewportRef.current ?? { pan: { x: 0, y: 0 }, zoom: 1 }
+    const clickX = rect ? (e.clientX - rect.left - pan.x) / zoom : 0
+    const clickY = rect ? (e.clientY - rect.top - pan.y) / zoom : 0
 
-    const clickX = (e.clientX - rect.left - pan.x) / zoom
-    const clickY = (e.clientY - rect.top - pan.y) / zoom
-
-    onShowWaypointContextMenu(e, clickX, clickY)
+    onShowContextMenu(e.clientX, e.clientY, clickX, clickY)
   }
 
   return (
@@ -570,4 +589,89 @@ export function TransitionLine({
     </g>
   )
 }
+
+function pointEqual(a: Point | null, b: Point | null): boolean {
+  if (a === b) return true
+  if (!a || !b) return false
+  return a.x === b.x && a.y === b.y
+}
+
+function pointArraysEqual(a: Point[], b: Point[]): boolean {
+  if (a === b) return true
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].x !== b[i].x || a[i].y !== b[i].y) return false
+  }
+  return true
+}
+
+/**
+ * Re-render a transition only when something that affects its rendering changes.
+ * The viewport (pan/zoom) is read via ref, so panning/zooming never re-renders
+ * edges. During a node drag only the moved node's endpoints change reference, so
+ * only the connected edges re-render.
+ */
+function transitionPropsEqual(prev: TransitionLineProps, next: TransitionLineProps): boolean {
+  const t = next.transition
+  if (prev.transition !== t) return false
+  if (prev.isSelected !== next.isSelected) return false
+  if (prev.isDragging !== next.isDragging) return false
+  if (prev.draggingEndpoint !== next.draggingEndpoint) return false
+  if (prev.isAdmin !== next.isAdmin) return false
+  if (prev.parallelOffset !== next.parallelOffset) return false
+
+  // Hover color only matters when this line is the hovered one.
+  if ((prev.hoveredTransitionId === t.id) !== (next.hoveredTransitionId === t.id)) return false
+
+  // Gate badge count.
+  if (prev.gates.length !== next.gates.length) return false
+
+  // Endpoint state objects (positions) - changes only for connected nodes.
+  const pf = prev.states.find((s) => s.id === t.from_state_id)
+  const nf = next.states.find((s) => s.id === t.from_state_id)
+  if (pf !== nf) return false
+  const pt = prev.states.find((s) => s.id === t.to_state_id)
+  const nt = next.states.find((s) => s.id === t.to_state_id)
+  if (pt !== nt) return false
+
+  // Endpoint dimensions.
+  if (prev.stateDimensions[t.from_state_id] !== next.stateDimensions[t.from_state_id]) return false
+  if (prev.stateDimensions[t.to_state_id] !== next.stateDimensions[t.to_state_id]) return false
+
+  // Custom edge anchor positions for this transition.
+  if (prev.edgePositions[`${t.id}-start`] !== next.edgePositions[`${t.id}-start`]) return false
+  if (prev.edgePositions[`${t.id}-end`] !== next.edgePositions[`${t.id}-end`]) return false
+
+  // Label positioning.
+  if (prev.labelOffset !== next.labelOffset) return false
+  if (prev.pinnedLabelPosition !== next.pinnedLabelPosition) return false
+
+  // Stored waypoints.
+  if (!pointArraysEqual(prev.waypoints, next.waypoints)) return false
+
+  // Live waypoint drag only affects the edge being dragged.
+  const prevCurve = prev.draggingCurveControl === t.id
+  const nextCurve = next.draggingCurveControl === t.id
+  if (prevCurve !== nextCurve) return false
+  if (nextCurve) {
+    if (prev.draggingWaypointIndex !== next.draggingWaypointIndex) return false
+    if (!pointEqual(prev.tempCurvePos, next.tempCurvePos)) return false
+  }
+
+  // Live label drag only affects the edge being dragged.
+  const prevLabel = prev.draggingLabel === t.id
+  const nextLabel = next.draggingLabel === t.id
+  if (prevLabel !== nextLabel) return false
+  if (nextLabel && !pointEqual(prev.tempLabelPos, next.tempLabelPos)) return false
+
+  // Endpoint drag previews follow the cursor / hovered target.
+  if (next.draggingEndpoint !== null) {
+    if (!pointEqual(prev.mousePos, next.mousePos)) return false
+    if (prev.hoveredStateId !== next.hoveredStateId) return false
+  }
+
+  return true
+}
+
+export const TransitionLine = React.memo(TransitionLineComponent, transitionPropsEqual)
 

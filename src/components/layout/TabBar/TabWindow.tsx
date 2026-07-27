@@ -33,6 +33,9 @@ const DeviationsView = lazy(() =>
 const ProductsView = lazy(() =>
   import('@/features/items/products').then((m) => ({ default: m.ProductsView })),
 )
+const ItemBrowserView = lazy(() =>
+  import('@/features/items/itemBrowser').then((m) => ({ default: m.ItemBrowserView })),
+)
 const ProcessView = lazy(() =>
   import('@/features/change-control/process').then((m) => ({ default: m.ProcessView })),
 )
@@ -183,6 +186,12 @@ export function TabWindow({ view, title }: TabWindowProps) {
         return (
           <Suspense fallback={<ViewLoading />}>
             <ProductsView />
+          </Suspense>
+        )
+      case 'items':
+        return (
+          <Suspense fallback={<ViewLoading />}>
+            <ItemBrowserView />
           </Suspense>
         )
       case 'process':

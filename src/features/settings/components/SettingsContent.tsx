@@ -47,6 +47,11 @@ const MetadataColumnsSettings = lazy(() =>
     default: m.MetadataColumnsSettings,
   })),
 )
+const ItemDesignationsSettings = lazy(() =>
+  import('../organization/ItemDesignationsSettings').then((m) => ({
+    default: m.ItemDesignationsSettings,
+  })),
+)
 const BackupSettings = lazy(() =>
   import('../system/BackupSettings').then((m) => ({ default: m.BackupSettings })),
 )
@@ -130,6 +135,8 @@ export function SettingsContent({ activeTab }: SettingsContentProps) {
         return <RFQSettings />
       case 'metadata-columns':
         return <MetadataColumnsSettings />
+      case 'item-designations':
+        return <ItemDesignationsSettings />
       case 'backup':
         return <BackupSettings />
       case 'solidworks':

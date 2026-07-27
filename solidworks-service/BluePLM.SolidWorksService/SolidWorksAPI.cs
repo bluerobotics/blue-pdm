@@ -4,6 +4,8 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using SolidWorks.Interop.sldworks;
 using SolidWorks.Interop.swconst;
@@ -191,6 +193,60 @@ namespace BluePLM.SolidWorksService
         }
 
         /// <summary>
+        /// Pre-warm SolidWorks: ensure a hidden SolidWorks COM instance is running so the
+        /// first write operation (e.g. setProperties) does not pay the ~40s cold-start cost.
+        /// This is a no-op if SolidWorks is already running. Launches SolidWorks hidden
+        /// (no window, no user control) via the normal GetSolidWorks() path.
+        /// </summary>
+        public CommandResult EnsureRunning()
+        {
+            if (!IsSolidWorksAvailable())
+            {
+                Console.Error.WriteLine("[SW-API] EnsureRunning: SolidWorks not installed - skipping warmup");
+                return new CommandResult
+                {
+                    Success = false,
+                    Error = "SolidWorks is not installed on this machine",
+                    ErrorCode = "SW_NOT_INSTALLED",
+                };
+            }
+
+            // Already running? Nothing to do.
+            if (GetRunningSwInstanceOrNull() != null)
+            {
+                Console.Error.WriteLine("[SW-API] EnsureRunning: SolidWorks already running - warmup skipped");
+                return new CommandResult
+                {
+                    Success = true,
+                    Data = new { alreadyRunning = true, launched = false },
+                };
+            }
+
+            try
+            {
+                Console.Error.WriteLine("[SW-API] EnsureRunning: pre-warming hidden SolidWorks instance...");
+                // GetSolidWorks() launches SolidWorks hidden and waits for startup to complete.
+                GetSolidWorks();
+                Console.Error.WriteLine("[SW-API] EnsureRunning: warmup complete");
+                return new CommandResult
+                {
+                    Success = true,
+                    Data = new { alreadyRunning = false, launched = true },
+                };
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[SW-API] EnsureRunning: warmup failed: {ex.Message}");
+                return new CommandResult
+                {
+                    Success = false,
+                    Error = $"Failed to pre-warm SolidWorks: {ex.Message}",
+                    ErrorCode = "SW_WARMUP_FAILED",
+                };
+            }
+        }
+
+        /// <summary>
         /// Get the running SolidWorks instance without launching it.
         /// Uses cached _swApp reference (validated with RevisionNumber ping), then
         /// falls back to GetActiveObjectOnSTA(). When process is detected but ROT
@@ -354,7 +410,20 @@ namespace BluePLM.SolidWorksService
             // Now check if document is already open - this ensures _swApp is initialized
             // so IsDocumentAlreadyOpen can actually check the running SolidWorks instance
             wasAlreadyOpen = IsDocumentAlreadyOpen(filePath);
-            
+
+            // If the user already has this document open, return the existing live ModelDoc2
+            // instead of calling OpenDoc6. OpenDoc6 on an already-open document reactivates and
+            // reloads it, causing the visible open/close/re-open churn (flicker) on every read.
+            if (wasAlreadyOpen)
+            {
+                try
+                {
+                    if (sw.GetOpenDocument(filePath) is ModelDoc2 existing)
+                        return existing;
+                }
+                catch { /* fall through to OpenDoc6 if the lookup fails */ }
+            }
+
             var docType = GetDocumentType(filePath);
 
             if (docType == swDocumentTypes_e.swDocNONE)
@@ -412,48 +481,56 @@ namespace BluePLM.SolidWorksService
         /// </summary>
         public bool IsFileOpenInSolidWorks(string filePath)
         {
-            Console.Error.WriteLine($"[SW-API] IsFileOpenInSolidWorks: Checking {Path.GetFileName(filePath)}");
             try
             {
                 // Use STA-thread-aware helper to get running SolidWorks instance
                 var swObj = GetActiveObjectOnSTA();
                 if (swObj == null)
                 {
-                    Console.Error.WriteLine($"[SW-API] IsFileOpenInSolidWorks: SolidWorks not accessible");
-                    return false;
-                }
-
-                ISldWorks swApp = (ISldWorks)swObj;
-                Console.Error.WriteLine($"[SW-API] IsFileOpenInSolidWorks: Got SolidWorks instance");
-                
-                // Check if this file is open
-                var docs = (object[])swApp.GetDocuments();
-                if (docs == null || docs.Length == 0)
-                {
-                    Console.Error.WriteLine($"[SW-API] IsFileOpenInSolidWorks: No documents open in SolidWorks");
-                    return false;
-                }
-                
-                Console.Error.WriteLine($"[SW-API] IsFileOpenInSolidWorks: Found {docs.Length} open documents");
-                
-                foreach (ModelDoc2 doc in docs)
-                {
-                    var openPath = doc.GetPathName();
-                    Console.Error.WriteLine($"[SW-API] IsFileOpenInSolidWorks: Open doc: {Path.GetFileName(openPath)}");
-                    if (string.Equals(openPath, filePath, StringComparison.OrdinalIgnoreCase))
+                    // Distinguish "SW isn't running at all" from "SW is running but COM
+                    // momentarily unavailable". This matters because the caller uses this to
+                    // decide DM vs SW routing, and running DM against a file SW has open can
+                    // cause SW to CLOSE the user's document.
+                    if (!IsSolidWorksProcessRunning())
                     {
-                        Console.Error.WriteLine($"[SW-API] IsFileOpenInSolidWorks: MATCH FOUND - file is open!");
+                        // SW genuinely not running -> safe to use the fast DM path.
+                        return false;
+                    }
+
+                    // Process is running but COM was inaccessible: retry once.
+                    System.Threading.Thread.Sleep(250);
+                    swObj = GetActiveObjectOnSTA();
+                    if (swObj == null)
+                    {
+                        // Still can't reach COM while SW is running. Fail "open/unknown" so we
+                        // never route DM against a file SW may have open.
+                        Console.Error.WriteLine("[SW-API] IsFileOpenInSolidWorks: SW running but COM inaccessible - assuming OPEN to be safe");
                         return true;
                     }
                 }
-                
-                Console.Error.WriteLine($"[SW-API] IsFileOpenInSolidWorks: File not found in open documents");
+
+                ISldWorks swApp = (ISldWorks)swObj;
+
+                var docs = (object[])swApp.GetDocuments();
+                if (docs == null || docs.Length == 0)
+                    return false;
+
+                foreach (ModelDoc2 doc in docs)
+                {
+                    var openPath = doc.GetPathName();
+                    if (string.Equals(openPath, filePath, StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+
                 return false;
             }
             catch (Exception ex)
             {
+                // Enumeration threw. If SW is running, assume the file may be open (safe default
+                // that avoids the DM-vs-SW document close). If SW isn't running, use DM.
                 Console.Error.WriteLine($"[SW-API] IsFileOpenInSolidWorks: Exception - {ex.Message}");
-                return false; // Any error means we can't confirm it's open
+                try { return IsSolidWorksProcessRunning(); }
+                catch { return false; }
             }
         }
 
@@ -1273,6 +1350,482 @@ namespace BluePLM.SolidWorksService
 
         #endregion
 
+        #region Inspection
+
+        /// <summary>
+        /// Read SOLIDWORKS Inspection characteristics (balloons / Bill of Characteristics) from a
+        /// drawing via the SOLIDWORKS Inspection add-in API.
+        ///
+        /// Requires SOLIDWORKS Inspection to be installed, licensed, and the add-in enabled
+        /// (Tools > Add-Ins). The add-in operates on the active document, so we open and activate
+        /// the drawing first. Uses late-bound (dynamic) COM so the service still builds without the
+        /// SolidWorks.Interop.swinspectionAddIn interop assembly present.
+        /// </summary>
+        public CommandResult GetInspectionCharacteristics(string? filePath)
+        {
+            if (string.IsNullOrEmpty(filePath))
+                return new CommandResult { Success = false, Error = "Missing 'filePath'" };
+
+            if (!File.Exists(filePath))
+                return new CommandResult { Success = false, Error = $"File not found: {filePath}" };
+
+            ModelDoc2? doc = null;
+            bool wasAlreadyOpen = false;
+            try
+            {
+                var sw = GetSolidWorks();
+
+                doc = OpenDocument(filePath!, out var errors, out var warnings, out wasAlreadyOpen);
+                if (doc == null)
+                    return new CommandResult { Success = false, Error = $"Failed to open drawing: errors={errors}" };
+
+                // The Inspection add-in acts on the active document.
+                try
+                {
+                    int activateErrors = 0;
+                    sw.ActivateDoc3(
+                        doc.GetTitle(),
+                        true,
+                        (int)swRebuildOnActivation_e.swDontRebuildActiveDoc,
+                        ref activateErrors);
+                }
+                catch { }
+
+                // Late-bound access to the SOLIDWORKS Inspection add-in (ProgID: Inspection.ExtSwAddin).
+                dynamic? inspectionMgr = null;
+                try { inspectionMgr = sw.GetAddInObject("Inspection.ExtSwAddin"); } catch { }
+
+                if (inspectionMgr == null)
+                {
+                    return new CommandResult
+                    {
+                        Success = false,
+                        Error = "SOLIDWORKS Inspection add-in is not available. Ensure SOLIDWORKS Inspection is installed, licensed, and enabled (Tools > Add-Ins).",
+                        ErrorCode = "INSPECTION_ADDIN_UNAVAILABLE"
+                    };
+                }
+
+                // GetCharacteristicIDs can return double[], int[], or object[] depending on the
+                // Inspection version, so treat it as a generic enumerable rather than casting.
+                object? idsRaw = null;
+                try
+                {
+                    idsRaw = inspectionMgr.GetCharacteristicIDs;
+                }
+                catch (Exception ex)
+                {
+                    return new CommandResult
+                    {
+                        Success = false,
+                        Error = "Failed to read inspection characteristics. The drawing may not contain a SOLIDWORKS Inspection project: " + ex.Message,
+                        ErrorDetails = ex.ToString()
+                    };
+                }
+
+                var characteristics = new List<object>();
+                if (idsRaw is System.Collections.IEnumerable idEnumerable)
+                {
+                    foreach (var idObj in idEnumerable)
+                    {
+                        if (idObj == null) continue;
+
+                        // Pass the raw id (boxed double/int) straight back so COM coerces it correctly.
+                        dynamic? d = null;
+                        try { d = inspectionMgr.GetCharacteristicsData(idObj); } catch { }
+                        if (d == null) continue;
+
+                        // Diagnostic: log the raw Value code points so GD&T / symbol-font glyphs can
+                        // be mapped to readable characters. Shows up in the service stderr log.
+                        try
+                        {
+                            string? rawValue = Convert.ToString((object?)d.Value);
+                            if (!string.IsNullOrEmpty(rawValue))
+                            {
+                                var codes = string.Join(" ", rawValue!.Select(ch => "U+" + ((int)ch).ToString("X4")));
+                                Console.Error.WriteLine(
+                                    $"[Inspection] charId={InspStr(() => d.CharId)} subType={InspStr(() => d.SubType)} valueChars=[{codes}] raw=\"{rawValue}\"");
+                            }
+                        }
+                        catch { }
+
+                        characteristics.Add(new
+                        {
+                            charId = InspStr(() => d.CharId),
+                            zone = InspStr(() => d.CharZone),
+                            // ICharacteristicsData has no "Type" property; the bluePLM Type is derived
+                            // in the app from SubType (swiCharacteristicSubType_e, an integer).
+                            subType = InspInt(() => d.SubType),
+                            value = InspStr(() => d.Value),
+                            unit = InspStr(() => d.Units),
+                            tolerancePlus = InspStr(() => d.TolerancePlus),
+                            toleranceMinus = InspStr(() => d.ToleranceMinus),
+                            upperLimit = InspStr(() => d.UpperLimit),
+                            lowerLimit = InspStr(() => d.LowerLimit),
+                            classification = InspClassification(() => d.Classification),
+                            method = InspStr(() => d.Method),
+                            operation = InspStr(() => d.Operation),
+                            aql = InspStr(() => d.AQL),
+                            sampleSize = InspInt(() => d.SampleSize),
+                            quantity = InspInt(() => d.Quantity),
+                            isReference = InspBool(() => d.Reference),
+                            comments = InspStr(() => d.Comments),
+                            sheet = InspStr(() => d.Sheet),
+                            view = InspStr(() => d.View),
+                        });
+                    }
+                }
+
+                return new CommandResult
+                {
+                    Success = true,
+                    Data = new
+                    {
+                        filePath,
+                        count = characteristics.Count,
+                        characteristics
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
+            }
+            finally
+            {
+                // Only close if WE opened it - don't close the user's open documents.
+                if (doc != null && !wasAlreadyOpen)
+                {
+                    try { CloseDocument(filePath!); } catch { }
+                }
+                CloseSolidWorksIfWeStartedIt();
+            }
+        }
+
+        /// <summary>
+        /// EXPERIMENTAL (verification spike): write bluePLM inspection metadata back into the
+        /// SOLIDWORKS Inspection Bill of Characteristics. Matches rows by CharId (balloon number)
+        /// and sets only the writable metadata fields (Classification, Method, Operation, AQL,
+        /// Comments) — never geometry-derived values.
+        ///
+        /// The 2026 Inspection API has no EditCharacteristic method; this mutates the object
+        /// returned by GetCharacteristicsData in place. We read each field back after writing and
+        /// return it so the caller can confirm whether the edit actually took. The drawing is NOT
+        /// saved here — the user verifies the change in the Inspection panel and saves manually.
+        /// </summary>
+        public CommandResult SetInspectionCharacteristics(string? filePath, List<Dictionary<string, string>>? characteristics)
+        {
+            if (string.IsNullOrEmpty(filePath))
+                return new CommandResult { Success = false, Error = "Missing 'filePath'" };
+
+            if (!File.Exists(filePath))
+                return new CommandResult { Success = false, Error = $"File not found: {filePath}" };
+
+            if (characteristics == null || characteristics.Count == 0)
+                return new CommandResult { Success = false, Error = "Missing 'characteristics' to push" };
+
+            // Index the incoming rows by CharId (balloon number) for O(1) matching.
+            var byCharId = new Dictionary<string, Dictionary<string, string>>();
+            foreach (var item in characteristics)
+            {
+                if (item.TryGetValue("charId", out var cid) && !string.IsNullOrWhiteSpace(cid))
+                    byCharId[cid.Trim()] = item;
+            }
+
+            ModelDoc2? doc = null;
+            bool wasAlreadyOpen = false;
+            try
+            {
+                var sw = GetSolidWorks();
+
+                doc = OpenDocument(filePath!, out var errors, out _, out wasAlreadyOpen);
+                if (doc == null)
+                    return new CommandResult { Success = false, Error = $"Failed to open drawing: errors={errors}" };
+
+                try
+                {
+                    int activateErrors = 0;
+                    sw.ActivateDoc3(
+                        doc.GetTitle(),
+                        true,
+                        (int)swRebuildOnActivation_e.swDontRebuildActiveDoc,
+                        ref activateErrors);
+                }
+                catch { }
+
+                dynamic? inspectionMgr = null;
+                try { inspectionMgr = sw.GetAddInObject("Inspection.ExtSwAddin"); } catch { }
+
+                if (inspectionMgr == null)
+                {
+                    return new CommandResult
+                    {
+                        Success = false,
+                        Error = "SOLIDWORKS Inspection add-in is not available. Ensure SOLIDWORKS Inspection is installed, licensed, and enabled (Tools > Add-Ins).",
+                        ErrorCode = "INSPECTION_ADDIN_UNAVAILABLE"
+                    };
+                }
+
+                object? idsRaw = null;
+                try { idsRaw = inspectionMgr.GetCharacteristicIDs; }
+                catch (Exception ex)
+                {
+                    return new CommandResult
+                    {
+                        Success = false,
+                        Error = "Failed to read inspection characteristics: " + ex.Message,
+                        ErrorDetails = ex.ToString()
+                    };
+                }
+
+                var results = new List<object>();
+                int updated = 0;
+
+                if (idsRaw is System.Collections.IEnumerable idEnumerable)
+                {
+                    foreach (var idObj in idEnumerable)
+                    {
+                        if (idObj == null) continue;
+
+                        dynamic? d = null;
+                        try { d = inspectionMgr.GetCharacteristicsData(idObj); } catch { }
+                        if (d == null) continue;
+
+                        var charId = InspStr(() => d.CharId);
+                        if (charId == null || !byCharId.TryGetValue(charId, out var row)) continue;
+
+                        var applied = new List<string>();
+
+                        // Classification is an int enum (swiCharacteristicClassification_e); encode the label back.
+                        if (row.TryGetValue("classification", out var classification))
+                        {
+                            int? code = ClassificationCode(classification);
+                            if (code.HasValue && InspSet(() => { d.Classification = code.Value; })) applied.Add("classification");
+                        }
+                        if (row.TryGetValue("method", out var method) && method != null)
+                            if (InspSet(() => { d.Method = method; })) applied.Add("method");
+                        if (row.TryGetValue("operation", out var operation) && operation != null)
+                            if (InspSet(() => { d.Operation = operation; })) applied.Add("operation");
+                        if (row.TryGetValue("aql", out var aql) && aql != null)
+                            if (InspSet(() => { d.AQL = aql; })) applied.Add("aql");
+                        if (row.TryGetValue("comments", out var comments) && comments != null)
+                            if (InspSet(() => { d.Comments = comments; })) applied.Add("comments");
+
+                        if (applied.Count > 0) updated++;
+
+                        // Read the values back so the caller can confirm the setters actually took.
+                        results.Add(new
+                        {
+                            charId,
+                            applied,
+                            readback = new
+                            {
+                                classification = InspClassification(() => d.Classification),
+                                method = InspStr(() => d.Method),
+                                operation = InspStr(() => d.Operation),
+                                aql = InspStr(() => d.AQL),
+                                comments = InspStr(() => d.Comments),
+                            }
+                        });
+                    }
+                }
+
+                // Persist the edits into the drawing file so they survive close/reopen and are
+                // captured on the next bluePLM check-in.
+                bool saved = false;
+                if (updated > 0)
+                {
+                    try
+                    {
+                        int saveErrors = 0, saveWarnings = 0;
+                        doc.Save3(
+                            (int)swSaveAsOptions_e.swSaveAsOptions_Silent,
+                            ref saveErrors,
+                            ref saveWarnings);
+                        saved = saveErrors == 0;
+                    }
+                    catch (Exception saveEx)
+                    {
+                        Console.Error.WriteLine($"[Inspection] Save after push failed: {saveEx.Message}");
+                    }
+                }
+
+                return new CommandResult
+                {
+                    Success = true,
+                    Data = new
+                    {
+                        filePath,
+                        requested = characteristics.Count,
+                        matched = results.Count,
+                        updated,
+                        saved,
+                        results
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
+            }
+            finally
+            {
+                CloseSolidWorksIfWeStartedIt();
+            }
+        }
+
+        /// <summary>Encode a bluePLM classification label to swiCharacteristicClassification_e (null when unknown/empty).</summary>
+        private static int? ClassificationCode(string? label)
+        {
+            if (string.IsNullOrWhiteSpace(label)) return null;
+            return label.Trim().ToLowerInvariant() switch
+            {
+                "critical" => 0,
+                "major" => 1,
+                "minor" => 2,
+                "incidental" => 3,
+                _ => null,
+            };
+        }
+
+        /// <summary>Safely set a dynamic COM property; returns false (without throwing) if it fails.</summary>
+        private static bool InspSet(Action setter)
+        {
+            try { setter(); return true; }
+            catch { return false; }
+        }
+
+        /// <summary>Safely read a dynamic COM property as a trimmed, symbol-decoded string (null when empty/missing).</summary>
+        private static string? InspStr(Func<object?> getter)
+        {
+            try
+            {
+                var v = getter();
+                if (v == null) return null;
+                var s = Convert.ToString(v);
+                if (string.IsNullOrWhiteSpace(s)) return null;
+                return DecodeSwSymbolFont(s!);
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// SOLIDWORKS renders GD&amp;T and other symbols using its private symbol font (SWGDT),
+        /// whose glyphs live in the Unicode Private Use Area. Most glyphs are encoded as
+        /// (0xE000 + ASCII code) — e.g. the feature-control-frame separator '|', digits, and datum
+        /// letters — while geometric-characteristic symbols map to specific PUA code points.
+        /// This table translates the specific symbol glyphs into readable Unicode.
+        ///
+        /// Extend this from the "[Inspection] ... valueChars=[...]" diagnostic lines in the service log.
+        /// </summary>
+        private static readonly Dictionary<int, string> GdtSymbolMap = new Dictionary<int, string>
+        {
+            { 0xE368, "\u2313" }, // profile of a surface ⌓
+        };
+
+        /// <summary>
+        /// Convert a string that may contain SOLIDWORKS symbol-font (SWGDT) Private Use Area glyphs
+        /// into readable text. Non-PUA input is returned unchanged.
+        /// </summary>
+        private static string DecodeSwSymbolFont(string input)
+        {
+            if (string.IsNullOrEmpty(input)) return input;
+
+            bool hadSymbol = false;
+            var sb = new StringBuilder(input.Length);
+            foreach (var ch in input)
+            {
+                int code = ch;
+                if (code >= 0xE000 && code <= 0xF8FF)
+                {
+                    hadSymbol = true;
+
+                    if (GdtSymbolMap.TryGetValue(code, out var mapped))
+                    {
+                        sb.Append(mapped);
+                        continue;
+                    }
+
+                    // Most SWGDT glyphs are just (0xE000 + ASCII) — recover the base character.
+                    int ascii = code - 0xE000;
+                    if (ascii >= 0x20 && ascii <= 0x7E)
+                    {
+                        sb.Append((char)ascii);
+                        continue;
+                    }
+
+                    // Unmapped symbol glyph — keep a visible marker (logged for later mapping).
+                    sb.Append('\u25CA'); // ◊
+                    continue;
+                }
+
+                sb.Append(ch);
+            }
+
+            var result = sb.ToString();
+            if (hadSymbol)
+            {
+                // Feature control frames use '|' as compartment separators; render them as spaces.
+                result = result.Replace('|', ' ');
+                result = Regex.Replace(result, "\\s+", " ").Trim();
+            }
+            return result;
+        }
+
+        /// <summary>Safely read a dynamic COM property as a bool (false when missing).</summary>
+        private static bool InspBool(Func<object?> getter)
+        {
+            try
+            {
+                var v = getter();
+                return v != null && Convert.ToBoolean(v);
+            }
+            catch { return false; }
+        }
+
+        /// <summary>Safely read a dynamic COM property as an int (null when missing).</summary>
+        private static int? InspInt(Func<object?> getter)
+        {
+            try
+            {
+                var v = getter();
+                if (v == null) return null;
+                return Convert.ToInt32(v);
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// Read the characteristic Classification. ICharacteristicsData.Classification is an
+        /// integer enum (swiCharacteristicClassification_e: 0=Critical, 1=Major, 2=Minor,
+        /// 3=Incidental); decode it to the label bluePLM stores. Falls back to the raw string
+        /// if a future version returns text instead of a code.
+        /// </summary>
+        private static string? InspClassification(Func<object?> getter)
+        {
+            try
+            {
+                var v = getter();
+                if (v == null) return null;
+                var s = Convert.ToString(v);
+                if (string.IsNullOrWhiteSpace(s)) return null;
+                if (int.TryParse(s, out int code))
+                {
+                    return code switch
+                    {
+                        0 => "Critical",
+                        1 => "Major",
+                        2 => "Minor",
+                        3 => "Incidental",
+                        _ => null,
+                    };
+                }
+                return s!.Trim();
+            }
+            catch { return null; }
+        }
+
+        #endregion
+
         #region Export Operations
 
         /// <summary>
@@ -1288,19 +1841,30 @@ namespace BluePLM.SolidWorksService
 
             ModelDoc2? doc = null;
             ISldWorks? sw = null;
+            bool wasAlreadyOpen = false;
             try
             {
                 sw = GetSolidWorks();
                 int errors = 0, warnings = 0;
 
-                doc = (ModelDoc2)sw.OpenDoc6(
-                    filePath,
-                    (int)swDocumentTypes_e.swDocDRAWING,
-                    (int)swOpenDocOptions_e.swOpenDocOptions_Silent,
-                    "",
-                    ref errors,
-                    ref warnings
-                );
+                // Don't re-open (and later close) a drawing the user already has open
+                wasAlreadyOpen = IsDocumentAlreadyOpen(filePath!);
+                if (wasAlreadyOpen && sw.GetOpenDocument(filePath) is ModelDoc2 existingDoc)
+                {
+                    doc = existingDoc;
+                }
+                else
+                {
+                    wasAlreadyOpen = false;
+                    doc = (ModelDoc2)sw.OpenDoc6(
+                        filePath,
+                        (int)swDocumentTypes_e.swDocDRAWING,
+                        (int)swOpenDocOptions_e.swOpenDocOptions_Silent,
+                        "",
+                        ref errors,
+                        ref warnings
+                    );
+                }
 
                 if (doc == null)
                     return new CommandResult { Success = false, Error = $"Failed to open drawing: errors={errors}" };
@@ -1372,8 +1936,8 @@ namespace BluePLM.SolidWorksService
             }
             finally
             {
-                // ALWAYS close the document to release file locks
-                if (doc != null && sw != null)
+                // Only close if WE opened it - never close a document the user already had open
+                if (doc != null && sw != null && !wasAlreadyOpen)
                 {
                     try { sw.CloseDoc(filePath); } catch { }
                 }
@@ -1394,6 +1958,7 @@ namespace BluePLM.SolidWorksService
 
             ModelDoc2? doc = null;
             ISldWorks? sw = null;
+            bool wasAlreadyOpen = false;
             try
             {
                 sw = GetSolidWorks();
@@ -1401,14 +1966,25 @@ namespace BluePLM.SolidWorksService
                 var docType = ext == ".sldprt" ? swDocumentTypes_e.swDocPART : swDocumentTypes_e.swDocASSEMBLY;
 
                 int errors = 0, warnings = 0;
-                doc = (ModelDoc2)sw.OpenDoc6(
-                    filePath,
-                    (int)docType,
-                    (int)swOpenDocOptions_e.swOpenDocOptions_Silent,
-                    "",
-                    ref errors,
-                    ref warnings
-                );
+
+                // Don't re-open (and later close) a model the user already has open
+                wasAlreadyOpen = IsDocumentAlreadyOpen(filePath!);
+                if (wasAlreadyOpen && sw.GetOpenDocument(filePath) is ModelDoc2 existingDoc)
+                {
+                    doc = existingDoc;
+                }
+                else
+                {
+                    wasAlreadyOpen = false;
+                    doc = (ModelDoc2)sw.OpenDoc6(
+                        filePath,
+                        (int)docType,
+                        (int)swOpenDocOptions_e.swOpenDocOptions_Silent,
+                        "",
+                        ref errors,
+                        ref warnings
+                    );
+                }
 
                 if (doc == null)
                     return new CommandResult { Success = false, Error = $"Failed to open file: errors={errors}" };
@@ -1563,8 +2139,8 @@ namespace BluePLM.SolidWorksService
             }
             finally
             {
-                // ALWAYS close the document to release file locks
-                if (doc != null && sw != null)
+                // Only close if WE opened it - never close a document the user already had open
+                if (doc != null && sw != null && !wasAlreadyOpen)
                 {
                     try { sw.CloseDoc(filePath); } catch { }
                 }

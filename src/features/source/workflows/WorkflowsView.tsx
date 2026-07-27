@@ -15,9 +15,11 @@
  * <WorkflowsView />
  * ```
  */
-import { useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import { GitBranch } from 'lucide-react'
 import { usePDMStore } from '@/stores/pdmStore'
+
+import { useRafThrottle, useStableCallback } from './utils'
 
 // Slim canvas context
 import { WorkflowCanvasProvider, useWorkflowCanvasContext } from './context/WorkflowCanvasContext'
@@ -254,12 +256,16 @@ function WorkflowsViewContent({
 
   const { handleCanvasMouseDown, handleCanvasMouseMove, handleCanvasMouseUp } = useCanvasHandlers({
     canvasRef: canvas.canvasRef,
+    groupRef: canvas.groupRef,
+    viewportRef: canvas.viewportRef,
+    mousePosRef: canvas.mousePosRef,
     hasDraggedRef: canvas.hasDraggedRef,
     dragStartPosRef: canvas.dragStartPosRef,
     waypointHasDraggedRef: canvas.waypointHasDraggedRef,
     pan: canvas.pan,
     zoom: canvas.zoom,
     canvasMode: canvas.canvasMode,
+    isCreatingTransition: canvas.isCreatingTransition,
     draggingStateId: canvas.draggingStateId,
     dragOffset: canvas.dragOffset,
     currentResizing: canvas.resizingState,
@@ -276,6 +282,7 @@ function WorkflowsViewContent({
     hoveredStateId: canvas.hoveredStateId,
     isDraggingToCreateTransition: canvas.isDraggingToCreateTransition,
     setPan: canvas.setPan,
+    setMousePos: canvas.setMousePos,
     setDraggingStateId: canvas.setDraggingStateId,
     setFloatingToolbar: dialogs.setFloatingToolbar,
     setAlignmentGuides: canvas.setAlignmentGuides,
@@ -319,6 +326,7 @@ function WorkflowsViewContent({
     hasDraggedRef: canvas.hasDraggedRef,
     pan: canvas.pan,
     zoom: canvas.zoom,
+    canvasMode: canvas.canvasMode,
     isCreatingTransition: canvas.isCreatingTransition,
     contextMenu: dialogs.contextMenu,
     floatingToolbar: dialogs.floatingToolbar,
@@ -344,6 +352,79 @@ function WorkflowsViewContent({
     handleRedo,
     handleDeleteSelected,
   })
+
+  // ============================================
+  // STABLE HANDLER IDENTITIES
+  // ============================================
+  // Wrap handlers passed to memoized StateNode / TransitionLine children so that
+  // recreated parent closures never bust memoization while still invoking the
+  // latest logic (no stale pan/zoom/state captures).
+  const stableStartDrag = useStableCallback(handleStateStartDrag)
+  const stableStartResize = useStableCallback(handleStateStartResize)
+  const stableShowStateToolbar = useStableCallback(handleStateShowToolbar)
+  const stableCompleteTransition = useStableCallback(completeTransition)
+  const stableStartTransition = useStableCallback(startTransition)
+  const stableEditState = useStableCallback(dialogs.openEditState)
+  const stableShowTransitionToolbar = useStableCallback(handleTransitionShowToolbar)
+  const stableAddWaypoint = useStableCallback(handleAddWaypointToTransition)
+  const stableShowTransitionContextMenu = useStableCallback(
+    (transitionId: string, clientX: number, clientY: number, canvasX: number, canvasY: number) => {
+      canvas.selectTransition(transitionId)
+      dialogs.setFloatingToolbar(null)
+      dialogs.setContextMenu({
+        x: clientX,
+        y: clientY,
+        type: 'transition',
+        targetId: transitionId,
+        canvasX,
+        canvasY,
+      })
+    },
+  )
+
+  // ============================================
+  // GLOBAL POINTER HANDLING (smooth, drop-free drags)
+  // ============================================
+  // Route pointer move/up through window listeners while a gesture is active so
+  // dragging never stops when the cursor leaves the canvas or moves quickly.
+  // Moves are coalesced to one update per animation frame via rAF.
+  const interacting = !!(
+    canvas.draggingStateId ||
+    canvas.resizingState ||
+    canvas.draggingTransitionEndpoint ||
+    canvas.draggingCurveControl ||
+    canvas.draggingLabel ||
+    canvas.isCreatingTransition
+  )
+  const interactingRef = useRef(interacting)
+  interactingRef.current = interacting
+
+  const moveHandlerRef = useRef(handleCanvasMouseMove)
+  moveHandlerRef.current = handleCanvasMouseMove
+  const upHandlerRef = useRef(handleCanvasMouseUp)
+  upHandlerRef.current = handleCanvasMouseUp
+
+  const [throttledPointerMove, cancelPointerMove] = useRafThrottle((e: PointerEvent) => {
+    moveHandlerRef.current(e)
+  })
+
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      if (interactingRef.current) throttledPointerMove(e)
+    }
+    const onUp = (e: PointerEvent) => {
+      cancelPointerMove()
+      if (interactingRef.current) void upHandlerRef.current(e)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
+    }
+  }, [throttledPointerMove, cancelPointerMove])
 
   // ============================================
   // RENDER
@@ -410,6 +491,8 @@ function WorkflowsViewContent({
                 pan={canvas.pan}
                 mousePos={canvas.mousePos}
                 canvasRef={canvas.canvasRef}
+                groupRef={canvas.groupRef}
+                viewportRef={canvas.viewportRef}
                 canvasTransform={canvasTransform}
                 isAdmin={isAdmin}
                 draggingStateId={canvas.draggingStateId}
@@ -438,22 +521,21 @@ function WorkflowsViewContent({
                 floatingToolbar={dialogs.floatingToolbar}
                 toolbarActions={toolbarActions}
                 onCanvasMouseDown={handleCanvasMouseDown}
-                onCanvasMouseMove={handleCanvasMouseMove}
-                onCanvasMouseUp={handleCanvasMouseUp}
                 onCanvasClick={handleCanvasClick}
                 onCanvasContextMenu={handleCanvasContextMenu}
                 onWheel={canvas.handleWheel}
                 onSelectState={canvas.selectState}
                 onSelectTransition={canvas.selectTransition}
-                onStartDrag={handleStateStartDrag}
-                onStartResize={handleStateStartResize}
-                onCompleteTransition={completeTransition}
-                onStartTransition={startTransition}
-                onEditState={dialogs.openEditState}
+                onStartDrag={stableStartDrag}
+                onStartResize={stableStartResize}
+                onCompleteTransition={stableCompleteTransition}
+                onStartTransition={stableStartTransition}
+                onEditState={stableEditState}
                 onHoverState={canvas.setHoveredStateId}
-                onShowStateToolbar={handleStateShowToolbar}
-                onShowTransitionToolbar={handleTransitionShowToolbar}
-                onAddWaypointToTransition={handleAddWaypointToTransition}
+                onShowStateToolbar={stableShowStateToolbar}
+                onShowTransitionToolbar={stableShowTransitionToolbar}
+                onShowTransitionContextMenu={stableShowTransitionContextMenu}
+                onAddWaypointToTransition={stableAddWaypoint}
                 setIsDraggingToCreateTransition={canvas.setIsDraggingToCreateTransition}
                 setHoveredStateId={canvas.setHoveredStateId}
                 setHoveredTransitionId={canvas.setHoveredTransitionId}

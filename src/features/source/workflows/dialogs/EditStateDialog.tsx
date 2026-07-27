@@ -20,6 +20,28 @@ export function EditStateDialog({ state, onClose, onSave }: EditStateDialogProps
   const [autoRev, setAutoRev] = useState(state.auto_increment_revision)
   const [requiredRoles, setRequiredRoles] = useState<string[]>(state.required_workflow_roles || [])
 
+  // Resync form fields when the dialog is reused for a different state
+  useEffect(() => {
+    setName(state.name)
+    setLabel(state.label || '')
+    setDescription(state.description || '')
+    setColor(state.color)
+    setIcon(state.icon)
+    setIsEditable(state.is_editable)
+    setAutoRev(state.auto_increment_revision)
+    setRequiredRoles(state.required_workflow_roles || [])
+  }, [
+    state.id,
+    state.name,
+    state.label,
+    state.description,
+    state.color,
+    state.icon,
+    state.is_editable,
+    state.auto_increment_revision,
+    state.required_workflow_roles,
+  ])
+
   // Load workflow roles
   const [workflowRoles, setWorkflowRoles] = useState<WorkflowRoleBasic[]>([])
   const [loadingRoles, setLoadingRoles] = useState(true)

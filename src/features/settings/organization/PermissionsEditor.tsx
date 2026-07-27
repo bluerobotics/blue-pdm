@@ -69,7 +69,7 @@ const RESOURCE_GROUPS: {
     name: 'Items & BOMs',
     icon: 'Package',
     color: '#8b5cf6',
-    resources: ['module:items', 'module:boms', 'module:products'],
+    resources: ['module:items', 'system:item-designations', 'module:boms', 'module:products'],
   },
   {
     id: 'change-control',

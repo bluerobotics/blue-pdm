@@ -13,6 +13,7 @@ import {
   writeLog,
   startCliServer,
   cleanupCli,
+  autoStartServiceFromCache,
   cleanupSolidWorksService,
   cleanupExtensionHost,
   cleanupOAuth,
@@ -461,6 +462,15 @@ function initializeApp() {
 
       log('App ready, creating window...')
       createWindow()
+
+      // Start the SolidWorks service from the main process in parallel with the
+      // renderer boot. The renderer's initial vault load can saturate its thread
+      // for tens of seconds, starving the renderer-driven auto-start; launching
+      // here (fire-and-forget) makes the service ready in ~2s regardless. No-op
+      // on first-ever boot (no cache) or when auto-start is disabled.
+      autoStartServiceFromCache().catch((error) => {
+        logError('SolidWorks main-process early start failed', { error: String(error) })
+      })
 
       app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) {

@@ -9,7 +9,7 @@
  * - Waypoint dragging
  * - Label dragging
  */
-import { useCallback, type RefObject } from 'react'
+import { useCallback, useRef, type RefObject } from 'react'
 import type {
   WorkflowState,
   WorkflowTransition,
@@ -22,9 +22,19 @@ import { getNearestPointOnBoxEdge, findInsertionIndex } from '../utils'
 import { transitionService } from '../services'
 import type { TransitionPathType } from '@/types/workflow'
 
+/**
+ * Minimal pointer shape accepted by the canvas handlers. Both React synthetic
+ * events and native DOM PointerEvents satisfy this, so the same handlers work
+ * whether invoked from JSX or from window-level pointer listeners.
+ */
+export type CanvasPointerInput = Pick<React.MouseEvent, 'clientX' | 'clientY' | 'button'>
+
 interface UseCanvasHandlersParams {
   // Refs
   canvasRef: RefObject<HTMLDivElement | null>
+  groupRef: RefObject<SVGGElement | null>
+  viewportRef: RefObject<{ pan: Point; zoom: number }>
+  mousePosRef: RefObject<Point>
   hasDraggedRef: RefObject<boolean>
   dragStartPosRef: RefObject<Point | null>
   waypointHasDraggedRef: RefObject<boolean>
@@ -33,6 +43,7 @@ interface UseCanvasHandlersParams {
   pan: Point
   zoom: number
   canvasMode: string
+  isCreatingTransition: boolean
 
   // Dragging state
   draggingStateId: string | null
@@ -63,6 +74,7 @@ interface UseCanvasHandlersParams {
 
   // Callbacks
   setPan: (pan: Point) => void
+  setMousePos: (pos: Point) => void
   setDraggingStateId: (id: string | null) => void
   setFloatingToolbar: (toolbar: null) => void
   setAlignmentGuides: (guides: { vertical: number | null; horizontal: number | null }) => void
@@ -105,12 +117,16 @@ interface UseCanvasHandlersParams {
 export function useCanvasHandlers(params: UseCanvasHandlersParams) {
   const {
     canvasRef,
+    groupRef,
+    viewportRef,
+    mousePosRef,
     hasDraggedRef,
     dragStartPosRef,
     waypointHasDraggedRef,
     pan,
     zoom,
     canvasMode,
+    isCreatingTransition,
     draggingStateId,
     dragOffset,
     currentResizing,
@@ -127,6 +143,7 @@ export function useCanvasHandlers(params: UseCanvasHandlersParams) {
     hoveredStateId,
     isDraggingToCreateTransition,
     setPan,
+    setMousePos,
     setDraggingStateId,
     setFloatingToolbar,
     setAlignmentGuides,
@@ -156,9 +173,13 @@ export function useCanvasHandlers(params: UseCanvasHandlersParams) {
     addToast,
   } = params
 
+  // Latest pan computed during an imperative (non-React) pan gesture; committed
+  // to React state on pointer up so panning never triggers a re-render per frame.
+  const pendingPanRef = useRef<Point | null>(null)
+
   // Handle canvas mouse down
   const handleCanvasMouseDown = useCallback(
-    (e: React.MouseEvent) => {
+    (e: CanvasPointerInput) => {
       if (e.button !== 0) return
 
       closeAll()
@@ -175,19 +196,38 @@ export function useCanvasHandlers(params: UseCanvasHandlersParams) {
 
   // Handle canvas mouse move
   const handleCanvasMouseMove = useCallback(
-    (e: React.MouseEvent) => {
+    (e: CanvasPointerInput) => {
       const rect = canvasRef.current?.getBoundingClientRect()
       if (!rect) return
 
       const canvasX = (e.clientX - rect.left - pan.x) / zoom
       const canvasY = (e.clientY - rect.top - pan.y) / zoom
 
-      // Handle panning
+      // Track the live pointer position in canvas space. Update the rubber-band
+      // preview (CreatingTransition / endpoint drag) so it follows the cursor.
+      mousePosRef.current = { x: canvasX, y: canvasY }
+      if (isCreatingTransition || draggingTransitionEndpoint) {
+        setMousePos({ x: canvasX, y: canvasY })
+      }
+
+      // Handle panning - apply the transform imperatively to the SVG group so a
+      // pan gesture causes zero React re-renders; commit to state on pointer up.
       if (draggingStateId === '_panning_' && dragStartPosRef.current) {
-        setPan({
+        const newPan = {
           x: e.clientX - dragStartPosRef.current.x,
           y: e.clientY - dragStartPosRef.current.y,
-        })
+        }
+        pendingPanRef.current = newPan
+        const group = groupRef.current
+        if (group) {
+          const currentZoom = viewportRef.current?.zoom ?? zoom
+          group.setAttribute(
+            'transform',
+            `translate(${newPan.x}, ${newPan.y}) scale(${currentZoom})`,
+          )
+        } else {
+          setPan(newPan)
+        }
         return
       }
 
@@ -292,6 +332,11 @@ export function useCanvasHandlers(params: UseCanvasHandlersParams) {
     },
     [
       canvasRef,
+      groupRef,
+      viewportRef,
+      mousePosRef,
+      isCreatingTransition,
+      setMousePos,
       pan,
       zoom,
       draggingStateId,
@@ -324,12 +369,16 @@ export function useCanvasHandlers(params: UseCanvasHandlersParams) {
 
   // Handle canvas mouse up
   const handleCanvasMouseUp = useCallback(
-    async (e: React.MouseEvent) => {
+    async (e: CanvasPointerInput) => {
       // Clear alignment guides
       clearAlignmentGuides()
 
-      // Handle panning end
+      // Handle panning end - commit the imperatively-applied pan to React state
       if (draggingStateId === '_panning_') {
+        if (pendingPanRef.current) {
+          setPan(pendingPanRef.current)
+          pendingPanRef.current = null
+        }
         setDraggingStateId(null)
         dragStartPosRef.current = null
         return

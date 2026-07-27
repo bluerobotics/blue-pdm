@@ -125,6 +125,8 @@ export function FloatingToolbar({
         adjustedPos ? 'opacity-100' : 'opacity-0'
       }`}
       style={{ left: adjustedPos?.x ?? x, top: adjustedPos?.y ?? y }}
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
     >
       {/* Main horizontal toolbar */}
       <div className="flex items-center gap-0.5 bg-plm-sidebar rounded-lg shadow-2xl border border-plm-border p-1">

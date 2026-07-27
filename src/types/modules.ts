@@ -182,7 +182,7 @@ export const MODULE_GROUPS: ModuleGroupDefinition[] = [
   {
     id: 'items',
     name: 'Products',
-    description: 'Product explorer, item browser, and BOMs',
+    description: 'Product explorer and BOMs',
     isMasterToggle: true,
     defaultEnabled: true,
   },
@@ -347,9 +347,10 @@ export const MODULES: ModuleDefinition[] = [
   {
     id: 'items',
     name: 'Item Browser',
-    group: 'items',
-    icon: 'Database',
+    group: 'quality',
+    icon: 'ShieldCheck',
     defaultEnabled: true,
+    implemented: true,
   },
   {
     id: 'boms',
@@ -716,7 +717,7 @@ export const MODULES: ModuleDefinition[] = [
 // Default section dividers (groups provide visual separation, so minimal dividers)
 export const DEFAULT_DIVIDERS: SectionDivider[] = [
   // Divider before integrations/system
-  { id: 'divider-1', enabled: true, position: 42 }, // After Quality, before google-drive
+  { id: 'divider-1', enabled: true, position: 33 }, // After Quality, before Accounting/google-drive
 ]
 
 // Default module order
@@ -729,7 +730,6 @@ export const DEFAULT_MODULE_ORDER: ModuleId[] = [
   'trash',
   // Products
   'products',
-  'items',
   'boms',
   // Change Control
   'ecr',
@@ -763,16 +763,8 @@ export const DEFAULT_MODULE_ORDER: ModuleId[] = [
   'downtime',
   'oee',
   'scrap-tracking',
-  // Quality
-  'fai',
-  'ncr',
-  'imr',
-  'scar',
-  'capa',
-  'rma',
-  'certificates',
-  'calibration',
-  'quality-templates',
+  // Quality (single top-level entry; opens the Item Browser)
+  'items',
   // Accounting
   'accounts-payable',
   'accounts-receivable',
@@ -848,14 +840,6 @@ export const DEFAULT_CUSTOM_GROUPS: CustomGroup[] = [
     enabled: true,
   },
   {
-    id: 'group-quality',
-    name: 'Quality',
-    icon: 'ShieldCheck',
-    iconColor: null,
-    position: 34,
-    enabled: true,
-  },
-  {
     id: 'group-accounting',
     name: 'Accounting',
     icon: 'Calculator',
@@ -875,7 +859,6 @@ export const DEFAULT_MODULE_PARENT_MAP: Record<ModuleId, ParentId> = {
   trash: 'group-source-files',
   // Products group (after Source Files)
   products: 'group-products',
-  items: 'group-products',
   boms: 'group-products',
   // Change Control group
   ecr: 'group-change-control',
@@ -907,16 +890,17 @@ export const DEFAULT_MODULE_PARENT_MAP: Record<ModuleId, ParentId> = {
   downtime: 'production-analytics',
   oee: 'production-analytics',
   'scrap-tracking': 'production-analytics',
-  // Quality group
-  fai: 'group-quality',
-  ncr: 'group-quality',
-  imr: 'group-quality',
-  scar: 'group-quality',
-  capa: 'group-quality',
-  rma: 'group-quality',
-  certificates: 'group-quality',
-  calibration: 'group-quality',
-  'quality-templates': 'group-quality',
+  // Quality: single top-level entry (Item Browser); in-dev modules detached
+  items: null,
+  fai: null,
+  ncr: null,
+  imr: null,
+  scar: null,
+  capa: null,
+  rma: null,
+  certificates: null,
+  calibration: null,
+  'quality-templates': null,
   // Accounting group
   'accounts-payable': 'group-accounting',
   'accounts-receivable': 'group-accounting',

@@ -607,6 +607,8 @@ export interface OrgSettings {
   // SolidWorks integration (org-wide)
   solidworks_dm_license_key?: string // Document Manager API key for fast file reading
   solidworks_templates?: SolidWorksTemplateSettingsOrg // Template folder configuration
+  /** When true (default), keep a hidden SolidWorks instance warm so the first property edit is instant instead of a ~40s cold-start. */
+  solidworks_prewarm_full_app?: boolean
   // REST API (org-wide)
   api_url?: string // External API server URL for ERP integrations
   // Export settings (org-wide)

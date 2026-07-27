@@ -24,11 +24,12 @@ import type {
   TransitionEndpointDrag,
 } from '../types'
 import { lightenColor } from '../utils'
-import { DEFAULT_STATE_WIDTH, DEFAULT_STATE_HEIGHT } from '../constants'
+import { DEFAULT_STATE_WIDTH, DEFAULT_STATE_HEIGHT, PARALLEL_EDGE_OFFSET } from '../constants'
 import { StateNode } from './StateNode'
 import { TransitionLine } from './TransitionLine'
 import { TransitionHandles } from './TransitionHandles'
 import { CreatingTransition } from './CreatingTransition'
+import { GridPattern } from './GridPattern'
 import { FloatingToolbar } from './toolbar'
 
 interface WorkflowCanvasProps {
@@ -50,6 +51,8 @@ interface WorkflowCanvasProps {
   pan: Point
   mousePos: Point
   canvasRef: React.RefObject<HTMLDivElement | null>
+  groupRef: React.RefObject<SVGGElement | null>
+  viewportRef: React.RefObject<{ pan: Point; zoom: number }>
   canvasTransform: string
 
   // Permissions
@@ -114,9 +117,7 @@ interface WorkflowCanvasProps {
   }
 
   // Event handlers
-  onCanvasMouseDown: (e: React.MouseEvent) => void
-  onCanvasMouseMove: (e: React.MouseEvent) => void
-  onCanvasMouseUp: (e: React.MouseEvent) => void
+  onCanvasMouseDown: (e: React.PointerEvent) => void
   onCanvasClick: (e: React.MouseEvent) => void
   onCanvasContextMenu: (e: React.MouseEvent) => void
   onWheel: (e: React.WheelEvent) => void
@@ -132,6 +133,13 @@ interface WorkflowCanvasProps {
   onHoverState: (stateId: string | null) => void
   onShowStateToolbar: (stateId: string) => void
   onShowTransitionToolbar: (transitionId: string, canvasX: number, canvasY: number) => void
+  onShowTransitionContextMenu: (
+    transitionId: string,
+    clientX: number,
+    clientY: number,
+    canvasX: number,
+    canvasY: number,
+  ) => void
   onAddWaypointToTransition: (
     transitionId: string,
     x: number,
@@ -186,6 +194,8 @@ export function WorkflowCanvas({
   pan,
   mousePos,
   canvasRef,
+  groupRef,
+  viewportRef,
   canvasTransform,
   isAdmin,
   draggingStateId,
@@ -214,10 +224,9 @@ export function WorkflowCanvas({
   floatingToolbar,
   toolbarActions,
   onCanvasMouseDown,
-  onCanvasMouseMove,
-  onCanvasMouseUp,
   onCanvasClick,
   onCanvasContextMenu,
+  onShowTransitionContextMenu,
   onWheel,
   onSelectState,
   onSelectTransition,
@@ -261,15 +270,19 @@ export function WorkflowCanvas({
             : canvasMode === 'connect'
               ? 'crosshair'
               : 'default',
+        touchAction: 'none',
       }}
-      onMouseDown={onCanvasMouseDown}
-      onMouseMove={onCanvasMouseMove}
-      onMouseUp={onCanvasMouseUp}
+      onPointerDown={onCanvasMouseDown}
       onClick={onCanvasClick}
       onContextMenu={onCanvasContextMenu}
       onWheel={onWheel}
     >
-      <svg width="100%" height="100%" style={{ position: 'absolute', inset: 0 }}>
+      <svg
+        width="100%"
+        height="100%"
+        style={{ position: 'absolute', inset: 0 }}
+        shapeRendering="geometricPrecision"
+      >
         {/* Arrow marker definitions */}
         <defs>
           <marker
@@ -355,34 +368,18 @@ export function WorkflowCanvas({
         </defs>
 
         {/* Transformable canvas group */}
-        <g transform={canvasTransform}>
+        <g
+          ref={groupRef}
+          transform={canvasTransform}
+          style={{
+            willChange: 'transform',
+            // While panning, the transform is updated imperatively; suppress
+            // hover events so an incidental re-render can't snap it back.
+            pointerEvents: draggingStateId === '_panning_' ? 'none' : undefined,
+          }}
+        >
           {/* Grid pattern when snap to grid enabled */}
-          {snapSettings.snapToGrid && (
-            <g className="pointer-events-none" opacity="0.15">
-              {Array.from({ length: 100 }).map((_, i) => (
-                <line
-                  key={`vgrid-${i}`}
-                  x1={i * snapSettings.gridSize - 2000}
-                  y1={-2000}
-                  x2={i * snapSettings.gridSize - 2000}
-                  y2={2000}
-                  stroke="currentColor"
-                  strokeWidth={0.5}
-                />
-              ))}
-              {Array.from({ length: 100 }).map((_, i) => (
-                <line
-                  key={`hgrid-${i}`}
-                  x1={-2000}
-                  y1={i * snapSettings.gridSize - 2000}
-                  x2={2000}
-                  y2={i * snapSettings.gridSize - 2000}
-                  stroke="currentColor"
-                  strokeWidth={0.5}
-                />
-              ))}
-            </g>
-          )}
+          <GridPattern snapSettings={snapSettings} />
 
           {/* Alignment guides */}
           {alignmentGuides.vertical !== null && (
@@ -421,12 +418,25 @@ export function WorkflowCanvas({
             const isDraggingThis = draggingTransitionEndpoint?.transitionId === transition.id
             const draggingEndpoint = isDraggingThis ? draggingTransitionEndpoint.endpoint : null
 
+            // If an opposite-direction transition exists, offset both lines
+            // perpendicular (in opposite directions) so they don't overlap.
+            const hasReverse = transitions.some(
+              (other) =>
+                other.id !== transition.id &&
+                other.from_state_id === transition.to_state_id &&
+                other.to_state_id === transition.from_state_id,
+            )
+            const parallelOffset = hasReverse
+              ? (transition.from_state_id < transition.to_state_id ? 1 : -1) * PARALLEL_EDGE_OFFSET
+              : 0
+
             return (
               <TransitionLine
                 key={transition.id}
                 transition={transition}
                 states={states}
                 gates={transitionGates}
+                parallelOffset={parallelOffset}
                 isSelected={selectedTransitionId === transition.id}
                 isDragging={isDraggingThis}
                 draggingEndpoint={draggingEndpoint}
@@ -446,8 +456,7 @@ export function WorkflowCanvas({
                 draggingLabel={draggingLabel}
                 tempLabelPos={tempLabelPos}
                 mousePos={mousePos}
-                pan={pan}
-                zoom={zoom}
+                viewportRef={viewportRef}
                 canvasRef={canvasRef}
                 onSelect={() => onSelectTransition(transition.id)}
                 onHoverChange={(hovered) => setHoveredTransitionId(hovered ? transition.id : null)}
@@ -464,15 +473,8 @@ export function WorkflowCanvas({
                     endEdge,
                   )
                 }}
-                onShowWaypointContextMenu={(e, clickX, clickY) => {
-                  setWaypointContextMenu({
-                    x: e.clientX,
-                    y: e.clientY,
-                    canvasX: clickX,
-                    canvasY: clickY,
-                    transitionId: transition.id,
-                    waypointIndex: null,
-                  })
+                onShowContextMenu={(clientX, clientY, clickX, clickY) => {
+                  onShowTransitionContextMenu(transition.id, clientX, clientY, clickX, clickY)
                 }}
                 addToast={addToast}
               />
@@ -523,10 +525,15 @@ export function WorkflowCanvas({
             const isResizing = currentResizing?.stateId === state.id
             const isTransitionStart = transitionStartId === state.id
             const isHovered = hoveredStateId === state.id
+            // Highlight a box as a drop target both when creating a new
+            // transition and when dragging an existing transition's endpoint.
             const isSnapTarget =
-              isDraggingToCreateTransition &&
-              hoveredStateId === state.id &&
-              transitionStartId !== state.id
+              (isDraggingToCreateTransition &&
+                hoveredStateId === state.id &&
+                transitionStartId !== state.id) ||
+              (draggingTransitionEndpoint != null &&
+                hoveredStateId === state.id &&
+                draggingTransitionEndpoint.originalStateId !== state.id)
 
             return (
               <StateNode
@@ -544,8 +551,6 @@ export function WorkflowCanvas({
                 transitionStartId={transitionStartId}
                 isDraggingToCreateTransition={isDraggingToCreateTransition}
                 dimensions={dims}
-                pan={pan}
-                zoom={zoom}
                 canvasRef={canvasRef}
                 justCompletedTransitionRef={justCompletedTransitionRef}
                 transitionCompletedAtRef={transitionCompletedAtRef}

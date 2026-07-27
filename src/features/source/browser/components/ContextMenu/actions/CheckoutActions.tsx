@@ -11,6 +11,7 @@ import { getCountLabel } from '@/lib/utils'
 import type { RefreshableActionProps, SelectionCounts, SelectionState } from './types'
 import { ContextSubmenu } from '../components'
 import { useSolidWorksStatus } from '@/hooks/useSolidWorksStatus'
+import { ChangeStateSubmenu } from './ChangeStateSubmenu'
 
 interface CheckoutActionsProps extends RefreshableActionProps {
   counts: SelectionCounts
@@ -19,6 +20,7 @@ interface CheckoutActionsProps extends RefreshableActionProps {
   handleCheckoutFolder: (folder: LocalFile) => void
   handleCheckinFolder: (folder: LocalFile) => void
   handleBulkStateChange: (files: LocalFile[], newState: string) => void
+  handleOpenReviewModal: (file: LocalFile) => void
   showStateSubmenu: boolean
   setShowStateSubmenu: (show: boolean) => void
   stateSubmenuTimeoutRef: React.MutableRefObject<NodeJS.Timeout | null>
@@ -38,6 +40,7 @@ export function CheckoutActions({
   handleCheckoutFolder,
   handleCheckinFolder,
   handleBulkStateChange,
+  handleOpenReviewModal,
   showStateSubmenu,
   setShowStateSubmenu,
   stateSubmenuTimeoutRef,
@@ -283,8 +286,21 @@ export function CheckoutActions({
         </div>
       )}
 
-      {/* Change State - for synced files */}
-      {state.anySynced && (
+      {/* Change State - single file uses the workflow engine's available transitions */}
+      {syncedFilesInSelection.length === 1 && (
+        <ChangeStateSubmenu
+          targetFile={syncedFilesInSelection[0]}
+          onClose={onClose}
+          onRefresh={onRefresh}
+          handleOpenReviewModal={handleOpenReviewModal}
+          showStateSubmenu={showStateSubmenu}
+          setShowStateSubmenu={setShowStateSubmenu}
+          stateSubmenuTimeoutRef={stateSubmenuTimeoutRef}
+        />
+      )}
+
+      {/* Change State - multi-select falls back to the legacy bulk state change */}
+      {syncedFilesInSelection.length > 1 && (
         <div
           className="context-menu-item relative"
           onMouseEnter={() => {

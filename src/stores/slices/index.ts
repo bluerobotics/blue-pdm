@@ -26,3 +26,4 @@ export type {
   OperationStatus,
 } from './operationLogSlice'
 export { createAnnotationsSlice } from './annotationsSlice'
+export { createItemBrowserSlice } from './itemBrowserSlice'

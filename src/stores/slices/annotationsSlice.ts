@@ -13,6 +13,40 @@
  */
 import { StateCreator } from 'zustand'
 import type { PDMStoreState, AnnotationsSlice } from '../types'
+import type { FileAnnotation } from '@/types/database'
+
+/**
+ * Apply a partial update to the annotation with `id`, searching both top-level
+ * threads and their nested `replies`. Returns a new tree (immutable).
+ */
+function updateAnnotationTree(
+  annotation: FileAnnotation,
+  id: string,
+  updates: Partial<FileAnnotation>,
+): FileAnnotation {
+  if (annotation.id === id) return { ...annotation, ...updates }
+  if (annotation.replies && annotation.replies.length > 0) {
+    return {
+      ...annotation,
+      replies: annotation.replies.map((reply) => updateAnnotationTree(reply, id, updates)),
+    }
+  }
+  return annotation
+}
+
+/**
+ * Remove the annotation with `id` from a tree, searching both top-level threads
+ * and their nested `replies`. Returns a new array (immutable).
+ */
+function removeAnnotationTree(annotations: FileAnnotation[], id: string): FileAnnotation[] {
+  return annotations
+    .filter((a) => a.id !== id)
+    .map((a) =>
+      a.replies && a.replies.length > 0
+        ? { ...a, replies: removeAnnotationTree(a.replies, id) }
+        : a,
+    )
+}
 
 export const createAnnotationsSlice: StateCreator<
   PDMStoreState,
@@ -55,12 +89,12 @@ export const createAnnotationsSlice: StateCreator<
 
   updateAnnotationInStore: (id, updates) =>
     set((s) => ({
-      annotations: s.annotations.map((a) => (a.id === id ? { ...a, ...updates } : a)),
+      annotations: s.annotations.map((a) => updateAnnotationTree(a, id, updates)),
     })),
 
   removeAnnotation: (id) =>
     set((s) => ({
-      annotations: s.annotations.filter((a) => a.id !== id),
+      annotations: removeAnnotationTree(s.annotations, id),
     })),
 
   setActiveAnnotationId: (id) => set({ activeAnnotationId: id }),

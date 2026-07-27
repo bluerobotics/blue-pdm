@@ -319,7 +319,8 @@ export function CommentSidebar({ fileId, fileName: _fileName, fileVersion }: Com
 
       if (result.error || !result.annotation) {
         addToast('error', `Failed to save reply: ${result.error}`)
-        return
+        // Throw so the reply input stays open and the typed text is preserved
+        throw new Error(result.error ?? 'Failed to save reply')
       }
 
       // Reload to get the updated threaded structure

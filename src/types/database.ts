@@ -57,6 +57,14 @@ export type FileRecord = Tables<'files'>
 export type Vault = Tables<'vaults'>
 export type FileVersion = Tables<'file_versions'>
 
+// Inspection
+export type InspectionCharacteristic = Tables<'inspection_characteristics'>
+export type InspectionCharacteristicInsert = TablesInsert<'inspection_characteristics'>
+export type InspectionCharacteristicUpdate = TablesUpdate<'inspection_characteristics'>
+export type InspectionCharacteristicVersion = Tables<'inspection_characteristic_versions'>
+export type InspectionMethod = Tables<'inspection_methods'>
+export type InspectionMethodInsert = TablesInsert<'inspection_methods'>
+
 // Workflows
 export type WorkflowTemplate = Tables<'workflow_templates'>
 export type WorkflowState = Tables<'workflow_states'>

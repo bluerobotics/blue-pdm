@@ -15,6 +15,20 @@ export function EditTransitionDialog({ transition, onClose, onSave }: EditTransi
     transition.allowed_workflow_roles || [],
   )
 
+  // Resync form fields when the dialog is reused for a different transition
+  useEffect(() => {
+    setName(transition.name || '')
+    setDescription(transition.description || '')
+    setLineStyle(transition.line_style)
+    setAllowedWorkflowRoles(transition.allowed_workflow_roles || [])
+  }, [
+    transition.id,
+    transition.name,
+    transition.description,
+    transition.line_style,
+    transition.allowed_workflow_roles,
+  ])
+
   // Load workflow roles
   const [workflowRoles, setWorkflowRoles] = useState<WorkflowRoleBasic[]>([])
   const [loadingRoles, setLoadingRoles] = useState(true)

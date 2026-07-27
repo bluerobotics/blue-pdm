@@ -46,6 +46,32 @@ import {
 import type { DrawingRefItem } from '@/stores/types'
 import { log } from '@/lib/logger'
 
+/**
+ * If a SolidWorks write is still pending after this long, it almost certainly
+ * triggered a cold launch of SolidWorks (the first write when SW isn't warm can
+ * take ~40s). Surface a non-blocking hint so the edit doesn't look frozen.
+ */
+const SLOW_WRITE_FEEDBACK_MS = 1500
+
+/**
+ * Runs a SolidWorks write and, if it takes longer than SLOW_WRITE_FEEDBACK_MS,
+ * shows a one-off info toast explaining the delay (cold SolidWorks launch).
+ * The toast is skipped entirely for fast writes (SW already warm).
+ */
+async function withSlowWriteFeedback<T>(
+  op: () => Promise<T>,
+  addToast: (type: 'success' | 'error' | 'info' | 'warning', message: string) => void,
+): Promise<T> {
+  const timer = setTimeout(() => {
+    addToast('info', 'Starting SolidWorks — the first edit can take up to a minute…')
+  }, SLOW_WRITE_FEEDBACK_MS)
+  try {
+    return await op()
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 // SolidWorks BOM item shape from the SW service (camelCase - from preload.ts getBom return type)
 interface SWBomItem {
   fileName: string
@@ -446,10 +472,9 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
         props['Date'] = dateStr
         if (drawnBy) props['DrawnBy'] = drawnBy
 
-        const result = await window.electronAPI?.solidworks?.setProperties(
-          filePath,
-          props,
-          configName,
+        const result = await withSlowWriteFeedback(
+          () => window.electronAPI?.solidworks?.setProperties(filePath, props, configName),
+          addToast,
         )
         if (result?.success) {
           addToast('success', `Saved tab number to ${configName}`)
@@ -541,10 +566,9 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
         props['Date'] = dateStr
         if (drawnBy) props['DrawnBy'] = drawnBy
 
-        const result = await window.electronAPI?.solidworks?.setProperties(
-          filePath,
-          props,
-          configName,
+        const result = await withSlowWriteFeedback(
+          () => window.electronAPI?.solidworks?.setProperties(filePath, props, configName),
+          addToast,
         )
         if (result?.success) {
           addToast('success', `Saved description to ${configName}`)

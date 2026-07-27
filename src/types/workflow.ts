@@ -15,7 +15,7 @@ export type StateShape = 'rectangle' | 'diamond' | 'hexagon' | 'ellipse'
 // Transition visual styles
 export type TransitionLineStyle = 'solid' | 'dashed' | 'dotted'
 export type TransitionPathType = 'straight' | 'spline' | 'elbow'
-export type TransitionArrowHead = 'end' | 'start' | 'both' | 'none'
+export type TransitionArrowHead = 'end' | 'start' | 'none'
 export type TransitionLineThickness = 1 | 2 | 3 | 4 | 6
 
 // Permission types (what can be done to files in a state)

@@ -26,7 +26,7 @@ import { supabase } from './supabase'
 
 // The schema version this app version expects
 // Increment this when releasing app updates that require schema changes
-export const EXPECTED_SCHEMA_VERSION = 62
+export const EXPECTED_SCHEMA_VERSION = 72
 
 // Minimum schema version that will still work (for soft warnings vs hard errors)
 // Set this to allow some backwards compatibility
@@ -94,8 +94,17 @@ export const VERSION_DESCRIPTIONS: Record<number, string> = {
   58: 'User-level column defaults: save/load personal column layout across devices',
   59: 'Removed org roles from team reviewers; simplified to user + workflow_role types only',
   60: 'Removed WooCommerce integration tables (woocommerce_saved_configs, woocommerce_product_mappings)',
-  61: 'Added rename_folder_files RPC for bulk folder path updates',
   62: 'Opt-in vault access: invite vault_ids granted on claim, no grants means no vaults',
+  63: 'Backfill kicked_back on review_status enum for databases created before v55 (idempotent ALTER TYPE)',
+  64: 'Migrate bidirectional transition arrowheads (both -> end); transitions are single-direction',
+  65: 'Inspection table module: inspection_characteristics + per-version snapshots, inspection_hash on files/file_versions, checkin_file snapshots inspection rows',
+  66: 'Inspection methods table: org-level custom inspection method list for the Method dropdown',
+  67: 'Removed is_key (Key) column from inspection tables; criticality/classification covers key characteristics',
+  68: 'Added item_definition_settings column and get/update RPCs for the Item Browser module',
+  69: 'Added google_drive_inspection_template_folder_id column and extended Google Drive settings RPCs for inspection sheet templates',
+  70: 'Added matchOrgFormat to item_definition_settings default (Item Browser org part-number filter)',
+  71: 'Added item_images table + get/upsert/reset RPCs for Item Browser per-item image overrides',
+  72: 'Added item_designations + item_designation_assignments tables and RPCs for Item Browser designations',
   // Note: Process templates module (v26+) is optional - see modules/process-templates.sql
 }
 

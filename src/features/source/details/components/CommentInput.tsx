@@ -71,8 +71,12 @@ export function CommentInput({
   const handleSubmit = useCallback(async () => {
     const trimmed = text.trim()
     if (!trimmed || isLoading) return
-    await onSubmit(trimmed)
-    setText('')
+    try {
+      await onSubmit(trimmed)
+      setText('')
+    } catch {
+      // Keep the typed text so the user can retry; the caller surfaces the error (toast)
+    }
   }, [text, isLoading, onSubmit])
 
   const handleKeyDown = useCallback(

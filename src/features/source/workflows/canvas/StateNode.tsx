@@ -28,8 +28,6 @@ export interface StateNodeProps {
   dimensions: StateDimensions
 
   // Canvas transform
-  pan: { x: number; y: number }
-  zoom: number
   canvasRef: React.RefObject<HTMLDivElement | null>
 
   // Refs for timing
@@ -52,7 +50,7 @@ export interface StateNodeProps {
   onSetHoveredStateId: (id: string | null) => void
 }
 
-export function StateNode({
+function StateNodeComponent({
   state,
   isSelected,
   isTransitionStart,
@@ -66,9 +64,6 @@ export function StateNode({
   transitionStartId,
   isDraggingToCreateTransition,
   dimensions: dims,
-  // pan and zoom kept for potential future use in resize calculations
-  pan: _pan,
-  zoom: _zoom,
   canvasRef,
   justCompletedTransitionRef,
   transitionCompletedAtRef,
@@ -84,9 +79,6 @@ export function StateNode({
   onSetDraggingToCreateTransition,
   onSetHoveredStateId,
 }: StateNodeProps) {
-  // Mark as used for future use
-  void _pan
-  void _zoom
   const textColor = getContrastColor(state.color)
   const hw = dims.width / 2
   const hh = dims.height / 2
@@ -588,4 +580,30 @@ export function StateNode({
     </g>
   )
 }
+
+/**
+ * Only re-render a node when its own visual inputs change. Function props are
+ * stable (wrapped with useStableCallback upstream), and refs never change, so we
+ * compare the data/visual props explicitly. This keeps node drag and pan cheap:
+ * dragging one node does not re-render the others.
+ */
+function statePropsEqual(prev: StateNodeProps, next: StateNodeProps): boolean {
+  return (
+    prev.state === next.state &&
+    prev.dimensions === next.dimensions &&
+    prev.isSelected === next.isSelected &&
+    prev.isTransitionStart === next.isTransitionStart &&
+    prev.isDragging === next.isDragging &&
+    prev.isResizing === next.isResizing &&
+    prev.isSnapTarget === next.isSnapTarget &&
+    prev.isHovered === next.isHovered &&
+    prev.isAdmin === next.isAdmin &&
+    prev.canvasMode === next.canvasMode &&
+    prev.isCreatingTransition === next.isCreatingTransition &&
+    prev.transitionStartId === next.transitionStartId &&
+    prev.isDraggingToCreateTransition === next.isDraggingToCreateTransition
+  )
+}
+
+export const StateNode = React.memo(StateNodeComponent, statePropsEqual)
 

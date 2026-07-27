@@ -93,7 +93,13 @@ export type SidebarView =
   | 'terminal'
   | 'settings'
 
-export type DetailsPanelTab = 'properties' | 'preview' | 'whereused' | 'datacard' | 'vendors'
+export type DetailsPanelTab =
+  | 'properties'
+  | 'preview'
+  | 'whereused'
+  | 'datacard'
+  | 'vendors'
+  | 'inspection'
 export type PanelPosition = 'bottom' | 'right'
 export type ToastType = 'error' | 'success' | 'info' | 'warning' | 'progress' | 'update'
 export type ThemeMode =
@@ -636,6 +642,7 @@ export interface SettingsSlice {
     showOrg: boolean
     showSearch: boolean
     showOnlineUsers: boolean
+    showSolidworks: boolean
     showUserName: boolean
     showPanelToggles: boolean
   }
@@ -1995,6 +2002,45 @@ export interface AnnotationsSlice {
 }
 
 // ============================================================================
+// Item Browser Slice
+// ============================================================================
+
+export type ItemViewMode = 'list' | 'icons'
+
+// Right-panel context for an Item Browser item (eBOM / mBOM detail view)
+export interface ItemPanelState {
+  itemNumber: string
+  kind: 'ebom' | 'mbom'
+  // Server file id of the item's primary assembly file (for BOM lookups)
+  fileId: string | null
+  title: string
+}
+
+export interface ItemBrowserSlice {
+  // Org-wide definition of what constitutes an item (cached from DB)
+  itemDefinition: import('../types/item').ItemDefinitionSettings
+  // Whether the definition has been loaded from the server at least once
+  itemDefinitionLoaded: boolean
+  // UI preferences (persisted) — kept separate from the file browser's fields
+  itemViewMode: ItemViewMode
+  itemListRowSize: number
+  itemIconSize: number
+  // Column config (visibility, width, order) for the item list view
+  itemColumns: ColumnConfig[]
+  // Currently open item detail panel (eBOM/mBOM), null when closed
+  itemPanel: ItemPanelState | null
+
+  // Actions
+  setItemDefinition: (definition: import('../types/item').ItemDefinitionSettings) => void
+  setItemDefinitionLoaded: (loaded: boolean) => void
+  setItemViewMode: (mode: ItemViewMode) => void
+  setItemListRowSize: (size: number) => void
+  setItemIconSize: (size: number) => void
+  setItemColumns: (columns: ColumnConfig[]) => void
+  setItemPanel: (panel: ItemPanelState | null) => void
+}
+
+// ============================================================================
 // Combined Store Type
 // ============================================================================
 
@@ -2016,7 +2062,8 @@ export type PDMStoreState = ToastsSlice &
   IntegrationsSlice &
   ExtensionsSlice &
   OperationLogSlice &
-  AnnotationsSlice
+  AnnotationsSlice &
+  ItemBrowserSlice
 
 // ============================================================================
 // Store Versioning

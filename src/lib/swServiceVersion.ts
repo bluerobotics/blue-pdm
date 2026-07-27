@@ -13,6 +13,24 @@
  * - Version 1.2.2: Add process detection when COM connection fails
  * - Version 1.2.3: Unified COM connection with caching/retry, add resetComConnection command
  * - Version 1.2.4: DM-first for file-level-only property writes (avoid SW cold start), SW fallback
+ * - Version 1.3.0: Add getInspectionCharacteristics (read SOLIDWORKS Inspection Bill of Characteristics)
+ * - Version 1.3.1: Fix inspection characteristic ID parsing (handle double[]/int[] return types)
+ * - Version 1.3.2: UTF-8/ASCII-safe JSON responses so GD&T + symbol characters survive (no more "?")
+ * - Version 1.3.3: Decode SOLIDWORKS symbol-font (SWGDT) Private Use Area glyphs to readable GD&T text
+ * - Version 1.3.4: Include characteristic Type (Dimension/GTOL/Note/Datum) so the Type column auto-populates
+ * - Version 1.4.0: Emit SubType as its integer enum code (Type is derived from it in-app; the API has
+ *                  no Type field), decode Classification to its label, and drop the unused Key field
+ * - Version 1.5.0: Add setInspectionCharacteristics (EXPERIMENTAL) to push metadata (Classification,
+ *                  Method, Operation, AQL, Comments) back into the drawing's Bill of Characteristics
+ * - Version 1.6.0: Push now saves the drawing after applying edits so changes persist to the file
+ *                  (returns saved flag)
+ * - Version 1.7.0: Stop SolidWorks reopen churn - reuse the already-open ModelDoc2 instead of
+ *                  calling OpenDoc6 on open docs; exports no longer close a doc the user had open;
+ *                  IsFileOpenInSolidWorks fails safe (open) on COM hiccups while SW is running
+ * - Version 1.8.0: Add warmup command that pre-launches a hidden SolidWorks instance so the first
+ *                  property write does not pay the ~40s cold-start (no-op if already running)
+ * - Version 1.9.0: Merge DM-first file-level-only property writes (from the 1.2.4 line) into the
+ *                  warmup/inspection service so file-level edits skip the SW cold start
  *
  * When making service changes:
  * 1. Increment SERVICE_VERSION in Program.cs
@@ -22,7 +40,7 @@
 
 // The SolidWorks service version this app version expects
 // Uses semver: MAJOR.MINOR.PATCH
-export const EXPECTED_SW_SERVICE_VERSION = '1.2.4'
+export const EXPECTED_SW_SERVICE_VERSION = '1.9.0'
 
 // Minimum service version that will still work (for soft warnings vs hard errors)
 // Breaking changes should bump the major version and update this
@@ -37,6 +55,20 @@ export const SW_SERVICE_VERSION_DESCRIPTIONS: Record<string, string> = {
   '1.2.2': 'Add process detection when COM connection fails',
   '1.2.3': 'Unified COM connection with caching/retry, add resetComConnection command',
   '1.2.4': 'DM-first for file-level-only property writes (avoid SolidWorks cold start), SW fallback',
+  '1.3.0': 'Read SOLIDWORKS Inspection Bill of Characteristics from drawings (import into Inspection tab)',
+  '1.3.1': 'Fix inspection characteristic ID parsing (handle double[]/int[] return types)',
+  '1.3.2': 'UTF-8/ASCII-safe JSON responses so GD&T and symbol characters survive (no more "?")',
+  '1.3.3': 'Decode SOLIDWORKS symbol-font (SWGDT) Private Use Area glyphs to readable GD&T text',
+  '1.3.4': 'Include characteristic Type so the Type column auto-populates on import',
+  '1.4.0': 'Derive Type from SubType enum code, decode Classification labels, drop unused Key field',
+  '1.5.0': 'Experimental push: write inspection metadata (classification/method/operation/AQL/comments) back to the drawing',
+  '1.6.0': 'Push now saves the drawing after applying edits so changes persist to the file',
+  '1.7.0':
+    'Stop SolidWorks reopen churn: reuse already-open documents (no OpenDoc6/flicker), exports never close a doc you had open, and open-file detection fails safe during COM hiccups',
+  '1.8.0':
+    'Add warmup command that pre-launches a hidden SolidWorks instance in the background so the first property edit is instant instead of paying a ~40s cold-start',
+  '1.9.0':
+    'Merge DM-first file-level-only property writes (1.2.4) into the warmup/inspection service so file-level edits skip the SolidWorks cold start',
 }
 
 export interface SwServiceVersionCheckResult {

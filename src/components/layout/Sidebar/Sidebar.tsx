@@ -189,7 +189,9 @@ export function Sidebar() {
       // ============================================
       // ITEMS
       // ============================================
-      case 'items':
+      // Note: 'items' (Quality / Item Browser) renders full-width in MainContent,
+      // not in the sidebar. See MainContent.tsx.
+
       case 'boms':
         return isEnabled ? (
           <ModuleComingSoon moduleName={moduleName} />

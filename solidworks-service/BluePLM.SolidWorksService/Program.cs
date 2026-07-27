@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
@@ -33,8 +34,20 @@ namespace BluePLM.SolidWorksService
         /// Service version - bump this when making changes that affect functionality.
         /// The app checks this version and warns if there's a mismatch.
         /// </summary>
-        private const string SERVICE_VERSION = "1.2.4";
-        
+        private const string SERVICE_VERSION = "1.9.0";
+
+        /// <summary>
+        /// JSON settings for all stdout responses. EscapeNonAscii forces every non-ASCII character
+        /// (e.g. the diameter sign, GD&amp;T symbols, tolerance glyphs) to a \uXXXX escape so the
+        /// payload is pure ASCII. This survives any Windows console/stdout code page and is parsed
+        /// back to the correct Unicode by the Electron side, preventing "?" replacement characters.
+        /// </summary>
+        private static readonly JsonSerializerSettings ResponseJsonSettings = new JsonSerializerSettings
+        {
+            StringEscapeHandling = StringEscapeHandling.EscapeNonAscii,
+        };
+
+
         private static DocumentManagerAPI? _dmApi;
         private static SolidWorksAPI? _swApi;
         private static ComStabilityLayer? _comStability;
@@ -47,6 +60,16 @@ namespace BluePLM.SolidWorksService
 
         static int Main(string[] args)
         {
+            // Emit stdout/stderr as UTF-8 so Unicode (diameter sign, GD&T symbols, etc.) is not
+            // mangled by the default Windows console code page. Combined with EscapeNonAscii on the
+            // JSON responses, this guarantees non-ASCII characters reach the app intact.
+            try
+            {
+                Console.OutputEncoding = new UTF8Encoding(false);
+                Console.InputEncoding = new UTF8Encoding(false);
+            }
+            catch { /* Non-fatal: EscapeNonAscii still keeps responses ASCII-safe */ }
+
             // Catch ALL unhandled exceptions to prevent silent crashes
             AppDomain.CurrentDomain.UnhandledException += (sender, e) =>
             {
@@ -121,7 +144,7 @@ namespace BluePLM.SolidWorksService
             if (singleCommand && commandJson != null && commandJson.Length > 0)
             {
                 var result = ProcessCommand(commandJson);
-                Console.WriteLine(JsonConvert.SerializeObject(result));
+                Console.WriteLine(JsonConvert.SerializeObject(result, ResponseJsonSettings));
                 return result.Success ? 0 : 1;
             }
 
@@ -169,7 +192,7 @@ namespace BluePLM.SolidWorksService
                     try
                     {
                         var result = ProcessCommand(line);
-                        var response = JsonConvert.SerializeObject(result);
+                        var response = JsonConvert.SerializeObject(result, ResponseJsonSettings);
                         if (!isQuietOperation)
                         {
                             Console.Error.WriteLine($"[Service] Sending response ({response.Length} chars)");
@@ -196,7 +219,7 @@ namespace BluePLM.SolidWorksService
                             // CRITICAL: Include requestId so frontend can match this error to the correct request
                             RequestId = requestIdForErrorHandling
                         };
-                        Console.WriteLine(JsonConvert.SerializeObject(error));
+                        Console.WriteLine(JsonConvert.SerializeObject(error, ResponseJsonSettings));
                         Console.Out.Flush();
                     }
                 }
@@ -310,6 +333,18 @@ namespace BluePLM.SolidWorksService
                     // getMassProperties requires full SolidWorks (needs rebuild)
                     "getMassProperties" => RequiresSolidWorks(() => _swApi!.GetMassProperties(filePath,
                         command["configuration"]?.ToString()), "getMassProperties"),
+
+                    // getInspectionCharacteristics reads the SOLIDWORKS Inspection add-in's
+                    // Bill of Characteristics from a drawing (requires full SW + Inspection add-in)
+                    "getInspectionCharacteristics" => RequiresSolidWorks(
+                        () => _swApi!.GetInspectionCharacteristics(filePath), "getInspectionCharacteristics"),
+
+                    // setInspectionCharacteristics (EXPERIMENTAL) writes bluePLM inspection metadata
+                    // back into the drawing's Bill of Characteristics (requires full SW + Inspection add-in)
+                    "setInspectionCharacteristics" => RequiresSolidWorks(
+                        () => _swApi!.SetInspectionCharacteristics(filePath,
+                            command["characteristics"]?.ToObject<System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, string>>>()),
+                        "setInspectionCharacteristics"),
                     
                     // Exports (require full SW)
                     "exportPdf" => RequiresSolidWorks(() => _swApi!.ExportToPdf(filePath, 
@@ -360,6 +395,10 @@ namespace BluePLM.SolidWorksService
                         command["componentPath"]?.ToString(),
                         command["coordinates"]?.ToObject<double[]>()), "addComponent"),
                     
+                    // warmup pre-launches a hidden SolidWorks instance so the first write
+                    // operation (setProperties) doesn't pay the cold-start cost. No-op if already running.
+                    "warmup" => RequiresSolidWorks(() => _swApi!.EnsureRunning(), "warmup"),
+
                     // Service control
                     "ping" => Ping(),
                     "setDmLicense" => SetDmLicense(command["licenseKey"]?.ToString()),
@@ -876,6 +915,7 @@ Getting a Document Manager License Key (FREE with SW subscription):
 
 Commands:
   {{""action"": ""ping""}}
+  {{""action"": ""warmup""}}
   {{""action"": ""setDmLicense"", ""licenseKey"": ""YOUR_KEY_HERE""}}
   
   -- FAST (no SW launch with DM key) --

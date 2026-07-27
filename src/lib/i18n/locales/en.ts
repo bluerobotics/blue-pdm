@@ -2,6 +2,34 @@ import type { TranslationDict } from '../types'
 
 // English translations (default/fallback)
 export const en: TranslationDict = {
+  // Item Browser expandable sections
+  itemBrowser: {
+    designation: 'Designation',
+    source: 'Source',
+    release: 'Release',
+    boms: 'BOMs',
+    ebom: 'eBOM',
+    mbom: 'mBOM',
+    quality: 'Quality',
+    faiReports: 'First article inspection reports',
+    imrReports: 'Incoming material inspection reports',
+    noTemplateDefined: 'No template defined',
+    selectTemplate: 'Select template',
+    noSourceFiles: 'No source files',
+    noReleaseFiles: 'No release files',
+    comingSoon: 'Coming soon',
+    openEbom: 'Open eBOM',
+    openMbom: 'Open mBOM',
+    defaultDesignation: 'Default',
+    designationsTitle: 'Item Designations',
+    designationsDescription:
+      'Manage the list of item designations (e.g. Part, Assembly, Packed Assembly). These appear in the Item Browser and can be assigned per item.',
+    addDesignation: 'Add designation',
+    designationName: 'Designation name',
+    noDesignations: 'No designations defined yet.',
+    deleteDesignationConfirm: 'Delete this designation? Items using it will revert to their default.',
+    noPermission: 'You do not have permission to manage item designations.',
+  },
   // Common
   common: {
     save: 'Save',
@@ -436,6 +464,65 @@ export const en: TranslationDict = {
 
   // Source / Details Panel
   source: {
+    inspection: {
+      title: 'Inspection Table',
+      notSynced: 'Sync this drawing to bluePLM to manage its inspection table.',
+      notInstalledTitle: 'Inspection tables not set up',
+      notInstalledBody:
+        'Your database does not have the inspection module yet. Ask your admin to run the latest schema (modules/15-inspection.sql) to enable inspection tables.',
+      version: 'Version',
+      current: 'Current',
+      saving: 'Saving…',
+      readOnlyCheckout: 'Check out the drawing to edit',
+      addRow: 'Add Row',
+      deleteRow: 'Delete row',
+      sortBy: 'Click to sort',
+      filterAll: 'All',
+      filterPlaceholder: 'Filter…',
+      noMatches: 'No rows match the current filters.',
+      methods: 'Methods',
+      manageMethods: 'Manage methods…',
+      generateTemplate: 'Generate template',
+      generating: 'Generating…',
+      templateLoading: 'Loading templates…',
+      templateNone: 'No templates found in the configured folder.',
+      templateConnectDrive: 'Connect Google Drive to generate inspection templates.',
+      templateListFailed: 'Failed to load templates from Google Drive.',
+      templateSuccess: 'Inspection sheet generated. Opening in Google Sheets…',
+      templateFailed: 'Failed to generate the inspection sheet.',
+      methodsTitle: 'Inspection Methods',
+      addMethodPlaceholder: 'New method name',
+      addMethodButton: 'Add',
+      noMethods: 'No methods yet. Add one above.',
+      builtIn: 'Built-in',
+      empty: 'No inspection characteristics yet.',
+      importFromSw: 'Pull from SOLIDWORKS',
+      importing: 'Pulling…',
+      importServiceOffline: 'Start the SOLIDWORKS service to import inspection characteristics.',
+      importNotDrawing: 'Open a SOLIDWORKS drawing (.slddrw) to import inspection characteristics.',
+      importAddinUnavailable:
+        'SOLIDWORKS Inspection add-in not available. Install it, ensure it is licensed, and enable it in Tools > Add-Ins.',
+      importNone: 'No SOLIDWORKS Inspection characteristics found in this drawing.',
+      importSuccess: 'Imported {count} characteristic(s) from SOLIDWORKS',
+      importFailed: 'Failed to import from SOLIDWORKS',
+      importConfirmReplace:
+        'This will replace the current inspection rows with the characteristics from SOLIDWORKS. Continue?',
+      pushToSw: 'Push to SOLIDWORKS',
+      pushing: 'Pushing…',
+      pushConfirm:
+        'This will write inspection metadata (criticality, method, operation, AQL, comments) for {count} changed characteristic(s) back into the SOLIDWORKS drawing and save it. Continue?',
+      pushSuccess: 'Pushed metadata to {matched} characteristic(s) and saved the drawing',
+      pushSavedWarn:
+        'Pushed metadata to {matched} characteristic(s), but the drawing could not be saved automatically — save it in SOLIDWORKS.',
+      pushNoneMatched: 'No matching characteristics found in the SOLIDWORKS drawing (matched by balloon number).',
+      pushNoChanges: 'No unpushed changes to send to SOLIDWORKS.',
+      pushFailed: 'Failed to push to SOLIDWORKS',
+      unpushedBadge: '{count} unpushed',
+      unpushedTitle:
+        '{count} characteristic(s) have metadata changes not yet pushed to the SOLIDWORKS drawing.',
+      unpushedWarnLeave:
+        'You have inspection changes that have not been pushed to the SOLIDWORKS drawing. Leave anyway?',
+    },
     details: {
       dragToReorder: 'Drag to reorder or move to right panel',
       selectFileToView: 'Select a file to view details',

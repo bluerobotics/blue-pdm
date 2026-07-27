@@ -120,6 +120,9 @@ export { isFileBeingThumbnailed, getThumbnailsInProgress } from './solidworks'
 // SolidWorks service cleanup for app quit
 export { cleanupSolidWorksService } from './solidworks'
 
+// SolidWorks main-process early start (parallel to renderer boot) for main.ts
+export { autoStartServiceFromCache } from './solidworks'
+
 // Convenience log functions
 const log = (message: string, data?: unknown) => {
   writeLog('info', `[Main] ${message}`, data)

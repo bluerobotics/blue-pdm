@@ -29,6 +29,7 @@ import {
   useRef,
   useMemo,
   useCallback,
+  useEffect,
   type ReactNode,
   type RefObject,
 } from 'react'
@@ -57,10 +58,17 @@ export interface WorkflowCanvasContextValue {
   pan: Point
   mousePos: Point
   canvasRef: RefObject<HTMLDivElement | null>
+  /** Ref to the transformable SVG group, used for imperative pan/zoom during gestures */
+  groupRef: RefObject<SVGGElement | null>
+  /** Always-current viewport values for stable coordinate math inside memoized children */
+  viewportRef: RefObject<{ pan: Point; zoom: number }>
+  /** Always-current pointer position in canvas coordinates */
+  mousePosRef: RefObject<Point>
 
   setCanvasMode: (mode: CanvasMode) => void
   setZoom: (zoom: number) => void
   setPan: (pan: Point) => void
+  setMousePos: (pos: Point) => void
   handleWheel: (e: React.WheelEvent) => void
   centerOnContent: (states: WorkflowState[]) => void
   screenToCanvas: (screenX: number, screenY: number) => Point
@@ -201,6 +209,13 @@ const DEFAULT_STATE_WIDTH = 120
 const DEFAULT_STATE_HEIGHT = 50
 const DRAG_THRESHOLD = 5
 
+// Stable default dimensions object so memoized nodes that have no custom size
+// receive a referentially-stable `dimensions` prop across renders.
+const DEFAULT_DIMENSIONS: StateDimensions = {
+  width: DEFAULT_STATE_WIDTH,
+  height: DEFAULT_STATE_HEIGHT,
+}
+
 // ==============================================
 // Provider Component
 // ==============================================
@@ -213,8 +228,67 @@ export function WorkflowCanvasProvider({
   const [canvasMode, setCanvasMode] = useState<CanvasMode>('select')
   const [zoom, setZoom] = useState(1)
   const [pan, setPan] = useState<Point>({ x: 0, y: 0 })
-  const [mousePos] = useState<Point>({ x: 0, y: 0 })
+  const [mousePos, setMousePos] = useState<Point>({ x: 0, y: 0 })
   const canvasRef = useRef<HTMLDivElement>(null)
+  const groupRef = useRef<SVGGElement>(null)
+
+  // Keep always-current viewport + pointer values so memoized children can do
+  // coordinate math via refs without re-rendering on every pan/zoom/move.
+  const viewportRef = useRef<{ pan: Point; zoom: number }>({ pan, zoom })
+  viewportRef.current = { pan, zoom }
+  const mousePosRef = useRef<Point>(mousePos)
+
+  // ---- Spacebar-to-pan (hold space to temporarily pan, like Figma) ----
+  // Keep a ref to the latest mode so the keydown listener can restore it on release
+  const canvasModeRef = useRef(canvasMode)
+  canvasModeRef.current = canvasMode
+  const isSpacePanningRef = useRef(false)
+  const preSpacePanModeRef = useRef<CanvasMode>('select')
+
+  useEffect(() => {
+    const isEditableTarget = (target: EventTarget | null) => {
+      const el = target as HTMLElement | null
+      if (!el) return false
+      const tag = el.tagName
+      return (
+        tag === 'INPUT' ||
+        tag === 'TEXTAREA' ||
+        tag === 'SELECT' ||
+        tag === 'BUTTON' ||
+        el.isContentEditable
+      )
+    }
+
+    const startSpacePan = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' || e.repeat) return
+      if (isEditableTarget(document.activeElement)) return
+      e.preventDefault()
+      if (isSpacePanningRef.current) return
+      isSpacePanningRef.current = true
+      preSpacePanModeRef.current = canvasModeRef.current
+      setCanvasMode('pan')
+    }
+
+    const endSpacePan = () => {
+      if (!isSpacePanningRef.current) return
+      isSpacePanningRef.current = false
+      setCanvasMode(preSpacePanModeRef.current)
+    }
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.code !== 'Space') return
+      endSpacePan()
+    }
+
+    window.addEventListener('keydown', startSpacePan)
+    window.addEventListener('keyup', handleKeyUp)
+    window.addEventListener('blur', endSpacePan)
+    return () => {
+      window.removeEventListener('keydown', startSpacePan)
+      window.removeEventListener('keyup', handleKeyUp)
+      window.removeEventListener('blur', endSpacePan)
+    }
+  }, [])
 
   // ---- Selection State ----
   const [selectedStateId, setSelectedStateId] = useState<string | null>(null)
@@ -305,9 +379,7 @@ export function WorkflowCanvasProvider({
 
   const getDimensions = useCallback(
     (stateId: string): StateDimensions => {
-      return (
-        stateDimensions[stateId] || { width: DEFAULT_STATE_WIDTH, height: DEFAULT_STATE_HEIGHT }
-      )
+      return stateDimensions[stateId] || DEFAULT_DIMENSIONS
     },
     [stateDimensions],
   )
@@ -455,17 +527,24 @@ export function WorkflowCanvasProvider({
       const mouseX = e.clientX - rect.left
       const mouseY = e.clientY - rect.top
 
-      const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1
-      const newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom * zoomFactor))
+      // Miro-style: ctrl/cmd + wheel (and trackpad pinch, which reports ctrlKey)
+      // zooms toward the cursor; a plain wheel / two-finger drag pans the canvas.
+      if (e.ctrlKey || e.metaKey) {
+        // Exponential factor keeps zoom velocity smooth and symmetric.
+        const zoomFactor = Math.exp(-e.deltaY * 0.01)
+        const newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom * zoomFactor))
 
-      const canvasX = (mouseX - pan.x) / zoom
-      const canvasY = (mouseY - pan.y) / zoom
+        const canvasX = (mouseX - pan.x) / zoom
+        const canvasY = (mouseY - pan.y) / zoom
 
-      const newPanX = mouseX - canvasX * newZoom
-      const newPanY = mouseY - canvasY * newZoom
-
-      setZoom(newZoom)
-      setPan({ x: newPanX, y: newPanY })
+        setZoom(newZoom)
+        setPan({ x: mouseX - canvasX * newZoom, y: mouseY - canvasY * newZoom })
+      } else {
+        // Pan with wheel / trackpad. Shift+wheel scrolls horizontally on mice.
+        const dx = e.shiftKey && e.deltaX === 0 ? e.deltaY : e.deltaX
+        const dy = e.shiftKey && e.deltaX === 0 ? 0 : e.deltaY
+        setPan({ x: pan.x - dx, y: pan.y - dy })
+      }
     },
     [zoom, pan],
   )
@@ -528,9 +607,13 @@ export function WorkflowCanvasProvider({
       pan,
       mousePos,
       canvasRef,
+      groupRef,
+      viewportRef,
+      mousePosRef,
       setCanvasMode,
       setZoom,
       setPan,
+      setMousePos,
       handleWheel,
       centerOnContent,
       screenToCanvas,

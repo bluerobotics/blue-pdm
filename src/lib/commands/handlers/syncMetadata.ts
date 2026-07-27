@@ -841,6 +841,11 @@ function getSwFilesFromSelection(allFiles: LocalFile[], selectedFiles: LocalFile
  * Used by file watcher for auto-refresh on save.
  * Only PULLs metadata (reads from file), does not PUSH.
  *
+ * INVARIANT: this is a background pass and MUST stay read-only. Never call
+ * setProperties/setPropertiesBatch here - writing properties to a document the user has
+ * open in SolidWorks mutates their file mid-session. Property writes belong only in the
+ * explicit, user-initiated syncMetadataCommand (pushPartAssemblyMetadata).
+ *
  * This is a silent operation - no toasts or progress indicators.
  * Skips gracefully if SW service is unavailable.
  *

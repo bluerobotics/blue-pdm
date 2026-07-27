@@ -5,4 +5,5 @@
  */
 
 export * from './products'
+export * from './itemBrowser'
 // export * from './boms'  // Coming soon

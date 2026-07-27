@@ -580,6 +580,62 @@ export function useSolidWorksSettings() {
   )
 
   // ============================================
+  // Background Warmup Policy (org-wide)
+  // ============================================
+
+  // Keep a hidden SolidWorks instance running so the first property edit is instant
+  // instead of paying a ~40s cold-start. Default ON when the setting is undefined.
+  const prewarmSolidworks = organization?.settings?.solidworks_prewarm_full_app ?? true
+  const [isSavingPrewarm, setIsSavingPrewarm] = useState(false)
+
+  const handleTogglePrewarm = useCallback(
+    async (enabled: boolean) => {
+      if (!organization) return
+      setIsSavingPrewarm(true)
+      try {
+        // Fetch current settings to avoid overwriting other fields
+        const { data: currentOrg } = await db
+          .from('organizations')
+          .select('settings')
+          .eq('id', organization.id)
+          .single()
+
+        const currentSettings = currentOrg?.settings || organization.settings || {}
+        const newSettings = { ...currentSettings, solidworks_prewarm_full_app: enabled }
+
+        const { data: updateResult, error } = await db
+          .from('organizations')
+          .update({ settings: newSettings })
+          .eq('id', organization.id)
+          .select('settings')
+          .single()
+
+        if (error) throw error
+        if (!updateResult) throw new Error('Update failed - you may not have permission')
+
+        setOrganization({ ...organization, settings: newSettings })
+        addToast(
+          'success',
+          enabled
+            ? 'SolidWorks will stay warm in the background for faster edits'
+            : 'Background SolidWorks warmup disabled',
+        )
+
+        // Start warming immediately when enabling so the benefit is instant
+        if (enabled) {
+          window.electronAPI?.solidworks?.warmup?.().catch(() => {})
+        }
+      } catch (error) {
+        log.error('[SWSettings]', 'Toggle prewarm failed', { error: error })
+        addToast('error', error instanceof Error ? error.message : 'Failed to update warmup setting')
+      } finally {
+        setIsSavingPrewarm(false)
+      }
+    },
+    [organization, setOrganization, addToast],
+  )
+
+  // ============================================
   // Overall Status Helpers
   // ============================================
 
@@ -705,6 +761,11 @@ export function useSolidWorksSettings() {
     allowModelRevision,
     isSavingRevisionPolicy,
     handleToggleModelRevision,
+
+    // Background warmup policy (org-wide)
+    prewarmSolidworks,
+    isSavingPrewarm,
+    handleTogglePrewarm,
 
     // Overall status
     overallStatus,

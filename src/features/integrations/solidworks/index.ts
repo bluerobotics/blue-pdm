@@ -7,6 +7,7 @@ export {
   SWExportActions,
 } from './SolidWorksPanel'
 export { SWDatacardPanel } from './SWDatacardPanel'
+export { InspectionTab } from './inspection/InspectionTab'
 export {
   BomTree,
   convertLegacyBomToBomNodes,

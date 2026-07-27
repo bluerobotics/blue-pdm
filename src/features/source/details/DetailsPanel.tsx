@@ -11,6 +11,7 @@ import { format } from 'date-fns'
 import { getNextSerialNumber } from '@/lib/serialization'
 import { WhereUsedTab, SWPropertiesTab } from '@/features/integrations/solidworks'
 import { SWDatacardPanel } from '@/features/integrations/solidworks'
+import { InspectionTab } from '@/features/integrations/solidworks'
 import { VendorsTab } from './VendorsTab'
 import { PdfAnnotationViewer } from './components/PdfAnnotationViewer'
 import type { AnnotationOverlay } from './components/PdfAnnotationViewer'
@@ -383,6 +384,11 @@ export function DetailsPanel() {
 
       const watcherKey = targetFile.relativePath
       let watcherSuppressed = false
+      // If this write is still pending after a moment, it likely triggered a cold
+      // SolidWorks launch (~40s on the first edit). Surface a non-blocking hint.
+      const slowWriteTimer = setTimeout(() => {
+        addToast('info', 'Starting SolidWorks — the first edit can take up to a minute…')
+      }, 1500)
       try {
         const props: Record<string, string> = {}
 
@@ -559,6 +565,7 @@ export function DetailsPanel() {
       } catch (error) {
         addToast('error', `Failed to save: ${error instanceof Error ? error.message : String(error)}`)
       } finally {
+        clearTimeout(slowWriteTimer)
         // Delay clearing watcher suppression so the debounced FileWatcher event
         // triggered by our SW write is filtered out, not the next legitimate edit.
         if (watcherSuppressed) {
@@ -711,20 +718,24 @@ export function DetailsPanel() {
   const isSolidWorksFile =
     file && ['.sldprt', '.sldasm', '.slddrw'].includes(file.extension?.toLowerCase() || '')
 
+  // Inspection tables are drawing-only
+  const isDrawingFile = !!file && file.extension?.toLowerCase() === '.slddrw'
+
   // For SolidWorks files, use Preview tab (metadata is edited inline in the file tree)
-  const allTabs =
+  const allTabs: { id: DetailsPanelTab; label: string }[] =
     isSolidWorksFile && !isFolder
-      ? ([
+      ? [
           { id: 'preview', label: 'Preview' },
           { id: 'whereused', label: 'Where Used' },
           { id: 'vendors', label: 'Vendors' },
-        ] as const)
-      : ([
+          ...(isDrawingFile ? [{ id: 'inspection' as const, label: 'Inspection' }] : []),
+        ]
+      : [
           { id: 'preview', label: 'Preview' },
           { id: 'properties', label: 'Properties' },
           { id: 'whereused', label: 'Where Used' },
           { id: 'vendors', label: 'Vendors' },
-        ] as const)
+        ]
 
   // Filter out tabs that are in the right panel, then sort by custom order
   const filteredTabs = allTabs.filter((tab) => !rightPanelTabs.includes(tab.id))
@@ -755,6 +766,13 @@ export function DetailsPanel() {
       setDetailsPanelTab('preview')
     }
   }, [isSolidWorksFile, isFolder, detailsPanelTab, setDetailsPanelTab])
+
+  // Inspection tab is drawing-only; switch away if a non-drawing becomes selected
+  useEffect(() => {
+    if (detailsPanelTab === 'inspection' && !isDrawingFile) {
+      setDetailsPanelTab('preview')
+    }
+  }, [detailsPanelTab, isDrawingFile, setDetailsPanelTab])
 
   // Check file types for preview
   const ext = file?.extension?.toLowerCase() || ''
@@ -1255,6 +1273,8 @@ export function DetailsPanel() {
               {detailsPanelTab === 'whereused' && <WhereUsedTab file={file} />}
 
               {detailsPanelTab === 'vendors' && <VendorsTab file={file} />}
+
+              {detailsPanelTab === 'inspection' && isDrawingFile && <InspectionTab file={file} />}
             </>
           )
         )}

@@ -49,6 +49,7 @@ export type {
 
 // Status & Info components
 export { OnlineUsersIndicator } from './OnlineUsers'
+export { SolidWorksStatusIndicator } from './SolidWorksStatusIndicator'
 export { ImpersonationBanner } from './ImpersonationBanner'
 export { LanguageSelector } from './LanguageSelector'
 

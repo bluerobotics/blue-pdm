@@ -329,13 +329,6 @@ export function TransitionToolbar({
                   markerEnd="url(#toolbar-arrow)"
                 />
               )}
-              {currentArrowHead === 'both' && (
-                <>
-                  <line x1="5" y1="9" x2="13" y2="9" stroke="currentColor" strokeWidth="2" />
-                  <polygon points="2,9 6,6 6,12" fill="currentColor" />
-                  <polygon points="16,9 12,6 12,12" fill="currentColor" />
-                </>
-              )}
               {currentArrowHead === 'none' && (
                 <line x1="2" y1="9" x2="16" y2="9" stroke="currentColor" strokeWidth="2" />
               )}
@@ -354,7 +347,6 @@ export function TransitionToolbar({
                 {[
                   { value: 'end' as TransitionArrowHead, tooltip: t('workflows.transitionToolbar.arrowAtEnd') },
                   { value: 'start' as TransitionArrowHead, tooltip: t('workflows.transitionToolbar.arrowAtStart') },
-                  { value: 'both' as TransitionArrowHead, tooltip: t('workflows.transitionToolbar.arrowsAtBothEnds') },
                   { value: 'none' as TransitionArrowHead, tooltip: t('workflows.transitionToolbar.noArrows') },
                 ].map(({ value, tooltip }) => (
                   <button
@@ -392,20 +384,6 @@ export function TransitionToolbar({
                             strokeWidth="2"
                           />
                           <polygon points="2,6 8,2 8,10" fill="currentColor" />
-                        </>
-                      )}
-                      {value === 'both' && (
-                        <>
-                          <line
-                            x1="8"
-                            y1="6"
-                            x2="20"
-                            y2="6"
-                            stroke="currentColor"
-                            strokeWidth="2"
-                          />
-                          <polygon points="2,6 8,2 8,10" fill="currentColor" />
-                          <polygon points="26,6 20,2 20,10" fill="currentColor" />
                         </>
                       )}
                       {value === 'none' && (

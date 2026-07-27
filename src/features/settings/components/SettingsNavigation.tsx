@@ -36,6 +36,7 @@ const settingsSections: SettingsSection[] = [
       { id: 'serialization', label: 'Serialization' },
       { id: 'export', label: 'Export Options' },
       { id: 'metadata-columns', label: 'File Metadata' },
+      { id: 'item-designations', label: 'Item Designations' },
       { id: 'rfq', label: 'RFQ Settings' },
       { id: 'recovery-codes', label: 'Recovery Codes' },
     ],

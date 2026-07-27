@@ -513,6 +513,16 @@ declare global {
           }
           error?: string
         }>
+        /**
+         * Persist the renderer's auto-start policy so the main process can launch
+         * the SolidWorks service at app-ready, in parallel with the renderer boot.
+         */
+        setAutoStartConfig: (config: {
+          autoStartEnabled: boolean
+          integrationEnabled: boolean
+          dmLicenseKey?: string
+          verboseLogging?: boolean
+        }) => Promise<{ success: boolean }>
         stopService: () => Promise<{ success: boolean }>
         forceRestart: (
           dmLicenseKey?: string,
@@ -536,6 +546,11 @@ declare global {
           }
           error?: string
         }>
+        /**
+         * Pre-warm a hidden SolidWorks instance so the first property write is instant
+         * instead of paying a ~40s cold-start. No-op if SolidWorks is already running.
+         */
+        warmup: () => Promise<{ success: boolean; error?: string; data?: unknown }>
 
         // Metadata operations
         getBom: (
@@ -659,6 +674,62 @@ declare global {
             }
           }
           error?: string
+        }>
+        getInspectionCharacteristics: (filePath: string) => Promise<{
+          success: boolean
+          data?: {
+            filePath: string
+            count: number
+            characteristics: Array<{
+              charId: string | null
+              zone: string | null
+              subType: number | null
+              value: string | null
+              unit: string | null
+              tolerancePlus: string | null
+              toleranceMinus: string | null
+              upperLimit: string | null
+              lowerLimit: string | null
+              classification: string | null
+              method: string | null
+              operation: string | null
+              aql: string | null
+              sampleSize: number | null
+              quantity: number | null
+              isReference: boolean
+              comments: string | null
+              sheet: string | null
+              view: string | null
+            }>
+          }
+          error?: string
+          errorCode?: string
+        }>
+        setInspectionCharacteristics: (
+          filePath: string,
+          characteristics: Array<Record<string, string | null>>,
+        ) => Promise<{
+          success: boolean
+          data?: {
+            filePath: string
+            requested: number
+            matched: number
+            updated: number
+            saved: boolean
+            results: Array<{
+              charId: string | null
+              applied: string[]
+              readback: {
+                classification: string | null
+                method: string | null
+                operation: string | null
+                aql: string | null
+                comments: string | null
+              }
+            }>
+          }
+          error?: string
+          errorCode?: string
         }>
 
         // Export operations

@@ -64,6 +64,19 @@ export {
 // Version functions - rollback, state transitions, notes
 export { rollbackToVersion, transitionFileState, updateVersionNote } from './versions'
 
+// Inspection table functions - drawing inspection characteristics + version snapshots
+export {
+  getInspectionRows,
+  getInspectionRowsForVersion,
+  saveInspectionRows,
+  getInspectionMethods,
+  addInspectionMethod,
+  updateInspectionMethod,
+  deleteInspectionMethod,
+} from './inspection'
+
+export type { InspectionRowValues, InspectionRowInput, InspectionMethodOption } from './inspection'
+
 // Move functions - atomic file move operations
 export { moveFileOnServer, moveFilesOnServer } from './move'
 

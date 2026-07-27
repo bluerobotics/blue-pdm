@@ -98,6 +98,10 @@ export async function checkinFile(
       config_tabs?: Record<string, string> // Per-configuration tab numbers
       config_descriptions?: Record<string, string> // Per-configuration descriptions
     }
+    // Inspection table fingerprint override. Normally omitted: checkin_file computes the
+    // authoritative fingerprint server-side from the live inspection_characteristics rows,
+    // so any inspection edits made during checkout are detected and versioned automatically.
+    inspectionHash?: string
     // Performance optimizations for batch operations:
     machineId?: string // Pre-fetched machine ID to avoid N IPC calls for N files
     skipMachineMismatchCheck?: boolean // Skip the SELECT query for batch operations
@@ -108,6 +112,7 @@ export async function checkinFile(
   error?: string | null
   contentChanged?: boolean
   metadataChanged?: boolean
+  inspectionChanged?: boolean
   machineMismatchWarning?: string | null
 }> {
   const client = getSupabaseClient()
@@ -172,6 +177,7 @@ export async function checkinFile(
     p_custom_properties: customPropsUpdate,
     p_new_file_path: options?.newFilePath,
     p_new_file_name: options?.newFileName,
+    p_inspection_hash: options?.inspectionHash,
   })
 
   if (error) {
@@ -185,6 +191,7 @@ export async function checkinFile(
     new_version?: number
     content_changed?: boolean
     metadata_changed?: boolean
+    inspection_changed?: boolean
     version_incremented?: boolean
   }
 
@@ -200,6 +207,7 @@ export async function checkinFile(
     error: null,
     contentChanged: result.content_changed,
     metadataChanged: result.metadata_changed,
+    inspectionChanged: result.inspection_changed,
     machineMismatchWarning,
   }
 }

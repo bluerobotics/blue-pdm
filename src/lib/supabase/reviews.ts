@@ -347,7 +347,7 @@ export async function getOrgTeamsWithMembers(
       icon,
       description,
       team_members(
-        user:users(id, email, full_name, avatar_url, role)
+        user:users!team_members_user_id_fkey(id, email, full_name, avatar_url, role)
       )
     `,
     )

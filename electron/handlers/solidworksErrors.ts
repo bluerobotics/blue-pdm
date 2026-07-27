@@ -180,6 +180,7 @@ export const SW_OPERATION_TIMEOUTS: Readonly<{
   // Service management
   serviceStartup: number
   quit: number
+  warmup: number
 
   // Default fallback
   default: number
@@ -220,6 +221,7 @@ export const SW_OPERATION_TIMEOUTS: Readonly<{
   // Service management
   serviceStartup: 30_000, // 30 seconds
   quit: 5_000, // 5 seconds
+  warmup: 90_000, // 90 seconds (cold SolidWorks launch can take ~40-60s)
 
   // Default fallback for unspecified operations
   default: 300_000, // 5 minutes

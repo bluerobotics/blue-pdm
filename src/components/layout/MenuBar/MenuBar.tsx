@@ -23,6 +23,7 @@ import {
   Users,
   User,
   Layers,
+  Box,
 } from 'lucide-react'
 import { usePDMStore } from '@/stores/pdmStore'
 import { CommandSearch } from '@/features/search/command-search'
@@ -39,6 +40,7 @@ import {
 import { getInitials, getEffectiveAvatarUrl } from '@/lib/utils'
 import { logAuth } from '@/lib/userActionLogger'
 import { OnlineUsersIndicator } from '@/components/shared/OnlineUsers'
+import { SolidWorksStatusIndicator } from '@/components/shared/SolidWorksStatusIndicator'
 import { getMachineId } from '@/lib/backup'
 import { log } from '@/lib/logger'
 
@@ -609,6 +611,14 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
             </div>
           )}
 
+          {/* SolidWorks Service Status Indicator */}
+          {!minimal && topbarConfig.showSolidworks && (
+            <div className="flex items-center titlebar-no-drag">
+              <div className="w-px h-4 bg-plm-border mx-1" />
+              <SolidWorksStatusIndicator />
+            </div>
+          )}
+
           {/* Online Users Indicator */}
           {!minimal && organization && !isOfflineMode && topbarConfig.showOnlineUsers && (
             <div className="flex items-center titlebar-no-drag">
@@ -789,6 +799,26 @@ export function MenuBar({ minimal = false }: MenuBarProps) {
                       >
                         <div
                           className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm transition-transform ${topbarConfig.showOnlineUsers ? 'translate-x-4' : 'translate-x-0.5'}`}
+                        />
+                      </div>
+                    </button>
+
+                    {/* SolidWorks Status */}
+                    <button
+                      onClick={() =>
+                        setTopbarConfig({ showSolidworks: !topbarConfig.showSolidworks })
+                      }
+                      className="w-full flex items-center gap-2.5 px-3 py-1.5 text-sm text-plm-fg hover:bg-plm-bg-lighter transition-colors"
+                    >
+                      <span className="text-plm-fg-muted">
+                        <Box size={14} />
+                      </span>
+                      <span className="flex-1 text-left">SolidWorks Status</span>
+                      <div
+                        className={`w-8 h-4 rounded-full transition-colors relative ${topbarConfig.showSolidworks ? 'bg-plm-accent' : 'bg-plm-border'}`}
+                      >
+                        <div
+                          className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm transition-transform ${topbarConfig.showSolidworks ? 'translate-x-4' : 'translate-x-0.5'}`}
                         />
                       </div>
                     </button>

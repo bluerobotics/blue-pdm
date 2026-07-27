@@ -1435,6 +1435,7 @@ export type Database = {
           file_id: string
           file_size: number | null
           id: string
+          inspection_hash: string | null
           part_number: string | null
           revision: string
           state: string
@@ -1450,6 +1451,7 @@ export type Database = {
           file_id: string
           file_size?: number | null
           id?: string
+          inspection_hash?: string | null
           part_number?: string | null
           revision: string
           state?: string
@@ -1465,6 +1467,7 @@ export type Database = {
           file_id?: string
           file_size?: number | null
           id?: string
+          inspection_hash?: string | null
           part_number?: string | null
           revision?: string
           state?: string
@@ -1651,6 +1654,7 @@ export type Database = {
           file_size: number | null
           file_type: Database['public']['Enums']['file_type']
           id: string
+          inspection_hash: string | null
           lock_message: string | null
           org_id: string
           part_number: string | null
@@ -1684,6 +1688,7 @@ export type Database = {
           file_size?: number | null
           file_type?: Database['public']['Enums']['file_type']
           id?: string
+          inspection_hash?: string | null
           lock_message?: string | null
           org_id: string
           part_number?: string | null
@@ -1717,6 +1722,7 @@ export type Database = {
           file_size?: number | null
           file_type?: Database['public']['Enums']['file_type']
           id?: string
+          inspection_hash?: string | null
           lock_message?: string | null
           org_id?: string
           part_number?: string | null
@@ -1847,6 +1853,266 @@ export type Database = {
             columns: ['vault_id']
             isOneToOne: false
             referencedRelation: 'vaults'
+            referencedColumns: ['id']
+          },
+        ]
+      }
+      inspection_methods: {
+        Row: {
+          created_at: string | null
+          created_by: string | null
+          id: string
+          name: string
+          org_id: string
+        }
+        Insert: {
+          created_at?: string | null
+          created_by?: string | null
+          id?: string
+          name: string
+          org_id: string
+        }
+        Update: {
+          created_at?: string | null
+          created_by?: string | null
+          id?: string
+          name?: string
+          org_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: 'inspection_methods_created_by_fkey'
+            columns: ['created_by']
+            isOneToOne: false
+            referencedRelation: 'users'
+            referencedColumns: ['id']
+          },
+          {
+            foreignKeyName: 'inspection_methods_org_id_fkey'
+            columns: ['org_id']
+            isOneToOne: false
+            referencedRelation: 'organizations'
+            referencedColumns: ['id']
+          },
+        ]
+      }
+      inspection_characteristic_versions: {
+        Row: {
+          aql: string | null
+          balloon_number: string | null
+          char_id: string | null
+          char_type: string | null
+          classification: string | null
+          comments: string | null
+          created_at: string | null
+          file_version_id: string
+          id: string
+          internal_inspection_rate: number | null
+          inspection_method: string | null
+          lower_limit: string | null
+          minus_tolerance: string | null
+          nominal_value: string | null
+          operation: string | null
+          org_id: string
+          plus_tolerance: string | null
+          reference: string | null
+          sample_size: number | null
+          sort_order: number
+          sub_type: string | null
+          supplier_inspection_rate: number | null
+          unit: string | null
+          upper_limit: string | null
+          zone: string | null
+        }
+        Insert: {
+          aql?: string | null
+          balloon_number?: string | null
+          char_id?: string | null
+          char_type?: string | null
+          classification?: string | null
+          comments?: string | null
+          created_at?: string | null
+          file_version_id: string
+          id?: string
+          internal_inspection_rate?: number | null
+          inspection_method?: string | null
+          lower_limit?: string | null
+          minus_tolerance?: string | null
+          nominal_value?: string | null
+          operation?: string | null
+          org_id: string
+          plus_tolerance?: string | null
+          reference?: string | null
+          sample_size?: number | null
+          sort_order?: number
+          sub_type?: string | null
+          supplier_inspection_rate?: number | null
+          unit?: string | null
+          upper_limit?: string | null
+          zone?: string | null
+        }
+        Update: {
+          aql?: string | null
+          balloon_number?: string | null
+          char_id?: string | null
+          char_type?: string | null
+          classification?: string | null
+          comments?: string | null
+          created_at?: string | null
+          file_version_id?: string
+          id?: string
+          internal_inspection_rate?: number | null
+          inspection_method?: string | null
+          lower_limit?: string | null
+          minus_tolerance?: string | null
+          nominal_value?: string | null
+          operation?: string | null
+          org_id?: string
+          plus_tolerance?: string | null
+          reference?: string | null
+          sample_size?: number | null
+          sort_order?: number
+          sub_type?: string | null
+          supplier_inspection_rate?: number | null
+          unit?: string | null
+          upper_limit?: string | null
+          zone?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: 'inspection_characteristic_versions_file_version_id_fkey'
+            columns: ['file_version_id']
+            isOneToOne: false
+            referencedRelation: 'file_versions'
+            referencedColumns: ['id']
+          },
+          {
+            foreignKeyName: 'inspection_characteristic_versions_org_id_fkey'
+            columns: ['org_id']
+            isOneToOne: false
+            referencedRelation: 'organizations'
+            referencedColumns: ['id']
+          },
+        ]
+      }
+      inspection_characteristics: {
+        Row: {
+          aql: string | null
+          balloon_number: string | null
+          char_id: string | null
+          char_type: string | null
+          classification: string | null
+          comments: string | null
+          created_at: string | null
+          created_by: string | null
+          file_id: string
+          id: string
+          internal_inspection_rate: number | null
+          inspection_method: string | null
+          lower_limit: string | null
+          minus_tolerance: string | null
+          nominal_value: string | null
+          operation: string | null
+          org_id: string
+          plus_tolerance: string | null
+          reference: string | null
+          sample_size: number | null
+          sort_order: number
+          sub_type: string | null
+          supplier_inspection_rate: number | null
+          unit: string | null
+          updated_at: string | null
+          updated_by: string | null
+          upper_limit: string | null
+          zone: string | null
+        }
+        Insert: {
+          aql?: string | null
+          balloon_number?: string | null
+          char_id?: string | null
+          char_type?: string | null
+          classification?: string | null
+          comments?: string | null
+          created_at?: string | null
+          created_by?: string | null
+          file_id: string
+          id?: string
+          internal_inspection_rate?: number | null
+          inspection_method?: string | null
+          lower_limit?: string | null
+          minus_tolerance?: string | null
+          nominal_value?: string | null
+          operation?: string | null
+          org_id: string
+          plus_tolerance?: string | null
+          reference?: string | null
+          sample_size?: number | null
+          sort_order?: number
+          sub_type?: string | null
+          supplier_inspection_rate?: number | null
+          unit?: string | null
+          updated_at?: string | null
+          updated_by?: string | null
+          upper_limit?: string | null
+          zone?: string | null
+        }
+        Update: {
+          aql?: string | null
+          balloon_number?: string | null
+          char_id?: string | null
+          char_type?: string | null
+          classification?: string | null
+          comments?: string | null
+          created_at?: string | null
+          created_by?: string | null
+          file_id?: string
+          id?: string
+          internal_inspection_rate?: number | null
+          inspection_method?: string | null
+          lower_limit?: string | null
+          minus_tolerance?: string | null
+          nominal_value?: string | null
+          operation?: string | null
+          org_id?: string
+          plus_tolerance?: string | null
+          reference?: string | null
+          sample_size?: number | null
+          sort_order?: number
+          sub_type?: string | null
+          supplier_inspection_rate?: number | null
+          unit?: string | null
+          updated_at?: string | null
+          updated_by?: string | null
+          upper_limit?: string | null
+          zone?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: 'inspection_characteristics_created_by_fkey'
+            columns: ['created_by']
+            isOneToOne: false
+            referencedRelation: 'users'
+            referencedColumns: ['id']
+          },
+          {
+            foreignKeyName: 'inspection_characteristics_file_id_fkey'
+            columns: ['file_id']
+            isOneToOne: false
+            referencedRelation: 'files'
+            referencedColumns: ['id']
+          },
+          {
+            foreignKeyName: 'inspection_characteristics_org_id_fkey'
+            columns: ['org_id']
+            isOneToOne: false
+            referencedRelation: 'organizations'
+            referencedColumns: ['id']
+          },
+          {
+            foreignKeyName: 'inspection_characteristics_updated_by_fkey'
+            columns: ['updated_by']
+            isOneToOne: false
+            referencedRelation: 'users'
             referencedColumns: ['id']
           },
         ]
@@ -2338,9 +2604,11 @@ export type Database = {
           google_drive_client_secret: string | null
           column_defaults_forced_at: string | null
           google_drive_enabled: boolean | null
+          google_drive_inspection_template_folder_id: string | null
           id: string
           logo_storage_path: string | null
           logo_url: string | null
+          item_definition_settings: Json | null
           module_defaults: Json | null
           module_defaults_forced_at: string | null
           name: string
@@ -2368,7 +2636,9 @@ export type Database = {
           google_drive_client_id?: string | null
           google_drive_client_secret?: string | null
           google_drive_enabled?: boolean | null
+          google_drive_inspection_template_folder_id?: string | null
           id?: string
+          item_definition_settings?: Json | null
           logo_storage_path?: string | null
           logo_url?: string | null
           module_defaults?: Json | null
@@ -2398,7 +2668,9 @@ export type Database = {
           google_drive_client_id?: string | null
           google_drive_client_secret?: string | null
           google_drive_enabled?: boolean | null
+          google_drive_inspection_template_folder_id?: string | null
           id?: string
+          item_definition_settings?: Json | null
           logo_storage_path?: string | null
           logo_url?: string | null
           module_defaults?: Json | null
@@ -6514,6 +6786,7 @@ export type Database = {
           p_custom_properties?: Json
           p_description?: string
           p_file_id: string
+          p_inspection_hash?: string
           p_local_active_version?: number
           p_new_content_hash?: string
           p_new_file_name?: string
@@ -6703,6 +6976,7 @@ export type Database = {
           client_id: string
           client_secret: string
           enabled: boolean
+          inspection_template_folder_id: string
         }[]
       }
       get_my_pending_reviews: {
@@ -6993,6 +7267,7 @@ export type Database = {
           p_client_id: string
           p_client_secret: string
           p_enabled: boolean
+          p_inspection_template_folder_id?: string
           p_org_id: string
         }
         Returns: boolean
@@ -7012,6 +7287,14 @@ export type Database = {
       update_schema_version: {
         Args: { new_description?: string; new_version: number }
         Returns: undefined
+      }
+      get_item_definition_settings: {
+        Args: { p_org_id: string }
+        Returns: Json
+      }
+      update_item_definition_settings: {
+        Args: { p_org_id: string; p_settings: Json }
+        Returns: boolean
       }
       update_serialization_settings_safe: {
         Args: { p_org_id: string; p_settings: Json }

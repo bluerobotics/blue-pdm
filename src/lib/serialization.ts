@@ -274,6 +274,34 @@ export function validateSerialNumber(
 }
 
 /**
+ * Check whether a part number matches the org's serialization FORMAT only.
+ *
+ * Unlike validateSerialNumber, this ignores keepout zones (an already-assigned
+ * part number that happens to fall in a keepout range should still be recognized
+ * as matching the format). Used by the Item Browser to filter to org part numbers.
+ *
+ * @param serialNumber - The part number to test (base number, no tab)
+ * @param settings - Serialization settings
+ * @returns true if the string matches the prefix + letters + digits + suffix pattern
+ */
+export function matchesSerialFormat(
+  serialNumber: string,
+  settings: SerializationSettings,
+): boolean {
+  if (!serialNumber) return false
+
+  const prefixEscaped = escapeRegex(settings.prefix)
+  const suffixEscaped = escapeRegex(settings.suffix)
+  const letterPrefixEscaped = escapeRegex(settings.letter_prefix)
+
+  const pattern = new RegExp(
+    `^${prefixEscaped}${letterPrefixEscaped}\\d{${settings.padding_digits}}${suffixEscaped}$`,
+  )
+
+  return pattern.test(serialNumber)
+}
+
+/**
  * Check if a serial number already exists in the database
  *
  * @param orgId - Organization UUID

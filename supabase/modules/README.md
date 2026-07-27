@@ -28,6 +28,9 @@ Always install in this order:
 
 3. **Optional Modules** (Install as needed)
    ```sql
+   -- Inspection (drawing inspection tables, version snapshots)
+   \i modules/15-inspection.sql
+   
    -- Change Control (ECOs, Reviews, Deviations)
    \i modules/20-change-control.sql
    

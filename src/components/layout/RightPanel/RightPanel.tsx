@@ -6,7 +6,9 @@ import { formatFileSize } from '@/lib/utils'
 import { DraggableTab, TabDropZone, PanelLocation } from '@/components/shared/DraggableTab'
 import { WhereUsedTab } from '@/features/integrations/solidworks'
 import { SWDatacardPanel } from '@/features/integrations/solidworks'
+import { InspectionTab } from '@/features/integrations/solidworks'
 import { VendorsTab } from '@/features/source/details/VendorsTab'
+import { ItemBomPanel } from '@/features/items/itemBrowser/components/ItemBomPanel'
 import { FileBox, Layers, File, Loader2, FilePen, ExternalLink, ArrowLeft } from 'lucide-react'
 
 // Component to load OS icon for files
@@ -82,6 +84,8 @@ export function RightPanel() {
     moveTabToRight,
     reorderTabsInPanel,
     addToast,
+    itemPanel,
+    setItemPanel,
   } = usePDMStore()
 
   // Handle tab drop from either panel
@@ -239,6 +243,18 @@ export function RightPanel() {
     if (!file) return <File size={24} className="text-plm-fg-muted" />
     // Use OS icons for files
     return <RightPanelIcon file={file} size={24} />
+  }
+
+  // Item Browser detail panel (eBOM / mBOM) takes precedence over file-based tabs.
+  if (itemPanel) {
+    return (
+      <div
+        className="bg-plm-panel border-l border-plm-border flex flex-col"
+        style={{ width: rightPanelWidth }}
+      >
+        <ItemBomPanel panel={itemPanel} onClose={() => setItemPanel(null)} />
+      </div>
+    )
   }
 
   if (rightPanelTabs.length === 0) return null
@@ -405,6 +421,9 @@ export function RightPanel() {
               {rightPanelTab === 'whereused' && <WhereUsedTab file={file} />}
 
               {rightPanelTab === 'vendors' && <VendorsTab file={file} />}
+
+              {rightPanelTab === 'inspection' &&
+                ext === '.slddrw' && <InspectionTab file={file} />}
             </>
           )
         )}

@@ -61,6 +61,7 @@ import {
   createExtensionsSlice,
   createOperationLogSlice,
   createAnnotationsSlice,
+  createItemBrowserSlice,
 } from './slices'
 import { defaultCardViewFields } from './slices/settingsSlice'
 
@@ -87,6 +88,7 @@ export const usePDMStore = create<PDMStoreState>()(
       ...createExtensionsSlice(...a),
       ...createOperationLogSlice(...a),
       ...createAnnotationsSlice(...a),
+      ...createItemBrowserSlice(...a),
     }),
     {
       name: 'blue-plm-storage',
@@ -143,6 +145,10 @@ export const usePDMStore = create<PDMStoreState>()(
         columnConfigLastSyncedAt: state.columnConfigLastSyncedAt,
         cardViewFields: state.cardViewFields,
         lowercaseExtensions: state.lowercaseExtensions,
+        itemViewMode: state.itemViewMode,
+        itemListRowSize: state.itemListRowSize,
+        itemIconSize: state.itemIconSize,
+        itemColumns: state.itemColumns,
 
         // ═══════════════════════════════════════════════════════════════
         // Theme & Appearance
@@ -316,6 +322,12 @@ export const usePDMStore = create<PDMStoreState>()(
           expandedPendingSections: new Set((persisted.expandedPendingSections as string[]) || []),
           // Ensure cadPreviewMode has a default
           cadPreviewMode: (persisted.cadPreviewMode as 'thumbnail' | 'edrawings') || 'thumbnail',
+          // Merge topbarConfig over defaults so newly added toggles (e.g. showSolidworks)
+          // aren't left undefined for users with a pre-existing persisted config.
+          topbarConfig: {
+            ...currentState.topbarConfig,
+            ...((persisted.topbarConfig as Partial<typeof currentState.topbarConfig>) || {}),
+          },
           // Restore SolidWorks settings
           solidworksIntegrationEnabled:
             persisted.solidworksIntegrationEnabled !== undefined

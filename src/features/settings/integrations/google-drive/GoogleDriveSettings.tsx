@@ -11,6 +11,7 @@ export function GoogleDriveSettings() {
   const [clientId, setClientId] = useState('')
   const [clientSecret, setClientSecret] = useState('')
   const [enabled, setEnabled] = useState(false)
+  const [inspectionTemplateFolderId, setInspectionTemplateFolderId] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
   const [showSecret, setShowSecret] = useState(false)
@@ -41,10 +42,12 @@ export function GoogleDriveSettings() {
           client_id?: string
           client_secret?: string
           enabled?: boolean
+          inspection_template_folder_id?: string
         }
         setClientId(settings.client_id || '')
         setClientSecret(settings.client_secret || '')
         setEnabled(settings.enabled || false)
+        setInspectionTemplateFolderId(settings.inspection_template_folder_id || '')
       }
     } catch (error) {
       log.error('[GoogleDrive]', 'Error loading settings', { error: error })
@@ -72,12 +75,16 @@ export function GoogleDriveSettings() {
       if (org.google_drive_client_secret !== undefined) {
         setClientSecret(org.google_drive_client_secret || '')
       }
+      if (org.google_drive_inspection_template_folder_id !== undefined) {
+        setInspectionTemplateFolderId(org.google_drive_inspection_template_folder_id || '')
+      }
     }
   }, [
     isLoading,
     (organization as any)?.google_drive_enabled, // TODO: type this
     (organization as any)?.google_drive_client_id, // TODO: type this
     (organization as any)?.google_drive_client_secret, // TODO: type this
+    (organization as any)?.google_drive_inspection_template_folder_id, // TODO: type this
   ])
 
   const saveSettings = async () => {
@@ -91,6 +98,7 @@ export function GoogleDriveSettings() {
         p_client_id: clientId || null,
         p_client_secret: clientSecret || null,
         p_enabled: enabled,
+        p_inspection_template_folder_id: inspectionTemplateFolderId.trim() || null,
       })
 
       if (error) {
@@ -192,6 +200,25 @@ export function GoogleDriveSettings() {
               </div>
             </div>
 
+            {/* Inspection template folder */}
+            <div className="space-y-2">
+              <label className="text-sm text-plm-fg-muted">Inspection template folder ID</label>
+              <input
+                type="text"
+                value={inspectionTemplateFolderId}
+                onChange={(e) => isAdmin && setInspectionTemplateFolderId(e.target.value)}
+                placeholder="Google Drive folder ID containing inspection template sheets"
+                readOnly={!isAdmin}
+                className={`w-full px-3 py-2 text-base bg-plm-sidebar border border-plm-border rounded-lg focus:outline-none focus:border-plm-accent font-mono ${!isAdmin ? 'opacity-60 cursor-not-allowed' : ''}`}
+              />
+              <p className="text-xs text-plm-fg-muted">
+                Google Sheets in this folder appear in the "Generate template" dropdown on the
+                inspection tab. Use tokens like {'{{BR_NUMBER}}'}, {'{{PART_PREVIEW}}'} and{' '}
+                {'{{INSPECTION_TABLE}}'} in your templates. Paste the folder ID from its Drive URL
+                (the part after <span className="font-mono">/folders/</span>).
+              </p>
+            </div>
+
             {/* Help text */}
             <div className="p-4 bg-plm-sidebar rounded-lg">
               <p className="text-sm text-plm-fg-muted font-medium mb-2">Setup instructions:</p>
@@ -208,7 +235,7 @@ export function GoogleDriveSettings() {
                   </a>
                 </li>
                 <li>Create or select a project</li>
-                <li>Enable the Google Drive API</li>
+                <li>Enable the Google Drive API and the Google Sheets API</li>
                 <li>Create OAuth 2.0 credentials (Desktop app type)</li>
                 <li>Copy the Client ID and Client Secret here</li>
               </ol>

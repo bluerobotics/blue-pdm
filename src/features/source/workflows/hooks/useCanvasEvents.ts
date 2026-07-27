@@ -29,6 +29,7 @@ interface UseCanvasEventsParams {
   // Canvas state
   pan: Point
   zoom: number
+  canvasMode: string
 
   // Selection
   isCreatingTransition: boolean
@@ -111,6 +112,7 @@ export function useCanvasEvents(params: UseCanvasEventsParams): UseCanvasEventsR
     hasDraggedRef,
     pan,
     zoom,
+    canvasMode,
     isCreatingTransition,
     contextMenu,
     floatingToolbar,
@@ -146,9 +148,23 @@ export function useCanvasEvents(params: UseCanvasEventsParams): UseCanvasEventsR
       // If in connect mode, cancel
       if (isCreatingTransition) {
         cancelTransitionCreation()
+        return
+      }
+
+      // Clicking empty canvas in select mode clears the current selection.
+      if (canvasMode === 'select') {
+        clearSelection()
+        setFloatingToolbar(null)
       }
     },
-    [hasDraggedRef, isCreatingTransition, cancelTransitionCreation],
+    [
+      hasDraggedRef,
+      isCreatingTransition,
+      cancelTransitionCreation,
+      canvasMode,
+      clearSelection,
+      setFloatingToolbar,
+    ],
   )
 
   // Handle canvas context menu

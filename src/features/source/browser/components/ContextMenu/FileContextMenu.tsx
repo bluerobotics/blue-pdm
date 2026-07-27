@@ -314,6 +314,7 @@ export function FileContextMenu({
           handleCheckoutFolder={handleCheckoutFolder}
           handleCheckinFolder={handleCheckinFolder}
           handleBulkStateChange={handleBulkStateChange}
+          handleOpenReviewModal={handleOpenReviewModal}
           showStateSubmenu={showStateSubmenu}
           setShowStateSubmenu={setShowStateSubmenu}
           stateSubmenuTimeoutRef={stateSubmenuTimeoutRef}

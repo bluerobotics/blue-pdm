@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, memo, useEffect } from 'react'
+import { useState, useMemo, useCallback, memo, useEffect, useRef } from 'react'
 import {
   Lock,
   ArrowUp,
@@ -98,6 +98,46 @@ const normalizePath = (p: string): string => {
     .replace(/\/+/g, '/') // Collapse multiple slashes
     .replace(/\/$/, '') // Remove trailing slash
     .toLowerCase()
+}
+
+// A raw reference as returned by the SolidWorks service (before matching to open docs)
+interface RawReference {
+  path: string
+}
+
+// Resolve raw assembly references to the paths of the currently-open documents.
+// References may be full paths OR bare filenames, so we try an exact path match first,
+// then fall back to matching by filename (without extension).
+// This is cheap (no COM/IPC) and MUST be re-run against the fresh open-doc set every tick
+// so the tree reflects components the user opens/closes inside an already-open assembly.
+const deriveChildPaths = (
+  references: RawReference[],
+  openDocPaths: Set<string>,
+  openDocByName: Map<string, string>,
+): string[] => {
+  const childPaths: string[] = []
+  for (const ref of references) {
+    const refPath = ref.path
+    const normalizedRefPath = normalizePath(refPath)
+
+    if (openDocPaths.has(normalizedRefPath)) {
+      childPaths.push(refPath)
+      continue
+    }
+
+    const refFileName =
+      refPath
+        .replace(/\\/g, '/')
+        .split('/')
+        .pop()
+        ?.replace(/\.[^.]+$/, '')
+        ?.toLowerCase() || ''
+    const matchedFullPath = openDocByName.get(refFileName)
+    if (matchedFullPath) {
+      childPaths.push(matchedFullPath)
+    }
+  }
+  return childPaths
 }
 
 // TODO(decompose): Extract to pending/components/PendingRowComponents.tsx — FileRow,
@@ -692,7 +732,11 @@ export function PendingView({ onRefresh }: PendingViewProps) {
 
   // Active files - files currently open in applications like SolidWorks
   const [openDocuments, setOpenDocuments] = useState<OpenDocument[]>([])
-  const [assemblyReferences, setAssemblyReferences] = useState<Map<string, string[]>>(new Map()) // assembly path -> child paths
+  const [assemblyReferences, setAssemblyReferences] = useState<Map<string, string[]>>(new Map()) // assembly path -> child paths (resolved to open docs)
+  // Cache of RAW references per assembly path (the expensive COM call). We fetch these once
+  // per newly-seen open assembly and re-derive resolved children each poll, so the 5s tick
+  // no longer calls getReferences (which routes through the SolidWorks COM API) every cycle.
+  const rawRefsCacheRef = useRef<Map<string, RawReference[]>>(new Map())
   const [expandedAssemblies, setExpandedAssemblies] = useState<Set<string>>(new Set())
   const [loadingAssemblies, setLoadingAssemblies] = useState<Set<string>>(new Set()) // assemblies currently loading references
   const [isLoadingOpenDocs, setIsLoadingOpenDocs] = useState(false)
@@ -741,13 +785,20 @@ export function PendingView({ onRefresh }: PendingViewProps) {
   // toggleAssemblyExpand, navigateToOpenDoc, openInSolidWorks, isReconnecting,
   // setIsReconnecting, loadOpenDocuments }.
 
-  // Load open documents from SolidWorks
-  const loadOpenDocuments = useCallback(async () => {
+  // Load open documents from SolidWorks.
+  // `force` clears the raw-reference cache so a manual refresh re-fetches references from COM;
+  // the background 5s poll always passes force=false to reuse the cache.
+  const loadOpenDocuments = useCallback(async (force = false) => {
     if (!solidworksIntegrationEnabled) {
       setOpenDocuments([])
       setAssemblyReferences(new Map())
       setExpandedAssemblies(new Set())
+      rawRefsCacheRef.current.clear()
       return
+    }
+
+    if (force) {
+      rawRefsCacheRef.current.clear()
     }
 
     setIsLoadingOpenDocs(true)
@@ -810,74 +861,51 @@ export function PendingView({ onRefresh }: PendingViewProps) {
         let newExpanded = new Set<string>()
 
         if (assemblies.length > 0) {
-          // Debug: Log open document paths for comparison
-          window.electronAPI?.log(
-            'info',
-            '[OpenFiles] Open doc paths (normalized)',
-            Array.from(openDocPaths),
-          )
-          window.electronAPI?.log(
-            'info',
-            '[OpenFiles] Open doc by name',
-            Object.fromEntries(openDocByName),
+          // Only fetch RAW references (the expensive COM call) for assemblies we haven't
+          // seen open before. Everything already cached is reused - no COM call this tick.
+          const uncachedAssemblies = assemblies.filter(
+            (a) => !rawRefsCacheRef.current.has(a.filePath),
           )
 
-          // Load references for all assemblies in parallel
-          const refPromises = assemblies.map(async (asm) => {
-            try {
-              const refResult = await window.electronAPI?.solidworks?.getReferences?.(asm.filePath)
-              if (refResult?.success && refResult.data?.references) {
-                // Match references to open documents
-                // References may be full paths OR just filenames, so try both
-                const childPaths: string[] = []
-
-                for (const ref of refResult.data.references) {
-                  const refPath = ref.path
-                  const normalizedRefPath = normalizePath(refPath)
-
-                  // First try exact path match
-                  if (openDocPaths.has(normalizedRefPath)) {
-                    childPaths.push(refPath)
-                    continue
-                  }
-
-                  // If no exact match, try matching by filename (without extension)
-                  // This handles cases where getReferences returns just "Part7" instead of full path
-                  const refFileName =
-                    refPath
-                      .replace(/\\/g, '/')
-                      .split('/')
-                      .pop()
-                      ?.replace(/\.[^.]+$/, '')
-                      ?.toLowerCase() || ''
-                  const matchedFullPath = openDocByName.get(refFileName)
-                  if (matchedFullPath) {
-                    childPaths.push(matchedFullPath) // Use the full path from open docs
-                  }
-                }
-
-                // Debug: Log reference matching
-                window.electronAPI?.log(
-                  'info',
-                  `[OpenFiles] Assembly "${asm.fileName}" matched children`,
-                  childPaths,
+          await Promise.all(
+            uncachedAssemblies.map(async (asm) => {
+              try {
+                const refResult = await window.electronAPI?.solidworks?.getReferences?.(
+                  asm.filePath,
                 )
-
-                return { assemblyPath: asm.filePath, childPaths }
+                if (refResult?.success && refResult.data?.references) {
+                  rawRefsCacheRef.current.set(
+                    asm.filePath,
+                    refResult.data.references.map((r) => ({ path: r.path })),
+                  )
+                } else {
+                  // Store empty so we don't re-fetch a failed/empty assembly every tick
+                  rawRefsCacheRef.current.set(asm.filePath, [])
+                }
+              } catch {
+                rawRefsCacheRef.current.set(asm.filePath, [])
               }
-              return { assemblyPath: asm.filePath, childPaths: [] as string[] }
-            } catch {
-              return { assemblyPath: asm.filePath, childPaths: [] as string[] }
-            }
+            }),
+          )
+
+          // Re-derive resolved children for EVERY open assembly from cached raw refs against
+          // the fresh open-doc set. This is cheap (no COM) and keeps the tree live when the
+          // user opens/closes components inside an already-open assembly.
+          assemblies.forEach((asm) => {
+            const raw = rawRefsCacheRef.current.get(asm.filePath) || []
+            newRefs.set(asm.filePath, deriveChildPaths(raw, openDocPaths, openDocByName))
           })
-
-          const refResults = await Promise.all(refPromises)
-
-          // Build assemblyReferences map
-          refResults.forEach((r) => newRefs.set(r.assemblyPath, r.childPaths))
 
           // Auto-expand all assemblies by default
           newExpanded = new Set(assemblies.map((a) => a.filePath))
+        }
+
+        // Evict cache entries for assemblies that are no longer open
+        const openAssemblyPaths = new Set(assemblies.map((a) => a.filePath))
+        for (const cachedPath of Array.from(rawRefsCacheRef.current.keys())) {
+          if (!openAssemblyPaths.has(cachedPath)) {
+            rawRefsCacheRef.current.delete(cachedPath)
+          }
         }
 
         // Set ALL state atomically to avoid race conditions
@@ -904,9 +932,10 @@ export function PendingView({ onRefresh }: PendingViewProps) {
   useEffect(() => {
     loadOpenDocuments()
 
-    // Poll for open documents every 5 seconds when integration is enabled
+    // Poll for open documents every 5 seconds when integration is enabled.
+    // Wrapped so setInterval never passes args (force stays false = reuse ref cache).
     if (solidworksIntegrationEnabled) {
-      const interval = setInterval(loadOpenDocuments, 5000)
+      const interval = setInterval(() => loadOpenDocuments(), 5000)
       return () => clearInterval(interval)
     }
     return undefined
@@ -1005,56 +1034,32 @@ export function PendingView({ onRefresh }: PendingViewProps) {
       if (!assemblyReferences.has(assemblyPath)) {
         setLoadingAssemblies((prev) => new Set(prev).add(assemblyPath))
         try {
-          const refResult = await window.electronAPI?.solidworks?.getReferences?.(assemblyPath)
-          if (refResult?.success && refResult.data?.references) {
-            // Build lookup maps for matching - same logic as loadOpenDocuments
-            const openDocPaths = new Set(openDocuments.map((d) => normalizePath(d.filePath)))
-            const openDocByName = new Map<string, string>()
-            openDocuments.forEach((d) => {
-              const fileName = d.fileName.replace(/\.[^.]+$/, '').toLowerCase()
-              openDocByName.set(fileName, d.filePath)
-            })
+          // Build lookup maps for matching - same logic as loadOpenDocuments
+          const openDocPaths = new Set(openDocuments.map((d) => normalizePath(d.filePath)))
+          const openDocByName = new Map<string, string>()
+          openDocuments.forEach((d) => {
+            const fileName = d.fileName.replace(/\.[^.]+$/, '').toLowerCase()
+            openDocByName.set(fileName, d.filePath)
+          })
 
-            // Match references to open documents by path or filename
-            const childPaths: string[] = []
-            for (const ref of refResult.data.references) {
-              const refPath = ref.path
-              const normalizedRefPath = normalizePath(refPath)
-
-              // First try exact path match
-              if (openDocPaths.has(normalizedRefPath)) {
-                childPaths.push(refPath)
-                continue
-              }
-
-              // If no exact match, try matching by filename (without extension)
-              const refFileName =
-                refPath
-                  .replace(/\\/g, '/')
-                  .split('/')
-                  .pop()
-                  ?.replace(/\.[^.]+$/, '')
-                  ?.toLowerCase() || ''
-              const matchedFullPath = openDocByName.get(refFileName)
-              if (matchedFullPath) {
-                childPaths.push(matchedFullPath)
-              }
-            }
-
-            // Update assemblyReferences with the new data
-            setAssemblyReferences((prev) => {
-              const next = new Map(prev)
-              next.set(assemblyPath, childPaths)
-              return next
-            })
-          } else {
-            // No references found or API error - store empty array to indicate we tried
-            setAssemblyReferences((prev) => {
-              const next = new Map(prev)
-              next.set(assemblyPath, [])
-              return next
-            })
+          // Reuse cached raw refs if present; otherwise fetch once and cache them so the
+          // background poll won't re-fetch this assembly.
+          let raw = rawRefsCacheRef.current.get(assemblyPath)
+          if (!raw) {
+            const refResult = await window.electronAPI?.solidworks?.getReferences?.(assemblyPath)
+            raw =
+              refResult?.success && refResult.data?.references
+                ? refResult.data.references.map((r) => ({ path: r.path }))
+                : []
+            rawRefsCacheRef.current.set(assemblyPath, raw)
           }
+
+          const childPaths = deriveChildPaths(raw, openDocPaths, openDocByName)
+          setAssemblyReferences((prev) => {
+            const next = new Map(prev)
+            next.set(assemblyPath, childPaths)
+            return next
+          })
         } catch {
           // On error, store empty array to prevent repeated failed attempts
           setAssemblyReferences((prev) => {
@@ -1733,7 +1738,7 @@ export function PendingView({ onRefresh }: PendingViewProps) {
                 )}
               </button>
               <button
-                onClick={loadOpenDocuments}
+                onClick={() => loadOpenDocuments(true)}
                 disabled={isLoadingOpenDocs}
                 className="text-xs text-plm-fg-muted hover:text-plm-fg transition-colors flex items-center gap-1"
                 title={t('pending.refreshActiveFiles')}

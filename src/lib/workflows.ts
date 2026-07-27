@@ -482,7 +482,21 @@ export async function executeTransition(
     return { success: false, error: updateError }
   }
 
-  // Update the file's state if the workflow state maps to a file state
+  // Update the canonical file state so the vault list reflects the change
+  const { error: fileUpdateError } = await supabase
+    .from('files')
+    .update({
+      workflow_state_id: transition.to_state_id,
+      state_changed_at: new Date().toISOString(),
+      state_changed_by: userId,
+    })
+    .eq('id', fileId)
+
+  if (fileUpdateError) {
+    return { success: false, error: fileUpdateError }
+  }
+
+  // Update the legacy file state enum if the workflow state maps to one
   if (toState?.maps_to_file_state) {
     await supabase
       .from('files')
@@ -494,7 +508,7 @@ export async function executeTransition(
       .eq('id', fileId)
   }
 
-  return { success: true }
+  return { success: true, toStateId: transition.to_state_id }
 }
 
 // ============================================

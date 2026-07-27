@@ -67,13 +67,15 @@ export const createOperationsSlice: StateCreator<
 
   // Actions - Loading
   setIsLoading: (isLoading) => {
-    const stack =
-      new Error().stack
-        ?.split('\n')
-        .slice(1, 5)
-        .map((s) => s.trim())
-        .join(' | ') || 'no-stack'
-    logExplorer('setIsLoading CALLED', { isLoading, stack })
+    if (import.meta.env.VITE_DEBUG_LOADING) {
+      const stack =
+        new Error().stack
+          ?.split('\n')
+          .slice(1, 5)
+          .map((s) => s.trim())
+          .join(' | ') || 'no-stack'
+      logExplorer('setIsLoading CALLED', { isLoading, stack })
+    }
     set({ isLoading })
   },
   setIsRefreshing: (isRefreshing) => set({ isRefreshing }),
