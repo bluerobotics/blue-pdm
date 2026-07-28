@@ -34,6 +34,9 @@ Native integration for SolidWorks CAD files (Windows only).
 - Toggle integration on/off
 - License key for Document Manager API
 - Service status
+- **Keep SolidWorks warm in background** (organization-wide, admin only) — pre-launches a hidden SolidWorks instance so the first property edit is instant instead of a ~40 second cold start. No window is shown. On by default.
+
+The same status is also available at a glance from the title bar: enable **SolidWorks Status** in the top bar's configuration dropdown to show a CAD glyph that reflects the live service state. Hovering it shows service stats, and clicking it opens **Settings** → **Integrations** → **SolidWorks**.
 
 ### Obtaining a Document Manager API Key
 

@@ -4,7 +4,7 @@ All notable changes to BluePLM will be documented in this file.
 
 ![1774273238438](image/CHANGELOG/1774273238438.png)
 
-## [3.22.0] - Unreleased
+## [3.22.0] - 2026-07-28
 
 ### Added
 - **Copy Item Number / Description via highlight box** — a slow double-click on a non-editable Item Number or Description cell now opens a read-only, auto-selected highlight box (mirroring the Name column) so the value can be copied cleanly. Editing stays gated on checkout, and a fast double-click still opens the file.
@@ -43,6 +43,9 @@ All notable changes to BluePLM will be documented in this file.
 - **PDF comments — editing or deleting a reply did nothing in the UI** — the annotations store holds a threaded tree, but `updateAnnotationInStore` and `removeAnnotation` only scanned top-level threads, so optimistic edits/deletes of nested replies (and realtime reply deletions from other users) silently missed and the stale reply stayed on screen until a full reload. Both now recurse into nested `replies`.
 - **PDF comments — a failed reply discarded the typed text** — `handleReply` swallowed save errors, so the input closed and cleared even when the reply failed to persist. It now surfaces the error and keeps the input open with the text intact for retry.
 - **Review kickback — "invalid input value for enum review_status: kicked_back"** — the `kicked_back` value was added to the `review_status` enum (schema v55) by editing the `CREATE TYPE` statement, which only runs for brand-new databases; pre-existing databases never received the value, so kicking a review back failed. Added an idempotent `ALTER TYPE review_status ADD VALUE IF NOT EXISTS 'kicked_back'` backfill that repairs existing databases.
+
+### Schema
+- Bumped to schema version **73** (`EXPECTED_SCHEMA_VERSION`). Admins must apply the latest `supabase/core.sql` (plus any optional modules in use) for the phantom-modified-file fix and the review kickback repair to take effect.
 
 ---
 
