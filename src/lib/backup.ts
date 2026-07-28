@@ -480,6 +480,8 @@ export function startBackupService(
 
 // Stop the service
 export function stopBackupService(): void {
+  const wasRunning = heartbeatInterval !== null || pollingInterval !== null
+
   if (heartbeatInterval) {
     clearInterval(heartbeatInterval)
     heartbeatInterval = null
@@ -488,7 +490,12 @@ export function stopBackupService(): void {
     clearInterval(pollingInterval)
     pollingInterval = null
   }
-  log.info('[Backup]', 'Backup service stopped')
+
+  // startBackupService calls this defensively, so logging unconditionally makes every
+  // start look like a stop/start cycle in the log.
+  if (wasRunning) {
+    log.info('[Backup]', 'Backup service stopped')
+  }
 }
 
 // ============================================

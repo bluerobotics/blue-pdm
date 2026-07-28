@@ -30,6 +30,7 @@ import { isMachineOnline } from '@/lib/supabase'
 import { moveFileOnServer, updateFolderPath, updateFolderServerPath } from '@/lib/supabase/files'
 import { getFilesInFolder } from '@/lib/commands/types'
 import { buildFullPath } from '@/lib/utils/path'
+import { beginWatcherSuppression } from '@/lib/fileWatcherSuppression'
 import type { CustomConfirmState } from './useDialogState'
 
 export interface UseFileOperationsOptions {
@@ -408,15 +409,15 @@ export function useFileOperations({
       if (wouldStayInPlace) return
 
       // Register expected file changes to suppress file watcher during operation
-      const { addExpectedFileChanges, setLastOperationCompletedAt } = usePDMStore.getState()
       const expectedPaths: string[] = []
       for (const file of filesToMove) {
         expectedPaths.push(file.relativePath) // old path
         const newRelPath = targetFolderPath ? `${targetFolderPath}/${file.name}` : file.name
         expectedPaths.push(newRelPath) // new path
       }
-      addExpectedFileChanges(expectedPaths)
+      const releaseWatcher = beginWatcherSuppression(expectedPaths)
 
+      try {
       // Perform the move
       const total = filesToMove.length
       const toastId = `move-${Date.now()}`
@@ -552,10 +553,11 @@ export function useFileOperations({
         addToast('warning', `Moved ${succeeded}, failed ${failed}`)
       }
 
-      // Mark operation complete to help suppress file watcher
-      setLastOperationCompletedAt(Date.now())
-
       // No need for full refresh - store is already updated
+      } finally {
+        // Re-stamps the suppression window and schedules the expected-changes clear.
+        releaseWatcher()
+      }
     },
     [
       vaultPath,

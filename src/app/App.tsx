@@ -46,6 +46,9 @@ const drawingRefSyncTimers = new Map<string, NodeJS.Timeout>()
 /** Debounce delay (ms) per-drawing to avoid hammering SW service on rapid saves */
 const DRAWING_REF_SYNC_DEBOUNCE_MS = 3000
 
+/** Debounce delay (ms) for watcher-recovery reloads, which arrive in bursts */
+const VAULT_RESYNC_DEBOUNCE_MS = 1000
+
 /**
  * Syncs drawing references in the background when .slddrw files change on disk.
  *
@@ -729,7 +732,9 @@ export function App() {
           unexpectedCount: unexpectedChanges.length,
         })
 
-        await loadFiles(true)
+        // Hand the changed paths through so the main process re-stats only those
+        // instead of walking every entry in the vault.
+        await loadFiles(true, false, unexpectedChanges)
 
         // Sync drawing references in background (fire-and-forget).
         // When .slddrw files change, extract their model references via SW service
@@ -782,6 +787,31 @@ export function App() {
     })
 
     return cleanup
+  }, [vaultPath, loadFiles])
+
+  // Watcher recovery - the main process lost file events and can no longer say what
+  // changed, so a full reload is the only way back to a correct view of the vault.
+  useEffect(() => {
+    if (!window.electronAPI || !vaultPath) return
+
+    let resyncTimeout: NodeJS.Timeout | null = null
+
+    const cleanup = window.electronAPI.onVaultResyncRequired((reason) => {
+      window.electronAPI?.log('warn', '[FileWatcher] Full resync requested', { reason })
+
+      if (resyncTimeout) clearTimeout(resyncTimeout)
+      resyncTimeout = setTimeout(async () => {
+        resyncTimeout = null
+        const { syncProgress, processingOperations } = usePDMStore.getState()
+        if (syncProgress.isActive || processingOperations.size > 0) return
+        await loadFiles(true, false)
+      }, VAULT_RESYNC_DEBOUNCE_MS)
+    })
+
+    return () => {
+      if (resyncTimeout) clearTimeout(resyncTimeout)
+      cleanup()
+    }
   }, [vaultPath, loadFiles])
 
   // Directory change watcher - sync folder changes from Windows Explorer to server

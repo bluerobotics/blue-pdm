@@ -1,5 +1,4 @@
 // TODO(decompose): Extract to fsHelpers.ts — hash functions, directory walkers, lock detection, and cleanup utilities (lines ~57–443)
-// TODO(decompose): Extract to fsWatcher.ts — file watcher lifecycle (startFileWatcher, stopFileWatcher, chokidar setup) (lines ~316–418)
 // TODO(decompose): Extract to fsReadWrite.ts — read, write, download, and hash IPC handlers (lines ~549–1160)
 // TODO(decompose): Extract to fsListAndScan.ts — directory listing, file scanning, and hash computation IPC handlers (lines ~1162–1466)
 // TODO(decompose): Extract to fsDeleteAndRename.ts — delete, batch delete, trash, rename, copy, move, and lock-check IPC handlers (lines ~1546–2683)
@@ -7,13 +6,14 @@
 // File system handlers for Electron main process
 import { ipcMain, BrowserWindow, shell, dialog, nativeImage } from 'electron'
 import fs from 'fs'
+import type * as fsTypes from 'fs'
 import path from 'path'
 import crypto from 'crypto'
 import { pipeline } from 'stream/promises'
-import chokidar, { type FSWatcher } from 'chokidar'
 import { exec } from 'child_process'
 import { promisify } from 'util'
 import { recordSolidWorksFileOpen, findLockingProcessViaService } from './solidworks'
+import { createVaultWatcher, type VaultWatcher, type WatcherScanCache } from './fsWatcher'
 import type { LocalFileInfo } from '../types'
 
 const execAsync = promisify(exec)
@@ -28,17 +28,227 @@ const FS_EVENT_SETTLE_MS = 50
 const THUMBNAIL_CHECK_WAIT_MS = 100
 const DELETE_RETRY_BASE_MS = 100
 const DIR_RENAME_HANDLE_RELEASE_MS = 500
+/** Work budget between event loop handbacks during a vault scan (roughly one frame). */
+const SCAN_YIELD_INTERVAL_MS = 8
+/** Wall time to work time ratio above which a scan is considered starved. */
+const SCAN_STARVATION_RATIO = 4
+/** Work to complete before judging starvation, so one slow yield is not enough. */
+const SCAN_STARVATION_MIN_WORK_MS = 100
 
 // Module-level state
 let mainWindow: BrowserWindow | null = null
 let workingDirectory: string | null = null
-let fileWatcher: FSWatcher | null = null
+let fileWatcher: VaultWatcher | null = null
 let currentWatchPath: string | null = null // Track current watched path for deduplication
 let pendingDeleteOperations = 0
 let deleteWatcherStopPromise: Promise<void> | null = null
 
 // Hash cache to avoid recomputing hashes for unchanged files
 const hashCache = new Map<string, { size: number; mtime: number; hash: string }>()
+
+/**
+ * Last full vault scan, keyed by relative path.
+ *
+ * Kept so a watcher-driven refresh can re-stat only the handful of paths that
+ * actually changed and still hand the renderer a complete list, instead of walking
+ * every entry in the vault again. Invalidated whenever the working directory moves.
+ */
+let workingFilesScanCache: { rootDir: string; entries: Map<string, LocalFileInfo> } | null = null
+
+function buildDirectoryEntry(
+  fullPath: string,
+  relativePath: string,
+  stats: fsTypes.Stats,
+): LocalFileInfo {
+  return {
+    name: path.basename(fullPath),
+    path: fullPath,
+    relativePath,
+    isDirectory: true,
+    extension: '',
+    size: 0,
+    modifiedTime: stats.mtime.toISOString(),
+  }
+}
+
+function buildFileEntry(
+  fullPath: string,
+  relativePath: string,
+  stats: fsTypes.Stats,
+): LocalFileInfo {
+  // Reuse a cached hash only when size and mtime both still match.
+  const cached = hashCache.get(relativePath)
+  const hash =
+    cached && cached.size === stats.size && cached.mtime === stats.mtime.getTime()
+      ? cached.hash
+      : undefined
+
+  return {
+    name: path.basename(fullPath),
+    path: fullPath,
+    relativePath,
+    isDirectory: false,
+    extension: path.extname(fullPath).toLowerCase(),
+    size: stats.size,
+    modifiedTime: stats.mtime.toISOString(),
+    hash,
+    ino: stats.ino,
+  }
+}
+
+/**
+ * Walk a directory tree, keyed by path relative to `rootDir`.
+ *
+ * The stats are read with statSync rather than fs.promises. The syscalls themselves are
+ * cheap either way (~600ms vs ~800ms for a 27,600-entry vault), but an awaiting walk
+ * gives up the event loop between every directory, so anything else hogging the loop
+ * stretches it out of all proportion - the same vault took 35s to walk while the old
+ * chokidar watcher was starting up. statSync cannot be preempted that way.
+ *
+ * To stay responsive anyway, the walk hands the loop back every YIELD_INTERVAL_MS of
+ * work. If those handbacks turn out to be expensive, we are being starved by something
+ * else and finish inline instead of dragging the scan out for tens of seconds.
+ */
+async function scanWorkingTree(
+  rootDir: string,
+  startDir: string = rootDir,
+): Promise<Map<string, LocalFileInfo>> {
+  const entries = new Map<string, LocalFileInfo>()
+
+  const walkStart = Date.now()
+  let workedSince = Date.now()
+  let workDone = 0
+  let yielding = true
+
+  const yieldIfDue = async (): Promise<void> => {
+    if (!yielding) return
+
+    const now = Date.now()
+    if (now - workedSince < SCAN_YIELD_INTERVAL_MS) return
+
+    workDone += now - workedSince
+    await new Promise((resolve) => setImmediate(resolve))
+    workedSince = Date.now()
+
+    // Wall time running far ahead of work done means our yields are queueing behind
+    // someone else's backlog. Stop yielding and take the loop for the last stretch.
+    if (
+      workDone >= SCAN_STARVATION_MIN_WORK_MS &&
+      Date.now() - walkStart > workDone * SCAN_STARVATION_RATIO
+    ) {
+      yielding = false
+      log('Vault scan is being starved of event loop time, finishing without yielding')
+    }
+  }
+
+  async function walkDir(dir: string): Promise<void> {
+    let items: fsTypes.Dirent[]
+    try {
+      items = fs.readdirSync(dir, { withFileTypes: true })
+    } catch (error) {
+      log('Error reading directory: ' + String(error))
+      return
+    }
+
+    const subdirectories: string[] = []
+
+    for (const item of items) {
+      if (item.name.startsWith('.')) continue
+
+      const fullPath = path.join(dir, item.name)
+
+      let stats: fsTypes.Stats
+      try {
+        stats = fs.statSync(fullPath)
+      } catch (error) {
+        log('Error reading directory entry: ' + String(error))
+        continue
+      }
+
+      const relativePath = path.relative(rootDir, fullPath).replace(/\\/g, '/')
+
+      if (item.isDirectory()) {
+        entries.set(relativePath, buildDirectoryEntry(fullPath, relativePath, stats))
+        subdirectories.push(fullPath)
+      } else {
+        entries.set(relativePath, buildFileEntry(fullPath, relativePath, stats))
+      }
+    }
+
+    await yieldIfDue()
+
+    for (const subdirectory of subdirectories) {
+      await walkDir(subdirectory)
+    }
+  }
+
+  await walkDir(startDir)
+  return entries
+}
+
+/** Drop hash-cache entries for files that no longer exist in the scan. */
+function pruneHashCache(entries: Map<string, LocalFileInfo>): void {
+  for (const cachedPath of Array.from(hashCache.keys())) {
+    const entry = entries.get(cachedPath)
+    if (!entry || entry.isDirectory) {
+      hashCache.delete(cachedPath)
+    }
+  }
+}
+
+/** Directories first, then path order - the ordering the renderer merge expects. */
+function sortScanEntries(entries: Map<string, LocalFileInfo>): LocalFileInfo[] {
+  return Array.from(entries.values()).sort((a, b) => {
+    if (a.isDirectory && !b.isDirectory) return -1
+    if (!a.isDirectory && b.isDirectory) return 1
+    return a.relativePath.localeCompare(b.relativePath)
+  })
+}
+
+/** Remove a path from a scan, plus everything beneath it if it was a directory. */
+function deleteScanEntry(entries: Map<string, LocalFileInfo>, relativePath: string): void {
+  entries.delete(relativePath)
+  for (const key of entries.keys()) {
+    if (key.startsWith(relativePath + '/')) entries.delete(key)
+  }
+  hashCache.delete(relativePath)
+}
+
+/**
+ * Exposes the last full scan to the watcher so it can tell an added directory from a
+ * removed one. Writes go straight into the cache the delta handler reads, keeping a
+ * single view of what is on disk.
+ */
+const watcherScanCache: WatcherScanCache = {
+  getKind(relativePath) {
+    const entry = workingFilesScanCache?.entries.get(relativePath)
+    if (!entry) return undefined
+    return entry.isDirectory ? 'directory' : 'file'
+  },
+
+  isPopulated() {
+    return workingFilesScanCache !== null && workingFilesScanCache.rootDir === workingDirectory
+  },
+
+  setEntry(relativePath, fullPath, stats) {
+    if (!this.isPopulated() || !workingFilesScanCache) return
+    workingFilesScanCache.entries.set(
+      relativePath,
+      stats.isDirectory()
+        ? buildDirectoryEntry(fullPath, relativePath, stats)
+        : buildFileEntry(fullPath, relativePath, stats),
+    )
+  },
+
+  deleteEntry(relativePath) {
+    if (!this.isPopulated() || !workingFilesScanCache) return
+    deleteScanEntry(workingFilesScanCache.entries, relativePath)
+  },
+
+  invalidate() {
+    workingFilesScanCache = null
+  },
+}
 
 // Track delete operations for debugging
 let deleteOperationCounter = 0
@@ -366,83 +576,10 @@ async function startFileWatcher(dirPath: string): Promise<void> {
   log('Starting file watcher for: ' + dirPath)
   currentWatchPath = dirPath
 
-  let debounceTimer: NodeJS.Timeout | null = null
-  const changedFiles = new Set<string>()
-
-  fileWatcher = chokidar.watch(dirPath, {
-    persistent: true,
-    ignoreInitial: true,
-    usePolling: false,
-    awaitWriteFinish: {
-      stabilityThreshold: 1000,
-      pollInterval: 100,
-    },
-    ignorePermissionErrors: true,
-    ignored: [
-      /(^|[\/\\])\../,
-      /node_modules/,
-      /\.git/,
-      /desktop\.ini/i,
-      /thumbs\.db/i,
-      /\$RECYCLE\.BIN/i,
-      /System Volume Information/i,
-      /~\$/,
-      /\.tmp$/i,
-      /\.swp$/i,
-      /\.download$/,
-    ],
-  })
-
-  const notifyChanges = () => {
-    if (changedFiles.size > 0 && mainWindow) {
-      const files = Array.from(changedFiles)
-      changedFiles.clear()
-      log('File changes detected: ' + files.length + ' files')
-      mainWindow.webContents.send('files-changed', files)
-    }
-    debounceTimer = null
-  }
-
-  const handleChange = (filePath: string) => {
-    const relativePath = path.relative(dirPath, filePath).replace(/\\/g, '/')
-    changedFiles.add(relativePath)
-
-    if (debounceTimer) {
-      clearTimeout(debounceTimer)
-    }
-    const delay = changedFiles.size > 10 ? 2000 : 1000
-    debounceTimer = setTimeout(notifyChanges, delay)
-  }
-
-  fileWatcher.on('change', handleChange)
-  fileWatcher.on('add', handleChange)
-  fileWatcher.on('unlink', handleChange)
-
-  // Directory events - sync folder changes to server
-  fileWatcher.on('addDir', (addedDirPath: string) => {
-    // Skip the root watch directory itself
-    if (addedDirPath === dirPath) return
-    const relativePath = path.relative(dirPath, addedDirPath).replace(/\\/g, '/')
-    if (relativePath && mainWindow) {
-      log('Directory added: ' + relativePath)
-      mainWindow.webContents.send('directory-added', relativePath)
-    }
-  })
-
-  fileWatcher.on('unlinkDir', (removedDirPath: string) => {
-    const relativePath = path.relative(dirPath, removedDirPath).replace(/\\/g, '/')
-    if (relativePath && mainWindow) {
-      log('Directory removed: ' + relativePath)
-      mainWindow.webContents.send('directory-removed', relativePath)
-    }
-  })
-
-  fileWatcher.on('error', (error: unknown) => {
-    const fsError = error as NodeJS.ErrnoException
-    if (fsError.code === 'EPERM' || fsError.code === 'EACCES') {
-      return
-    }
-    log('File watcher error: ' + String(fsError))
+  fileWatcher = createVaultWatcher(dirPath, {
+    log: (message, data) => log(message, data),
+    getMainWindow: () => mainWindow,
+    scanCache: watcherScanCache,
   })
 }
 
@@ -482,6 +619,9 @@ export function setWorkingDirectoryExternal(dir: string | null): void {
 
 export function clearHashCache(): void {
   hashCache.clear()
+  // Scan entries embed cached hashes, so they would otherwise hand back the
+  // values the caller just asked us to forget.
+  workingFilesScanCache = null
 }
 
 export interface FsHandlerDependencies {
@@ -1216,6 +1356,22 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
     }
   })
 
+  // Size + mtime for a single path. Lets callers refresh the on-disk facts for one
+  // file after writing it, instead of triggering a full vault rescan.
+  ipcMain.handle('fs:stat-file', async (_, filePath: string) => {
+    try {
+      const stats = await fs.promises.stat(filePath)
+      return {
+        success: true,
+        size: stats.size,
+        modifiedTime: stats.mtime.toISOString(),
+        isDirectory: stats.isDirectory(),
+      }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
   // List files from any directory
   ipcMain.handle('fs:list-dir-files', async (_, dirPath: string) => {
     if (!dirPath || !fs.existsSync(dirPath)) {
@@ -1378,76 +1534,66 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
       return { success: false, error: 'No working directory set' }
     }
 
-    const files: LocalFileInfo[] = []
-    const seenPaths = new Set<string>()
+    const entries = await scanWorkingTree(workingDirectory)
+    pruneHashCache(entries)
+    workingFilesScanCache = { rootDir: workingDirectory, entries }
 
-    function walkDir(dir: string, baseDir: string) {
+    return { success: true, files: sortScanEntries(entries) }
+  })
+
+  /**
+   * Refresh only the paths the watcher reported, patching them into the previous
+   * full scan. Returns the same complete list shape as fs:list-working-files, so
+   * callers get an unchanged view of the vault without re-walking every entry.
+   * Falls back to a full scan when there is no usable cache.
+   */
+  ipcMain.handle('fs:list-working-files-delta', async (_, changedPaths: string[]) => {
+    if (!workingDirectory) {
+      return { success: false, error: 'No working directory set' }
+    }
+
+    const cache = workingFilesScanCache
+    if (!cache || cache.rootDir !== workingDirectory || changedPaths.length === 0) {
+      const entries = await scanWorkingTree(workingDirectory)
+      pruneHashCache(entries)
+      workingFilesScanCache = { rootDir: workingDirectory, entries }
+      return { success: true, files: sortScanEntries(entries), wasFullScan: true }
+    }
+
+    const entries = new Map(cache.entries)
+    const rootDir = workingDirectory
+
+    for (const changedPath of changedPaths) {
+      const relativePath = changedPath.replace(/\\/g, '/')
+      if (!relativePath || relativePath.startsWith('..')) continue
+
+      const fullPath = path.join(rootDir, relativePath)
+
+      let stats: fsTypes.Stats
       try {
-        const items = fs.readdirSync(dir, { withFileTypes: true })
+        stats = await fs.promises.stat(fullPath)
+      } catch {
+        // Gone. Drop it, plus anything beneath it if it was a directory.
+        deleteScanEntry(entries, relativePath)
+        continue
+      }
 
-        for (const item of items) {
-          if (item.name.startsWith('.')) continue
-
-          const fullPath = path.join(dir, item.name)
-          const relativePath = path.relative(baseDir, fullPath).replace(/\\/g, '/')
-          const stats = fs.statSync(fullPath)
-
-          if (item.isDirectory()) {
-            files.push({
-              name: item.name,
-              path: fullPath,
-              relativePath,
-              isDirectory: true,
-              extension: '',
-              size: 0,
-              modifiedTime: stats.mtime.toISOString(),
-            })
-            walkDir(fullPath, baseDir)
-          } else {
-            seenPaths.add(relativePath)
-
-            let fileHash: string | undefined
-            const cached = hashCache.get(relativePath)
-            const mtimeMs = stats.mtime.getTime()
-
-            if (cached && cached.size === stats.size && cached.mtime === mtimeMs) {
-              fileHash = cached.hash
-            }
-
-            files.push({
-              name: item.name,
-              path: fullPath,
-              relativePath,
-              isDirectory: false,
-              extension: path.extname(item.name).toLowerCase(),
-              size: stats.size,
-              modifiedTime: stats.mtime.toISOString(),
-              hash: fileHash,
-              ino: stats.ino,
-            })
-          }
+      if (stats.isDirectory()) {
+        // A directory appearing (or being replaced) can bring a whole subtree with it.
+        for (const key of entries.keys()) {
+          if (key.startsWith(relativePath + '/')) entries.delete(key)
         }
-      } catch (error) {
-        log('Error reading directory: ' + String(error))
+        entries.set(relativePath, buildDirectoryEntry(fullPath, relativePath, stats))
+        const subtree = await scanWorkingTree(rootDir, fullPath)
+        for (const [key, entry] of subtree) entries.set(key, entry)
+      } else {
+        entries.set(relativePath, buildFileEntry(fullPath, relativePath, stats))
       }
     }
 
-    walkDir(workingDirectory, workingDirectory)
+    workingFilesScanCache = { rootDir, entries }
 
-    // Clean up cache entries for files that no longer exist
-    Array.from(hashCache.keys()).forEach((cachedPath) => {
-      if (!seenPaths.has(cachedPath)) {
-        hashCache.delete(cachedPath)
-      }
-    })
-
-    files.sort((a, b) => {
-      if (a.isDirectory && !b.isDirectory) return -1
-      if (!a.isDirectory && b.isDirectory) return 1
-      return a.relativePath.localeCompare(b.relativePath)
-    })
-
-    return { success: true, files }
+    return { success: true, files: sortScanEntries(entries), wasFullScan: false }
   })
 
   // Compute hashes for files in batches
@@ -2945,9 +3091,9 @@ export function unregisterFsHandlers(): void {
  * Cleanup file system resources on app quit.
  * Stops the file watcher to allow the process to exit cleanly.
  *
- * CRITICAL FOR CLEAN EXIT: The file watcher uses chokidar which can sometimes
- * hang during close() if there are pending file system operations. We add a
- * hard timeout to ensure this cleanup doesn't block app exit indefinitely.
+ * CRITICAL FOR CLEAN EXIT: close() can hang if there are pending file system
+ * operations, so we add a hard timeout to ensure this cleanup doesn't block app
+ * exit indefinitely.
  *
  * @param timeoutMs - Maximum time to wait for watcher.close() (default: 2000ms)
  */

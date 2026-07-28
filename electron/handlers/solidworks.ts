@@ -7,6 +7,7 @@
 // SolidWorks handlers for Electron main process
 import { app, ipcMain, BrowserWindow, shell } from 'electron'
 import fs from 'fs'
+import type * as fsTypes from 'fs'
 import path from 'path'
 import { spawn, ChildProcess, execSync } from 'child_process'
 import * as CFB from 'cfb'
@@ -102,12 +103,48 @@ const thumbnailsInProgress = new Set<string>()
 // Request Queue State
 // ============================================
 
+/**
+ * Queue priority. Higher runs first; ties keep FIFO order.
+ *
+ * Browsing a folder floods the queue with one getPreview per file. Behind a
+ * concurrency of 3 that pushes interactive work (a status ping, the properties for
+ * the file the user just selected) tens of slots back, and it times out.
+ */
+const PRIORITY_BULK = 0
+const PRIORITY_INTERACTIVE = 1
+
+/**
+ * Actions that must not queue behind a folder's worth of preview extractions:
+ * status probes, and anything triggered by a direct user action.
+ * `ping` bypasses the queue entirely but is listed for the paths that do queue it.
+ */
+const INTERACTIVE_ACTIONS = new Set([
+  'ping',
+  'resetComConnection',
+  'releaseHandles',
+  'getSelectedFiles',
+  'getOpenDocuments',
+  'isDocumentOpen',
+  'getDocumentInfo',
+  'getProperties',
+  'setProperties',
+  'setPropertiesBatch',
+  'setDocumentProperties',
+  'getConfigurations',
+  'getReferences',
+])
+
+function getCommandPriority(action: string): number {
+  return INTERACTIVE_ACTIONS.has(action) ? PRIORITY_INTERACTIVE : PRIORITY_BULK
+}
+
 /** Queue of pending commands waiting to be sent */
 interface QueuedCommand {
   command: Record<string, unknown>
   options?: { timeoutMs?: number }
   resolve: (value: SWServiceResult) => void
   queuedAt: number
+  priority: number
 }
 
 const commandQueue: QueuedCommand[] = []
@@ -571,6 +608,47 @@ function getQueueStats(): { queueDepth: number; activeCommands: number } {
   }
 }
 
+function normalizeForCompare(filePath: string): string {
+  return filePath.replace(/\\/g, '/').toLowerCase()
+}
+
+function isUnder(normalizedFilePath: string, normalizedFolder: string): boolean {
+  if (normalizedFolder === '') return true
+  return (
+    normalizedFilePath.startsWith(normalizedFolder + '/') || normalizedFilePath === normalizedFolder
+  )
+}
+
+/**
+ * Drop queued preview/thumbnail extractions whose path matches a predicate.
+ *
+ * Only affects commands still waiting in the queue. The up-to-3 already dispatched
+ * to the service cannot be aborted, so callers should expect a residual tail of at
+ * most SW_MAX_CONCURRENT_COMMANDS running to their per-operation timeout.
+ */
+function cancelQueuedPreviewsWhere(
+  shouldCancel: (normalizedFilePath: string) => boolean,
+  reason: string,
+): number {
+  let cancelledCount = 0
+
+  for (let i = commandQueue.length - 1; i >= 0; i--) {
+    const queued = commandQueue[i]
+    const filePath = queued.command.filePath as string | undefined
+    const action = queued.command.action as string | undefined
+
+    if (!filePath || (action !== 'getPreview' && action !== 'getThumbnail')) continue
+
+    if (shouldCancel(normalizeForCompare(filePath))) {
+      commandQueue.splice(i, 1)
+      queued.resolve({ success: false, error: `Cancelled: ${reason}` })
+      cancelledCount++
+    }
+  }
+
+  return cancelledCount
+}
+
 /**
  * Cancel queued preview/thumbnail extractions for files inside a folder.
  * Used before moving folders to prevent EPERM errors from open file handles.
@@ -581,36 +659,17 @@ function cancelPreviewsForFolder(folderPath: string): {
   activeCount: number
   activePaths: string[]
 } {
-  const normalizedFolder = folderPath.replace(/\\/g, '/').toLowerCase()
+  const normalizedFolder = normalizeForCompare(folderPath)
 
-  // Cancel queued getPreview commands for files in this folder
-  let cancelledCount = 0
-  for (let i = commandQueue.length - 1; i >= 0; i--) {
-    const queued = commandQueue[i]
-    const filePath = queued.command.filePath as string | undefined
-    const action = queued.command.action as string | undefined
-
-    if (filePath && (action === 'getPreview' || action === 'getThumbnail')) {
-      const normalizedFile = filePath.replace(/\\/g, '/').toLowerCase()
-      if (
-        normalizedFile.startsWith(normalizedFolder + '/') ||
-        normalizedFile === normalizedFolder
-      ) {
-        commandQueue.splice(i, 1)
-        queued.resolve({ success: false, error: 'Cancelled: folder being moved' })
-        cancelledCount++
-      }
-    }
-  }
+  const cancelledCount = cancelQueuedPreviewsWhere(
+    (normalizedFile) => isUnder(normalizedFile, normalizedFolder),
+    'folder being moved',
+  )
 
   // Check for active thumbnail extractions in this folder
   const activePaths: string[] = []
   for (const activePath of thumbnailsInProgress) {
-    const normalizedActive = activePath.replace(/\\/g, '/').toLowerCase()
-    if (
-      normalizedActive.startsWith(normalizedFolder + '/') ||
-      normalizedActive === normalizedFolder
-    ) {
+    if (isUnder(normalizeForCompare(activePath), normalizedFolder)) {
       activePaths.push(activePath)
     }
   }
@@ -625,12 +684,56 @@ function cancelPreviewsForFolder(folderPath: string): {
 }
 
 /**
+ * Cancel queued previews the user has navigated away from.
+ *
+ * Browsing a folder enqueues one getPreview per file against a concurrency-3 queue,
+ * so moving on before it drains leaves tens of requests that nobody will look at
+ * ahead of the ones that matter. `keepFolderPath` is the folder now on screen; its
+ * requests are left in place.
+ */
+function cancelStalePreviews(keepFolderPath?: string): { cancelledCount: number } {
+  const normalizedKeep = keepFolderPath ? normalizeForCompare(keepFolderPath) : null
+
+  const cancelledCount = cancelQueuedPreviewsWhere(
+    (normalizedFile) => normalizedKeep === null || !isUnder(normalizedFile, normalizedKeep),
+    'navigated away',
+  )
+
+  if (cancelledCount > 0) {
+    log(
+      `[SolidWorks] Cancelled ${cancelledCount} stale queued previews on navigate (queue depth now ${commandQueue.length})`,
+    )
+  }
+
+  return { cancelledCount }
+}
+
+/**
  * Processes the next command in the queue if capacity is available.
  * Called after each command completes or when new commands are queued.
  */
+/**
+ * Take the next command to run: highest priority first, FIFO within a priority.
+ *
+ * A linear scan is fine here; the queue is short enough that a heap would be
+ * more machinery than the problem warrants.
+ */
+function dequeueNextCommand(): QueuedCommand | undefined {
+  if (commandQueue.length === 0) return undefined
+
+  let bestIndex = 0
+  for (let i = 1; i < commandQueue.length; i++) {
+    if (commandQueue[i].priority > commandQueue[bestIndex].priority) {
+      bestIndex = i
+    }
+  }
+
+  return commandQueue.splice(bestIndex, 1)[0]
+}
+
 function processQueue(): void {
   while (activeCommandCount < SW_MAX_CONCURRENT_COMMANDS && commandQueue.length > 0) {
-    const queued = commandQueue.shift()!
+    const queued = dequeueNextCommand()!
     const waitTime = Date.now() - queued.queuedAt
     const action = queued.command.action as string
 
@@ -1133,6 +1236,7 @@ async function sendSWCommand(
       options,
       resolve: wrappedResolve,
       queuedAt: Date.now(),
+      priority: getCommandPriority(action),
     })
 
     // Trigger queue processing
@@ -1521,6 +1625,11 @@ async function extractSolidWorksThumbnail(
     }
 
     // Fallback: Try CFB/OLE extraction (for older pre-2015 files)
+    if (!(await isOleCompoundFile(filePath))) {
+      log(`[SWThumbnail] ${fileName} is not an OLE compound file, skipping CFB read`)
+      return { success: false, error: 'No thumbnail found' }
+    }
+
     try {
       const fileBuffer = fs.readFileSync(filePath)
       const cfb = CFB.read(fileBuffer, { type: 'buffer' })
@@ -1568,12 +1677,46 @@ async function extractSolidWorksThumbnail(
   }
 }
 
+/** OLE2 / Compound File Binary header signature. */
+const OLE_MAGIC = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])
+
+/**
+ * Whether a file is an OLE compound document, i.e. whether CFB.read has any chance
+ * of succeeding.
+ *
+ * SolidWorks 2015+ files use a different container, so CFB.read throws
+ * "Header Signature" on them after the caller has already pulled the entire file
+ * (often hundreds of MB) into memory. Reading eight bytes answers the same question.
+ *
+ * This also bounds the damage for cloud-backed files: an eight-byte read hydrates a
+ * OneDrive/Dropbox placeholder far more cheaply than a whole-file read would. Files
+ * that are cloud-only in the vault are excluded upstream by their `cloud` diffStatus.
+ */
+async function isOleCompoundFile(filePath: string): Promise<boolean> {
+  let handle: fsTypes.promises.FileHandle | undefined
+  try {
+    handle = await fs.promises.open(filePath, 'r')
+    const header = Buffer.alloc(OLE_MAGIC.length)
+    const { bytesRead } = await handle.read(header, 0, OLE_MAGIC.length, 0)
+    return bytesRead === OLE_MAGIC.length && header.equals(OLE_MAGIC)
+  } catch {
+    return false
+  } finally {
+    await handle?.close().catch(() => undefined)
+  }
+}
+
 // Extract high-quality preview from SolidWorks file
 async function extractSolidWorksPreview(
   filePath: string,
 ): Promise<{ success: boolean; data?: string; error?: string }> {
   const fileName = path.basename(filePath)
   log(`[SWPreview] Extracting preview from: ${fileName}`)
+
+  if (!(await isOleCompoundFile(filePath))) {
+    log(`[SWPreview] ${fileName} is not an OLE compound file, skipping CFB read`)
+    return { success: false, error: 'No preview stream found in file' }
+  }
 
   try {
     const fileBuffer = fs.readFileSync(filePath)
@@ -2620,6 +2763,11 @@ export function registerSolidWorksHandlers(
     return cancelPreviewsForFolder(folderPath)
   })
 
+  // Drop queued previews the user navigated away from, keeping the current folder's
+  ipcMain.handle('sw:cancel-previews', async (_, keepFolderPath?: string) => {
+    return cancelStalePreviews(keepFolderPath)
+  })
+
   // Release DM handles for folder move operations
   ipcMain.handle('sw:release-handles', async () => {
     log('[SolidWorks] Releasing handles for folder move...')
@@ -3179,6 +3327,7 @@ export function unregisterSolidWorksHandlers(): void {
     'solidworks:get-process-status',
     'solidworks:kill-orphaned-processes',
     'sw:cancel-previews-for-folder',
+    'sw:cancel-previews',
     'sw:release-handles',
     'solidworks:get-bom',
     'solidworks:get-properties',

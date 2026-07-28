@@ -14,6 +14,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { usePDMStore } from '@/stores/pdmStore'
 import type { LocalFile } from '@/stores/types'
 import { log } from '@/lib/logger'
+import { beginWatcherSuppression } from '@/lib/fileWatcherSuppression'
 
 /** Template settings from organization */
 interface TemplateSettings {
@@ -283,13 +284,14 @@ export function useSolidWorksFileCreation(): UseSolidWorksFileCreationReturn {
           }
 
           // Mark as expected change so file watcher doesn't trigger full refresh
-          const { files, setFiles, addExpectedFileChanges, setLastOperationCompletedAt } =
-            usePDMStore.getState()
-          addExpectedFileChanges([relativePath])
-          setLastOperationCompletedAt(Date.now())
+          const releaseWatcher = beginWatcherSuppression([relativePath])
 
           // Add to store - file watcher will skip this as expected change
+          const { files, setFiles } = usePDMStore.getState()
           setFiles([...files, newFile])
+
+          // The template copy already finished, so start the clear timer now.
+          releaseWatcher()
 
           log.info('[SWFileCreation]', `Added file to store immediately: ${relativePath}`)
         }

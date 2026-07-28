@@ -36,6 +36,12 @@ interface FilesListResult extends OperationResult {
   files?: LocalFileInfo[]
 }
 
+interface FileStatResult extends OperationResult {
+  size?: number
+  modifiedTime?: string
+  isDirectory?: boolean
+}
+
 interface FileSelectResult extends OperationResult {
   files?: Array<{
     name: string
@@ -292,7 +298,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getFileHash: (path: string) => ipcRenderer.invoke('fs:get-hash', path),
   // Streaming hash - more efficient for large files, use this for checkin operations
   hashFile: (path: string) => ipcRenderer.invoke('fs:hash-file', path),
+  statFile: (path: string) => ipcRenderer.invoke('fs:stat-file', path),
   listWorkingFiles: () => ipcRenderer.invoke('fs:list-working-files'),
+  // Re-stats only the given paths and patches them into the last full scan.
+  // Still returns the complete list, so callers see an unchanged view of the vault.
+  listWorkingFilesDelta: (changedPaths: string[]) =>
+    ipcRenderer.invoke('fs:list-working-files-delta', changedPaths),
   listDirFiles: (dirPath: string) => ipcRenderer.invoke('fs:list-dir-files', dirPath),
   // Fast folder listing - no hash computation (for folder-scoped refresh)
   listFolderFast: (folderRelativePath: string) =>
@@ -380,6 +391,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Cancel queued thumbnail/preview extractions for files in a folder (used before folder moves)
   cancelPreviewsForFolder: (folderPath: string) =>
     ipcRenderer.invoke('sw:cancel-previews-for-folder', folderPath),
+
+  // Drop queued previews outside keepFolderPath (used when navigating between folders)
+  cancelPreviews: (keepFolderPath?: string) =>
+    ipcRenderer.invoke('sw:cancel-previews', keepFolderPath),
 
   // Release SolidWorks Document Manager handles (used before folder moves to prevent EPERM)
   releaseHandles: () => ipcRenderer.invoke('sw:release-handles'),
@@ -777,6 +792,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
+  // Fired when the watcher lost events and can no longer describe what changed,
+  // so only a full reload can bring the vault back in sync.
+  onVaultResyncRequired: (callback: (reason: string) => void) => {
+    const handler = (_: unknown, reason: string) => callback(reason)
+    ipcRenderer.on('vault-resync-required', handler)
+
+    return () => {
+      ipcRenderer.removeListener('vault-resync-required', handler)
+    }
+  },
+
   // Auth session listener (for OAuth callback in production)
   onSetSession: (
     callback: (tokens: {
@@ -1160,7 +1186,11 @@ declare global {
       hashFile: (
         path: string,
       ) => Promise<{ success: boolean; hash?: string; size?: number; error?: string }>
+      statFile: (path: string) => Promise<FileStatResult>
       listWorkingFiles: () => Promise<FilesListResult>
+      listWorkingFilesDelta: (
+        changedPaths: string[],
+      ) => Promise<FilesListResult & { wasFullScan?: boolean }>
       listDirFiles: (dirPath: string) => Promise<FilesListResult>
       // Fast folder listing - no hash computation (for folder-scoped refresh)
       listFolderFast: (
@@ -1691,6 +1721,9 @@ declare global {
       // Directory change events (for syncing external folder changes to server)
       onDirectoryAdded: (callback: (relativePath: string) => void) => () => void
       onDirectoryRemoved: (callback: (relativePath: string) => void) => () => void
+
+      // Watcher lost events - the renderer must do a full reload
+      onVaultResyncRequired: (callback: (reason: string) => void) => () => void
 
       // Auth session events (for OAuth callback in production)
       onSetSession: (

@@ -1,3 +1,9 @@
+// SIZE: this file is over the 1500-line split threshold in .cursor/rules/style.mdc.
+// Splitting a zustand slice means splitting the StateCreator, which touches the store
+// composition and every action's `set`/`get` typing, so it was kept out of the
+// performance work. Pure helpers added by that work live in ../fileUpdates.ts, so the
+// file did not grow. The TODO(decompose) markers below record the intended seams.
+
 // TODO(decompose): Extract to filesSliceProcessing.ts — processing operations batching, flush logic, and all addProcessing/removeProcessing actions (lines ~18–95, 1585–1669)
 // TODO(decompose): Extract to filesSliceMetadata.ts — pending metadata, copy source, version notes, and config metadata actions (lines ~499–758)
 // TODO(decompose): Extract to filesSliceRealtime.ts — addCloudFile, updateFilePdmData, updateFileLocationFromServer, batchUpdateFileLocationsFromServer, removeCloudFile (lines ~1072–1477)
@@ -17,8 +23,10 @@ import type { PDMFile } from '../../types/pdm'
 import { buildFullPath } from '@/lib/utils/path'
 import { recordMetric } from '@/lib/performanceMetrics'
 import { log } from '@/lib/logger'
+import { dropCommittedPendingMetadata } from '@/lib/pendingMetadata'
 import { logExplorer } from '@/lib/userActionLogger'
 import { thumbnailCache } from '@/lib/thumbnailCache'
+import { applyFileUpdates } from '../fileUpdates'
 
 // ============================================================================
 // Processing Operations Batching
@@ -210,20 +218,31 @@ export const createFilesSlice: StateCreator<
     }
 
     const { persistedCopySource } = get()
+
+    // Pending entries that turned out to match the server are dropped rather than
+    // restored. Left in place they would mark the file modified on every load with
+    // nothing to check in, and re-persist themselves indefinitely.
+    const committedPaths: string[] = []
+
     const filesWithRestoredMetadata = deduped.map((f) => {
       let restored = f
       const persisted = persistedPendingMetadata[f.path]
       if (persisted) {
-        log.debug('[filesSlice]', `setFiles: restoring metadata for ${f.path}`, persisted as Record<string, unknown>)
-        // Restore pending metadata and mark as modified if it's a synced file
-        restored = {
-          ...restored,
-          pendingMetadata: persisted,
-          diffStatus:
-            restored.pdmData &&
-            !['outdated', 'deleted', 'deleted_remote'].includes(restored.diffStatus || '')
-              ? ('modified' as const)
-              : restored.diffStatus,
+        const stillPending = dropCommittedPendingMetadata(persisted, f.pdmData)
+        if (!stillPending) {
+          committedPaths.push(f.path)
+        } else {
+          log.debug('[filesSlice]', `setFiles: restoring metadata for ${f.path}`, stillPending as Record<string, unknown>)
+          // Restore pending metadata and mark as modified if it's a synced file
+          restored = {
+            ...restored,
+            pendingMetadata: stillPending,
+            diffStatus:
+              restored.pdmData &&
+              !['outdated', 'deleted', 'deleted_remote'].includes(restored.diffStatus || '')
+                ? ('modified' as const)
+                : restored.diffStatus,
+          }
         }
       }
       // Restore copy source info for version history preservation
@@ -237,6 +256,19 @@ export const createFilesSlice: StateCreator<
       }
       return restored
     })
+
+    if (committedPaths.length > 0) {
+      log.debug(
+        '[filesSlice]',
+        `setFiles: dropping ${committedPaths.length} pending metadata entries that match the server`,
+        { paths: committedPaths },
+      )
+      const pruned = { ...persistedPendingMetadata }
+      for (const path of committedPaths) delete pruned[path]
+      set({ files: filesWithRestoredMetadata, persistedPendingMetadata: pruned })
+      return
+    }
+
     set({ files: filesWithRestoredMetadata })
   },
 
@@ -244,26 +276,22 @@ export const createFilesSlice: StateCreator<
   setServerFolderPaths: (serverFolderPaths) => set({ serverFolderPaths }),
 
   updateFileInStore: (path, updates) => {
-    set((state) => ({
-      files: state.files.map((f) => (f.path === path ? { ...f, ...updates } : f)),
-    }))
+    const updateMap = new Map([[path.toLowerCase(), updates]])
+    set((state) => {
+      const { files, changed } = applyFileUpdates(state.files, updateMap)
+      return changed ? { files } : state
+    })
   },
 
   // Batch update multiple files in a single state change (avoids N re-renders)
   updateFilesInStore: (updates) => {
     if (updates.length === 0) return
-    window.electronAPI?.log('info', '[Store] updateFilesInStore START', {
-      updateCount: updates.length,
-      paths: updates.slice(0, 5).map((u) => u.path),
-      timestamp: Date.now(),
-    })
+
     // Build a map for O(1) lookups - use lowercase keys for case-insensitive matching on Windows
     const updateMap = new Map(updates.map((u) => [u.path.toLowerCase(), u.updates]))
+
     set((state) => {
-      const newFiles = state.files.map((f) => {
-        const fileUpdates = updateMap.get(f.path.toLowerCase())
-        return fileUpdates ? { ...f, ...fileUpdates } : f
-      })
+      const { files: newFiles, changed } = applyFileUpdates(state.files, updateMap)
 
       // Clear persistedPendingMetadata for files where pendingMetadata is being cleared
       // This prevents LoadFiles from restoring stale pending metadata after check-in
@@ -302,6 +330,20 @@ export const createFilesSlice: StateCreator<
           }
         }
       }
+
+      const persistedUnchanged =
+        newPersistedPendingMetadata === state.persistedPendingMetadata &&
+        newPersistedCopySource === state.persistedCopySource
+
+      // A write that changes nothing must not replace the files array, or every
+      // downstream memo recomputes over the whole vault for no reason.
+      if (!changed && persistedUnchanged) return state
+
+      window.electronAPI?.log('info', '[Store] updateFilesInStore APPLIED', {
+        updateCount: updates.length,
+        paths: updates.slice(0, 5).map((u) => u.path),
+        timestamp: Date.now(),
+      })
 
       return {
         files: newFiles,
@@ -367,16 +409,14 @@ export const createFilesSlice: StateCreator<
         newProcessingOps.delete(path)
       }
 
-      // Build new files array with updates applied
-      // Use lowercase for case-insensitive matching on Windows
-      let matchCount = 0
-      const newFiles = updateMap
-        ? state.files.map((f) => {
-            const fileUpdates = updateMap.get(f.path.toLowerCase())
-            if (fileUpdates) matchCount++
-            return fileUpdates ? { ...f, ...fileUpdates } : f
-          })
-        : state.files
+      // Build new files array with updates applied.
+      // Keeps the existing array reference when nothing actually changed, so the
+      // processing-state clear does not drag a full memo recompute along with it.
+      const applied = updateMap
+        ? applyFileUpdates(state.files, updateMap)
+        : { files: state.files, matchCount: 0, changed: false }
+      const newFiles = applied.files
+      const matchCount = applied.matchCount
 
       // Debug: Log how many files actually matched
       if (updateMap && updateMap.size > 0) {

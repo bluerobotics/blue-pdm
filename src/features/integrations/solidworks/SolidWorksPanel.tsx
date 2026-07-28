@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from 'react'
 import { usePDMStore, LocalFile } from '@/stores/pdmStore'
 import { syncSolidWorksFileMetadata, getWhereUsed } from '@/lib/supabase'
 import { log } from '@/lib/logger'
+import { beginWatcherSuppression } from '@/lib/fileWatcherSuppression'
+import { refreshLocalFileFacts } from '@/lib/refreshLocalFileFacts'
 import {
   FileBox,
   Layers,
@@ -1074,6 +1076,9 @@ export function SWPropertiesTab({ file }: { file: LocalFile }) {
     }
 
     setIsSyncing(true)
+    // Without this the watcher sees our own write as an external change and kicks off
+    // a full vault reload.
+    const releaseWatcher = beginWatcherSuppression([file.relativePath])
     try {
       const properties: Record<string, string> = {}
 
@@ -1093,6 +1098,8 @@ export function SWPropertiesTab({ file }: { file: LocalFile }) {
       const result = await window.electronAPI?.solidworks?.setProperties(file.path, properties)
       if (result?.success) {
         addToast('success', 'Metadata written to SolidWorks file')
+        // The suppressed reload would have refreshed these; do it directly instead.
+        await refreshLocalFileFacts(file)
         // Reload properties to show updated values
         const reloadResult = await window.electronAPI?.solidworks?.getProperties(file.path)
         if (reloadResult?.success && reloadResult.data) {
@@ -1109,6 +1116,7 @@ export function SWPropertiesTab({ file }: { file: LocalFile }) {
     } catch (error) {
       addToast('error', `Write failed: ${error}`)
     } finally {
+      releaseWatcher()
       setIsSyncing(false)
     }
   }

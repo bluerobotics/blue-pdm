@@ -82,6 +82,14 @@ interface FilesListResult {
   error?: string
 }
 
+interface FileStatResult {
+  success: boolean
+  size?: number
+  modifiedTime?: string
+  isDirectory?: boolean
+  error?: string
+}
+
 interface OperationResult {
   success: boolean
   error?: string
@@ -333,7 +341,14 @@ declare global {
       hashFile: (
         path: string,
       ) => Promise<{ success: boolean; hash?: string; size?: number; error?: string }>
+      // Size + mtime for a single path, for refreshing one file without a full rescan
+      statFile: (path: string) => Promise<FileStatResult>
       listWorkingFiles: () => Promise<FilesListResult>
+      // Re-stats only the given paths and patches them into the last full scan.
+      // Still returns the complete list, so the merge sees an unchanged view.
+      listWorkingFilesDelta: (
+        changedPaths: string[],
+      ) => Promise<FilesListResult & { wasFullScan?: boolean }>
       listDirFiles: (dirPath: string) => Promise<FilesListResult>
       // Fast folder listing - no hash computation (for folder-scoped refresh)
       listFolderFast: (
@@ -481,6 +496,20 @@ declare global {
       extractSolidWorksPreview: (
         filePath: string,
       ) => Promise<{ success: boolean; data?: string; error?: string }>
+
+      // Cancel queued preview/thumbnail extractions for files in a folder (before folder moves).
+      // Only affects queued work; already-dispatched commands run to their timeout.
+      cancelPreviewsForFolder: (folderPath: string) => Promise<{
+        cancelledCount: number
+        activeCount: number
+        activePaths: string[]
+      }>
+
+      // Drop queued previews outside keepFolderPath (when navigating between folders)
+      cancelPreviews: (keepFolderPath?: string) => Promise<{ cancelledCount: number }>
+
+      // Release SolidWorks Document Manager handles (before folder moves, to prevent EPERM)
+      releaseHandles: () => Promise<{ success: boolean; error?: string }>
 
       // Check if SLDWORKS.exe process is running (lightweight check, no service call)
       isSolidWorksProcessRunning: () => Promise<boolean>
@@ -1247,6 +1276,9 @@ declare global {
       // Directory change events (for syncing external folder changes to server)
       onDirectoryAdded: (callback: (relativePath: string) => void) => () => void
       onDirectoryRemoved: (callback: (relativePath: string) => void) => () => void
+
+      // Watcher lost events - the renderer must do a full reload
+      onVaultResyncRequired: (callback: (reason: string) => void) => () => void
 
       // Auth session events (for OAuth callback in production)
       onSetSession: (

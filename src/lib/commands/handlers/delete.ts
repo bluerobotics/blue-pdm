@@ -36,6 +36,7 @@ import { log } from '@/lib/logger'
 import { FileOperationTracker } from '../../fileOperationTracker'
 import { removeFromSyncIndex } from '../../cache/localSyncIndex'
 import { clearVaultCache } from '../../cache/vaultFileCache'
+import { beginWatcherSuppression } from '@/lib/fileWatcherSuppression'
 
 // Helper for timing-based logging
 function logDelete(
@@ -285,8 +286,10 @@ export const deleteLocalCommand: Command<DeleteLocalParams> = {
     const allPathsBeingProcessed = [...foldersBeingProcessed, ...filesBeingProcessed]
     const localFolders = files.filter((f) => f.isDirectory && f.diffStatus !== 'cloud')
 
-    // Register expected file changes to suppress file watcher during operation
-    ctx.addExpectedFileChanges(allPathsBeingProcessed)
+    // Register expected file changes to suppress file watcher during operation.
+    // Released alongside the processing markers at every exit; the helper also
+    // carries a backstop so a missed exit cannot suppress these paths forever.
+    const releaseWatcher = beginWatcherSuppression(allPathsBeingProcessed, ctx)
 
     // Yield to let the confirmation modal close, then show spinner BEFORE heavy file scanning
     await new Promise((resolve) => setTimeout(resolve, 0))
@@ -329,7 +332,7 @@ export const deleteLocalCommand: Command<DeleteLocalParams> = {
         }
 
         // Mark operation complete to help suppress file watcher
-        ctx.setLastOperationCompletedAt(Date.now())
+        releaseWatcher()
 
         if (deleted > 0) {
           ctx.addToast('success', `Deleted ${deleted} folder${deleted !== 1 ? 's' : ''}`)
@@ -370,7 +373,7 @@ export const deleteLocalCommand: Command<DeleteLocalParams> = {
       }
 
       // Mark operation complete to help suppress file watcher
-      ctx.setLastOperationCompletedAt(Date.now())
+      releaseWatcher()
 
       tracker.endOperation('failed', 'Delete operation failed')
       return {
@@ -384,6 +387,7 @@ export const deleteLocalCommand: Command<DeleteLocalParams> = {
 
     if (filesToRemove.length === 0) {
       ctx.removeProcessingFoldersSync(allPathsBeingProcessed)
+      releaseWatcher()
       ctx.addToast('info', 'No local files to remove')
       tracker.endOperation('completed')
       return {
@@ -602,6 +606,8 @@ export const deleteLocalCommand: Command<DeleteLocalParams> = {
     // Complete operation tracking
     tracker.endOperation(failed === 0 ? 'completed' : 'failed', failed > 0 ? errors[0] : undefined)
 
+    releaseWatcher()
+
     return {
       success: failed === 0,
       message:
@@ -695,13 +701,12 @@ export const deleteServerCommand: Command<DeleteServerParams> = {
     // Compute selected paths (cheap — only iterates the selected items, not the full store)
     const selectedPaths = files.map((f) => f.relativePath)
 
-    // Register expected file changes for local items
-    if (deleteLocal) {
-      const localPathsToDelete = files
-        .filter((f) => f.diffStatus !== 'cloud')
-        .map((f) => f.relativePath)
-      ctx.addExpectedFileChanges(localPathsToDelete)
-    }
+    // Register expected file changes for local items. Empty when nothing local is
+    // touched, in which case the release is a no-op.
+    const localPathsToDelete = deleteLocal
+      ? files.filter((f) => f.diffStatus !== 'cloud').map((f) => f.relativePath)
+      : []
+    const releaseWatcher = beginWatcherSuppression(localPathsToDelete, ctx)
 
     // Yield to let the confirmation modal close, then show spinner BEFORE heavy scanning.
     // Folder-level spinners propagate down to children via getProcessingOperation,
@@ -738,6 +743,7 @@ export const deleteServerCommand: Command<DeleteServerParams> = {
     // Handle empty cloud-only folders
     if (uniqueFiles.length === 0 && !hasLocalFolders) {
       ctx.removeProcessingFoldersSync(selectedPaths)
+      releaseWatcher()
 
       if (hasCloudOnlyFolders) {
         const emptyFolders = files.filter((f) => f.isDirectory && f.diffStatus === 'cloud')
@@ -827,6 +833,7 @@ export const deleteServerCommand: Command<DeleteServerParams> = {
         // Clear processing state synchronously
         ctx.removeProcessingFoldersSync(selectedPaths)
         ctx.setLastOperationCompletedAt(Date.now())
+        releaseWatcher()
 
         logDelete('info', 'Local folder deletion complete', {
           deleted,
@@ -878,6 +885,7 @@ export const deleteServerCommand: Command<DeleteServerParams> = {
       // (No need to restore - files were never removed from store)
       ctx.removeProcessingFoldersSync(selectedPaths)
       ctx.setLastOperationCompletedAt(Date.now())
+      releaseWatcher()
       ctx.addToast('error', 'Delete operation failed')
       tracker.endOperation('failed', 'Delete operation failed')
       return {
@@ -1128,6 +1136,7 @@ export const deleteServerCommand: Command<DeleteServerParams> = {
     // Clear processing state synchronously so UI updates immediately
     ctx.removeProcessingFoldersSync(allPathsBeingProcessed)
     ctx.setLastOperationCompletedAt(Date.now())
+    releaseWatcher()
     ctx.removeToast(toastId)
 
     logDelete('info', 'Store updated after delete-server', {

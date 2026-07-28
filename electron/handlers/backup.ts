@@ -69,6 +69,27 @@ let currentStats: BackupOperationStats | null = null
 let isBackupRunning = false
 let backupStartedAt: number | null = null
 
+/**
+ * Last logged failure per repository.
+ *
+ * Repository access failures (wrong credentials, missing bucket, no repo at that path)
+ * do not heal on their own, and the snapshot list is polled every few minutes, so logging
+ * each one buries everything else in the log. Log a given failure once and stay quiet
+ * until the message changes or the repo becomes reachable again.
+ */
+const lastLoggedRepoFailure = new Map<string, string>()
+
+function logRepoFailureOnce(repo: string, message: string, data?: Record<string, unknown>): void {
+  if (lastLoggedRepoFailure.get(repo) === message) return
+
+  lastLoggedRepoFailure.set(repo, message)
+  logError(message, { ...data, repo })
+}
+
+function clearRepoFailure(repo: string): void {
+  lastLoggedRepoFailure.delete(repo)
+}
+
 // Get path to bundled restic binary
 function getResticPath(): string {
   const binaryName = process.platform === 'win32' ? 'restic.exe' : 'restic'
@@ -951,14 +972,14 @@ export function registerBackupHandlers(
                 resolve([])
               }
             } else {
-              const errorMsg = stderr.trim() || `Restic exited with code ${code}`
-              logError('Failed to list snapshots', { code, stderr: errorMsg, repo })
-              reject(new Error(errorMsg))
+              reject(new Error(stderr.trim() || `Restic exited with code ${code}`))
             }
           })
 
           list.on('error', reject)
         })
+
+        clearRepoFailure(repo)
 
         return {
           success: true,
@@ -971,8 +992,9 @@ export function registerBackupHandlers(
           })),
         }
       } catch (error) {
-        logError('Failed to list snapshots', { error: String(error) })
-        return { success: false, error: String(error), snapshots: [] }
+        const message = error instanceof Error ? error.message : String(error)
+        logRepoFailureOnce(repo, 'Failed to list snapshots', { error: message })
+        return { success: false, error: message, snapshots: [] }
       }
     },
   )

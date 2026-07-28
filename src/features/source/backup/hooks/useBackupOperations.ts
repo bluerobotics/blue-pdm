@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { log } from '@/lib/logger'
 import {
   runBackup,
@@ -206,6 +206,14 @@ export function useBackupOperations(
     [connectedVaults, selectedVaultIds, orgId, addToast, loadStatus],
   )
 
+  // The service only ever calls the latest handler, so holding it in a ref keeps it out
+  // of the effect's dependencies. Otherwise every change to connectedVaults,
+  // selectedVaultIds or loadStatus tears the service down and restarts it.
+  const runBackupInternalRef = useRef(handleRunBackupInternal)
+  useEffect(() => {
+    runBackupInternalRef.current = handleRunBackupInternal
+  }, [handleRunBackupInternal])
+
   // Start backup service if this is the designated machine
   useEffect(() => {
     if (!isThisDesignated || !orgId || !currentVaultId) return
@@ -217,7 +225,7 @@ export function useBackupOperations(
       currentVaultId,
       async (backupConfig) => {
         // Backup request received - run the backup
-        await handleRunBackupInternal(backupConfig)
+        await runBackupInternalRef.current(backupConfig)
       },
       async () => {
         // Fetch fresh config from database each time
@@ -228,7 +236,7 @@ export function useBackupOperations(
     return () => {
       stopBackupService()
     }
-  }, [isThisDesignated, orgId, currentVaultId, handleRunBackupInternal])
+  }, [isThisDesignated, orgId, currentVaultId])
 
   // Handle backup button click - either run locally or request remotely
   const handleRunBackup = useCallback(async () => {

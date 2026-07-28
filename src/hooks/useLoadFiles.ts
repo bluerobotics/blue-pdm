@@ -1,3 +1,12 @@
+// SIZE: this file is over the 1500-line split threshold in .cursor/rules/style.mdc.
+// The performance work deliberately did not carry the split: loadFiles is one long
+// pipeline whose stages share ~20 locals, so a mechanical extraction would have
+// meant threading a large context object through every stage in the same change as
+// behavioural fixes. New module-level state added by that work lives in
+// ./loadFilesCoordination.ts instead, so the file did not grow. The inline
+// TODO(decompose) markers below record the intended seams; take them one at a time
+// in a change that does nothing else.
+
 import { useCallback, startTransition } from 'react'
 // flushSync removed - causes React crashes when called during existing render cycles
 import { usePDMStore } from '@/stores/pdmStore'
@@ -5,6 +14,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { getFilesLightweight, getCheckedOutUsers, getVaultFolders } from '@/lib/supabase'
 import { executeCommand } from '@/lib/commands'
 import { buildFullPath } from '@/lib/commands/types'
+import { dropCommittedPendingMetadata } from '@/lib/pendingMetadata'
 import { recordMetric } from '@/lib/performanceMetrics'
 import { getFilesWithCache, updateCachedUserInfo } from '@/lib/cache/vaultFileCache'
 import {
@@ -16,6 +26,13 @@ import {
 } from '@/lib/cache/localSyncIndex'
 import { logExplorer } from '@/lib/userActionLogger'
 import type { LightweightFile } from '@/lib/supabase/files/queries'
+import {
+  computeLocalScanFingerprint,
+  getLastMergedState,
+  isLoadFilesInFlight,
+  runExclusiveLoad,
+  setLastMergedState,
+} from './loadFilesCoordination'
 
 /**
  * Hook to load files from working directory and merge with PDM data
@@ -63,8 +80,15 @@ export function useLoadFiles() {
   // Load files from working directory and merge with PDM data
   // silent = true means no loading spinner (for background refreshes after downloads/uploads)
   // forceHashComputation = true forces full hash computation on ALL synced files (for Full Refresh)
-  const loadFiles = useCallback(
-    async (silent: boolean = false, forceHashComputation: boolean = false) => {
+  // changedRelativePaths, when supplied by the file watcher, lets the main process
+  // re-stat only those paths instead of walking the whole vault.
+  // Callers should use loadFiles below, which serializes passes; this is the raw implementation.
+  const runLoadFiles = useCallback(
+    async (
+      silent: boolean = false,
+      forceHashComputation: boolean = false,
+      changedRelativePaths?: string[],
+    ) => {
       // Capture vault context at start - used to detect if vault changed during async operations
       const loadingForVaultId = currentVaultId
       const loadingForVaultPath = vaultPath
@@ -116,7 +140,18 @@ export function useLoadFiles() {
         const localScanStart = performance.now()
         let localScanEnd = 0
 
-        const localPromise = window.electronAPI.listWorkingFiles().then((result) => {
+        // A delta scan is only safe when it can build on a prior full scan; the
+        // main process falls back to a full walk on its own if it cannot.
+        const canDeltaScan =
+          !forceHashComputation &&
+          changedRelativePaths !== undefined &&
+          changedRelativePaths.length > 0
+
+        const localPromise = (
+          canDeltaScan
+            ? window.electronAPI.listWorkingFilesDelta(changedRelativePaths!)
+            : window.electronAPI.listWorkingFiles()
+        ).then((result) => {
           localScanEnd = performance.now()
           return result
         })
@@ -218,6 +253,49 @@ export function useLoadFiles() {
         window.electronAPI?.log('info', '[LoadFiles] Scanned local items', {
           count: localResult.files.length,
         })
+
+        // Skip the merge when none of its three inputs moved.
+        //
+        // Server: cacheHit with a zero-row delta means the watermark query found no
+        // changes. Disk: an identical scan fingerprint means no path, size or mtime
+        // changed. Store: an unchanged file count means no other operation added or
+        // removed entries since we last committed. With all three unchanged the merge
+        // would recompute the same result over ~25k rows and rewrite the entire sync
+        // index for nothing.
+        //
+        // Restricted to silent refreshes (the watcher path this exists for) and to
+        // vaults already merged once, so explicit user refreshes and the first load of
+        // a vault always take the full path.
+        const localScanFingerprint = computeLocalScanFingerprint(localResult.files)
+        const lastMerged = getLastMergedState(loadingForVaultId)
+        const storeState = usePDMStore.getState()
+        const canSkipMerge =
+          silent &&
+          !forceHashComputation &&
+          serverResultWithCache.cacheHit &&
+          serverResultWithCache.deltaCount === 0 &&
+          lastMerged !== undefined &&
+          lastMerged.scanFingerprint === localScanFingerprint &&
+          lastMerged.storeFileCount === storeState.files.length &&
+          storeState.filesLoaded &&
+          !isVaultStale()
+
+        if (canSkipMerge) {
+          window.electronAPI?.log(
+            'info',
+            '[LoadFiles] Skipping merge - no local, server or store changes',
+            {
+              localFileCount: localResult.files.length,
+              localScanMs: Math.round(localScanDuration),
+            },
+          )
+          recordMetric('VaultLoad', 'Skipped merge (no changes)', {
+            localFileCount: localResult.files.length,
+            localScanMs: Math.round(localScanDuration),
+          })
+          return
+        }
+
         window.electronAPI?.log('info', '[LoadFiles] Server query params', {
           orgId: organization?.id,
           vaultId: currentVaultId,
@@ -806,13 +884,17 @@ export function useLoadFiles() {
               // Preserve pendingMetadata from existing file OR from persistedPendingMetadata (for app restart)
               // For moved files, also try looking up by the OLD path (stored in pdmData.file_path)
               // since pendingMetadata was stored under the old path before the rename
-              const preservedPending =
+              const recoveredPending =
                 existingPendingMetadata.get(localFile.path) ||
                 persistedPendingMetadata[localFile.path] ||
                 (isMovedFile && pdmData?.file_path
                   ? existingPendingByServerPath.get(pdmData.file_path.toLowerCase()) ||
                     persistedPendingMetadata[buildFullPath(loadingForVaultPath, pdmData.file_path)]
                   : undefined)
+
+              // Compare against the raw server row, not finalPdmData - pending values are
+              // merged into that below, which would make every edit look already committed.
+              const preservedPending = dropCommittedPendingMetadata(recoveredPending, pdmData)
 
               // Check if this file was recently modified locally (e.g., just saved to SW file + DB)
               // If so, preserve the existing pdmData to prevent server data from overwriting local changes
@@ -1390,6 +1472,13 @@ export function useLoadFiles() {
 
         setFiles(localFiles)
         setFilesLoaded(true) // Mark that initial load is complete
+
+        // Only recorded once the merge actually committed, so a failed or aborted
+        // pass can never make the next one skip.
+        setLastMergedState(loadingForVaultId, {
+          scanFingerprint: localScanFingerprint,
+          storeFileCount: localFiles.length,
+        })
         const totalFiles = localFiles.filter((f) => !f.isDirectory).length
         const syncedCount = localFiles.filter((f) => !f.isDirectory && f.pdmData).length
         const folderCount = localFiles.filter((f) => f.isDirectory).length
@@ -1892,6 +1981,25 @@ export function useLoadFiles() {
     ],
   )
 
+  /** Serialized entry point for loadFiles. See runExclusiveLoad for the rationale. */
+  const loadFiles = useCallback(
+    async (
+      silent: boolean = false,
+      forceHashComputation: boolean = false,
+      changedRelativePaths?: string[],
+    ) =>
+      runExclusiveLoad(
+        currentVaultId,
+        {
+          silent,
+          forceHashComputation,
+          hasChangedPaths: (changedRelativePaths?.length ?? 0) > 0,
+        },
+        () => runLoadFiles(silent, forceHashComputation, changedRelativePaths),
+      ),
+    [runLoadFiles, currentVaultId],
+  )
+
   // TODO(decompose): Extract to hooks/useRefreshFolder.ts — refreshCurrentFolder is a
   // self-contained hook (~220 lines) that shares no mutable state with loadFiles.
   // Could be a standalone useRefreshFolder(vaultPath, user, setFiles, ...) hook.
@@ -1906,8 +2014,9 @@ export function useLoadFiles() {
       window.electronAPI?.log('info', '[RefreshFolder] Called with', { folderPath, vaultPath })
       if (!window.electronAPI || !vaultPath) return
 
-      // Guard against concurrent refreshes
-      if (usePDMStore.getState().isLoading) {
+      // Guard against concurrent refreshes. isLoading misses silent watcher-driven
+      // loadFiles passes, so check the in-flight tracker too.
+      if (usePDMStore.getState().isLoading || isLoadFilesInFlight()) {
         window.electronAPI?.log('info', '[RefreshFolder] Skipping - already refreshing')
         return
       }

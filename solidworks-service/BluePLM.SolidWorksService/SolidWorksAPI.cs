@@ -26,6 +26,13 @@ namespace BluePLM.SolidWorksService
         private readonly ComStabilityLayer? _comStability;
 
         /// <summary>
+        /// The stability layer, reachable from the static COM helpers below.
+        /// The service creates exactly one SolidWorksAPI, so this is effectively the same
+        /// instance as <see cref="_comStability"/>.
+        /// </summary>
+        private static ComStabilityLayer? _sharedComStability;
+
+        /// <summary>
         /// Creates a new SolidWorksAPI instance.
         /// </summary>
         /// <param name="keepRunning">Whether to keep SolidWorks running after operations.</param>
@@ -34,6 +41,7 @@ namespace BluePLM.SolidWorksService
         {
             _keepRunning = keepRunning;
             _comStability = comStability;
+            _sharedComStability = comStability;
             
             if (_comStability != null)
             {
@@ -80,6 +88,79 @@ namespace BluePLM.SolidWorksService
             }
         }
 
+        #region COM Availability Probe Cache
+
+        // GetActiveObjectOnSTA costs up to ~5s when it has to fall back to an STA thread
+        // and still fails, and IsFileOpenInSolidWorks pays that (plus a 250ms retry) once
+        // per file. Browsing a folder therefore stalls behind dozens of identical failing
+        // probes. A short TTL collapses them into one without changing any answer: inside
+        // the window we return exactly what the probe just produced.
+
+        private const int ComUnavailableCacheTtlMs = 2000;
+        private const int ProcessRunningCacheTtlMs = 1000;
+
+        private static readonly object _probeCacheLock = new object();
+        private static DateTime _comUnavailableAtUtc = DateTime.MinValue;
+        private static DateTime _processRunningCheckedAtUtc = DateTime.MinValue;
+
+        /// <summary>
+        /// True when a recent probe found SolidWorks running but COM unreachable.
+        /// Callers should take the same fail-open branch they would have taken then.
+        /// </summary>
+        private static bool IsComKnownUnavailable()
+        {
+            lock (_probeCacheLock)
+            {
+                return (DateTime.UtcNow - _comUnavailableAtUtc).TotalMilliseconds < ComUnavailableCacheTtlMs;
+            }
+        }
+
+        private static void MarkComUnavailable()
+        {
+            lock (_probeCacheLock)
+            {
+                _comUnavailableAtUtc = DateTime.UtcNow;
+            }
+        }
+
+        private static void MarkComAvailable()
+        {
+            lock (_probeCacheLock)
+            {
+                _comUnavailableAtUtc = DateTime.MinValue;
+            }
+        }
+
+        /// <summary>
+        /// Process-running check with a short TTL on POSITIVE results only.
+        /// A stale "running" answer just keeps us on the safe SW path; a stale
+        /// "not running" answer would route DM against a document SolidWorks has open,
+        /// so misses are always re-checked.
+        /// </summary>
+        private static bool IsSolidWorksProcessRunningCached()
+        {
+            lock (_probeCacheLock)
+            {
+                if ((DateTime.UtcNow - _processRunningCheckedAtUtc).TotalMilliseconds < ProcessRunningCacheTtlMs)
+                {
+                    return true;
+                }
+            }
+
+            bool running = IsSolidWorksProcessRunning();
+            if (running)
+            {
+                lock (_probeCacheLock)
+                {
+                    _processRunningCheckedAtUtc = DateTime.UtcNow;
+                }
+            }
+
+            return running;
+        }
+
+        #endregion
+
         /// <summary>
         /// Try to get the active SolidWorks COM object, using an STA thread as fallback.
         /// The service runs on an MTA thread, and Marshal.GetActiveObject can fail from MTA
@@ -107,6 +188,25 @@ namespace BluePLM.SolidWorksService
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"[SW-API] GetActiveObjectOnSTA: Direct call failed ({ex.Message}), trying STA thread...");
+            }
+
+            // Fallback: run the lookup on the shared STA pump, which owns the
+            // IMessageFilter and saves creating a thread per call.
+            if (_sharedComStability != null)
+            {
+                if (_sharedComStability.TryInvokeOnSta(
+                        () => Marshal.GetActiveObject("SldWorks.Application"),
+                        timeoutMs,
+                        out var pumpResult))
+                {
+                    if (pumpResult != null)
+                    {
+                        Console.Error.WriteLine("[SW-API] GetActiveObjectOnSTA: Found via STA pump");
+                    }
+                    return pumpResult;
+                }
+
+                Console.Error.WriteLine("[SW-API] GetActiveObjectOnSTA: STA pump unavailable, using one-shot thread");
             }
 
             // Fallback: try on a dedicated STA thread
@@ -483,6 +583,13 @@ namespace BluePLM.SolidWorksService
         {
             try
             {
+                // A probe moments ago already established SW is running with COM
+                // unreachable; re-running it would cost seconds for the same answer.
+                if (IsComKnownUnavailable())
+                {
+                    return true;
+                }
+
                 // Use STA-thread-aware helper to get running SolidWorks instance
                 var swObj = GetActiveObjectOnSTA();
                 if (swObj == null)
@@ -491,7 +598,7 @@ namespace BluePLM.SolidWorksService
                     // momentarily unavailable". This matters because the caller uses this to
                     // decide DM vs SW routing, and running DM against a file SW has open can
                     // cause SW to CLOSE the user's document.
-                    if (!IsSolidWorksProcessRunning())
+                    if (!IsSolidWorksProcessRunningCached())
                     {
                         // SW genuinely not running -> safe to use the fast DM path.
                         return false;
@@ -505,10 +612,12 @@ namespace BluePLM.SolidWorksService
                         // Still can't reach COM while SW is running. Fail "open/unknown" so we
                         // never route DM against a file SW may have open.
                         Console.Error.WriteLine("[SW-API] IsFileOpenInSolidWorks: SW running but COM inaccessible - assuming OPEN to be safe");
+                        MarkComUnavailable();
                         return true;
                     }
                 }
 
+                MarkComAvailable();
                 ISldWorks swApp = (ISldWorks)swObj;
 
                 var docs = (object[])swApp.GetDocuments();

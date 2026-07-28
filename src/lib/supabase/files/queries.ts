@@ -84,6 +84,9 @@ export interface LightweightFile {
   checked_out_by: string | null
   checked_out_at: string | null
   updated_at: string
+  // Carries the reserved _config_tabs / _config_descriptions keys the explorer needs to
+  // recognise per-configuration metadata that is already committed.
+  custom_properties: Record<string, unknown> | null
 }
 
 // Delta file includes deletion info
@@ -815,7 +818,8 @@ export async function getDrawingsForFiles(fileIds: string[]): Promise<{
         state,
         checked_out_by,
         checked_out_at,
-        updated_at
+        updated_at,
+        custom_properties
       )
     `,
     )
@@ -847,6 +851,7 @@ export async function getDrawingsForFiles(fileIds: string[]): Promise<{
       checked_out_by: string | null
       checked_out_at: string | null
       updated_at: string
+      custom_properties: Record<string, unknown> | null
     } | null
 
     // Verify this is actually a drawing file
@@ -868,6 +873,7 @@ export async function getDrawingsForFiles(fileIds: string[]): Promise<{
           checked_out_by: parent.checked_out_by,
           checked_out_at: parent.checked_out_at,
           updated_at: parent.updated_at,
+          custom_properties: parent.custom_properties,
         })
       }
     }

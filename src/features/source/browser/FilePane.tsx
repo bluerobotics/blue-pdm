@@ -895,6 +895,19 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
   // Use store's currentFolder instead of local state
   const currentPath = currentFolder
 
+  // Browsing a folder enqueues one preview extraction per file against a
+  // concurrency-3 queue, so leaving before it drains strands tens of requests
+  // ahead of the ones the user is now looking at. Drop everything outside the
+  // folder now on screen. Requests already dispatched to the service cannot be
+  // aborted and will run to their timeout; results for unmounted rows are
+  // discarded by the thumbnail hooks' own unmount guards.
+  useEffect(() => {
+    if (!vaultPath) return
+
+    const keepFolderPath = currentPath ? buildFullPath(vaultPath, currentPath) : vaultPath
+    window.electronAPI?.cancelPreviews?.(keepFolderPath)
+  }, [currentPath, vaultPath])
+
   // File edit handlers (create folder, rename, inline cell editing)
   const {
     handleCreateFolder,
@@ -994,11 +1007,14 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
     [baseHandleRowClick, handleSlowDoubleClick],
   )
 
-  // Selection box (marquee/drag-box selection)
+  // Selection box (marquee/drag-box selection). The grid lays cards out in two
+  // dimensions, so it needs its own item selector and a horizontal overlap test.
+  const isIconView = viewMode === 'icons'
   const { selectionBox, selectionHandlers } = useSelectionBox({
     containerRef: tableRef,
     getVisibleItems: () => sortedFiles,
-    rowSelector: 'tbody tr',
+    rowSelector: isIconView ? '[data-grid-card]' : 'tbody tr',
+    axis: isIconView ? 'both' : 'vertical',
     setSelectedFiles,
     clearSelection,
     excludeSelector: 'th', // Don't start selection when clicking headers
@@ -1740,6 +1756,7 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
                 userFullName={user?.full_name ?? undefined}
                 userEmail={user?.email}
                 userAvatarUrl={user?.avatar_url ?? undefined}
+                scrollContainerRef={tableRef}
                 onSelect={handleRowClick}
                 onDoubleClick={handleRowDoubleClick}
                 onContextMenu={handleContextMenu}

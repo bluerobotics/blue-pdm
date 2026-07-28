@@ -45,6 +45,8 @@ import {
 } from '@/lib/supabase/files/queries'
 import type { DrawingRefItem } from '@/stores/types'
 import { log } from '@/lib/logger'
+import { beginWatcherSuppression } from '@/lib/fileWatcherSuppression'
+import { refreshLocalFileFacts } from '@/lib/refreshLocalFileFacts'
 
 /**
  * If a SolidWorks write is still pending after this long, it almost certainly
@@ -443,8 +445,7 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
 
       // Write to SW file immediately so sync-metadata on drawings reads the updated value
       // Mark file change as expected so file watcher doesn't trigger a refresh that collapses configs
-      usePDMStore.getState().addExpectedFileChanges([file.relativePath])
-      usePDMStore.getState().setLastOperationCompletedAt(Date.now())
+      const releaseWatcher = beginWatcherSuppression([file.relativePath])
 
       try {
         // Get serialization settings and user info for full property build
@@ -478,6 +479,8 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
         )
         if (result?.success) {
           addToast('success', `Saved tab number to ${configName}`)
+          // The watcher-driven reload is suppressed, so refresh disk facts here.
+          await refreshLocalFileFacts(file)
         } else {
           addToast('error', `Failed to save tab number: ${result?.error || 'Unknown error'}`)
         }
@@ -488,6 +491,8 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
           error: error,
         })
         addToast('error', 'Failed to save tab number to file')
+      } finally {
+        releaseWatcher()
       }
     },
     [addToast, organization],
@@ -531,8 +536,7 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
 
       // Write to SW file immediately so sync-metadata on drawings reads the updated value
       // Mark file change as expected so file watcher doesn't trigger a refresh that collapses configs
-      usePDMStore.getState().addExpectedFileChanges([file.relativePath])
-      usePDMStore.getState().setLastOperationCompletedAt(Date.now())
+      const releaseWatcher = beginWatcherSuppression([file.relativePath])
 
       try {
         // Get serialization settings and user info for full property build
@@ -572,6 +576,8 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
         )
         if (result?.success) {
           addToast('success', `Saved description to ${configName}`)
+          // The watcher-driven reload is suppressed, so refresh disk facts here.
+          await refreshLocalFileFacts(file)
         } else {
           addToast('error', `Failed to save description: ${result?.error || 'Unknown error'}`)
         }
@@ -582,6 +588,8 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
           error: error,
         })
         addToast('error', 'Failed to save description to file')
+      } finally {
+        releaseWatcher()
       }
     },
     [addToast, organization],
@@ -644,8 +652,13 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
 
       setSavingConfigsToSW((prev) => new Set(prev).add(file.path))
 
-      // Mark file as processing to suppress file watcher refreshes during save
+      // Mark file as processing to suppress file watcher refreshes during save.
+      // This only covers events that arrive while the write runs; the watcher's own
+      // debounce chain delivers our write ~2s after it finishes, by which point the
+      // processing marker is gone. beginWatcherSuppression covers that tail, without
+      // which every metadata edit triggers a full vault reload.
       usePDMStore.getState().addProcessingFolder(file.relativePath, 'upload')
+      const releaseWatcher = beginWatcherSuppression([file.relativePath])
 
       try {
         // Check what pending changes we have
@@ -942,9 +955,10 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
           // the server will keep the old values, which then overwrite our local state.
           // pendingMetadata will be cleared by check-in after successfully syncing to server.
 
-          // CRITICAL: Invalidate cached localHash since file content changed
-          // Without this, checkin would incorrectly take fast path and skip version increment
-          usePDMStore.getState().updateFileInStore(file.path, { localHash: undefined })
+          // Refresh the on-disk facts the suppressed reload would otherwise have
+          // supplied: content hash (checkin takes a fast path on a stale hash and
+          // skips the version increment) plus size/mtime, which drive diff status.
+          await refreshLocalFileFacts(file)
         } else if (failedCount > 0) {
           addToast('error', 'Failed to save metadata to file')
         }
@@ -954,6 +968,7 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
       } finally {
         // Remove processing marker so file watcher can resume normal operation
         usePDMStore.getState().removeProcessingFolder(file.relativePath)
+        releaseWatcher()
 
         setSavingConfigsToSW((prev) => {
           const next = new Set(prev)

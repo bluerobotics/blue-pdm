@@ -3041,7 +3041,11 @@ RETURNS TABLE (
   state TEXT,
   checked_out_by UUID,
   checked_out_at TIMESTAMPTZ,
-  updated_at TIMESTAMPTZ
+  updated_at TIMESTAMPTZ,
+  -- Needed by the explorer to tell committed per-configuration metadata apart from
+  -- uncommitted edits. Without it every pending config value looks like a change and
+  -- the file is marked modified forever.
+  custom_properties JSONB
 ) AS $$
 BEGIN
   RETURN QUERY
@@ -3049,7 +3053,8 @@ BEGIN
     f.id, f.file_path, f.file_name, f.extension, f.file_type,
     f.part_number, f.description, f.revision, f.version,
     f.content_hash, f.file_size, f.state,
-    f.checked_out_by, f.checked_out_at, f.updated_at
+    f.checked_out_by, f.checked_out_at, f.updated_at,
+    f.custom_properties
   FROM files f
   WHERE f.org_id = p_org_id
     AND f.deleted_at IS NULL
@@ -3179,6 +3184,9 @@ RETURNS TABLE (
   checked_out_by UUID,
   checked_out_at TIMESTAMPTZ,
   updated_at TIMESTAMPTZ,
+  -- Kept in step with get_vault_files_fast: a delta-refreshed row that dropped
+  -- custom_properties would re-introduce the phantom "modified" state it fixes.
+  custom_properties JSONB,
   deleted_at TIMESTAMPTZ,
   is_deleted BOOLEAN
 ) AS $$
@@ -3189,6 +3197,7 @@ BEGIN
     f.part_number, f.description, f.revision, f.version,
     f.content_hash, f.file_size, f.state,
     f.checked_out_by, f.checked_out_at, f.updated_at,
+    f.custom_properties,
     f.deleted_at,
     (f.deleted_at IS NOT NULL) AS is_deleted
   FROM files f

@@ -24,11 +24,13 @@ import { buildFullPath } from '../types'
 import { ProgressTracker } from '../executor'
 import { usePDMStore } from '../../../stores/pdmStore'
 import { log } from '@/lib/logger'
+import { dropCommittedPendingMetadata } from '@/lib/pendingMetadata'
 import {
   normalizeTabNumber,
   getSerializationSettings,
   combineBaseAndTab,
 } from '@/lib/serialization'
+import type { PendingMetadata } from '@/stores/types'
 
 // SolidWorks file extensions
 const SW_EXTENSIONS = ['.sldprt', '.sldasm', '.slddrw']
@@ -909,7 +911,7 @@ export async function refreshMetadataForFiles(
         const metadata = await pullDrawingMetadata(fullPath)
 
         if (metadata) {
-          const pendingUpdates: Record<string, string | null | undefined> = {}
+          const pendingUpdates: PendingMetadata = {}
 
           if (metadata.partNumber !== null) {
             pendingUpdates.part_number = metadata.partNumber
@@ -924,8 +926,9 @@ export async function refreshMetadataForFiles(
             pendingUpdates.revision = metadata.revision
           }
 
-          if (Object.keys(pendingUpdates).length > 0) {
-            store.updatePendingMetadata(file.path, pendingUpdates)
+          const changes = dropCommittedPendingMetadata(pendingUpdates, file.pdmData)
+          if (changes) {
+            store.updatePendingMetadata(file.path, changes)
             refreshed++
             logSync('info', 'Auto-refresh: updated metadata from file', {
               filePath: file.relativePath,
@@ -963,15 +966,16 @@ export async function refreshMetadataForFiles(
           }
 
           const metadata = extractMetadataFromProperties(allProps)
-          const pendingUpdates: Record<string, string | null | undefined> = {}
+          const pendingUpdates: PendingMetadata = {}
 
           // Only update revision - BluePLM is source of truth for part_number, tab_number, description
           if (metadata.revision !== null) {
             pendingUpdates.revision = metadata.revision
           }
 
-          if (Object.keys(pendingUpdates).length > 0) {
-            store.updatePendingMetadata(file.path, pendingUpdates)
+          const changes = dropCommittedPendingMetadata(pendingUpdates, file.pdmData)
+          if (changes) {
+            store.updatePendingMetadata(file.path, changes)
             refreshed++
             logSync('info', 'Auto-refresh: updated revision from file', {
               filePath: file.relativePath,
@@ -1153,7 +1157,7 @@ export const syncMetadataCommand: Command<SyncMetadataParams> = {
             }
 
             // Build pending updates from extracted metadata
-            const pendingUpdates: Record<string, string | null | undefined> = {}
+            const pendingUpdates: PendingMetadata = {}
 
             if (metadata.partNumber !== null) {
               pendingUpdates.part_number = metadata.partNumber
@@ -1168,8 +1172,9 @@ export const syncMetadataCommand: Command<SyncMetadataParams> = {
               pendingUpdates.revision = metadata.revision
             }
 
-            if (Object.keys(pendingUpdates).length > 0) {
-              store.updatePendingMetadata(file.path, pendingUpdates)
+            const changes = dropCommittedPendingMetadata(pendingUpdates, file.pdmData)
+            if (changes) {
+              store.updatePendingMetadata(file.path, changes)
               pulled++
               logSync('info', 'PULL complete - updated pendingMetadata', {
                 filePath: file.path,

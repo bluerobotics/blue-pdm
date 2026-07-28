@@ -38,7 +38,9 @@ interface VaultCacheEntry {
 const DB_NAME = 'blueplm-vault-cache'
 // IMPORTANT: Bump this version to force cache clear on app update
 // v1 -> v2: Fixed Supabase 1000 row limit bug
-const DB_VERSION = 2
+// v2 -> v3: Rows gained custom_properties; cached rows without it would leave files
+//           looking permanently modified until their next delta update
+const DB_VERSION = 3
 const STORE_NAME = 'vault-files'
 
 // Cache expiry - if cache is older than this, do a full refresh
@@ -226,6 +228,7 @@ export function applyDeltaToCache(
         checked_out_by: delta.checked_out_by,
         checked_out_at: delta.checked_out_at,
         updated_at: delta.updated_at,
+        custom_properties: delta.custom_properties,
         // Preserve user info if checkout user hasn't changed
         checked_out_user: preserveUserInfo ? existing!.checked_out_user : undefined,
       })

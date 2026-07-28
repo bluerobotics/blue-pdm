@@ -1,4 +1,4 @@
-import { useMemo, useCallback, useDeferredValue } from 'react'
+import { useMemo, useCallback, useDeferredValue, useRef } from 'react'
 import { usePDMStore, LocalFile } from '@/stores/pdmStore'
 import type { OperationType } from '@/stores/types'
 import {
@@ -76,6 +76,23 @@ export interface FolderMetrics {
 /** Map of folder path to pre-computed metrics */
 export type FolderMetricsMap = Map<string, FolderMetrics>
 
+// ============================================================================
+// Cross-instance memo caches
+// ============================================================================
+// useVaultTree runs in up to three places at once: FileTree, and FilePane plus
+// useFilePaneView via useFolderMetrics. Each has its own useMemo, so a single
+// store update used to trigger the O(N) tree and folderMetrics passes once per
+// instance over tens of thousands of files. All instances read the same store
+// values, so the dependency tuples are reference-identical and a one-entry cache
+// collapses them into a single computation. Both passes are pure over their deps.
+
+function depsEqual(a: readonly unknown[], b: readonly unknown[]): boolean {
+  return a.length === b.length && a.every((value, index) => Object.is(value, b[index]))
+}
+
+let treeMemoCache: { deps: readonly unknown[]; result: TreeMap } | null = null
+let folderMetricsMemoCache: { deps: readonly unknown[]; result: FolderMetricsMap } | null = null
+
 /**
  * Hook for building and managing the vault file tree
  * Handles tree construction, filtering, and folder statistics
@@ -106,11 +123,22 @@ export function useVaultTree() {
   // ═══════════════════════════════════════════════════════════════════════════
   const deferredFiles = useDeferredValue(files)
 
+  // Read via ref inside folderMetrics so the memo can depend on deferredFiles alone.
+  // With `files` in its dependency array the memo also ran on the pre-deferral render,
+  // recomputing over the whole vault against data it was about to be handed again.
+  const isDeferredRef = useRef(false)
+  isDeferredRef.current = deferredFiles !== files
+
   // Note: getFolderDiffCounts no longer needed from store - computed in folderMetrics Map
   // This eliminates O(N) per-folder calls, replacing with O(1) Map lookups
 
   // Build folder tree structure
   const tree = useMemo<TreeMap>(() => {
+    const deps = [files, hideSolidworksTempFiles, hideCloudOnlyFolders] as const
+    if (treeMemoCache && depsEqual(treeMemoCache.deps, deps)) {
+      return treeMemoCache.result
+    }
+
     const _treeStart = performance.now()
     logExplorer('tree useMemo START', { filesCount: files.length, hideCloudOnlyFolders })
     const treeMap: TreeMap = { '': [] }
@@ -183,6 +211,8 @@ export function useVaultTree() {
       treeKeyCount: Object.keys(treeMap).length,
       rootItems: treeMap['']?.length,
     })
+
+    treeMemoCache = { deps, result: treeMap }
     return treeMap
   }, [files, hideSolidworksTempFiles, hideCloudOnlyFolders])
 
@@ -203,9 +233,21 @@ export function useVaultTree() {
    *   React can yield to user input while this computation runs in the background.
    */
   const folderMetrics = useMemo<FolderMetricsMap>(() => {
+    const deps = [
+      deferredFiles,
+      user?.id,
+      user?.full_name,
+      user?.email,
+      user?.avatar_url,
+      hideSolidworksTempFiles,
+    ] as const
+    if (folderMetricsMemoCache && depsEqual(folderMetricsMemoCache.deps, deps)) {
+      return folderMetricsMemoCache.result
+    }
+
     const startTime = performance.now()
     const fileCount = deferredFiles.length
-    const isDeferred = deferredFiles !== files
+    const isDeferred = isDeferredRef.current
     logExplorer('folderMetrics useMemo START', { fileCount, isDeferred })
     recordMetric('FolderMetrics', 'Starting computation', { fileCount, isDeferred })
 
@@ -437,10 +479,10 @@ export function useVaultTree() {
       durationMs: Math.round(durationMs * 100) / 100,
     })
 
+    folderMetricsMemoCache = { deps, result: metrics }
     return metrics
   }, [
     deferredFiles,
-    files,
     user?.id,
     user?.full_name,
     user?.email,

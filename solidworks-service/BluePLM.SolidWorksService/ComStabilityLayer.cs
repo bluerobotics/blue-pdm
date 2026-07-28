@@ -516,12 +516,16 @@ namespace BluePLM.SolidWorksService
         // Health check configuration
         private const int HEALTH_CHECK_TIMEOUT_MS = 2000;
 
+        // How long to wait for the STA pump thread to reach its message loop
+        private const int STA_PUMP_START_TIMEOUT_MS = 5000;
+
         #endregion
 
         #region Fields
 
         private readonly MessageFilterRegistration _messageFilter;
         private readonly SemaphoreSlim _comCallSerializer;
+        private readonly StaComPump _staPump;
         private bool _initialized;
         private bool _disposed;
         private readonly object _initLock = new object();
@@ -538,6 +542,7 @@ namespace BluePLM.SolidWorksService
         {
             _messageFilter = new MessageFilterRegistration();
             _comCallSerializer = new SemaphoreSlim(1, 1);
+            _staPump = new StaComPump(_messageFilter);
 
             Console.Error.WriteLine("[ComStability] ComStabilityLayer instance created");
         }
@@ -547,9 +552,15 @@ namespace BluePLM.SolidWorksService
         #region Initialization
 
         /// <summary>
-        /// Initializes the COM stability layer by registering the IMessageFilter.
-        /// Must be called from the main STA thread before any COM operations.
+        /// Initializes the COM stability layer by starting the STA pump thread, which in
+        /// turn registers the IMessageFilter on its own apartment.
         /// </summary>
+        /// <remarks>
+        /// CoRegisterMessageFilter is rejected on MTA threads, and the service's main
+        /// thread is deliberately MTA. Registering on a dedicated STA thread gets busy
+        /// handling for the calls routed through <see cref="TryInvokeOnSta{T}"/> without
+        /// changing the apartment - and therefore the marshaling - of the whole process.
+        /// </remarks>
         /// <returns>True if initialization was successful.</returns>
         /// <exception cref="ObjectDisposedException">Thrown if the layer has been disposed.</exception>
         public bool Initialize()
@@ -566,17 +577,12 @@ namespace BluePLM.SolidWorksService
 
                 Console.Error.WriteLine("[ComStability] Initializing COM stability layer...");
 
-                // Verify we're on an STA thread (required for IMessageFilter)
-                var apartmentState = Thread.CurrentThread.GetApartmentState();
-                if (apartmentState != ApartmentState.STA)
+                bool pumpStarted = _staPump.Start(STA_PUMP_START_TIMEOUT_MS);
+                if (!pumpStarted)
                 {
-                    Console.Error.WriteLine($"[ComStability] WARNING: Current thread is {apartmentState}, IMessageFilter requires STA");
-                    Console.Error.WriteLine("[ComStability] COM busy handling may not work correctly");
+                    Console.Error.WriteLine("[ComStability] WARNING: STA pump thread failed to start");
                 }
-
-                // Register the message filter
-                bool filterRegistered = _messageFilter.Register();
-                if (!filterRegistered)
+                else if (!_messageFilter.IsRegistered)
                 {
                     Console.Error.WriteLine("[ComStability] WARNING: IMessageFilter registration failed");
                     Console.Error.WriteLine("[ComStability] COM busy states will cause RPC_E_CALL_REJECTED exceptions");
@@ -586,6 +592,45 @@ namespace BluePLM.SolidWorksService
                 Console.Error.WriteLine("[ComStability] Initialization complete");
                 return true;
             }
+        }
+
+        /// <summary>
+        /// Runs a short COM operation on the STA thread that owns the IMessageFilter.
+        /// </summary>
+        /// <typeparam name="T">The return type of the operation.</typeparam>
+        /// <param name="operation">The operation. Must be short-running - the pump is shared.</param>
+        /// <param name="timeoutMs">How long to wait before giving up on the pump.</param>
+        /// <param name="result">The operation's return value when it ran without throwing.</param>
+        /// <returns>
+        /// False if the pump was unavailable or the operation did not finish in time; the
+        /// caller must then fall back to its own thread. True means the operation ran, in
+        /// which case <paramref name="result"/> is default if it threw.
+        /// </returns>
+        public bool TryInvokeOnSta<T>(Func<T> operation, int timeoutMs, out T? result)
+        {
+            ThrowIfDisposed();
+
+            if (operation == null)
+                throw new ArgumentNullException(nameof(operation));
+
+            T? captured = default;
+            bool ran = _staPump.TryInvoke(() => captured = operation(), timeoutMs, out var error);
+
+            if (!ran)
+            {
+                result = default;
+                return false;
+            }
+
+            if (error != null)
+            {
+                Console.Error.WriteLine($"[ComStability] STA operation threw: {error.Message}");
+                result = default;
+                return true;
+            }
+
+            result = captured;
+            return true;
         }
 
         /// <summary>
@@ -1127,7 +1172,9 @@ namespace BluePLM.SolidWorksService
             {
                 Console.Error.WriteLine("[ComStability] Disposing COM stability layer...");
 
-                // Unregister message filter
+                // Stopping the pump unregisters the filter on the thread that registered
+                // it, which is the only apartment where CoRegisterMessageFilter is valid.
+                _staPump.Dispose();
                 _messageFilter.Dispose();
 
                 // Dispose semaphore

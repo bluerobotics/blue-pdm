@@ -26,7 +26,7 @@ import { supabase } from './supabase'
 
 // The schema version this app version expects
 // Increment this when releasing app updates that require schema changes
-export const EXPECTED_SCHEMA_VERSION = 72
+export const EXPECTED_SCHEMA_VERSION = 73
 
 // Minimum schema version that will still work (for soft warnings vs hard errors)
 // Set this to allow some backwards compatibility
@@ -105,6 +105,7 @@ export const VERSION_DESCRIPTIONS: Record<number, string> = {
   70: 'Added matchOrgFormat to item_definition_settings default (Item Browser org part-number filter)',
   71: 'Added item_images table + get/upsert/reset RPCs for Item Browser per-item image overrides',
   72: 'Added item_designations + item_designation_assignments tables and RPCs for Item Browser designations',
+  73: 'get_vault_files_fast and get_vault_files_delta return custom_properties, so the explorer can tell committed per-configuration metadata from pending edits',
   // Note: Process templates module (v26+) is optional - see modules/process-templates.sql
 }
 

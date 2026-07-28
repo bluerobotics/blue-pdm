@@ -46,6 +46,14 @@ export interface UseSelectionBoxOptions {
   clearSelection: () => void
   /** Optional: Elements that should NOT trigger selection box (default: none) */
   excludeSelector?: string
+  /**
+   * Which axes must overlap for an item to be selected.
+   *
+   * 'vertical' suits full-width rows, where a horizontal test would only ever
+   * reject edge cases. Grids lay items out in both directions and need 'both'.
+   * Default: 'vertical'.
+   */
+  axis?: 'vertical' | 'both'
 }
 
 export interface UseSelectionBoxReturn {
@@ -76,6 +84,7 @@ export function useSelectionBox(options: UseSelectionBoxOptions): UseSelectionBo
     setSelectedFiles,
     clearSelection,
     excludeSelector,
+    axis = 'vertical',
   } = options
 
   const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null)
@@ -133,33 +142,42 @@ export function useSelectionBox(options: UseSelectionBoxOptions): UseSelectionBo
       // Calculate selection box bounds
       const top = Math.min(selectionBox.startY, currentY)
       const bottom = Math.max(selectionBox.startY, currentY)
+      const left = Math.min(selectionBox.startX, currentX)
+      const right = Math.max(selectionBox.startX, currentX)
 
       // Find rows that intersect with selection box
       // Use data-path attributes to identify files instead of array indexing
       // This handles virtualization spacer rows, config rows, and other non-file rows correctly
+      // Note: only rendered items can match, so in a virtualized view the marquee
+      // covers what is on screen rather than the full underlying list.
       const rows = container.querySelectorAll(rowSelector)
+      const containerRect = container.getBoundingClientRect()
       const selectedPaths: string[] = []
 
       rows.forEach((row) => {
         const rowRect = row.getBoundingClientRect()
-        const containerRect = container.getBoundingClientRect()
 
         const rowTop = rowRect.top - containerRect.top + container.scrollTop
         const rowBottom = rowTop + rowRect.height
 
-        // Check if row intersects with selection box
-        if (rowBottom > top && rowTop < bottom) {
-          // Get file path from data attribute (rows without data-path are ignored)
-          const path = row.getAttribute('data-path')
-          if (path) {
-            selectedPaths.push(path)
-          }
+        if (rowBottom <= top || rowTop >= bottom) return
+
+        if (axis === 'both') {
+          const rowLeft = rowRect.left - containerRect.left + container.scrollLeft
+          const rowRight = rowLeft + rowRect.width
+          if (rowRight <= left || rowLeft >= right) return
+        }
+
+        // Get file path from data attribute (rows without data-path are ignored)
+        const path = row.getAttribute('data-path')
+        if (path) {
+          selectedPaths.push(path)
         }
       })
 
       setSelectedFiles(selectedPaths)
     },
-    [selectionBox, containerRef, rowSelector, setSelectedFiles],
+    [selectionBox, containerRef, rowSelector, setSelectedFiles, axis],
   )
 
   const handleMouseUp = useCallback(() => {

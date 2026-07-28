@@ -31,6 +31,9 @@
  *                  property write does not pay the ~40s cold-start (no-op if already running)
  * - Version 1.9.0: Merge DM-first file-level-only property writes (from the 1.2.4 line) into the
  *                  warmup/inspection service so file-level edits skip the SW cold start
+ * - Version 1.10.0: Register IMessageFilter on a dedicated STA pump thread (Main stays MTA) and
+ *                   route ROT lookups through it; cache the COM-availability probe with a short
+ *                   TTL so browsing a folder no longer repeats multi-second failing probes
  *
  * When making service changes:
  * 1. Increment SERVICE_VERSION in Program.cs
@@ -40,7 +43,7 @@
 
 // The SolidWorks service version this app version expects
 // Uses semver: MAJOR.MINOR.PATCH
-export const EXPECTED_SW_SERVICE_VERSION = '1.9.0'
+export const EXPECTED_SW_SERVICE_VERSION = '1.10.0'
 
 // Minimum service version that will still work (for soft warnings vs hard errors)
 // Breaking changes should bump the major version and update this
@@ -69,6 +72,8 @@ export const SW_SERVICE_VERSION_DESCRIPTIONS: Record<string, string> = {
     'Add warmup command that pre-launches a hidden SolidWorks instance in the background so the first property edit is instant instead of paying a ~40s cold-start',
   '1.9.0':
     'Merge DM-first file-level-only property writes (1.2.4) into the warmup/inspection service so file-level edits skip the SolidWorks cold start',
+  '1.10.0':
+    'COM busy handling now works: the message filter runs on a dedicated STA thread, and repeated open-file checks reuse a cached probe instead of stalling for seconds per file while browsing',
 }
 
 export interface SwServiceVersionCheckResult {

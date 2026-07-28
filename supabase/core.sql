@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 -- Insert initial version for new installations
 INSERT INTO schema_version (id, version, description, applied_at, applied_by)
-VALUES (1, 72, 'Add item_designations + item_designation_assignments tables and RPCs for Item Browser designations', NOW(), 'migration')
+VALUES (1, 73, 'Return custom_properties from get_vault_files_fast and get_vault_files_delta', NOW(), 'migration')
 ON CONFLICT (id) DO UPDATE SET 
   version = EXCLUDED.version,
   description = EXCLUDED.description,
