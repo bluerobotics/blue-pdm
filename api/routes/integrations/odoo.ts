@@ -20,15 +20,21 @@ import {
   sendError,
   ErrorCode,
 } from '../../utils/index.js'
-import { createSupabaseAdminClient } from '../../src/infrastructure/supabase.js'
 import {
   CredentialKeyMissingError,
+  CredentialStoreUnavailableError,
+  credentialSetupProblem,
   deleteCredential,
   getCredential,
   hasEncryptionKey,
+  openCredentialStore,
   setCredential,
   type CredentialOwnerType,
 } from '../../src/integrations/credentialStore.js'
+
+// Re-exported because they were defined here before moving to the credential
+// store, and the route's tests import them from this module.
+export { CredentialStoreUnavailableError, credentialSetupProblem }
 
 /**
  * Everything a client is allowed to see about a saved config. Listed out rather
@@ -40,44 +46,6 @@ const SAVED_CONFIG_COLUMNS =
 
 /** Credentials are stored per organization, so a user without one has nowhere to put them. */
 const NO_ORGANIZATION = 'Your account is not linked to an organization'
-
-/** The credential store exists but this deployment cannot reach it. */
-export class CredentialStoreUnavailableError extends Error {
-  constructor(reason: string) {
-    super(
-      `Integration credentials are unreachable: ${reason} They are stored in a table that only ` +
-        'the service-role client can read.',
-    )
-    this.name = 'CredentialStoreUnavailableError'
-  }
-}
-
-/**
- * Credentials are only readable with the service-role client: their table has
- * RLS on and no policies, so a user-scoped client returns zero rows instead of
- * an error, which would look like "no credential stored".
- */
-function openCredentialStore(): SupabaseClient {
-  try {
-    return createSupabaseAdminClient()
-  } catch (err) {
-    throw new CredentialStoreUnavailableError(err instanceof Error ? err.message : String(err))
-  }
-}
-
-/**
- * Separates "this deployment is misconfigured" from a genuine failure.
- *
- * Both cases are fixed by an admin setting an environment variable, so the
- * message is worth returning. It has to be returned deliberately: the
- * production error handler replaces the message of an unhandled error with a
- * generic string, which would leave an admin with nothing to act on.
- */
-export function credentialSetupProblem(err: unknown): string | null {
-  if (err instanceof CredentialKeyMissingError) return err.message
-  if (err instanceof CredentialStoreUnavailableError) return err.message
-  return null
-}
 
 type OdooRouteHandler = (request: FastifyRequest, reply: FastifyReply) => Promise<unknown>
 

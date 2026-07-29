@@ -31,6 +31,11 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { normalizeOdooUrl, odooReadOnlyCall, sendError, ErrorCode } from '../utils/index.js'
 import { requireTeamPermission } from '../middleware/index.js'
 import { createSupabaseAdminClient } from '../src/infrastructure/supabase.js'
+import {
+  credentialSetupProblem,
+  getCredential,
+  openCredentialStore,
+} from '../src/integrations/credentialStore.js'
 import { deriveAccount } from '../src/customers/grouping.js'
 import {
   ADDRESS_COLUMN_MAP,
@@ -269,7 +274,7 @@ const customerRoutes: FastifyPluginAsync = async (fastify) => {
       // ── 1. Odoo connection config, loaded exactly like the supplier sync ────
       const { data: integration } = await request.supabase
         .from('organization_integrations')
-        .select('id, settings, credentials_encrypted')
+        .select('id, settings')
         .eq('org_id', orgId)
         .eq('integration_type', 'odoo')
         .single()
@@ -282,10 +287,36 @@ const customerRoutes: FastifyPluginAsync = async (fastify) => {
       const rawUrl = text(settings.url)
       const database = text(settings.database)
       const username = text(settings.username)
-      const apiKey = text(integration.credentials_encrypted)
 
-      if (!rawUrl || !database || !username || !apiKey) {
-        return sendError(reply, 400, ErrorCode.BAD_REQUEST, 'Odoo integration is missing credentials')
+      // The key is deliberately not on the integration row: that row is readable
+      // by every member of the org, so the credential lives in a table only the
+      // service-role client can reach.
+      let apiKey: string | null
+      try {
+        apiKey = text(
+          await getCredential(openCredentialStore(), 'organization_integration', integration.id),
+        )
+      } catch (err) {
+        // A misconfigured deployment is fixed by setting an env var, so the
+        // message has to survive the production handler that would otherwise
+        // replace it with "Internal server error".
+        const problem = credentialSetupProblem(err)
+        if (!problem) throw err
+        request.log.error({ err }, 'Odoo credential store is not usable')
+        return sendError(reply, 503, ErrorCode.INTERNAL_ERROR, problem)
+      }
+
+      if (!rawUrl || !database || !username) {
+        return sendError(reply, 400, ErrorCode.BAD_REQUEST, 'Odoo integration is missing connection details')
+      }
+
+      if (!apiKey) {
+        return sendError(
+          reply,
+          400,
+          ErrorCode.BAD_REQUEST,
+          'The Odoo integration has no stored API key. Re-enter it in Settings and save.',
+        )
       }
 
       const url = normalizeOdooUrl(rawUrl)

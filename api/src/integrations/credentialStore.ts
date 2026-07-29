@@ -13,6 +13,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { env } from '../config/env.js'
 import { log } from '../infrastructure/logging.js'
+import { createSupabaseAdminClient } from '../infrastructure/supabase.js'
 import { encryptSecret, looksEncrypted, decryptSecret } from '../crypto/secretBox.js'
 
 export type CredentialOwnerType = 'odoo_saved_config' | 'organization_integration'
@@ -28,6 +29,44 @@ export class CredentialKeyMissingError extends Error {
     )
     this.name = 'CredentialKeyMissingError'
   }
+}
+
+/** The credential store exists but this deployment cannot reach it. */
+export class CredentialStoreUnavailableError extends Error {
+  constructor(reason: string) {
+    super(
+      `Integration credentials are unreachable: ${reason} They are stored in a table that only ` +
+        'the service-role client can read.',
+    )
+    this.name = 'CredentialStoreUnavailableError'
+  }
+}
+
+/**
+ * Credentials are only readable with the service-role client: their table has
+ * RLS on and no policies, so a user-scoped client returns zero rows instead of
+ * an error, which would look like "no credential stored".
+ */
+export function openCredentialStore(): SupabaseClient {
+  try {
+    return createSupabaseAdminClient()
+  } catch (err) {
+    throw new CredentialStoreUnavailableError(err instanceof Error ? err.message : String(err))
+  }
+}
+
+/**
+ * Separates "this deployment is misconfigured" from a genuine failure.
+ *
+ * Both cases are fixed by an admin setting an environment variable, so the
+ * message is worth returning. It has to be returned deliberately: the
+ * production error handler replaces the message of an unhandled error with a
+ * generic string, which would leave an admin with nothing to act on.
+ */
+export function credentialSetupProblem(err: unknown): string | null {
+  if (err instanceof CredentialKeyMissingError) return err.message
+  if (err instanceof CredentialStoreUnavailableError) return err.message
+  return null
 }
 
 /** Throws if unset. Only writes need the key; legacy plaintext reads do not. */
