@@ -111,7 +111,6 @@ export interface SandboxResult {
  * STUB: Returns error until isolated-vm is properly configured.
  */
 export class IsolatePool {
-  private config: IsolatePoolConfig
   private stats: PoolStats = {
     pooledCount: 0,
     activeCount: 0,
@@ -123,8 +122,9 @@ export class IsolatePool {
     memoryExceeded: 0,
   }
 
-  constructor(config?: Partial<IsolatePoolConfig>) {
-    this.config = { ...DEFAULT_POOL_CONFIG, ...config }
+  // Config is accepted to keep the signature stable for callers, but ignored
+  // while the pool is a stub. Wire it up when isolated-vm lands.
+  constructor(_config?: Partial<IsolatePoolConfig>) {
     log.warn('[Sandbox] Extension sandbox is disabled - isolated-vm not available')
   }
 

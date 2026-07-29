@@ -13,9 +13,9 @@
  * @module extensions/secrets
  */
 
-import crypto from 'crypto'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { log } from '../infrastructure/logging.js'
+import { encryptSecret, decryptSecret } from '../crypto/secretBox.js'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SECRETS LIMITS
@@ -41,46 +41,22 @@ export const SECRETS_LIMITS = {
 // ENCRYPTION UTILITIES
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const ALGORITHM = 'aes-256-gcm'
-const IV_LENGTH = 12
-
-/**
- * Encrypt a value using AES-256-GCM.
- */
+// Delegates to crypto/secretBox so integration credentials and extension
+// secrets share one implementation. Wrapped only to preserve SecretsError.
 function encrypt(plaintext: string, key: string): string {
-  const keyBuffer = crypto.createHash('sha256').update(key).digest()
-  const iv = crypto.randomBytes(IV_LENGTH)
-
-  const cipher = crypto.createCipheriv(ALGORITHM, keyBuffer, iv)
-  const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()])
-
-  const authTag = cipher.getAuthTag()
-
-  // Format: iv:authTag:ciphertext (all base64)
-  return [iv.toString('base64'), authTag.toString('base64'), encrypted.toString('base64')].join(':')
+  try {
+    return encryptSecret(plaintext, key)
+  } catch (err) {
+    throw new SecretsError(err instanceof Error ? err.message : 'Failed to encrypt secret')
+  }
 }
 
-/**
- * Decrypt a value using AES-256-GCM.
- */
 function decrypt(ciphertext: string, key: string): string {
-  const keyBuffer = crypto.createHash('sha256').update(key).digest()
-  const [ivB64, authTagB64, encryptedB64] = ciphertext.split(':')
-
-  if (!ivB64 || !authTagB64 || !encryptedB64) {
-    throw new SecretsError('Invalid encrypted value format')
+  try {
+    return decryptSecret(ciphertext, key)
+  } catch (err) {
+    throw new SecretsError(err instanceof Error ? err.message : 'Invalid encrypted value format')
   }
-
-  const iv = Buffer.from(ivB64, 'base64')
-  const authTag = Buffer.from(authTagB64, 'base64')
-  const encrypted = Buffer.from(encryptedB64, 'base64')
-
-  const decipher = crypto.createDecipheriv(ALGORITHM, keyBuffer, iv)
-  decipher.setAuthTag(authTag)
-
-  const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()])
-
-  return decrypted.toString('utf8')
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

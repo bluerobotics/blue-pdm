@@ -111,6 +111,7 @@ export const PERMISSION_RESOURCE_GROUPS: {
       'module:invoices',
       'module:shipping',
       'module:receiving',
+      'module:customers',
     ],
   },
   {
@@ -185,6 +186,7 @@ export const PERMISSION_RESOURCE_GROUPS: {
       'system:integrations',
       'system:recovery-codes',
       'system:impersonation',
+      'system:customer-enrichment',
     ],
   },
 ]

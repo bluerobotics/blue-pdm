@@ -15,6 +15,13 @@ services:
         sync: false # User must set this (anon key)
       - key: SUPABASE_SERVICE_KEY
         sync: false # User must set this (service role key - required for invites)
+      - key: EXTENSION_ENCRYPTION_KEY
+        # User must set this. Encrypts integration credentials and extension
+        # secrets at rest. Generate with:
+        #   node -e "console.log(require('crypto').randomBytes(48).toString('base64'))"
+        # WARNING: once set, this value can never change. Every secret encrypted
+        # with it becomes permanently unreadable if it does.
+        sync: false
       - key: CORS_ORIGINS
         value: "*"
       - key: RATE_LIMIT_MAX

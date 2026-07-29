@@ -32,6 +32,19 @@ async function getAuthToken(): Promise<string | null> {
   return session?.access_token || null
 }
 
+/**
+ * The API keeps the stored key when `api_key` is absent, so an untouched field
+ * must send nothing at all. An empty string would read as a deliberate change.
+ */
+function apiKeyPayload(apiKey: string): { api_key?: string } {
+  const typed = apiKey.trim()
+  return typed ? { api_key: typed } : {}
+}
+
+/**
+ * The API never returns the Odoo key, only whether one is stored, so the panel
+ * below sends `api_key` exclusively when an admin types a new one.
+ */
 interface OdooSettings {
   configured: boolean
   settings?: {
@@ -39,6 +52,7 @@ interface OdooSettings {
     database: string
     username: string
   }
+  has_api_key?: boolean
   is_connected: boolean
   last_sync_at: string | null
   last_sync_status: string | null
@@ -110,10 +124,15 @@ function OdooConfigPanel({
   const [username, setUsername] = useState(settings?.settings?.username || '')
   const [apiKey, setApiKey] = useState('')
   const [showApiKey, setShowApiKey] = useState(false)
+  // Only whether a key exists, never the key itself.
+  const hasStoredKey = Boolean(settings?.has_api_key)
   const [testing, setTesting] = useState(false)
   const [saving, setSaving] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
+  // Server-side misconfiguration an admin has to fix; the message names the
+  // environment variable, so it gets its own line rather than a toast.
+  const [setupError, setSetupError] = useState<string | null>(null)
 
   // Disconnect confirmation state
   const [showDisconnectDialog, setShowDisconnectDialog] = useState(false)
@@ -127,7 +146,12 @@ function OdooConfigPanel({
       return
     }
     if (!url || !database || !username || !apiKey) {
-      addToast('warning', 'Please fill in all fields')
+      addToast(
+        'warning',
+        hasStoredKey && !apiKey
+          ? 'Enter the API key to test it directly, or use Save & Test to test the saved one.'
+          : 'Please fill in all fields',
+      )
       return
     }
 
@@ -172,7 +196,7 @@ function OdooConfigPanel({
       addToast('error', 'API server not configured. Go to Settings > REST API.')
       return
     }
-    if (!url || !database || !username || !apiKey) {
+    if (!url || !database || !username || (!apiKey && !hasStoredKey)) {
       addToast('warning', 'Please fill in all fields')
       return
     }
@@ -195,7 +219,13 @@ function OdooConfigPanel({
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ url, database, username, api_key: apiKey, skip_test: skipTest }),
+        body: JSON.stringify({
+          url,
+          database,
+          username,
+          ...apiKeyPayload(apiKey),
+          skip_test: skipTest,
+        }),
       })
 
       const data = await response.json()
@@ -207,12 +237,17 @@ function OdooConfigPanel({
         } else {
           addToast('success', data.message || 'Odoo credentials saved!')
         }
+        setSetupError(null)
+        setApiKey('')
         onSave()
         onRefresh()
       } else {
         // Show more detailed error for auth issues
         if (response.status === 401) {
           addToast('error', `Auth failed: ${data.message || 'Check API server Supabase config'}`)
+        } else if (response.status === 503) {
+          setSetupError(data.message || 'The API cannot store credentials right now.')
+          addToast('error', 'Credentials could not be stored - see the message below.')
         } else {
           addToast('error', data.message || 'Failed to save configuration')
         }
@@ -389,7 +424,7 @@ function OdooConfigPanel({
               type={showApiKey ? 'text' : 'password'}
               value={apiKey}
               onChange={(e) => isAdmin && setApiKey(e.target.value)}
-              placeholder={settings?.is_connected ? '••••••••••••' : 'Enter API key'}
+              placeholder={hasStoredKey ? '•••••••• (saved)' : 'Enter API key'}
               readOnly={!isAdmin}
               className={`w-full px-3 py-2 pr-10 bg-plm-input border border-plm-border rounded text-sm text-plm-fg placeholder:text-plm-fg-muted focus:outline-none focus:border-plm-accent ${!isAdmin ? 'opacity-60 cursor-not-allowed' : ''}`}
             />
@@ -401,9 +436,19 @@ function OdooConfigPanel({
             </button>
           </div>
           <p className="text-[10px] text-plm-fg-muted mt-1">
-            Generate at: Odoo → Settings → Users → API Keys
+            {hasStoredKey
+              ? 'A key is saved. Leave this blank to keep it, or enter a new one to replace it.'
+              : 'Generate at: Odoo → Settings → Users → API Keys'}
           </p>
         </div>
+
+        {/* Credential storage misconfigured on the API - actionable by an admin */}
+        {setupError && (
+          <div className="flex items-start gap-2 p-2 rounded bg-plm-error/10 border border-plm-error/30">
+            <AlertCircle size={14} className="text-plm-error flex-shrink-0 mt-0.5" />
+            <span className="text-xs text-plm-fg-muted">{setupError}</span>
+          </div>
+        )}
 
         {/* Test result */}
         {testResult && (
@@ -426,6 +471,11 @@ function OdooConfigPanel({
           <button
             onClick={handleTest}
             disabled={testing || !url || !database || !username || !apiKey}
+            title={
+              hasStoredKey && !apiKey
+                ? 'Testing sends the key from this form. Use Save & Test to test the saved key.'
+                : undefined
+            }
             className="flex items-center justify-center gap-2 px-3 py-2 bg-plm-sidebar border border-plm-border hover:bg-plm-highlight text-plm-fg rounded text-sm font-medium transition-colors disabled:opacity-50"
           >
             {testing ? <Loader2 size={14} className="animate-spin" /> : <Plug size={14} />}
@@ -433,7 +483,7 @@ function OdooConfigPanel({
           </button>
           <button
             onClick={() => handleSave(true)}
-            disabled={saving || !url || !database || !username || !apiKey}
+            disabled={saving || !url || !database || !username || (!apiKey && !hasStoredKey)}
             className="flex items-center justify-center gap-2 px-3 py-2 bg-plm-sidebar border border-plm-border hover:bg-plm-highlight text-plm-fg rounded text-sm font-medium transition-colors disabled:opacity-50"
           >
             {saving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
@@ -441,7 +491,7 @@ function OdooConfigPanel({
           </button>
           <button
             onClick={() => handleSave(false)}
-            disabled={saving || !url || !database || !username || !apiKey}
+            disabled={saving || !url || !database || !username || (!apiKey && !hasStoredKey)}
             className="flex items-center justify-center gap-2 px-3 py-2 bg-plm-accent hover:bg-plm-accent/90 text-white rounded text-sm font-medium transition-colors disabled:opacity-50"
           >
             {saving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}

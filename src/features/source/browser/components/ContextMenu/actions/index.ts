@@ -4,6 +4,7 @@
 export { OpenActions } from './OpenActions'
 export { AssemblyActions } from './AssemblyActions'
 export { BulkAssemblyActions } from './BulkAssemblyActions'
+export { DuplicateActions } from './DuplicateActions'
 export { FileSystemActions } from './FileSystemActions'
 export { ClipboardActions } from './ClipboardActions'
 export { SyncActions } from './SyncActions'

@@ -36,3 +36,6 @@ npm-debug.log*
 REPORT.md
 image/REPORT/
 
+
+# Supabase CLI local state
+supabase/.temp/

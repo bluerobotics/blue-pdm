@@ -11,9 +11,16 @@ export { computeHash, generateWebhookSecret, signWebhookPayload } from './crypto
 // File utilities
 export { getFileTypeFromExtension } from './files.js'
 
-// Odoo integration
+// Odoo integration.
+// The unguarded transport (odooXmlRpc) is deliberately not re-exported here:
+// reaching it requires importing './odoo.js' directly, so the guarded wrapper
+// is the path of least resistance for new code.
 export {
-  odooXmlRpc,
+  odooReadOnlyCall,
+  assertOdooReadOnly,
+  ODOO_ALLOWED_ORM_METHODS,
+  ODOO_ALLOWED_MODELS,
+  ODOO_ALLOWED_SERVICE_METHODS,
   normalizeOdooUrl,
   testOdooConnection,
   fetchOdooSuppliers,

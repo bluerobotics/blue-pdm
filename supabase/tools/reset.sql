@@ -47,12 +47,28 @@ DROP TABLE IF EXISTS color_swatches CASCADE;
 DROP TABLE IF EXISTS webhook_deliveries CASCADE;
 DROP TABLE IF EXISTS webhooks CASCADE;
 
+-- Customers (children first; enrichment rows represent money already spent,
+-- so this is the only place they are ever dropped)
+DROP TABLE IF EXISTS customer_enrichment_run_items CASCADE;
+DROP TABLE IF EXISTS customer_enrichment_runs CASCADE;
+DROP TABLE IF EXISTS customer_enrichment_sources CASCADE;
+DROP TABLE IF EXISTS customer_enrichments CASCADE;
+DROP TABLE IF EXISTS customer_order_lines CASCADE;
+DROP TABLE IF EXISTS customer_orders CASCADE;
+DROP TABLE IF EXISTS customer_addresses CASCADE;
+DROP TABLE IF EXISTS customers CASCADE;
+DROP TABLE IF EXISTS customer_accounts CASCADE;
+DROP TABLE IF EXISTS customer_categories CASCADE;
+
 -- Supplier auth
 DROP TABLE IF EXISTS supplier_invitations CASCADE;
 DROP TABLE IF EXISTS supplier_contacts CASCADE;
 
 -- Custom metadata
 DROP TABLE IF EXISTS file_metadata_columns CASCADE;
+
+-- Integration credentials
+DROP TABLE IF EXISTS integration_credentials CASCADE;
 
 -- Odoo
 DROP TABLE IF EXISTS odoo_saved_configs CASCADE;
@@ -220,6 +236,10 @@ DROP FUNCTION IF EXISTS get_rfq_summary(UUID) CASCADE;
 DROP FUNCTION IF EXISTS get_org_integration_status(UUID, TEXT) CASCADE;
 DROP FUNCTION IF EXISTS get_org_odoo_configs(UUID) CASCADE;
 DROP FUNCTION IF EXISTS is_supplier_account(TEXT) CASCADE;
+DROP FUNCTION IF EXISTS seed_customer_categories(UUID) CASCADE;
+DROP FUNCTION IF EXISTS seed_customer_categories_for_new_org() CASCADE;
+DROP FUNCTION IF EXISTS update_customers_module_timestamp() CASCADE;
+DROP FUNCTION IF EXISTS update_integration_credentials_timestamp() CASCADE;
 DROP FUNCTION IF EXISTS update_org_rfq_settings(UUID, JSONB) CASCADE;
 DROP FUNCTION IF EXISTS update_org_branding(UUID, TEXT, TEXT) CASCADE;
 DROP FUNCTION IF EXISTS update_org_branding(UUID, TEXT, TEXT, TEXT, TEXT, TEXT) CASCADE;
@@ -308,6 +328,9 @@ DROP POLICY IF EXISTS "Authenticated users can delete from vault" ON storage.obj
 -- 4. Run: modules/20-change-control.sql (optional)
 -- 5. Run: modules/30-supply-chain.sql (optional)
 -- 6. Run: modules/40-integrations.sql (optional)
+-- 7. Run: modules/60-customers.sql (optional)
+-- 8. Run: modules/70-integration-credentials.sql (required if using integrations)
+--    (80-permission-model.sql is not needed after a reset; core.sql already has it)
 --
 -- Then:
 --   - Create your organization

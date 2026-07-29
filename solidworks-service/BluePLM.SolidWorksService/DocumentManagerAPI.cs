@@ -187,6 +187,113 @@ namespace BluePLM.SolidWorksService
             }
         }
 
+        /// <summary>
+        /// Build a search option object configured for resolving external references.
+        /// Default filters are SwDmSearchExternalReference | SwDmSearchRootAssemblyFolder |
+        /// SwDmSearchSubfolders | SwDmSearchInContextReference (1 + 2 + 4 + 8).
+        /// Note these are search BEHAVIOUR flags, not document TYPE flags.
+        /// </summary>
+        private object? CreateReferenceSearchOption(IEnumerable<string?> searchPaths, int searchFilters = 15)
+        {
+            var searchOpt = CreateSearchOptionObject();
+            if (searchOpt == null) return null;
+
+            dynamic dynSearchOpt = searchOpt;
+            dynSearchOpt.SearchFilters = searchFilters;
+
+            var added = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var path in searchPaths)
+            {
+                if (string.IsNullOrEmpty(path) || !added.Add(path!)) continue;
+                try
+                {
+                    dynSearchOpt.AddSearchPath(path);
+                    Console.Error.WriteLine($"[DM-API] Search path added: {path}");
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[DM-API] AddSearchPath failed for {path}: {ex.Message}");
+                }
+            }
+
+            return searchOpt;
+        }
+
+        /// <summary>
+        /// Read all external references from a Document Manager document, preferring
+        /// GetAllExternalReferences4 (available on ISwDMDocument19 and above) and falling back
+        /// to the original GetAllExternalReferences.
+        ///
+        /// Reflection is required because the search option object's runtime type does not match
+        /// the declared SwDMSearchOption parameter, which makes dynamic binding fail.
+        ///
+        /// Callers must invoke this before ISwDMDocument.ReplaceReference; the replacement is a
+        /// silent no-op unless the reference list has been resolved on the same document instance.
+        /// </summary>
+        private string[]? InvokeGetAllExternalReferences(object doc, object searchOpt)
+        {
+            var interfaceVersionsToTry = new[]
+            {
+                "ISwDMDocument19", "ISwDMDocument20", "ISwDMDocument21",
+                "ISwDMDocument22", "ISwDMDocument23", "ISwDMDocument24", "ISwDMDocument25"
+            };
+
+            foreach (var ifaceName in interfaceVersionsToTry)
+            {
+                var ifaceType = GetDmType(ifaceName);
+                var method = ifaceType?.GetMethod("GetAllExternalReferences4");
+                if (ifaceType == null || method == null) continue;
+                if (!ifaceType.IsInstanceOfType(doc)) continue;
+
+                try
+                {
+                    // GetAllExternalReferences4(searchOpt, out brokenRefs, out virtualComps, out timestamps)
+                    var parameters = new object?[] { searchOpt, null, null, null };
+                    var refs = method.Invoke(doc, parameters) as string[];
+                    Console.Error.WriteLine($"[DM-API] GetAllExternalReferences4 via {ifaceName} returned {refs?.Length ?? 0} refs");
+                    if (refs != null) return refs;
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[DM-API] GetAllExternalReferences4 via {ifaceName} failed: {ex.Message}");
+                }
+                break;
+            }
+
+            var legacyMethod = doc.GetType().GetMethod("GetAllExternalReferences");
+            if (legacyMethod != null)
+            {
+                try
+                {
+                    var refs = legacyMethod.Invoke(doc, new object[] { searchOpt }) as string[];
+                    Console.Error.WriteLine($"[DM-API] GetAllExternalReferences returned {refs?.Length ?? 0} refs");
+                    return refs;
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[DM-API] GetAllExternalReferences failed: {ex.Message}");
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Invoke ISwDMDocument.ReplaceReference, which swaps one resolved external reference
+        /// for another. Throws if the method is missing or the call fails.
+        /// </summary>
+        private void InvokeReplaceReference(object doc, string oldPath, string newPath)
+        {
+            var method = doc.GetType().GetMethod("ReplaceReference")
+                ?? GetDmType("ISwDMDocument")?.GetMethod("ReplaceReference");
+
+            if (method == null)
+                throw new InvalidOperationException("ReplaceReference is not available on this Document Manager version");
+
+            method.Invoke(doc, new object[] { oldPath, newPath });
+            Console.Error.WriteLine($"[DM-API] ReplaceReference: {Path.GetFileName(oldPath)} -> {Path.GetFileName(newPath)}");
+        }
+
         #endregion
 
         #region Initialization
@@ -2398,149 +2505,11 @@ namespace BluePLM.SolidWorksService
                 }
                 // #endregion
                 
-                var searchOpt = CreateSearchOptionObject();
+                var searchOpt = CreateReferenceSearchOption(new[] { Path.GetDirectoryName(filePath) });
                 if (searchOpt != null)
                 {
-                    dynamic dynSearchOpt = searchOpt;
-                    
-                    // #region agent log - FIX: Use correct search filter flags
-                    // Per codestack examples, the correct flags are:
-                    // SwDmSearchExternalReference (1) + SwDmSearchRootAssemblyFolder (2) + 
-                    // SwDmSearchSubfolders (4) + SwDmSearchInContextReference (8) = 15
-                    // The old value of 7 was for document TYPE filtering (Part|Assembly|Drawing), not search BEHAVIOR
-                    int searchFilterValue = 15; // SwDmSearchExternalReference | SwDmSearchRootAssemblyFolder | SwDmSearchSubfolders | SwDmSearchInContextReference
-                    Console.Error.WriteLine($"[DM-API-DEBUG] Setting SearchFilters to {searchFilterValue} (was 7)");
-                    dynSearchOpt.SearchFilters = searchFilterValue;
-                    // #endregion
-                    
-                    // Set search path to the directory containing the file
-                    // This is required for GetAllExternalReferences to find referenced files
-                    var fileDir = Path.GetDirectoryName(filePath);
-                    if (!string.IsNullOrEmpty(fileDir))
-                    {
-                        dynSearchOpt.AddSearchPath(fileDir);
-                        // #region agent log - Hypothesis D/E: Log search path
-                        Console.Error.WriteLine($"[DM-API-DEBUG] Search path added: {fileDir}");
-                        // #endregion
-                    }
-
                     var swGetRefs = System.Diagnostics.Stopwatch.StartNew();
-                    
-                    // Use reflection to invoke GetAllExternalReferences - dynamic binding fails
-                    // because the searchOpt object type doesn't match SwDMSearchOption at runtime
-                    string[]? dependencies = null;
-                    var docType = doc.GetType();
-                    
-                    // #region agent log - FIX: Try higher ISwDMDocument interfaces for GetAllExternalReferences4
-                    // The document implements base ISwDMDocument but we need ISwDMDocument19+ for GetAllExternalReferences4
-                    // Try to get the method from the interface types in the assembly
-                    System.Reflection.MethodInfo? getRefsMethod4 = null;
-                    System.Reflection.MethodInfo? getRefsMethod = docType.GetMethod("GetAllExternalReferences");
-                    
-                    // Try to find GetAllExternalReferences4 on ISwDMDocument19 or higher interfaces
-                    var interfaceVersionsToTry = new[] { "ISwDMDocument19", "ISwDMDocument20", "ISwDMDocument21", "ISwDMDocument22", "ISwDMDocument23", "ISwDMDocument24", "ISwDMDocument25" };
-                    Type? workingInterfaceType = null;
-                    foreach (var ifaceName in interfaceVersionsToTry)
-                    {
-                        var ifaceType = GetDmType(ifaceName);
-                        if (ifaceType != null)
-                        {
-                            var method = ifaceType.GetMethod("GetAllExternalReferences4");
-                            if (method != null)
-                            {
-                                getRefsMethod4 = method;
-                                workingInterfaceType = ifaceType;
-                                Console.Error.WriteLine($"[DM-API-DEBUG] Found GetAllExternalReferences4 on {ifaceName}");
-                                break;
-                            }
-                        }
-                    }
-                    
-                    Console.Error.WriteLine($"[DM-API-DEBUG] GetAllExternalReferences4 found via interface: {getRefsMethod4 != null}");
-                    Console.Error.WriteLine($"[DM-API-DEBUG] GetAllExternalReferences found on docType: {getRefsMethod != null}");
-                    // #endregion
-                    
-                    // Try GetAllExternalReferences4 first via the interface (more comprehensive, per codestack examples)
-                    if (getRefsMethod4 != null && workingInterfaceType != null)
-                    {
-                        try
-                        {
-                            // Check if doc implements the interface (COM objects can be cast to supported interfaces)
-                            var canCast = workingInterfaceType.IsInstanceOfType(doc);
-                            Console.Error.WriteLine($"[DM-API-DEBUG] Can cast doc to {workingInterfaceType.Name}: {canCast}");
-                            
-                            if (canCast)
-                            {
-                                // GetAllExternalReferences4(searchOpt, out brokenRefs, out virtComps, out timestamps) -> string[]
-                                var parameters = new object?[] { searchOpt, null, null, null };
-                                var result = getRefsMethod4.Invoke(doc, parameters);
-                                dependencies = result as string[];
-                                
-                                // #region agent log - Log GetAllExternalReferences4 results
-                                Console.Error.WriteLine($"[DM-API-DEBUG] GetAllExternalReferences4 result type: {result?.GetType().Name ?? "null"}");
-                                var brokenRefs = parameters[1];
-                                var virtComps = parameters[2];
-                                Console.Error.WriteLine($"[DM-API-DEBUG] BrokenRefs: {(brokenRefs is object[] br ? string.Join(", ", br) : brokenRefs?.ToString() ?? "null")}");
-                                Console.Error.WriteLine($"[DM-API-DEBUG] VirtualComps: {(virtComps is object[] vc ? string.Join(", ", vc) : virtComps?.ToString() ?? "null")}");
-                                
-                                if (result is string[] strArr4)
-                                {
-                                    Console.Error.WriteLine($"[DM-API-DEBUG] GetAllExternalReferences4 returned {strArr4.Length} refs");
-                                    if (strArr4.Length > 0)
-                                    {
-                                        Console.Error.WriteLine($"[DM-API-DEBUG] References found: {string.Join("; ", strArr4.Take(10))}");
-                                    }
-                                }
-                                // #endregion
-                            }
-                        }
-                        catch (Exception refEx4)
-                        {
-                            Console.Error.WriteLine($"[DM-API-DEBUG] GetAllExternalReferences4 failed: {refEx4.Message}, falling back to GetAllExternalReferences");
-                            dependencies = null; // Reset to try fallback
-                        }
-                    }
-                    
-                    // Fallback to GetAllExternalReferences if GetAllExternalReferences4 not available or failed
-                    if (dependencies == null && getRefsMethod != null)
-                    {
-                        try
-                        {
-                            var result = getRefsMethod.Invoke(doc, new object[] { searchOpt });
-                            dependencies = result as string[];
-                            // #region agent log - Hypothesis C: Log raw result type and value
-                            Console.Error.WriteLine($"[DM-API-DEBUG] GetAllExternalReferences raw result type: {result?.GetType().Name ?? "null"}, isStringArray: {result is string[]}");
-                            if (result is string[] strArr)
-                            {
-                                Console.Error.WriteLine($"[DM-API-DEBUG] String array length: {strArr.Length}");
-                                if (strArr.Length > 0)
-                                {
-                                    Console.Error.WriteLine($"[DM-API-DEBUG] References found: {string.Join("; ", strArr)}");
-                                }
-                                else
-                                {
-                                    Console.Error.WriteLine($"[DM-API-DEBUG] Array is EMPTY - no references returned by DM API");
-                                }
-                            }
-                            else if (result != null)
-                            {
-                                Console.Error.WriteLine($"[DM-API-DEBUG] Unexpected result type - trying to enumerate");
-                                if (result is System.Collections.IEnumerable enumerable)
-                                {
-                                    foreach (var item in enumerable)
-                                    {
-                                        Console.Error.WriteLine($"[DM-API-DEBUG] Item: {item}");
-                                    }
-                                }
-                            }
-                            // #endregion
-                        }
-                        catch (Exception refEx)
-                        {
-                            Console.Error.WriteLine($"[DM-API] GetExternalReferences: Reflection call failed: {refEx.Message}");
-                        }
-                    }
-                    
+                    var dependencies = InvokeGetAllExternalReferences(doc, searchOpt);
                     swGetRefs.Stop();
                     Console.Error.WriteLine($"[DM-API] GetAllExternalReferences took {swGetRefs.ElapsedMilliseconds}ms, found {dependencies?.Length ?? 0} refs");
 
@@ -2587,6 +2556,280 @@ namespace BluePLM.SolidWorksService
                     try { ((dynamic)doc).CloseDoc(); } catch { }
                     if (!string.IsNullOrEmpty(filePath)) LogDocClose(filePath!);
                 }
+            }
+        }
+
+        #endregion
+
+        #region Duplicate With Reference Remapping (NO SW LAUNCH!)
+
+        /// <summary>
+        /// Raised when a duplicate fails part-way through, carrying the Document Manager open
+        /// error code so the caller can decide whether a SolidWorks fallback is worth attempting.
+        /// </summary>
+        private class DuplicateFailedException : Exception
+        {
+            public int OpenError { get; }
+
+            public DuplicateFailedException(string message, int openError = 0) : base(message)
+            {
+                OpenError = openError;
+            }
+        }
+
+        private static string DescribeOpenError(int error) => error switch
+        {
+            1 => "generic failure (file locked, or Document Manager license missing)",
+            2 => "file not found",
+            3 => "file is read-only",
+            4 => "not a native SolidWorks file",
+            5 => "file is open in another application",
+            6 => "file was saved by a newer SolidWorks version than the installed Document Manager",
+            _ => $"error code {error}"
+        };
+
+        /// <summary>
+        /// Copy a file for duplication, clearing the read-only attribute on the copy.
+        /// Checked-in vault files are marked read-only and File.Copy preserves that attribute,
+        /// which would make the subsequent Document Manager save fail.
+        /// </summary>
+        private static void CopyForDuplicate(string sourcePath, string targetPath)
+        {
+            var targetDir = Path.GetDirectoryName(targetPath);
+            if (!string.IsNullOrEmpty(targetDir)) Directory.CreateDirectory(targetDir);
+
+            File.Copy(sourcePath, targetPath, overwrite: false);
+
+            var attributes = File.GetAttributes(targetPath);
+            if (attributes.HasFlag(FileAttributes.ReadOnly))
+            {
+                File.SetAttributes(targetPath, attributes & ~FileAttributes.ReadOnly);
+            }
+        }
+
+        private static void CleanupPartialCopies(IEnumerable<string> paths)
+        {
+            foreach (var path in paths)
+            {
+                try
+                {
+                    if (!File.Exists(path)) continue;
+                    var attributes = File.GetAttributes(path);
+                    if (attributes.HasFlag(FileAttributes.ReadOnly))
+                        File.SetAttributes(path, attributes & ~FileAttributes.ReadOnly);
+                    File.Delete(path);
+                    Console.Error.WriteLine($"[DM-API] Cleaned up partial copy: {Path.GetFileName(path)}");
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[DM-API] Could not clean up {Path.GetFileName(path)}: {ex.Message}");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Re-open a drawing read-only and confirm it now references the expected model.
+        /// </summary>
+        private bool VerifyDrawingReference(string drawingPath, string expectedModelPath, out string detail)
+        {
+            object? doc = null;
+            try
+            {
+                doc = OpenDocument(drawingPath, out var openError);
+                if (doc == null)
+                {
+                    detail = $"could not re-open drawing ({DescribeOpenError(openError)})";
+                    return false;
+                }
+
+                var searchOpt = CreateReferenceSearchOption(new[] { Path.GetDirectoryName(drawingPath) });
+                if (searchOpt == null)
+                {
+                    detail = "could not create search options";
+                    return false;
+                }
+
+                var references = InvokeGetAllExternalReferences(doc, searchOpt) ?? Array.Empty<string>();
+                var expectedName = Path.GetFileName(expectedModelPath);
+                var matched = references.Any(r =>
+                    string.Equals(Path.GetFileName(r), expectedName, StringComparison.OrdinalIgnoreCase));
+
+                detail = matched
+                    ? expectedName
+                    : $"expected {expectedName}, found [{string.Join(", ", references.Select(Path.GetFileName))}]";
+                return matched;
+            }
+            catch (Exception ex)
+            {
+                detail = ex.Message;
+                return false;
+            }
+            finally
+            {
+                if (doc != null)
+                {
+                    try { ((dynamic)doc).CloseDoc(); } catch { }
+                    LogDocClose(drawingPath);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Duplicate a model file and, optionally, its drawing, rewriting the copied drawing's
+        /// stored reference so it points at the copied model rather than the original.
+        ///
+        /// A drawing records the path of its model inside the file, so a plain byte copy of both
+        /// leaves the new drawing bound to the original model. This method exists to avoid that.
+        /// </summary>
+        public CommandResult DuplicateWithReferences(
+            string? sourceModelPath,
+            string? targetModelPath,
+            string? sourceDrawingPath,
+            string? targetDrawingPath)
+        {
+            if (!Initialize() || _dmApp == null)
+                return new CommandResult { Success = false, Error = _initError ?? "Document Manager not available", ErrorCode = "DM_UNAVAILABLE" };
+
+            if (string.IsNullOrEmpty(sourceModelPath))
+                return new CommandResult { Success = false, Error = "Missing 'sourceModelPath'" };
+            if (string.IsNullOrEmpty(targetModelPath))
+                return new CommandResult { Success = false, Error = "Missing 'targetModelPath'" };
+            if (!File.Exists(sourceModelPath))
+                return new CommandResult { Success = false, Error = $"File not found: {sourceModelPath}" };
+            if (File.Exists(targetModelPath))
+                return new CommandResult { Success = false, Error = $"Target already exists: {Path.GetFileName(targetModelPath)}" };
+
+            var withDrawing = !string.IsNullOrEmpty(sourceDrawingPath) && !string.IsNullOrEmpty(targetDrawingPath);
+            if (withDrawing)
+            {
+                if (!File.Exists(sourceDrawingPath))
+                    return new CommandResult { Success = false, Error = $"File not found: {sourceDrawingPath}" };
+                if (File.Exists(targetDrawingPath))
+                    return new CommandResult { Success = false, Error = $"Target already exists: {Path.GetFileName(targetDrawingPath)}" };
+            }
+
+            var copied = new List<string>();
+            SemaphoreSlim? drawingLock = null;
+            object? doc = null;
+
+            try
+            {
+                CopyForDuplicate(sourceModelPath!, targetModelPath!);
+                copied.Add(targetModelPath!);
+
+                if (!withDrawing)
+                {
+                    return new CommandResult
+                    {
+                        Success = true,
+                        Data = new
+                        {
+                            modelPath = targetModelPath,
+                            drawingPath = (string?)null,
+                            referenceUpdated = false,
+                            engine = "documentManager"
+                        }
+                    };
+                }
+
+                CopyForDuplicate(sourceDrawingPath!, targetDrawingPath!);
+                copied.Add(targetDrawingPath!);
+
+                drawingLock = GetFileLock(targetDrawingPath!);
+                drawingLock.Wait();
+
+                doc = OpenDocumentForWrite(targetDrawingPath!, out var openError);
+                if (doc == null)
+                    throw new DuplicateFailedException($"Could not open the copied drawing for writing: {DescribeOpenError(openError)}", openError);
+
+                // Include the source directories so the original reference resolves even when the
+                // duplicate is written to a different folder.
+                var searchOpt = CreateReferenceSearchOption(new[]
+                {
+                    Path.GetDirectoryName(targetDrawingPath!),
+                    Path.GetDirectoryName(sourceDrawingPath!),
+                    Path.GetDirectoryName(sourceModelPath!),
+                });
+                if (searchOpt == null)
+                    throw new DuplicateFailedException("Could not create Document Manager search options");
+
+                var references = InvokeGetAllExternalReferences(doc, searchOpt);
+                if (references == null || references.Length == 0)
+                    throw new DuplicateFailedException("The copied drawing reported no external references");
+
+                // Match against the string the API returned rather than a reconstructed path;
+                // ReplaceReference compares to the stored value and a rebuilt path will not match.
+                var sourceModelName = Path.GetFileName(sourceModelPath!);
+                var oldReference =
+                    references.FirstOrDefault(r => string.Equals(r, sourceModelPath, StringComparison.OrdinalIgnoreCase))
+                    ?? references.FirstOrDefault(r => string.Equals(Path.GetFileName(r), sourceModelName, StringComparison.OrdinalIgnoreCase));
+
+                if (oldReference == null)
+                {
+                    throw new DuplicateFailedException(
+                        $"The drawing does not reference {sourceModelName}. It references: {string.Join(", ", references.Select(Path.GetFileName))}");
+                }
+
+                InvokeReplaceReference(doc, oldReference, targetModelPath!);
+
+                dynamic dynDoc = doc;
+                dynDoc.Save();
+                try { dynDoc.CloseDoc(); } catch { }
+                LogDocClose(targetDrawingPath!);
+                doc = null;
+
+                if (!VerifyDrawingReference(targetDrawingPath!, targetModelPath!, out var detail))
+                    throw new DuplicateFailedException($"The reference rewrite could not be verified: {detail}");
+
+                return new CommandResult
+                {
+                    Success = true,
+                    Data = new
+                    {
+                        modelPath = targetModelPath,
+                        drawingPath = targetDrawingPath,
+                        replacedReference = oldReference,
+                        referenceUpdated = true,
+                        engine = "documentManager"
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                if (doc != null)
+                {
+                    try { ((dynamic)doc).CloseDoc(); } catch { }
+                    LogDocClose(targetDrawingPath ?? targetModelPath!);
+                    doc = null;
+                }
+
+                // Never leave a half-finished duplicate in the vault
+                CleanupPartialCopies(copied);
+
+                var openError = (ex as DuplicateFailedException)?.OpenError ?? 0;
+                Console.Error.WriteLine($"[DM-API] DuplicateWithReferences failed: {ex.Message}");
+
+                return new CommandResult
+                {
+                    Success = false,
+                    Error = ex.Message,
+                    ErrorDetails = ex.ToString(),
+                    ErrorCode = openError switch
+                    {
+                        5 => "DM_FILE_IN_USE",
+                        6 => "DM_FUTURE_VERSION",
+                        _ => "DM_DUPLICATE_FAILED"
+                    }
+                };
+            }
+            finally
+            {
+                if (doc != null)
+                {
+                    try { ((dynamic)doc).CloseDoc(); } catch { }
+                    if (!string.IsNullOrEmpty(targetDrawingPath)) LogDocClose(targetDrawingPath!);
+                }
+                drawingLock?.Release();
             }
         }
 

@@ -1,6 +1,6 @@
 {
   "name": "blue-plm",
-  "version": "3.22.0",
+  "version": "3.23.0-beta.1",
   "description": "Open-source Product Lifecycle Management",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -10,6 +10,9 @@
     "preview": "vite preview",
     "electron:dev": "vite",
     "typecheck": "tsc --noEmit",
+    "typecheck:api": "tsc --noEmit -p api/tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write \"src/**/*.{ts,tsx}\" \"api/**/*.ts\" \"electron/**/*.ts\"",
@@ -77,6 +80,7 @@
     "vite": "^6.4.1",
     "vite-plugin-electron": "^0.29.0",
     "vite-plugin-electron-renderer": "^0.14.6",
+    "vitest": "^4.1.10",
     "wait-on": "^9.0.3"
   },
   "build": {

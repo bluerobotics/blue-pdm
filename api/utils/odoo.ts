@@ -25,6 +25,14 @@ export function clearLastXmlResponses(): void {
 }
 
 /**
+ * Options for a single XML-RPC call.
+ */
+export interface OdooXmlRpcOptions {
+  /** Override the fetch implementation (used by tests). */
+  fetch?: typeof globalThis.fetch
+}
+
+/**
  * Make an XML-RPC call to Odoo
  */
 export async function odooXmlRpc(
@@ -32,16 +40,19 @@ export async function odooXmlRpc(
   service: string,
   method: string,
   params: unknown[],
+  options?: OdooXmlRpcOptions,
 ): Promise<unknown> {
   // Build XML-RPC request
   const xmlPayload = buildXmlRpcRequest(method, params)
 
-  const response = await fetch(`${url}/xmlrpc/2/${service}`, {
+  const target = `${url}/xmlrpc/2/${service}`
+  const init: RequestInit = {
     method: 'POST',
     headers: { 'Content-Type': 'text/xml' },
     body: xmlPayload,
     signal: AbortSignal.timeout(30000), // 30s timeout
-  })
+  }
+  const response = options?.fetch ? await options.fetch(target, init) : await fetch(target, init)
 
   if (!response.ok) {
     throw new Error(`Odoo API error: ${response.status} ${response.statusText}`)
@@ -57,6 +68,111 @@ export async function odooXmlRpc(
 }
 
 /**
+ * ORM methods that may be invoked through `execute_kw`.
+ *
+ * Allowlist, never a blocklist: anything not named here is rejected.
+ */
+export const ODOO_ALLOWED_ORM_METHODS = [
+  'search',
+  'search_read',
+  'search_count',
+  'read',
+  'fields_get',
+  'check_access_rights',
+] as const
+
+/**
+ * Models that may be touched through `execute_kw`.
+ */
+export const ODOO_ALLOWED_MODELS = [
+  'res.partner',
+  'sale.order',
+  'sale.order.line',
+  'res.partner.category',
+  'res.partner.industry',
+] as const
+
+/**
+ * Non-`execute_kw` calls that are inherently read-only, as `service.method`.
+ */
+export const ODOO_ALLOWED_SERVICE_METHODS = ['common.version', 'common.authenticate'] as const
+
+const SECURITY_PREFIX = '[SECURITY] Odoo read-only guard:'
+
+/**
+ * Make a read-only XML-RPC call to Odoo.
+ *
+ * The `method` argument of an ORM call is always the literal string `execute_kw`,
+ * so allowlisting it would permit every write in existence. The real ORM method
+ * lives inside the params array:
+ *
+ *   [database, uid, apiKey, model, ormMethod, args, kwargs?]
+ *
+ * which is why this validates `params[3]` (model) and `params[4]` (ORM method).
+ * Throws before any HTTP request is made.
+ */
+export async function odooReadOnlyCall(
+  url: string,
+  service: string,
+  method: string,
+  params: unknown[],
+  options?: OdooXmlRpcOptions,
+): Promise<unknown> {
+  assertOdooReadOnly(service, method, params)
+  return odooXmlRpc(url, service, method, params, options)
+}
+
+/**
+ * Throw unless the call is provably read-only. Exported for tests and for
+ * callers that build a request before deciding to send it.
+ */
+export function assertOdooReadOnly(service: string, method: string, params: unknown[]): void {
+  if (method !== 'execute_kw') {
+    const serviceMethod = `${service}.${method}`
+    if (!(ODOO_ALLOWED_SERVICE_METHODS as readonly string[]).includes(serviceMethod)) {
+      throw new Error(
+        `${SECURITY_PREFIX} call '${serviceMethod}' is not permitted. ` +
+          `Allowed non-ORM calls: ${ODOO_ALLOWED_SERVICE_METHODS.join(', ')}.`,
+      )
+    }
+    return
+  }
+
+  const model = params[3]
+  const ormMethod = params[4]
+
+  if (typeof ormMethod !== 'string') {
+    throw new Error(
+      `${SECURITY_PREFIX} execute_kw ORM method (params[4]) must be a string, got ${describe(ormMethod)}.`,
+    )
+  }
+  if (!(ODOO_ALLOWED_ORM_METHODS as readonly string[]).includes(ormMethod)) {
+    throw new Error(
+      `${SECURITY_PREFIX} ORM method '${ormMethod}' is not permitted. ` +
+        `Allowed ORM methods: ${ODOO_ALLOWED_ORM_METHODS.join(', ')}.`,
+    )
+  }
+
+  if (typeof model !== 'string') {
+    throw new Error(
+      `${SECURITY_PREFIX} execute_kw model (params[3]) must be a string, got ${describe(model)}.`,
+    )
+  }
+  if (!(ODOO_ALLOWED_MODELS as readonly string[]).includes(model)) {
+    throw new Error(
+      `${SECURITY_PREFIX} model '${model}' is not permitted. ` +
+        `Allowed models: ${ODOO_ALLOWED_MODELS.join(', ')}.`,
+    )
+  }
+}
+
+function describe(value: unknown): string {
+  if (value === undefined) return 'undefined'
+  if (value === null) return 'null'
+  return `${typeof value} (${JSON.stringify(value)})`
+}
+
+/**
  * Build an XML-RPC request payload
  */
 function buildXmlRpcRequest(method: string, params: unknown[]): string {
@@ -68,10 +184,45 @@ function buildXmlRpcRequest(method: string, params: unknown[]): string {
 </methodCall>`
 }
 
+const NAMED_ENTITIES = new Map<string, string>([
+  ['amp', '&'],
+  ['lt', '<'],
+  ['gt', '>'],
+  ['quot', '"'],
+  ['apos', "'"],
+])
+
+/**
+ * Decode XML entities in text taken out of an XML-RPC response.
+ *
+ * Done in a single left-to-right pass rather than chained replaces: a chain
+ * would rewrite `&amp;lt;` into `<` instead of the literal `&lt;` the sender
+ * meant, no matter which order the replaces run in.
+ */
+export function decodeXmlEntities(text: string): string {
+  if (!text.includes('&')) return text
+  return text.replace(
+    /&(?:#([0-9]+)|#[xX]([0-9a-fA-F]+)|([a-zA-Z][a-zA-Z0-9]*));/g,
+    (match, dec: string | undefined, hex: string | undefined, name: string | undefined) => {
+      if (dec !== undefined) return fromCodePoint(parseInt(dec, 10)) ?? match
+      if (hex !== undefined) return fromCodePoint(parseInt(hex, 16)) ?? match
+      const named = name !== undefined ? NAMED_ENTITIES.get(name) : undefined
+      return named ?? match
+    },
+  )
+}
+
+function fromCodePoint(code: number): string | null {
+  // Lone surrogates and out-of-range values would throw; leave them as-is.
+  if (!Number.isFinite(code) || code < 0 || code > 0x10ffff) return null
+  if (code >= 0xd800 && code <= 0xdfff) return null
+  return String.fromCodePoint(code)
+}
+
 /**
  * Convert a JavaScript value to XML-RPC format
  */
-function valueToXml(value: unknown): string {
+export function valueToXml(value: unknown): string {
   if (value === null || value === undefined) {
     return '<value><boolean>0</boolean></value>'
   }
@@ -104,11 +255,11 @@ function valueToXml(value: unknown): string {
 /**
  * Parse an XML-RPC response
  */
-function parseXmlRpcResponse(xml: string): unknown {
+export function parseXmlRpcResponse(xml: string): unknown {
   // Check for fault
   const faultMatch = xml.match(/<fault>[\s\S]*?<string>([^<]*)<\/string>[\s\S]*?<\/fault>/)
   if (faultMatch) {
-    throw new Error(`Odoo fault: ${faultMatch[1]}`)
+    throw new Error(`Odoo fault: ${decodeXmlEntities(faultMatch[1])}`)
   }
 
   // Find the param value content
@@ -119,7 +270,7 @@ function parseXmlRpcResponse(xml: string): unknown {
     if (simpleMatch) {
       if (simpleMatch[1] === 'int') return parseInt(simpleMatch[2], 10)
       if (simpleMatch[1] === 'boolean') return simpleMatch[2] === '1'
-      return simpleMatch[2]
+      return decodeXmlEntities(simpleMatch[2])
     }
     throw new Error('Invalid XML-RPC response')
   }
@@ -166,7 +317,7 @@ function parseXmlRpcResponse(xml: string): unknown {
 /**
  * Parse XML value content
  */
-function parseXmlValue(valueXml: string): unknown {
+export function parseXmlValue(valueXml: string): unknown {
   // Check for COMPLEX types first (they contain other elements)
 
   // Array - must check BEFORE int/string since arrays contain those
@@ -203,7 +354,7 @@ function parseXmlValue(valueXml: string): unknown {
       /<member>\s*<name>([^<]+)<\/name>\s*<value>([\s\S]*?)<\/value>\s*<\/member>/g
     let match
     while ((match = memberRegex.exec(structMatch[1])) !== null) {
-      obj[match[1]] = parseXmlValue(match[2])
+      obj[decodeXmlEntities(match[1])] = parseXmlValue(match[2])
     }
     return obj
   }
@@ -223,7 +374,7 @@ function parseXmlValue(valueXml: string): unknown {
 
   // String
   const strMatch = valueXml.match(/^\s*<string>([^<]*)<\/string>\s*$/)
-  if (strMatch) return strMatch[1]
+  if (strMatch) return decodeXmlEntities(strMatch[1])
 
   // Double
   const doubleMatch = valueXml.match(/^\s*<double>([^<]+)<\/double>\s*$/)
@@ -232,8 +383,8 @@ function parseXmlValue(valueXml: string): unknown {
   // Empty content
   if (valueXml.match(/^\s*$/)) return ''
 
-  // Default - return trimmed string
-  return valueXml.trim()
+  // Default - return trimmed string (Odoo sends bare <value>text</value> for strings)
+  return decodeXmlEntities(valueXml.trim())
 }
 
 /**

@@ -262,6 +262,8 @@ export const fr: TranslationDict = {
     // Supply Chain - Logistics
     shipping: 'Expédition',
     receiving: 'Réception',
+    // Customers
+    customers: 'Clients',
     // Production
     manufacturingOrders: 'Ordres de fabrication',
     travellers: 'Fiches suiveuses',

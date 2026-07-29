@@ -35,6 +35,8 @@ export const MODULE_LABELS: Record<SidebarView, string> = {
   // Supply Chain - Logistics
   shipping: 'Shipping',
   receiving: 'Receiving',
+  // Customers
+  customers: 'Customers',
   // Production
   'manufacturing-orders': 'Manufacturing Orders',
   travellers: 'Travellers',

@@ -257,6 +257,8 @@ export const pt: TranslationDict = {
     // Supply Chain - Logistics
     shipping: 'Expedição',
     receiving: 'Receção',
+    // Customers
+    customers: 'Clientes',
     // Production
     manufacturingOrders: 'Ordens de Fabrico',
     travellers: 'Guias de Produção',

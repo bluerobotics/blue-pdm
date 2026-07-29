@@ -2864,6 +2864,175 @@ namespace BluePLM.SolidWorksService
         }
 
         /// <summary>
+        /// Duplicate a drawing and its referenced model under new names, using Pack and Go so
+        /// SolidWorks rewrites the copied drawing's reference to the copied model.
+        ///
+        /// This is the fallback for files the Document Manager cannot open (for example files
+        /// saved by a newer SolidWorks than the installed Document Manager library).
+        ///
+        /// nameMap maps each source file path to the full path it should be written to. Every
+        /// document that Pack and Go pulls in must be mapped; an unmapped document would be left
+        /// in the temporary folder and the copies moved into the vault would reference it.
+        /// </summary>
+        public CommandResult DuplicateViaPackAndGo(string? sourceDrawingPath, Dictionary<string, string>? nameMap)
+        {
+            if (string.IsNullOrEmpty(sourceDrawingPath))
+                return new CommandResult { Success = false, Error = "Missing 'sourceDrawingPath'" };
+
+            if (!File.Exists(sourceDrawingPath))
+                return new CommandResult { Success = false, Error = $"File not found: {sourceDrawingPath}" };
+
+            if (nameMap == null || nameMap.Count == 0)
+                return new CommandResult { Success = false, Error = "Missing 'nameMap'" };
+
+            foreach (var target in nameMap.Values)
+            {
+                if (File.Exists(target))
+                    return new CommandResult { Success = false, Error = $"Target already exists: {Path.GetFileName(target)}" };
+            }
+
+            // Key the map by file name; Pack and Go reports documents by their resolved paths,
+            // which may differ in casing or separators from what the caller passed in.
+            var targetsByFileName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kvp in nameMap)
+            {
+                targetsByFileName[Path.GetFileName(kvp.Key)] = kvp.Value;
+            }
+
+            ModelDoc2? doc = null;
+            ISldWorks? sw = null;
+            var tempFolder = Path.Combine(Path.GetTempPath(), "BluePLM_Duplicate_" + Guid.NewGuid().ToString("N"));
+
+            try
+            {
+                sw = GetSolidWorks();
+                int errors = 0, warnings = 0;
+
+                doc = (ModelDoc2)sw.OpenDoc6(
+                    sourceDrawingPath,
+                    (int)swDocumentTypes_e.swDocDRAWING,
+                    (int)swOpenDocOptions_e.swOpenDocOptions_Silent,
+                    "",
+                    ref errors, ref warnings
+                );
+
+                if (doc == null)
+                    return new CommandResult { Success = false, Error = $"Failed to open drawing: errors={errors}" };
+
+                Directory.CreateDirectory(tempFolder);
+
+                var packAndGo = (PackAndGo)doc.Extension.GetPackAndGo();
+                packAndGo.IncludeDrawings = true;
+                packAndGo.IncludeSimulationResults = false;
+                packAndGo.IncludeToolboxComponents = false;
+                packAndGo.FlattenToSingleFolder = true;
+                packAndGo.SetSaveToName(true, tempFolder);
+
+                object fileNamesObj = null!;
+                packAndGo.GetDocumentNames(out fileNamesObj);
+                var fileNames = (object[])fileNamesObj;
+
+                var unmapped = fileNames
+                    .Select(f => Path.GetFileName((string)f))
+                    .Where(n => !targetsByFileName.ContainsKey(n))
+                    .ToList();
+
+                if (unmapped.Count > 0)
+                {
+                    return new CommandResult
+                    {
+                        Success = false,
+                        Error = $"The drawing pulls in files beyond the part being duplicated: {string.Join(", ", unmapped)}. " +
+                                "Duplicating it would leave those references pointing at temporary copies.",
+                        ErrorCode = "PAG_UNMAPPED_REFERENCES"
+                    };
+                }
+
+                // Pack and Go writes everything into the temp folder first so a partial failure
+                // never leaves stray files in the vault.
+                var tempNames = new string[fileNames.Length];
+                var finalTargets = new string[fileNames.Length];
+                for (int i = 0; i < fileNames.Length; i++)
+                {
+                    finalTargets[i] = targetsByFileName[Path.GetFileName((string)fileNames[i])];
+                    tempNames[i] = Path.Combine(tempFolder, Path.GetFileName(finalTargets[i]));
+                }
+
+                packAndGo.SetDocumentSaveToNames(tempNames);
+                var statuses = (int[])doc.Extension.SavePackAndGo(packAndGo);
+
+                var failed = new List<string>();
+                for (int i = 0; i < statuses.Length; i++)
+                {
+                    if (statuses[i] != 0) failed.Add($"{Path.GetFileName(tempNames[i])} (status {statuses[i]})");
+                }
+
+                if (failed.Count > 0)
+                    return new CommandResult { Success = false, Error = $"Pack and Go failed for: {string.Join(", ", failed)}" };
+
+                // Release the source drawing before moving files so nothing stays locked
+                try { sw.CloseDoc(sourceDrawingPath); } catch { }
+                doc = null;
+
+                var moved = new List<string>();
+                try
+                {
+                    for (int i = 0; i < tempNames.Length; i++)
+                    {
+                        var finalTarget = finalTargets[i];
+                        var finalDir = Path.GetDirectoryName(finalTarget);
+                        if (!string.IsNullOrEmpty(finalDir)) Directory.CreateDirectory(finalDir);
+
+                        File.Move(tempNames[i], finalTarget);
+
+                        var attributes = File.GetAttributes(finalTarget);
+                        if (attributes.HasFlag(FileAttributes.ReadOnly))
+                            File.SetAttributes(finalTarget, attributes & ~FileAttributes.ReadOnly);
+
+                        moved.Add(finalTarget);
+                    }
+                }
+                catch
+                {
+                    foreach (var path in moved)
+                    {
+                        try { File.Delete(path); } catch { }
+                    }
+                    throw;
+                }
+
+                var modelPath = moved.FirstOrDefault(p => !p.EndsWith(".SLDDRW", StringComparison.OrdinalIgnoreCase));
+                var drawingPath = moved.FirstOrDefault(p => p.EndsWith(".SLDDRW", StringComparison.OrdinalIgnoreCase));
+
+                return new CommandResult
+                {
+                    Success = true,
+                    Data = new
+                    {
+                        modelPath,
+                        drawingPath,
+                        files = moved,
+                        referenceUpdated = drawingPath != null,
+                        engine = "packAndGo"
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
+            }
+            finally
+            {
+                if (doc != null && sw != null)
+                {
+                    try { sw.CloseDoc(sourceDrawingPath); } catch { }
+                }
+                try { if (Directory.Exists(tempFolder)) Directory.Delete(tempFolder, recursive: true); } catch { }
+                CloseSolidWorksIfWeStartedIt();
+            }
+        }
+
+        /// <summary>
         /// Add a component (part or subassembly) to an open assembly.
         /// If assemblyPath is null, uses the active document in SolidWorks.
         /// </summary>

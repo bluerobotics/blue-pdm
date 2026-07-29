@@ -391,6 +391,14 @@ namespace BluePLM.SolidWorksService
                         command["outputFolder"]?.ToString(),
                         command["prefix"]?.ToString(),
                         command["suffix"]?.ToString()), "packAndGo"),
+
+                    // Duplication with reference remapping. Not wrapped in RequiresSolidWorks:
+                    // the Document Manager path works without a SolidWorks installation.
+                    "duplicateWithReferences" => DuplicateWithReferences(
+                        command["sourceModelPath"]?.ToString(),
+                        command["targetModelPath"]?.ToString(),
+                        command["sourceDrawingPath"]?.ToString(),
+                        command["targetDrawingPath"]?.ToString()),
                     "addComponent" => RequiresSolidWorks(() => _swApi!.AddComponent(filePath,
                         command["componentPath"]?.ToString(),
                         command["coordinates"]?.ToObject<double[]>()), "addComponent"),
@@ -668,6 +676,87 @@ namespace BluePLM.SolidWorksService
             // #endregion
             
             return result;  // Return DM result
+        }
+
+        /// <summary>
+        /// Duplicate a model and its drawing so the copied drawing references the copied model.
+        /// Tries Document Manager first because it needs no SolidWorks launch, then falls back to
+        /// Pack and Go for files Document Manager cannot open (typically a file saved by a newer
+        /// SolidWorks than the installed Document Manager library).
+        /// </summary>
+        static CommandResult DuplicateWithReferences(
+            string? sourceModelPath,
+            string? targetModelPath,
+            string? sourceDrawingPath,
+            string? targetDrawingPath)
+        {
+            if (string.IsNullOrEmpty(sourceModelPath) || string.IsNullOrEmpty(targetModelPath))
+                return new CommandResult { Success = false, Error = "Missing 'sourceModelPath' or 'targetModelPath'" };
+
+            var hasDrawing = !string.IsNullOrEmpty(sourceDrawingPath) && !string.IsNullOrEmpty(targetDrawingPath);
+
+            // A file open in SolidWorks cannot be read by Document Manager, and duplicating it
+            // would capture the last saved state rather than what the user sees on screen.
+            if (_swApi != null)
+            {
+                foreach (var path in new[] { sourceModelPath, hasDrawing ? sourceDrawingPath : null })
+                {
+                    if (string.IsNullOrEmpty(path) || !_swApi.IsFileOpenInSolidWorks(path!)) continue;
+                    return new CommandResult
+                    {
+                        Success = false,
+                        Error = $"{Path.GetFileName(path)} is open in SolidWorks. Close it and try again.",
+                        ErrorCode = "FILE_OPEN_IN_SOLIDWORKS"
+                    };
+                }
+            }
+
+            CommandResult? dmResult = null;
+            if (_dmApi != null)
+            {
+                dmResult = _dmApi.DuplicateWithReferences(sourceModelPath, targetModelPath, sourceDrawingPath, targetDrawingPath);
+                if (dmResult.Success) return dmResult;
+                Console.Error.WriteLine($"[Service] DM duplicate failed ({dmResult.ErrorCode}): {dmResult.Error}");
+            }
+
+            // Without a drawing there is nothing to remap, so Pack and Go adds no value
+            if (!hasDrawing)
+            {
+                return dmResult ?? new CommandResult
+                {
+                    Success = false,
+                    Error = "Document Manager not available. Configure DM license in Settings -> Integrations -> SOLIDWORKS."
+                };
+            }
+
+            if (_swApi == null || !_swApi.IsSolidWorksAvailable())
+            {
+                return dmResult ?? new CommandResult
+                {
+                    Success = false,
+                    Error = "Duplicating with reference remapping requires either a Document Manager license or a SolidWorks installation.",
+                    ErrorCode = "NO_ENGINE_AVAILABLE"
+                };
+            }
+
+            Console.Error.WriteLine("[Service] Falling back to Pack and Go for duplicate");
+            var nameMap = new Dictionary<string, string>
+            {
+                [sourceModelPath] = targetModelPath,
+                [sourceDrawingPath!] = targetDrawingPath!,
+            };
+
+            var pagResult = _swApi.DuplicateViaPackAndGo(sourceDrawingPath, nameMap);
+            if (pagResult.Success || dmResult == null) return pagResult;
+
+            // Surface both failures; either one alone is misleading about what went wrong
+            return new CommandResult
+            {
+                Success = false,
+                Error = $"{dmResult.Error} Pack and Go fallback also failed: {pagResult.Error}",
+                ErrorCode = pagResult.ErrorCode ?? dmResult.ErrorCode,
+                ErrorDetails = pagResult.ErrorDetails
+            };
         }
 
         // Track if Document Manager previews work (they don't for newer SW file formats)

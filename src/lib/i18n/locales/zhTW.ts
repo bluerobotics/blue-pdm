@@ -248,6 +248,8 @@ export const zhTW: TranslationDict = {
     // 供應鏈 - 物流
     shipping: '出貨',
     receiving: '收貨',
+    // 客戶
+    customers: '客戶',
     // 生產
     manufacturingOrders: '生產訂單',
     travellers: '製程流轉卡',

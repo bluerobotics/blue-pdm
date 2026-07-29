@@ -889,6 +889,27 @@ declare global {
           }
           error?: string
         }>
+        /**
+         * Copy a model (and optionally its drawing) under new names, rewriting the copied
+         * drawing's stored reference to point at the copied model rather than the original.
+         */
+        duplicateWithReferences: (args: {
+          sourceModelPath: string
+          targetModelPath: string
+          sourceDrawingPath?: string
+          targetDrawingPath?: string
+        }) => Promise<{
+          success: boolean
+          data?: {
+            modelPath: string
+            drawingPath: string | null
+            replacedReference?: string
+            referenceUpdated: boolean
+            engine: 'documentManager' | 'packAndGo'
+          }
+          error?: string
+          errorCode?: string
+        }>
         addComponent: (
           assemblyPath: string | null,
           componentPath: string,

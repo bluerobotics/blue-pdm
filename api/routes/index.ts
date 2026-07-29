@@ -13,6 +13,7 @@ import trashRoutes from './trash.js'
 import activityRoutes from './activity.js'
 import partsRoutes from './parts.js'
 import supplierRoutes from './suppliers.js'
+import customerRoutes from './customers.js'
 import integrationRoutes from './integrations/index.js'
 import webhookRoutes from './webhooks.js'
 import extensionRoutes from './extensions.js'
@@ -41,6 +42,9 @@ const routes: FastifyPluginAsync = async (fastify) => {
 
   // Supplier routes (includes part-supplier linking and costing)
   await fastify.register(supplierRoutes)
+
+  // Customer routes (Odoo customer/order sync)
+  await fastify.register(customerRoutes)
 
   // Integration routes (Odoo)
   await fastify.register(integrationRoutes)

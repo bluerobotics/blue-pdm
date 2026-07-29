@@ -9,3 +9,6 @@ export type { FolderConflictDialogProps } from './FolderConflictDialog'
 
 export { DeleteLocalCheckoutDialog } from './DeleteLocalCheckoutDialog'
 export type { DeleteLocalCheckoutDialogProps } from './DeleteLocalCheckoutDialog'
+
+export { DuplicatePartDialog } from './DuplicatePartDialog'
+export type { DuplicatePartDialogProps } from './DuplicatePartDialog'

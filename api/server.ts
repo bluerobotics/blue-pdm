@@ -118,6 +118,7 @@ export async function buildServer(): Promise<FastifyInstance> {
         { name: 'Files', description: 'File operations' },
         { name: 'ERP', description: 'ERP integration endpoints (Odoo, SAP, etc.)' },
         { name: 'Suppliers', description: 'Supplier/vendor management and costing' },
+        { name: 'Customers', description: 'Customer sync and enrichment' },
         { name: 'Versions', description: 'Version history' },
         { name: 'Trash', description: 'Deleted files' },
         { name: 'Activity', description: 'Activity feed' },

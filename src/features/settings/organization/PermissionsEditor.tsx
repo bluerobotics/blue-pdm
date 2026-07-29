@@ -98,6 +98,7 @@ const RESOURCE_GROUPS: {
       'module:invoices',
       'module:shipping',
       'module:receiving',
+      'module:customers',
     ],
   },
   {
@@ -172,6 +173,7 @@ const RESOURCE_GROUPS: {
       'system:integrations',
       'system:recovery-codes',
       'system:impersonation',
+      'system:customer-enrichment',
     ],
   },
 ]

@@ -562,6 +562,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
       outputFolder: string,
       options?: { prefix?: string; suffix?: string },
     ) => ipcRenderer.invoke('solidworks:pack-and-go', filePath, outputFolder, options),
+    duplicateWithReferences: (args: {
+      sourceModelPath: string
+      targetModelPath: string
+      sourceDrawingPath?: string
+      targetDrawingPath?: string
+    }) => ipcRenderer.invoke('solidworks:duplicate-with-references', args),
     addComponent: (
       assemblyPath: string | null,
       componentPath: string,
@@ -1640,6 +1646,23 @@ declare global {
             files: string[]
           }
           error?: string
+        }>
+        duplicateWithReferences: (args: {
+          sourceModelPath: string
+          targetModelPath: string
+          sourceDrawingPath?: string
+          targetDrawingPath?: string
+        }) => Promise<{
+          success: boolean
+          data?: {
+            modelPath: string
+            drawingPath: string | null
+            replacedReference?: string
+            referenceUpdated: boolean
+            engine: 'documentManager' | 'packAndGo'
+          }
+          error?: string
+          errorCode?: string
         }>
 
         // License Registry Operations (HKLM - requires admin for write operations)

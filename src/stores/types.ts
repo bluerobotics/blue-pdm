@@ -56,6 +56,8 @@ export type SidebarView =
   // Supply Chain - Logistics
   | 'shipping'
   | 'receiving'
+  // Customers
+  | 'customers'
   // Production
   | 'manufacturing-orders'
   | 'travellers'

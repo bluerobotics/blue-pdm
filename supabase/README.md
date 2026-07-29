@@ -12,6 +12,9 @@ supabase/
 │   ├── 20-change-control.sql   # ECOs, reviews, deviations, process templates
 │   ├── 30-supply-chain.sql     # Suppliers, RFQs, pricing
 │   ├── 40-integrations.sql     # Webhooks, Odoo
+│   ├── 60-customers.sql        # Odoo customer sync, AI enrichment
+│   ├── 70-integration-credentials.sql # ERP secrets moved out of client reach
+│   ├── 80-permission-model.sql # Upgrade-only: admin semantics alignment
 │   └── README.md               # Module documentation
 ├── tools/
 │   ├── reset.sql               # ⚠️ Nuclear reset (deletes all data)
@@ -36,9 +39,12 @@ Run these SQL files in order in your Supabase SQL Editor:
 -- 20-change-control.sql - Optional: ECOs, reviews, deviations
 -- 30-supply-chain.sql - Optional: Suppliers, RFQs
 -- 40-integrations.sql - Optional: Webhooks, external integrations
+-- 60-customers.sql - Optional: Odoo customer sync, AI enrichment
+-- 70-integration-credentials.sql - Required if using integrations (security)
+-- 80-permission-model.sql - Existing databases only (core.sql covers fresh installs)
 ```
 
-> **Note:** Modules must be run in numeric order (10 → 20 → 30 → 40) as later modules may depend on earlier ones.
+> **Note:** Modules must be run in numeric order (10 → 20 → 30 → 40 → 60 → 70) as later modules may depend on earlier ones.
 
 ## Schema Version
 
@@ -101,6 +107,8 @@ Run `tools/verify-schema.sql` after installation to check:
 | 20-change-control.sql | 10+ | 5+ | ECOs, reviews, deviations |
 | 30-supply-chain.sql | 6+ | 5+ | Suppliers, RFQs, pricing |
 | 40-integrations.sql | 6+ | 5+ | Webhooks, Odoo |
+| 60-customers.sql | 10 | 36 | Customer sync, AI enrichment |
+| 70-integration-credentials.sql | 1 | 0 (service_role only) | ERP credential storage |
 
 ## Related Documentation
 

@@ -503,6 +503,44 @@ export const moveCommand: Command<MoveParams> = {
     const errors: string[] = []
     let pathsToClear: string[] | null = null
 
+    // Check if any file operations are in progress for files inside folders being moved
+    // This prevents moving folders while downloads/syncs/checkins are active.
+    // Runs before the progress toast and expected-change registration so an early
+    // return here has nothing to clean up.
+    for (const file of files) {
+      if (file.isDirectory) {
+        const folderPath = file.relativePath.replace(/\\/g, '/').toLowerCase()
+        const opsInProgress: { path: string; operation: string }[] = []
+
+        for (const [opPath, opType] of ctx.processingOperations) {
+          const normalizedOpPath = opPath.replace(/\\/g, '/').toLowerCase()
+          if (normalizedOpPath.startsWith(folderPath + '/') || normalizedOpPath === folderPath) {
+            opsInProgress.push({ path: opPath, operation: opType })
+          }
+        }
+
+        if (opsInProgress.length > 0) {
+          const opTypes = [...new Set(opsInProgress.map((o) => o.operation))].join(', ')
+          log.warn('[Move]', 'Cannot move folder: file operations in progress', {
+            folder: file.name,
+            operationsInProgress: opsInProgress.length,
+            operationTypes: opTypes,
+          })
+          ctx.addToast(
+            'warning',
+            `Cannot move "${file.name}": ${opsInProgress.length} ${opTypes} operation(s) in progress. Wait for them to complete.`,
+          )
+          return {
+            success: false,
+            message: `Cannot move: ${opTypes} in progress`,
+            total: files.length,
+            succeeded: 0,
+            failed: files.length,
+          }
+        }
+      }
+    }
+
     // Pre-count files for accurate progress tracking (like copy command)
     // Also register expected file changes to suppress file watcher during operation
     const expectedPaths: string[] = []
@@ -552,42 +590,6 @@ export const moveCommand: Command<MoveParams> = {
       totalFilesToMove,
     )
 
-    // Check if any file operations are in progress for files inside folders being moved
-    // This prevents moving folders while downloads/syncs/checkins are active
-    for (const file of files) {
-      if (file.isDirectory) {
-        const folderPath = file.relativePath.replace(/\\/g, '/').toLowerCase()
-        const opsInProgress: { path: string; operation: string }[] = []
-
-        for (const [opPath, opType] of ctx.processingOperations) {
-          const normalizedOpPath = opPath.replace(/\\/g, '/').toLowerCase()
-          if (normalizedOpPath.startsWith(folderPath + '/') || normalizedOpPath === folderPath) {
-            opsInProgress.push({ path: opPath, operation: opType })
-          }
-        }
-
-        if (opsInProgress.length > 0) {
-          const opTypes = [...new Set(opsInProgress.map((o) => o.operation))].join(', ')
-          log.warn('[Move]', 'Cannot move folder: file operations in progress', {
-            folder: file.name,
-            operationsInProgress: opsInProgress.length,
-            operationTypes: opTypes,
-          })
-          ctx.addToast(
-            'warning',
-            `Cannot move "${file.name}": ${opsInProgress.length} ${opTypes} operation(s) in progress. Wait for them to complete.`,
-          )
-          return {
-            success: false,
-            message: `Cannot move: ${opTypes} in progress`,
-            total: files.length,
-            succeeded: 0,
-            failed: files.length,
-          }
-        }
-      }
-    }
-
     // Cancel queued thumbnail extractions for files in folders being moved
     // This prevents EPERM errors from open file handles during thumbnail generation
     // Type cast needed because these APIs are defined in electron/preload.ts but not recognized by src compilation
@@ -600,22 +602,6 @@ export const moveCommand: Command<MoveParams> = {
         data?: { released: boolean }
         error?: string
       }>
-      isSolidWorksProcessRunning?: () => Promise<boolean>
-    }
-
-    // CRITICAL: Check if SolidWorks is running BEFORE attempting folder moves
-    // If SW is running, it may have files open that will block the move
-    const hasAnyDirectoryMoves = files.some((f) => f.isDirectory)
-    if (hasAnyDirectoryMoves && electronAPI?.isSolidWorksProcessRunning) {
-      const swRunning = await electronAPI.isSolidWorksProcessRunning()
-      if (swRunning) {
-        log.warn('[Move]', 'SolidWorks is running - folder move may fail due to open files')
-        throw new Error(
-          'SolidWorks is running. Please close any files from this folder in SolidWorks, ' +
-            'then try the move again. Files open in SolidWorks cannot be moved.',
-        )
-      }
-      log.debug('[Move]', 'SolidWorks process check passed - SW is not running')
     }
 
     for (const file of files) {

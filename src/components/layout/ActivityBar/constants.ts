@@ -29,6 +29,8 @@ export const moduleTranslationKeys: Record<ModuleId, string> = {
   // Supply Chain - Logistics
   shipping: 'sidebar.shipping',
   receiving: 'sidebar.receiving',
+  // Customers
+  customers: 'sidebar.customers',
   // Production
   'manufacturing-orders': 'sidebar.manufacturingOrders',
   travellers: 'sidebar.travellers',

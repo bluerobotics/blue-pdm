@@ -16,7 +16,8 @@ Integration API for external systems (ERP, CI/CD, automation) built with [Fastif
 ┌─────────────────────────────────────────────────────────────┐
 │  Step 1: Deploy API (5 min)                                 │
 │  Click "Deploy to Railway" button below                     │
-│  Set: SUPABASE_URL, SUPABASE_KEY, SUPABASE_SERVICE_KEY      │
+│  Set: SUPABASE_URL, SUPABASE_KEY, SUPABASE_SERVICE_KEY,     │
+│       EXTENSION_ENCRYPTION_KEY                              │
 ├─────────────────────────────────────────────────────────────┤
 │  Step 2: Get API URL                                        │
 │  Railway gives you: https://your-app.railway.app            │
@@ -95,6 +96,7 @@ The server will start on `http://127.0.0.1:3001` by default.
 | `SUPABASE_URL` | - | Supabase project URL (required) |
 | `SUPABASE_KEY` | - | Supabase anon key (required) |
 | `SUPABASE_SERVICE_KEY` | - | Service role key (required for user invites) |
+| `EXTENSION_ENCRYPTION_KEY` | - | Encrypts integration credentials and extension secrets at rest (min 32 chars). See below |
 | `PORT` | `3001` | Port to listen on (auto-set by Railway/Render/Fly.io) |
 | `API_PORT` | - | Override port (fallback if PORT not set) |
 | `API_HOST` | `0.0.0.0` | Host to bind to |
@@ -103,6 +105,23 @@ The server will start on `http://127.0.0.1:3001` by default.
 | `CORS_ORIGINS` | `*` | Allowed origins (comma-separated) |
 
 You can also use `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` if you have them set for development.
+
+### Encryption key
+
+`EXTENSION_ENCRYPTION_KEY` encrypts secrets held at rest — ERP credentials such as
+your Odoo API key, extension secrets, and AI provider keys. Generate one with:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(48).toString('base64'))"
+```
+
+> ⚠️ **This value can never change.** Every secret encrypted with it becomes
+> permanently unreadable if it does, and credentials would have to be re-entered
+> by hand. Store it somewhere durable before you deploy.
+
+If it is not set, the API refuses to save new integration credentials rather than
+silently storing them in plaintext. Existing configurations keep working and are
+re-encrypted automatically the next time they are saved.
 
 ## Deployment
 
@@ -160,9 +179,16 @@ railway variables set SUPABASE_KEY=your-anon-key
 railway variables set SUPABASE_SERVICE_KEY=your-service-key
 railway variables set CORS_ORIGINS=https://your-erp.com,https://odoo.yourcompany.com
 
+# Encrypts stored integration credentials. Generate once with:
+#   node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+# Losing or changing it makes every stored credential undecryptable.
+railway variables set EXTENSION_ENCRYPTION_KEY=your-generated-key
+
 # Deploy
 railway up
 ```
+
+> Railway does not restart on a variable change. Redeploy after setting these.
 
 Your API will be live at `https://your-app.railway.app`
 
@@ -1265,6 +1291,14 @@ For JSON output (production), remove the `pino-pretty` transport in `server.js`.
 **"Service key not configured" error**
 - Set the `SUPABASE_SERVICE_KEY` environment variable (required for `/auth/invite` endpoint)
 - Get the service_role key from Supabase Dashboard → Settings → API
+
+**"Encryption key not configured" error when saving an integration**
+- Set `EXTENSION_ENCRYPTION_KEY` (min 32 chars) and redeploy — see [Encryption key](#encryption-key)
+- The API refuses to store credentials in plaintext, so saving fails until it is set
+
+**Integration credentials stopped decrypting**
+- `EXTENSION_ENCRYPTION_KEY` was changed or regenerated. Restore the original value if you have it
+- If it is lost, re-enter each integration's credentials to store them under the new key
 
 **"Invalid token" error**
 - Token may have expired - use `/auth/refresh` to get a new one

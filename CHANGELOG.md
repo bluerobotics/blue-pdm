@@ -4,6 +4,23 @@ All notable changes to BluePLM will be documented in this file.
 
 ![1774273238438](image/CHANGELOG/1774273238438.png)
 
+## [3.23.0-beta.1] - 2026-07-29
+
+### Added
+- **Customers module (backend only)** — a new top-level module for pulling customers, addresses and orders out of Odoo and enriching them with researched background and a category. This beta ships the database schema, the sync endpoint and the safety work; there is no UI yet. Requires **schema v76** (`60-customers.sql`, `70-integration-credentials.sql`, `80-permission-model.sql`).
+- **`POST /api/customers/sync`** — pulls partners, addresses, orders and order lines from Odoo. Gated on `module:customers` + `create`. Field selection is intersected against Odoo's own `fields_get`, so a field your Odoo doesn't have is skipped rather than erroring the run.
+- **Two new permission resources** — `module:customers` and `system:customer-enrichment`, the latter gating the (paid) AI enrichment runs separately from ordinary customer access.
+- **Duplicate a SolidWorks part together with its drawing** — a new file context-menu action. A drawing stores the path of its model inside the file, so copying both byte-for-byte would leave the new drawing pointing at the original part; the service rewrites that stored reference after the copy, using the Document Manager API or Pack and Go. Included in this beta for testing.
+
+### Changed
+- **An `admin` grant on a resource now implies every action on it** — the UI has always treated it that way, but the SQL matched the action exactly, so a team granted only `admin` was shown controls the database then refused with a 403.
+- **`is_org_admin()` accepts `users.role = 'admin'` as well as membership of the Administrators team** — the API routes checked the role while the SQL checked only the team, so an admin outside that team could run the supplier sync but not the customer sync.
+- **Odoo access is now read-only by construction** — all Odoo calls go through `odooReadOnlyCall`, which validates the model and ORM method against an allowlist and rejects writes, including ones nested inside a batch. The unguarded client is no longer exported.
+
+### Fixed
+- **ERP API keys were stored in plaintext and readable by every member of the org** — `odoo_saved_configs.api_key_encrypted` and `organization_integrations.credentials_encrypted` were named as though they held ciphertext but were written raw, and the SELECT policies on both tables grant access to all org members. RLS filters rows rather than columns, so no policy change could hide them. Credentials now live in `integration_credentials`, which has RLS enabled and no policies for `anon` or `authenticated`, making it reachable only by the API's service role. Values are AES-256-GCM encrypted under a new `EXTENSION_ENCRYPTION_KEY` environment variable, existing keys are migrated across and re-encrypt themselves on next write, and the API no longer returns a credential to the client at all — the UI gets a `has_api_key` flag instead.
+- **XML entities in Odoo responses were not decoded** — a company name containing `&amp;` came back mangled.
+
 ## [3.22.0] - 2026-07-28
 
 ### Added

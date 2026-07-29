@@ -190,8 +190,21 @@ export function buildCommandContext(
   onRefresh?: (silent?: boolean) => void,
   existingToastId?: string,
   silent?: boolean,
+  // Collects progress toasts this command creates, so the caller can clear any
+  // that are still open if the command throws before finishing them.
+  trackedToastIds?: Set<string>,
 ): CommandContext {
   const store = usePDMStore.getState()
+
+  const addProgressToast: CommandContext['addProgressToast'] = (id, message, total) => {
+    trackedToastIds?.add(id)
+    store.addProgressToast(id, message, total)
+  }
+
+  const removeToast: CommandContext['removeToast'] = (id) => {
+    trackedToastIds?.delete(id)
+    store.removeToast(id)
+  }
 
   return {
     user: store.user,
@@ -207,9 +220,9 @@ export function buildCommandContext(
 
     // Toast functions
     addToast: store.addToast,
-    addProgressToast: store.addProgressToast,
+    addProgressToast,
     updateProgressToast: store.updateProgressToast,
-    removeToast: store.removeToast,
+    removeToast,
     isProgressToastCancelled: store.isProgressToastCancelled,
 
     // Store updates
@@ -474,7 +487,17 @@ async function executeCommandDirect<K extends CommandId>(
     }
   }
 
-  const ctx = buildCommandContext(options?.onRefresh, options?.existingToastId, options?.silent)
+  // Seeded with the queued toast (if any) because ProgressTracker adopts it rather
+  // than creating its own, so it never passes through ctx.addProgressToast.
+  const openToastIds = new Set<string>(
+    options?.existingToastId ? [options.existingToastId] : undefined,
+  )
+  const ctx = buildCommandContext(
+    options?.onRefresh,
+    options?.existingToastId,
+    options?.silent,
+    openToastIds,
+  )
   const startTime = Date.now()
 
   // Execute
@@ -519,8 +542,20 @@ async function executeCommandDirect<K extends CommandId>(
 
     return result
   } catch (error) {
-    log.error('[Commands]', `Error executing ${commandId}`, { error })
     const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+    log.error('[Commands]', `Error executing ${commandId}`, {
+      error: errorMessage,
+      stack: error instanceof Error ? error.stack : undefined,
+    })
+
+    // A command that throws mid-flight never reaches ProgressTracker.finish(), which
+    // would leave its progress toast stuck on screen forever. Queued operations are
+    // covered by processQueue's finally; direct ones (move, copy, rename) are not.
+    for (const toastId of openToastIds) {
+      unregisterActiveOperation(`${commandId}-${toastId}`)
+      usePDMStore.getState().removeToast(toastId)
+    }
+    openToastIds.clear()
 
     ctx.addToast('error', `Command failed: ${errorMessage}`)
 

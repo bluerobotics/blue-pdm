@@ -29,6 +29,8 @@ export type ModuleId =
   // Supply Chain - Logistics
   | 'shipping'
   | 'receiving'
+  // Customers
+  | 'customers'
   // Production
   | 'manufacturing-orders'
   | 'travellers'
@@ -411,6 +413,16 @@ export const MODULES: ModuleDefinition[] = [
     implemented: true,
   },
   {
+    id: 'customers',
+    name: 'Customers',
+    group: 'supply-chain',
+    icon: 'Users',
+    defaultEnabled: true,
+    // Flip to true once CustomersView ships; until then the tab shows Coming Soon
+    // rather than mounting a view that does not exist.
+    implemented: false,
+  },
+  {
     id: 'supplier-portal',
     name: 'Supplier Portal',
     group: 'supply-chain-suppliers',
@@ -765,6 +777,8 @@ export const DEFAULT_MODULE_ORDER: ModuleId[] = [
   'scrap-tracking',
   // Quality (single top-level entry; opens the Item Browser)
   'items',
+  // Customers
+  'customers',
   // Accounting
   'accounts-payable',
   'accounts-receivable',
@@ -908,6 +922,7 @@ export const DEFAULT_MODULE_PARENT_MAP: Record<ModuleId, ParentId> = {
   'cost-tracking': 'group-accounting',
   budgets: 'group-accounting',
   // Top-level (no parent)
+  customers: null,
   'google-drive': null,
   terminal: null,
   reviews: null,

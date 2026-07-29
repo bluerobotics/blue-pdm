@@ -297,6 +297,8 @@ export const en: TranslationDict = {
     // Supply Chain - Logistics
     shipping: 'Shipping',
     receiving: 'Receiving',
+    // Customers
+    customers: 'Customers',
     // Production
     manufacturingOrders: 'Manufacturing Orders',
     travellers: 'Travellers',

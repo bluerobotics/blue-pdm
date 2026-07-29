@@ -260,6 +260,8 @@ export const es: TranslationDict = {
     // Supply Chain - Logistics
     shipping: 'Envío',
     receiving: 'Recepción',
+    // Customers
+    customers: 'Clientes',
     // Production
     manufacturingOrders: 'Órdenes de fabricación',
     travellers: 'Hojas de ruta',

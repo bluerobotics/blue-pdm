@@ -5,3 +5,9 @@ export {
   type TemplateFile,
   type SolidWorksFileType,
 } from './useSolidWorksFileCreation'
+
+export {
+  useDuplicatePartAndDrawing,
+  getBaseName,
+  type DuplicateResult,
+} from './useDuplicatePartAndDrawing'

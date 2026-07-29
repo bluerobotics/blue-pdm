@@ -2,9 +2,17 @@
  * Odoo Integration Routes
  *
  * Configuration, testing, and sync with Odoo ERP.
+ *
+ * The Odoo API key is never returned to a client and is never written to
+ * `odoo_saved_configs.api_key_encrypted` or
+ * `organization_integrations.credentials_encrypted`. Both of those columns sit
+ * on rows that every member of the org can read through PostgREST, so the
+ * credential lives in `integration_credentials` instead, reachable only with
+ * the service-role client. See api/src/integrations/credentialStore.ts.
  */
 
-import { FastifyPluginAsync } from 'fastify'
+import { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import {
   normalizeOdooUrl,
   testOdooConnection,
@@ -12,6 +20,131 @@ import {
   sendError,
   ErrorCode,
 } from '../../utils/index.js'
+import { createSupabaseAdminClient } from '../../src/infrastructure/supabase.js'
+import {
+  CredentialKeyMissingError,
+  deleteCredential,
+  getCredential,
+  hasEncryptionKey,
+  setCredential,
+  type CredentialOwnerType,
+} from '../../src/integrations/credentialStore.js'
+
+/**
+ * Everything a client is allowed to see about a saved config. Listed out rather
+ * than selecting `*` so that a deprecated credential column cannot ride along
+ * in a response.
+ */
+const SAVED_CONFIG_COLUMNS =
+  'id, name, description, url, database, username, color, is_active, last_tested_at, last_test_success, created_at'
+
+/** Credentials are stored per organization, so a user without one has nowhere to put them. */
+const NO_ORGANIZATION = 'Your account is not linked to an organization'
+
+/** The credential store exists but this deployment cannot reach it. */
+export class CredentialStoreUnavailableError extends Error {
+  constructor(reason: string) {
+    super(
+      `Integration credentials are unreachable: ${reason} They are stored in a table that only ` +
+        'the service-role client can read.',
+    )
+    this.name = 'CredentialStoreUnavailableError'
+  }
+}
+
+/**
+ * Credentials are only readable with the service-role client: their table has
+ * RLS on and no policies, so a user-scoped client returns zero rows instead of
+ * an error, which would look like "no credential stored".
+ */
+function openCredentialStore(): SupabaseClient {
+  try {
+    return createSupabaseAdminClient()
+  } catch (err) {
+    throw new CredentialStoreUnavailableError(err instanceof Error ? err.message : String(err))
+  }
+}
+
+/**
+ * Separates "this deployment is misconfigured" from a genuine failure.
+ *
+ * Both cases are fixed by an admin setting an environment variable, so the
+ * message is worth returning. It has to be returned deliberately: the
+ * production error handler replaces the message of an unhandled error with a
+ * generic string, which would leave an admin with nothing to act on.
+ */
+export function credentialSetupProblem(err: unknown): string | null {
+  if (err instanceof CredentialKeyMissingError) return err.message
+  if (err instanceof CredentialStoreUnavailableError) return err.message
+  return null
+}
+
+type OdooRouteHandler = (request: FastifyRequest, reply: FastifyReply) => Promise<unknown>
+
+function withCredentialErrors(handler: OdooRouteHandler): OdooRouteHandler {
+  return async (request, reply) => {
+    try {
+      return await handler(request, reply)
+    } catch (err) {
+      const problem = credentialSetupProblem(err)
+      if (!problem) throw err
+      request.log.error({ err }, 'Odoo credential store is not usable')
+      return sendError(reply, 503, ErrorCode.INTERNAL_ERROR, problem)
+    }
+  }
+}
+
+export interface OdooConnectionIdentity {
+  url: string
+  database: string
+  username: string
+}
+
+/**
+ * Find the saved config describing the same connection.
+ *
+ * The API key used to be part of this comparison, back when it sat in a column
+ * on the row. It is now obtainable only by decrypting it, so including it would
+ * mean decrypting every saved config on every save. It is also the wrong test:
+ * a connection is identified by where it points and who it logs in as, and a
+ * new key for that same target is a rotation of the connection rather than a
+ * different one.
+ */
+export function findMatchingSavedConfig<T extends OdooConnectionIdentity>(
+  configs: T[] | null | undefined,
+  target: OdooConnectionIdentity,
+): T | undefined {
+  return configs?.find(
+    (c) => c.url === target.url && c.database === target.database && c.username === target.username,
+  )
+}
+
+/**
+ * Whether a usable credential is stored, for UI that shows a key as already
+ * set. A credential that cannot be decrypted counts as absent: re-entering it
+ * is the only way out of that state, which is what the UI asks for when this
+ * is false.
+ */
+async function hasStoredCredential(
+  credentials: SupabaseClient,
+  ownerType: CredentialOwnerType,
+  ownerId: string,
+): Promise<boolean> {
+  try {
+    return Boolean(await getCredential(credentials, ownerType, ownerId))
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Refuse a save that would write a row and then fail to store its credential.
+ * `setCredential` throws the same error moments later; raising it up front just
+ * keeps the connection and its key from getting out of step.
+ */
+function requireEncryptionKey(): void {
+  if (!hasEncryptionKey()) throw new CredentialKeyMissingError()
+}
 
 const odooRoutes: FastifyPluginAsync = async (fastify) => {
   // Get Odoo integration settings
@@ -25,14 +158,16 @@ const odooRoutes: FastifyPluginAsync = async (fastify) => {
       },
       preHandler: fastify.authenticate,
     },
-    async (request, reply) => {
+    withCredentialErrors(async (request, reply) => {
       if (!request.user) {
         return sendError(reply, 401, ErrorCode.UNAUTHORIZED, 'Authentication required')
       }
 
       const { data, error } = await request
         .supabase!.from('organization_integrations')
-        .select('*')
+        .select(
+          'id, settings, is_connected, last_sync_at, last_sync_status, last_sync_count, auto_sync',
+        )
         .eq('org_id', request.user.org_id)
         .eq('integration_type', 'odoo')
         .single()
@@ -48,13 +183,20 @@ const odooRoutes: FastifyPluginAsync = async (fastify) => {
           database: data.settings?.database,
           username: data.settings?.username,
         },
+        // The key itself never leaves the server; the client only needs to know
+        // whether one is stored so it can show the field as already set.
+        has_api_key: await hasStoredCredential(
+          openCredentialStore(),
+          'organization_integration',
+          data.id,
+        ),
         is_connected: data.is_connected,
         last_sync_at: data.last_sync_at,
         last_sync_status: data.last_sync_status,
         last_sync_count: data.last_sync_count,
         auto_sync: data.auto_sync,
       }
-    },
+    }),
   )
 
   // Configure Odoo integration
@@ -67,7 +209,9 @@ const odooRoutes: FastifyPluginAsync = async (fastify) => {
         security: [{ bearerAuth: [] }],
         body: {
           type: 'object',
-          required: ['url', 'database', 'username', 'api_key'],
+          // api_key is optional: the client cannot read the stored key back, so
+          // an edit that leaves the field untouched sends nothing and keeps it.
+          required: ['url', 'database', 'username'],
           properties: {
             url: { type: 'string' },
             database: { type: 'string' },
@@ -80,7 +224,7 @@ const odooRoutes: FastifyPluginAsync = async (fastify) => {
       },
       preHandler: fastify.authenticate,
     },
-    async (request, reply) => {
+    withCredentialErrors(async (request, reply) => {
       if (!request.user || request.user.role !== 'admin') {
         return sendError(reply, 403, ErrorCode.FORBIDDEN, 'Only admins can configure integrations')
       }
@@ -89,35 +233,67 @@ const odooRoutes: FastifyPluginAsync = async (fastify) => {
         url: string
         database: string
         username: string
-        api_key: string
+        api_key?: string
         auto_sync?: boolean
         skip_test?: boolean
       }
 
+      const orgId = request.user.org_id
+      if (!orgId) return sendError(reply, 403, ErrorCode.FORBIDDEN, NO_ORGANIZATION)
+
+      const userId = request.user.id
       const normalizedUrl = normalizeOdooUrl(url)
+      const credentials = openCredentialStore()
+
+      const { data: existingConfigs } = await request
+        .supabase!.from('odoo_saved_configs')
+        .select('id, url, database, username')
+        .eq('org_id', orgId)
+        .eq('is_active', true)
+
+      const matchingConfig = findMatchingSavedConfig(existingConfigs, {
+        url: normalizedUrl,
+        database,
+        username,
+      })
+
+      const { data: existingIntegration } = await request
+        .supabase!.from('organization_integrations')
+        .select('id')
+        .eq('org_id', orgId)
+        .eq('integration_type', 'odoo')
+        .maybeSingle()
+
+      // Fall back to the stored key so that editing the URL or username does
+      // not require the admin to dig the key out of Odoo again.
+      let apiKey = (api_key ?? '').trim()
+      if (!apiKey && matchingConfig) {
+        apiKey = (await getCredential(credentials, 'odoo_saved_config', matchingConfig.id)) ?? ''
+      }
+      if (!apiKey && existingIntegration) {
+        apiKey =
+          (await getCredential(credentials, 'organization_integration', existingIntegration.id)) ??
+          ''
+      }
+      if (!apiKey) {
+        return sendError(
+          reply,
+          400,
+          ErrorCode.BAD_REQUEST,
+          'An Odoo API key is required: none was supplied and none is stored for this connection.',
+        )
+      }
+
+      requireEncryptionKey()
+
       let isConnected = false
       let connectionError: string | null = null
 
       if (!skip_test) {
-        const testResult = await testOdooConnection(normalizedUrl, database, username, api_key)
+        const testResult = await testOdooConnection(normalizedUrl, database, username, apiKey)
         isConnected = testResult.success
         connectionError = testResult.error || null
       }
-
-      // Save/update saved config
-      const { data: existingConfigs } = await request
-        .supabase!.from('odoo_saved_configs')
-        .select('id, url, database, username, api_key_encrypted')
-        .eq('org_id', request.user.org_id)
-        .eq('is_active', true)
-
-      const matchingConfig = existingConfigs?.find(
-        (c) =>
-          c.url === normalizedUrl &&
-          c.database === database &&
-          c.username === username &&
-          c.api_key_encrypted === api_key,
-      )
 
       let configId: string | null = matchingConfig?.id || null
       let configName: string | null = null
@@ -138,18 +314,17 @@ const odooRoutes: FastifyPluginAsync = async (fastify) => {
         const { data: newConfig } = await request
           .supabase!.from('odoo_saved_configs')
           .insert({
-            org_id: request.user.org_id,
+            org_id: orgId,
             name: baseName,
             url: normalizedUrl,
             database,
             username,
-            api_key_encrypted: api_key,
             color: colors[(existingConfigs?.length || 0) % colors.length],
             is_active: true,
             last_tested_at: !skip_test ? new Date().toISOString() : null,
             last_test_success: !skip_test ? isConnected : null,
-            created_by: request.user.id,
-            updated_by: request.user.id,
+            created_by: userId,
+            updated_by: userId,
           })
           .select('id, name')
           .single()
@@ -160,29 +335,50 @@ const odooRoutes: FastifyPluginAsync = async (fastify) => {
         }
       }
 
-      const { error } = await request.supabase!.from('organization_integrations').upsert(
-        {
-          org_id: request.user.org_id,
-          integration_type: 'odoo',
-          settings: {
-            url: normalizedUrl,
-            database,
-            username,
-            config_id: configId,
-            config_name: configName,
+      // Credentials are keyed on the owning row, so the row has to exist first.
+      if (configId) {
+        await setCredential(credentials, orgId, 'odoo_saved_config', configId, apiKey, userId)
+      }
+
+      const { data: integration, error } = await request
+        .supabase!.from('organization_integrations')
+        .upsert(
+          {
+            org_id: orgId,
+            integration_type: 'odoo',
+            settings: {
+              url: normalizedUrl,
+              database,
+              username,
+              config_id: configId,
+              config_name: configName,
+            },
+            // Deprecated column, cleared rather than written: anything left in
+            // it would be readable by every member of the org.
+            credentials_encrypted: null,
+            is_active: true,
+            is_connected: isConnected,
+            last_connected_at: isConnected ? new Date().toISOString() : null,
+            last_error: connectionError,
+            auto_sync: auto_sync || false,
+            updated_by: userId,
           },
-          credentials_encrypted: api_key,
-          is_active: true,
-          is_connected: isConnected,
-          last_connected_at: isConnected ? new Date().toISOString() : null,
-          last_error: connectionError,
-          auto_sync: auto_sync || false,
-          updated_by: request.user.id,
-        },
-        { onConflict: 'org_id,integration_type' },
-      )
+          { onConflict: 'org_id,integration_type' },
+        )
+        .select('id')
+        .single()
 
       if (error) throw error
+      if (!integration) throw new Error('Odoo integration row was not returned after save')
+
+      await setCredential(
+        credentials,
+        orgId,
+        'organization_integration',
+        integration.id,
+        apiKey,
+        userId,
+      )
 
       return {
         success: true,
@@ -191,7 +387,7 @@ const odooRoutes: FastifyPluginAsync = async (fastify) => {
           : `Saved but connection failed: ${connectionError}`,
         new_config: configName ? { id: configId, name: configName } : undefined,
       }
-    },
+    }),
   )
 
   // Test Odoo connection
@@ -204,6 +400,10 @@ const odooRoutes: FastifyPluginAsync = async (fastify) => {
         security: [{ bearerAuth: [] }],
         body: {
           type: 'object',
+          // The caller supplies the key. There is deliberately no fall back to
+          // the stored one: this route takes an arbitrary URL from any
+          // authenticated user, so a stored key would be sent wherever they
+          // asked. Use "Save & Test" to exercise a key already on file.
           required: ['url', 'database', 'username', 'api_key'],
           properties: {
             url: { type: 'string' },
@@ -244,7 +444,7 @@ const odooRoutes: FastifyPluginAsync = async (fastify) => {
       },
       preHandler: fastify.authenticate,
     },
-    async (request, reply) => {
+    withCredentialErrors(async (request, reply) => {
       if (!request.user) {
         return sendError(reply, 401, ErrorCode.UNAUTHORIZED)
       }
@@ -254,7 +454,7 @@ const odooRoutes: FastifyPluginAsync = async (fastify) => {
 
       const { data: integration } = await request
         .supabase!.from('organization_integrations')
-        .select('*')
+        .select('id, settings')
         .eq('org_id', request.user.org_id)
         .eq('integration_type', 'odoo')
         .single()
@@ -263,11 +463,26 @@ const odooRoutes: FastifyPluginAsync = async (fastify) => {
         return sendError(reply, 400, ErrorCode.BAD_REQUEST, 'Odoo integration not configured')
       }
 
+      const apiKey = await getCredential(
+        openCredentialStore(),
+        'organization_integration',
+        integration.id,
+      )
+
+      if (!apiKey) {
+        return sendError(
+          reply,
+          400,
+          ErrorCode.BAD_REQUEST,
+          'The Odoo integration has no stored API key. Re-enter it in Settings and save.',
+        )
+      }
+
       const odooSuppliers = await fetchOdooSuppliers(
         integration.settings.url,
         integration.settings.database,
         integration.settings.username,
-        integration.credentials_encrypted,
+        apiKey,
       )
 
       if (!odooSuppliers.success) {
@@ -352,7 +567,7 @@ const odooRoutes: FastifyPluginAsync = async (fastify) => {
         message: `Synced ${created + updated} suppliers from Odoo`,
         debug: odooSuppliers.debug,
       }
-    },
+    }),
   )
 
   // Disconnect Odoo integration
@@ -366,24 +581,36 @@ const odooRoutes: FastifyPluginAsync = async (fastify) => {
       },
       preHandler: fastify.authenticate,
     },
-    async (request, reply) => {
+    withCredentialErrors(async (request, reply) => {
       if (!request.user || request.user.role !== 'admin') {
         return sendError(reply, 403, ErrorCode.FORBIDDEN, 'Only admins can disconnect integrations')
       }
 
-      await request
+      const { data: integration } = await request
         .supabase!.from('organization_integrations')
-        .update({
-          is_active: false,
-          is_connected: false,
-          credentials_encrypted: null,
-          updated_by: request.user.id,
-        })
+        .select('id')
         .eq('org_id', request.user.org_id)
         .eq('integration_type', 'odoo')
+        .maybeSingle()
+
+      if (integration) {
+        await request
+          .supabase!.from('organization_integrations')
+          .update({
+            is_active: false,
+            is_connected: false,
+            credentials_encrypted: null,
+            updated_by: request.user.id,
+          })
+          .eq('id', integration.id)
+
+        // Disconnecting is meant to revoke access, so the key goes with it.
+        // Saved configs keep their own, which is what makes reconnecting work.
+        await deleteCredential(openCredentialStore(), 'organization_integration', integration.id)
+      }
 
       return { success: true, message: 'Odoo integration disconnected' }
-    },
+    }),
   )
 
   // List saved Odoo configurations
@@ -400,9 +627,7 @@ const odooRoutes: FastifyPluginAsync = async (fastify) => {
     async (request) => {
       const { data } = await request
         .supabase!.from('odoo_saved_configs')
-        .select(
-          'id, name, description, url, database, username, color, is_active, last_tested_at, last_test_success, created_at',
-        )
+        .select(SAVED_CONFIG_COLUMNS)
         .eq('org_id', request.user!.org_id)
         .eq('is_active', true)
         .order('name')
@@ -422,7 +647,7 @@ const odooRoutes: FastifyPluginAsync = async (fastify) => {
       },
       preHandler: fastify.authenticate,
     },
-    async (request, reply) => {
+    withCredentialErrors(async (request, reply) => {
       if (request.user!.role !== 'admin') {
         return sendError(reply, 403, ErrorCode.FORBIDDEN, 'Only admins can access saved configurations')
       }
@@ -430,7 +655,7 @@ const odooRoutes: FastifyPluginAsync = async (fastify) => {
       const { id } = request.params as { id: string }
       const { data } = await request
         .supabase!.from('odoo_saved_configs')
-        .select('*')
+        .select('id, name, url, database, username, color')
         .eq('id', id)
         .eq('org_id', request.user!.org_id)
         .single()
@@ -443,10 +668,12 @@ const odooRoutes: FastifyPluginAsync = async (fastify) => {
         url: data.url,
         database: data.database,
         username: data.username,
-        api_key: data.api_key_encrypted,
+        // Not the key: an admin loading this config into the form needs to know
+        // that one is on file, nothing more.
+        has_api_key: await hasStoredCredential(openCredentialStore(), 'odoo_saved_config', data.id),
         color: data.color,
       }
-    },
+    }),
   )
 
   // Save a new Odoo configuration
@@ -473,7 +700,7 @@ const odooRoutes: FastifyPluginAsync = async (fastify) => {
       },
       preHandler: fastify.authenticate,
     },
-    async (request, reply) => {
+    withCredentialErrors(async (request, reply) => {
       if (request.user!.role !== 'admin') {
         return sendError(reply, 403, ErrorCode.FORBIDDEN, 'Only admins can save configurations')
       }
@@ -488,27 +715,36 @@ const odooRoutes: FastifyPluginAsync = async (fastify) => {
         skip_test?: boolean
       }
 
+      const apiKey = (api_key ?? '').trim()
+      if (!apiKey) {
+        return sendError(reply, 400, ErrorCode.BAD_REQUEST, 'An Odoo API key is required')
+      }
+
+      requireEncryptionKey()
+
+      const orgId = request.user!.org_id
+      if (!orgId) return sendError(reply, 403, ErrorCode.FORBIDDEN, NO_ORGANIZATION)
+
+      const userId = request.user!.id
       const normalizedUrl = normalizeOdooUrl(url)
       let testResult: { success: boolean; error?: string } = { success: false, error: '' }
-      if (!skip_test)
-        testResult = await testOdooConnection(normalizedUrl, database, username, api_key)
+      if (!skip_test) testResult = await testOdooConnection(normalizedUrl, database, username, apiKey)
 
       const { data, error } = await request
         .supabase!.from('odoo_saved_configs')
         .insert({
-          org_id: request.user!.org_id,
+          org_id: orgId,
           name,
           url: normalizedUrl,
           database,
           username,
-          api_key_encrypted: api_key,
           color,
           last_tested_at: !skip_test ? new Date().toISOString() : null,
           last_test_success: !skip_test ? testResult.success : null,
-          created_by: request.user!.id,
-          updated_by: request.user!.id,
+          created_by: userId,
+          updated_by: userId,
         })
-        .select()
+        .select(SAVED_CONFIG_COLUMNS)
         .single()
 
       if (error) {
@@ -517,8 +753,17 @@ const odooRoutes: FastifyPluginAsync = async (fastify) => {
         throw error
       }
 
+      await setCredential(
+        openCredentialStore(),
+        orgId,
+        'odoo_saved_config',
+        data.id,
+        apiKey,
+        userId,
+      )
+
       return { success: true, config: data, connection_test: skip_test ? null : testResult }
-    },
+    }),
   )
 
   // Update a saved configuration
@@ -532,31 +777,52 @@ const odooRoutes: FastifyPluginAsync = async (fastify) => {
       },
       preHandler: fastify.authenticate,
     },
-    async (request, reply) => {
+    withCredentialErrors(async (request, reply) => {
       if (request.user!.role !== 'admin') return sendError(reply, 403, ErrorCode.FORBIDDEN)
+
+      const orgId = request.user!.org_id
+      if (!orgId) return sendError(reply, 403, ErrorCode.FORBIDDEN, NO_ORGANIZATION)
 
       const { id } = request.params as { id: string }
       const body = request.body as Record<string, unknown>
+
+      // Absent or blank means the admin did not retype the key, so the stored
+      // one stays. Only an actual value replaces it.
+      const apiKey = typeof body.api_key === 'string' ? body.api_key.trim() : ''
+      if (apiKey) requireEncryptionKey()
 
       const updateData: Record<string, unknown> = { updated_by: request.user!.id }
       if (body.name) updateData.name = body.name
       if (body.url) updateData.url = normalizeOdooUrl(body.url as string)
       if (body.database) updateData.database = body.database
       if (body.username) updateData.username = body.username
-      if (body.api_key) updateData.api_key_encrypted = body.api_key
       if (body.color !== undefined) updateData.color = body.color
 
       const { data } = await request
         .supabase!.from('odoo_saved_configs')
         .update(updateData)
         .eq('id', id)
-        .eq('org_id', request.user!.org_id)
-        .select()
+        .eq('org_id', orgId)
+        .select(SAVED_CONFIG_COLUMNS)
         .single()
 
       if (!data) return sendError(reply, 404, ErrorCode.NOT_FOUND)
+
+      if (apiKey) {
+        // data.id rather than the path param: the update is what proves the row
+        // belongs to this org, and credential owner ids are not org-scoped.
+        await setCredential(
+          openCredentialStore(),
+          orgId,
+          'odoo_saved_config',
+          data.id,
+          apiKey,
+          request.user!.id,
+        )
+      }
+
       return { success: true, config: data }
-    },
+    }),
   )
 
   // Delete a saved configuration
@@ -570,18 +836,26 @@ const odooRoutes: FastifyPluginAsync = async (fastify) => {
       },
       preHandler: fastify.authenticate,
     },
-    async (request, reply) => {
+    withCredentialErrors(async (request, reply) => {
       if (request.user!.role !== 'admin') return sendError(reply, 403, ErrorCode.FORBIDDEN)
 
       const { id } = request.params as { id: string }
-      await request
+      const { data: deleted } = await request
         .supabase!.from('odoo_saved_configs')
         .delete()
         .eq('id', id)
         .eq('org_id', request.user!.org_id)
+        .select('id')
+
+      // Only once the row is confirmed deleted from this org. Credential owner
+      // ids carry no org, so acting on an unverified id would let an admin drop
+      // another org's credential.
+      if (deleted && deleted.length > 0) {
+        await deleteCredential(openCredentialStore(), 'odoo_saved_config', id)
+      }
 
       return { success: true, message: 'Configuration deleted' }
-    },
+    }),
   )
 
   // Activate a saved configuration
@@ -595,45 +869,82 @@ const odooRoutes: FastifyPluginAsync = async (fastify) => {
       },
       preHandler: fastify.authenticate,
     },
-    async (request, reply) => {
+    withCredentialErrors(async (request, reply) => {
       if (request.user!.role !== 'admin') return sendError(reply, 403, ErrorCode.FORBIDDEN)
 
+      const orgId = request.user!.org_id
+      if (!orgId) return sendError(reply, 403, ErrorCode.FORBIDDEN, NO_ORGANIZATION)
+
+      const userId = request.user!.id
       const { id } = request.params as { id: string }
       const { data: config } = await request
         .supabase!.from('odoo_saved_configs')
-        .select('*')
+        .select('id, name, url, database, username')
         .eq('id', id)
-        .eq('org_id', request.user!.org_id)
+        .eq('org_id', orgId)
         .single()
 
       if (!config) return sendError(reply, 404, ErrorCode.NOT_FOUND)
+
+      const credentials = openCredentialStore()
+      const apiKey = await getCredential(credentials, 'odoo_saved_config', config.id)
+
+      if (!apiKey) {
+        return sendError(
+          reply,
+          400,
+          ErrorCode.BAD_REQUEST,
+          `"${config.name}" has no stored API key. Edit the connection and enter it again.`,
+        )
+      }
+
+      // A legacy plaintext key reads back without the encryption key but cannot
+      // be copied onto the integration without it.
+      requireEncryptionKey()
 
       const testResult = await testOdooConnection(
         config.url,
         config.database,
         config.username,
-        config.api_key_encrypted,
+        apiKey,
       )
 
-      await request.supabase!.from('organization_integrations').upsert(
-        {
-          org_id: request.user!.org_id,
-          integration_type: 'odoo',
-          settings: {
-            url: config.url,
-            database: config.database,
-            username: config.username,
-            config_id: config.id,
-            config_name: config.name,
+      const { data: integration, error } = await request
+        .supabase!.from('organization_integrations')
+        .upsert(
+          {
+            org_id: orgId,
+            integration_type: 'odoo',
+            settings: {
+              url: config.url,
+              database: config.database,
+              username: config.username,
+              config_id: config.id,
+              config_name: config.name,
+            },
+            // Deprecated column: see the note on the configure route.
+            credentials_encrypted: null,
+            is_active: true,
+            is_connected: testResult.success,
+            last_connected_at: testResult.success ? new Date().toISOString() : null,
+            last_error: testResult.error,
+            updated_by: userId,
           },
-          credentials_encrypted: config.api_key_encrypted,
-          is_active: true,
-          is_connected: testResult.success,
-          last_connected_at: testResult.success ? new Date().toISOString() : null,
-          last_error: testResult.error,
-          updated_by: request.user!.id,
-        },
-        { onConflict: 'org_id,integration_type' },
+          { onConflict: 'org_id,integration_type' },
+        )
+        .select('id')
+        .single()
+
+      if (error) throw error
+      if (!integration) throw new Error('Odoo integration row was not returned after activate')
+
+      await setCredential(
+        credentials,
+        orgId,
+        'organization_integration',
+        integration.id,
+        apiKey,
+        userId,
       )
 
       await request
@@ -649,7 +960,7 @@ const odooRoutes: FastifyPluginAsync = async (fastify) => {
           ? `Switched to "${config.name}" and connected!`
           : `Switched to "${config.name}" but connection failed`,
       }
-    },
+    }),
   )
 }
 

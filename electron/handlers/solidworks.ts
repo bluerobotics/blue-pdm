@@ -3022,6 +3022,25 @@ export function registerSolidWorksHandlers(
   )
 
   ipcMain.handle(
+    'solidworks:duplicate-with-references',
+    async (
+      _,
+      args: {
+        sourceModelPath: string
+        targetModelPath: string
+        sourceDrawingPath?: string
+        targetDrawingPath?: string
+      },
+    ) => {
+      log(
+        `[SolidWorks] IPC: duplicate-with-references - ${args.sourceModelPath} -> ${args.targetModelPath}` +
+          (args.sourceDrawingPath ? ` (+ drawing ${args.targetDrawingPath})` : ' (no drawing)'),
+      )
+      return sendSWCommand({ action: 'duplicateWithReferences', ...args })
+    },
+  )
+
+  ipcMain.handle(
     'solidworks:add-component',
     async (
       _,
@@ -3345,6 +3364,7 @@ export function unregisterSolidWorksHandlers(): void {
     'solidworks:export-image',
     'solidworks:replace-component',
     'solidworks:pack-and-go',
+    'solidworks:duplicate-with-references',
     'solidworks:get-open-documents',
     'solidworks:is-document-open',
     'solidworks:get-document-info',

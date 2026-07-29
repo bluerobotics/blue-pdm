@@ -19,6 +19,7 @@ import {
   OpenActions,
   AssemblyActions,
   BulkAssemblyActions,
+  DuplicateActions,
   FileSystemActions,
   ClipboardActions,
   SyncActions,
@@ -272,6 +273,14 @@ export function FileContextMenu({
 
         {/* Assembly actions (insert into open SolidWorks assembly) */}
         <AssemblyActions
+          contextFiles={contextFiles}
+          multiSelect={multiSelect}
+          firstFile={firstFile}
+          onClose={onClose}
+        />
+
+        {/* Duplicate a part together with its drawing, remapping the drawing's reference */}
+        <DuplicateActions
           contextFiles={contextFiles}
           multiSelect={multiSelect}
           firstFile={firstFile}

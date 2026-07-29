@@ -26,7 +26,7 @@ import { supabase } from './supabase'
 
 // The schema version this app version expects
 // Increment this when releasing app updates that require schema changes
-export const EXPECTED_SCHEMA_VERSION = 73
+export const EXPECTED_SCHEMA_VERSION = 76
 
 // Minimum schema version that will still work (for soft warnings vs hard errors)
 // Set this to allow some backwards compatibility
@@ -106,6 +106,9 @@ export const VERSION_DESCRIPTIONS: Record<number, string> = {
   71: 'Added item_images table + get/upsert/reset RPCs for Item Browser per-item image overrides',
   72: 'Added item_designations + item_designation_assignments tables and RPCs for Item Browser designations',
   73: 'get_vault_files_fast and get_vault_files_delta return custom_properties, so the explorer can tell committed per-configuration metadata from pending edits',
+  74: 'Add customers module: Odoo customer sync (customers, addresses, orders, order lines) and AI enrichment (accounts, enrichments, sources, runs) with a seeded category taxonomy',
+  75: 'Move integration credentials into a service-role-only table so org members can no longer read ERP API keys',
+  76: 'Align the permission model: an admin grant on a resource implies all actions, and is_org_admin accepts users.role = admin as well as the Administrators team',
   // Note: Process templates module (v26+) is optional - see modules/process-templates.sql
 }
 

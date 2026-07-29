@@ -248,6 +248,8 @@ export const zhCN: TranslationDict = {
     // 供应链 - 物流
     shipping: '发货',
     receiving: '收货',
+    // 客户
+    customers: '客户',
     // 生产
     manufacturingOrders: '生产订单',
     travellers: '工艺流转卡',

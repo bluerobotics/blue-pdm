@@ -20,6 +20,9 @@
 --   - 20-change-control.sql (ECOs, reviews, deviations)
 --   - 30-supply-chain.sql (suppliers, RFQs)
 --   - 40-integrations.sql (Odoo, webhooks)
+--   - 60-customers.sql (Odoo customer sync, AI enrichment)
+--   - 70-integration-credentials.sql (moves ERP secrets out of client-readable tables)
+--   - 80-permission-model.sql (only needed to upgrade an existing database)
 --
 -- =====================================================================
 
@@ -42,7 +45,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 -- Insert initial version for new installations
 INSERT INTO schema_version (id, version, description, applied_at, applied_by)
-VALUES (1, 73, 'Return custom_properties from get_vault_files_fast and get_vault_files_delta', NOW(), 'migration')
+VALUES (1, 76, 'Align permission model: admin grant implies all actions', NOW(), 'migration')
 ON CONFLICT (id) DO UPDATE SET 
   version = EXCLUDED.version,
   description = EXCLUDED.description,
@@ -822,7 +825,17 @@ BEGIN
     RETURN false;
   END IF;
   
+  -- Admin means membership of the Administrators team OR users.role = 'admin'.
+  -- These two notions drifted apart: the API routes check users.role while this
+  -- function checked only the team, so an admin outside that team could use
+  -- some features and be refused others.
   RETURN EXISTS(
+    SELECT 1
+    FROM users u
+    WHERE u.id = v_user_id
+      AND u.org_id = v_user_org_id
+      AND u.role = 'admin'
+  ) OR EXISTS(
     SELECT 1
     FROM team_members tm
     JOIN teams t ON t.id = tm.team_id
@@ -851,7 +864,14 @@ BEGIN
     RETURN false;
   END IF;
   
+  -- Same dual definition as the no-argument overload above; keep them in step.
   RETURN EXISTS(
+    SELECT 1
+    FROM users u
+    WHERE u.id = v_user_id
+      AND u.org_id = v_user_org_id
+      AND u.role = 'admin'
+  ) OR EXISTS(
     SELECT 1
     FROM team_members tm
     JOIN teams t ON t.id = tm.team_id
@@ -912,7 +932,13 @@ BEGIN
     JOIN team_permissions tp ON tm.team_id = tp.team_id
     WHERE tm.user_id = p_user_id
       AND tp.resource = p_resource
-      AND p_action = ANY(tp.actions)
+      AND (
+        p_action = ANY(tp.actions)
+        -- An 'admin' grant on a resource implies every action on it. The UI has
+        -- always treated it that way; this function did not, so a team granted
+        -- only 'admin' was shown controls the database then refused.
+        OR 'admin'::permission_action = ANY(tp.actions)
+      )
       AND (tp.vault_id IS NULL OR tp.vault_id = p_vault_id)
   ) INTO v_has_permission;
   

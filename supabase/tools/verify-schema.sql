@@ -26,6 +26,13 @@ DECLARE
     'process_template_items', 'eco_checklist_items', 'eco_gate_approvals',
     -- Supply chain
     'suppliers', 'part_suppliers', 'rfqs', 'rfq_items', 'rfq_suppliers', 'rfq_quotes',
+    -- Customers
+    'customer_categories', 'customer_accounts', 'customers', 'customer_addresses',
+    'customer_orders', 'customer_order_lines', 'customer_enrichments',
+    'customer_enrichment_sources', 'customer_enrichment_runs',
+    'customer_enrichment_run_items',
+    -- Integration credentials
+    'integration_credentials',
     -- Integrations
     'organization_integrations', 'integration_sync_log', 'odoo_saved_configs',
     'webhooks',
