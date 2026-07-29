@@ -21,6 +21,41 @@ const CONFIGS = [
   { id: 'other-db', url: 'https://one.odoo.com', database: 'staging', username: 'admin@example.com' },
 ]
 
+describe('isSameConnection', () => {
+  const TARGET = {
+    url: 'https://one.odoo.com',
+    database: 'main',
+    username: 'admin@example.com',
+  }
+
+  it('accepts the same target written with a trailing slash', () => {
+    // Stored settings and submitted values do not always agree on trailing
+    // slashes or scheme casing, and a false negative here would pointlessly
+    // force an admin to retype a key they cannot read.
+    expect(odoo.isSameConnection({ ...TARGET, url: 'https://one.odoo.com/' }, TARGET)).toBe(true)
+  })
+
+  it.each([
+    ['a different host', { ...TARGET, url: 'https://attacker.example' }],
+    ['a different database', { ...TARGET, database: 'staging' }],
+    ['a different username', { ...TARGET, username: 'someone-else@example.com' }],
+  ])('refuses to treat %s as the same connection', (_label, candidate) => {
+    // This is the check that stops a stored key being delivered to a host the
+    // caller chose: an admin cannot read the key, but without this they could
+    // re-point the connection and leave the key field blank.
+    expect(odoo.isSameConnection(candidate, TARGET)).toBe(false)
+  })
+
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['empty settings', {}],
+    ['settings missing a username', { url: TARGET.url, database: TARGET.database }],
+  ])('fails closed on %s', (_label, candidate) => {
+    expect(odoo.isSameConnection(candidate, TARGET)).toBe(false)
+  })
+})
+
 describe('findMatchingSavedConfig', () => {
   it('matches on url, database and username together', () => {
     const match = odoo.findMatchingSavedConfig(CONFIGS, {

@@ -82,8 +82,28 @@ export function findMatchingSavedConfig<T extends OdooConnectionIdentity>(
   configs: T[] | null | undefined,
   target: OdooConnectionIdentity,
 ): T | undefined {
-  return configs?.find(
-    (c) => c.url === target.url && c.database === target.database && c.username === target.username,
+  return configs?.find((c) => isSameConnection(c, target))
+}
+
+/**
+ * Whether two descriptions point at the same Odoo, logging in as the same user.
+ *
+ * This is the test that makes reusing a stored credential safe. A credential
+ * belongs to the target it was saved for, so handing it to a different url,
+ * database or username would send the secret somewhere its owner never
+ * authorised. That matters even though admins can no longer read a stored key:
+ * without this check an admin could still point a connection at a host they
+ * control, leave the key field blank, and have the API deliver the key there.
+ */
+export function isSameConnection(
+  candidate: Partial<OdooConnectionIdentity> | null | undefined,
+  target: OdooConnectionIdentity,
+): boolean {
+  if (!candidate?.url || !candidate.database || !candidate.username) return false
+  return (
+    normalizeOdooUrl(candidate.url) === normalizeOdooUrl(target.url) &&
+    candidate.database === target.database &&
+    candidate.username === target.username
   )
 }
 
@@ -227,18 +247,33 @@ const odooRoutes: FastifyPluginAsync = async (fastify) => {
 
       const { data: existingIntegration } = await request
         .supabase!.from('organization_integrations')
-        .select('id')
+        .select('id, settings')
         .eq('org_id', orgId)
         .eq('integration_type', 'odoo')
         .maybeSingle()
 
-      // Fall back to the stored key so that editing the URL or username does
+      // Fall back to a stored key so that re-saving an unchanged connection does
       // not require the admin to dig the key out of Odoo again.
+      //
+      // Both fallbacks are gated on the submitted connection being the one the
+      // key was stored for. Without that, a blank key field plus an edited URL
+      // would make the API send the stored secret to a host of the caller's
+      // choosing. matchingConfig is already identity-matched by definition; the
+      // integration row has to be checked explicitly.
       let apiKey = (api_key ?? '').trim()
+      const target = { url: normalizedUrl, database, username }
+
       if (!apiKey && matchingConfig) {
         apiKey = (await getCredential(credentials, 'odoo_saved_config', matchingConfig.id)) ?? ''
       }
-      if (!apiKey && existingIntegration) {
+      if (
+        !apiKey &&
+        existingIntegration &&
+        isSameConnection(
+          (existingIntegration.settings ?? {}) as Partial<OdooConnectionIdentity>,
+          target,
+        )
+      ) {
         apiKey =
           (await getCredential(credentials, 'organization_integration', existingIntegration.id)) ??
           ''
@@ -384,6 +419,14 @@ const odooRoutes: FastifyPluginAsync = async (fastify) => {
       preHandler: fastify.authenticate,
     },
     async (request, reply) => {
+      // This route makes the API open a connection to a URL chosen by the
+      // caller, so it is a request-forgery surface even though it carries no
+      // stored secret. Restricted to admins, who are the only ones with a
+      // reason to test a connection.
+      if (!request.user || request.user.role !== 'admin') {
+        return sendError(reply, 403, ErrorCode.FORBIDDEN, 'Only admins can test integrations')
+      }
+
       const { url, database, username, api_key } = request.body as {
         url: string
         database: string
@@ -758,6 +801,42 @@ const odooRoutes: FastifyPluginAsync = async (fastify) => {
       // one stays. Only an actual value replaces it.
       const apiKey = typeof body.api_key === 'string' ? body.api_key.trim() : ''
       if (apiKey) requireEncryptionKey()
+
+      // Re-pointing a connection while keeping its stored key would hand that
+      // key to the new target on the next test or sync. An admin cannot read a
+      // stored key back, so this is the remaining route by which they could get
+      // it out: change the host, leave the key blank, let the API deliver it.
+      // Supplying a new key alongside the change is allowed, since that key is
+      // one the admin already holds.
+      if (!apiKey && (body.url || body.database || body.username)) {
+        const { data: current } = await request
+          .supabase!.from('odoo_saved_configs')
+          .select('id, url, database, username')
+          .eq('id', id)
+          .eq('org_id', orgId)
+          .maybeSingle()
+
+        if (!current) return sendError(reply, 404, ErrorCode.NOT_FOUND)
+
+        const target = {
+          url: normalizeOdooUrl((body.url as string) || current.url),
+          database: (body.database as string) || current.database,
+          username: (body.username as string) || current.username,
+        }
+
+        if (
+          !isSameConnection(current, target) &&
+          (await hasStoredCredential(openCredentialStore(), 'odoo_saved_config', current.id))
+        ) {
+          return sendError(
+            reply,
+            400,
+            ErrorCode.BAD_REQUEST,
+            'This configuration has a stored API key. Enter the key again when changing the URL, ' +
+              'database or username, so a saved key is never sent to a different server.',
+          )
+        }
+      }
 
       const updateData: Record<string, unknown> = { updated_by: request.user!.id }
       if (body.name) updateData.name = body.name
