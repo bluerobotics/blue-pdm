@@ -1088,13 +1088,35 @@ ON CONFLICT (owner_type, owner_id) DO NOTHING;
 -- exposure; everything above only relocates the data. It is also the step that
 -- requires an API build reading from integration_credentials to be deployed -
 -- see the ordering note in this module's header.
-UPDATE odoo_saved_configs
+--
+-- Each clear is conditional on the credential being provably present in the
+-- new table. The INSERTs above use ON CONFLICT DO NOTHING, so a row that
+-- already had a credential entry is skipped - and if that entry were empty,
+-- clearing here would destroy the only remaining copy of the key. The EXISTS
+-- check makes that impossible: a key that was not captured is left where it is,
+-- still exposed but not lost, and a re-run picks it up. Losing a credential is
+-- worse than briefly not having relocated one.
+UPDATE odoo_saved_configs c
   SET api_key_encrypted = NULL
-  WHERE api_key_encrypted IS NOT NULL;
+  WHERE c.api_key_encrypted IS NOT NULL
+    AND EXISTS (
+      SELECT 1 FROM integration_credentials ic
+      WHERE ic.owner_type = 'odoo_saved_config'
+        AND ic.owner_id = c.id
+        AND ic.secret IS NOT NULL
+        AND ic.secret <> ''
+    );
 
-UPDATE organization_integrations
+UPDATE organization_integrations oi
   SET credentials_encrypted = NULL
-  WHERE credentials_encrypted IS NOT NULL;
+  WHERE oi.credentials_encrypted IS NOT NULL
+    AND EXISTS (
+      SELECT 1 FROM integration_credentials ic
+      WHERE ic.owner_type = 'organization_integration'
+        AND ic.owner_id = oi.id
+        AND ic.secret IS NOT NULL
+        AND ic.secret <> ''
+    );
 
 -- Left in place rather than dropped so that an API still running the previous
 -- build does not error on a missing column mid-rollout. Drop them in a later
