@@ -7,7 +7,7 @@ All notable changes to BluePLM will be documented in this file.
 ## [3.23.0-beta.1] - 2026-07-29
 
 ### Added
-- **Customers module (backend only)** — a new top-level module for pulling customers, addresses and orders out of Odoo and enriching them with researched background and a category. This beta ships the database schema, the sync endpoint and the safety work; there is no UI yet. Requires **schema v76** (`60-customers.sql`, `70-integration-credentials.sql`, `80-permission-model.sql`).
+- **Customers module (backend only)** — a new top-level module for pulling customers, addresses and orders out of Odoo and enriching them with researched background and a category. This beta ships the database schema, the sync endpoint and the safety work; there is no UI yet. Requires **schema v76** (re-run `core.sql`, then `40-integrations.sql` and `60-customers.sql`).
 - **`POST /api/customers/sync`** — pulls partners, addresses, orders and order lines from Odoo. Gated on `module:customers` + `create`. Field selection is intersected against Odoo's own `fields_get`, so a field your Odoo doesn't have is skipped rather than erroring the run.
 - **Two new permission resources** — `module:customers` and `system:customer-enrichment`, the latter gating the (paid) AI enrichment runs separately from ordinary customer access.
 - **Duplicate a SolidWorks part together with its drawing** — a new file context-menu action. A drawing stores the path of its model inside the file, so copying both byte-for-byte would leave the new drawing pointing at the original part; the service rewrites that stored reference after the copy, using the Document Manager API or Pack and Go. Included in this beta for testing.

@@ -9,10 +9,8 @@ This folder contains optional SQL schema modules that extend BluePLM's functiona
 | `10-source-files.sql` | Source Files | Vaults, files, workflows, backups, watchers | core.sql |
 | `20-change-control.sql` | Change Control | ECOs, reviews, deviations, process templates | core.sql, 10-source-files.sql |
 | `30-supply-chain.sql` | Supply Chain | Suppliers, RFQs, supplier portal | core.sql, 10-source-files.sql |
-| `40-integrations.sql` | Integrations | Odoo, webhooks | core.sql, 10-source-files.sql |
+| `40-integrations.sql` | Integrations | Odoo, webhooks, credential store | core.sql, 10-source-files.sql |
 | `60-customers.sql` | Customers | Odoo customer sync, AI enrichment | core.sql |
-| `70-integration-credentials.sql` | Integration Credentials | Moves ERP secrets out of client-readable tables | core.sql, 40-integrations.sql |
-| `80-permission-model.sql` | Permission Model | Upgrade-only: aligns admin semantics with the app | core.sql |
 
 ## Installation Order
 
@@ -46,12 +44,6 @@ Always install in this order:
    -- Customers (Odoo customer sync, AI enrichment)
    \i modules/60-customers.sql
 
-   -- Integration credentials (security fix; apply with a matching API deploy)
-   \i modules/70-integration-credentials.sql
-
-   -- Permission model alignment (existing databases only; core.sql already
-   -- contains these definitions for fresh installs)
-   \i modules/80-permission-model.sql
    ```
 
 ## Module Details
@@ -89,6 +81,16 @@ Contains external integration features:
 - **Organization Integrations** - Generic integration settings
 - **Odoo** - ERP connection configurations
 - **Webhooks** - Event-driven integrations
+- **Integration Credentials** - Encrypted secrets, readable only by `service_role`
+
+Apply this module together with a matching API deploy. The credential store at
+the end of the file clears the old plaintext credential columns, so an API
+still reading `odoo_saved_configs.api_key_encrypted` or
+`organization_integrations.credentials_encrypted` will find them empty. Those
+columns were named as though they held ciphertext but never did, and the SELECT
+policies on both tables grant access to every org member — RLS filters rows
+rather than columns, so relocating the secret was the only way to hide it. The
+API needs `EXTENSION_ENCRYPTION_KEY` set before it can store new credentials.
 
 ### 60-customers.sql (Customers)
 

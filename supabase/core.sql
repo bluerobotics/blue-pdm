@@ -21,8 +21,6 @@
 --   - 30-supply-chain.sql (suppliers, RFQs)
 --   - 40-integrations.sql (Odoo, webhooks)
 --   - 60-customers.sql (Odoo customer sync, AI enrichment)
---   - 70-integration-credentials.sql (moves ERP secrets out of client-readable tables)
---   - 80-permission-model.sql (only needed to upgrade an existing database)
 --
 -- =====================================================================
 

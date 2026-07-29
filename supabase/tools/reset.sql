@@ -329,8 +329,6 @@ DROP POLICY IF EXISTS "Authenticated users can delete from vault" ON storage.obj
 -- 5. Run: modules/30-supply-chain.sql (optional)
 -- 6. Run: modules/40-integrations.sql (optional)
 -- 7. Run: modules/60-customers.sql (optional)
--- 8. Run: modules/70-integration-credentials.sql (required if using integrations)
---    (80-permission-model.sql is not needed after a reset; core.sql already has it)
 --
 -- Then:
 --   - Create your organization
