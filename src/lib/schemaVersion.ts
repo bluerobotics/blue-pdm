@@ -26,7 +26,7 @@ import { supabase } from './supabase'
 
 // The schema version this app version expects
 // Increment this when releasing app updates that require schema changes
-export const EXPECTED_SCHEMA_VERSION = 80
+export const EXPECTED_SCHEMA_VERSION = 81
 
 // Minimum schema version that will still work (for soft warnings vs hard errors)
 // Set this to allow some backwards compatibility
@@ -113,6 +113,7 @@ export const VERSION_DESCRIPTIONS: Record<number, string> = {
   78: 'Cancellable Odoo customer sync: phase, progress, heartbeat and cancel columns on integration_sync_log',
   79: 'Customers dashboard performance: InitPlan-cacheable RLS, first_order_date and per-customer order indexes, segment counts in customer_analytics_summary, single-round-trip customer_detail RPC',
   80: 'Module access allowlist: module_access table plus user_can_access_module/get_denied_modules/get_module_access_config/set_module_access, and removal of permission rows for retired modules',
+  81: 'Incremental Odoo customer sync: sync_watermark on integration_sync_log records how far through Odoo\u2019s write_date history a successful run got, so the next run pulls only what changed',
   // Note: Process templates module (v26+) is optional - see modules/process-templates.sql
 }
 

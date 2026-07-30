@@ -17,6 +17,10 @@
  * And one data-preservation rule drives the rest: a field that Odoo did not
  * return must never reach the database as null. See {@link fillMissingColumns}.
  *
+ * The INCREMENTAL SYNC section holds the rules for pulling only what changed,
+ * all of them anchored on Odoo's `write_date` rather than on this server's
+ * clock. See {@link nextWatermark}.
+ *
  * @module customers/odooSync
  */
 
@@ -260,13 +264,15 @@ export const ORDER_COLUMN_MAP: readonly ColumnMapping[] = [
 /**
  * Fields requested from res.partner for a customer row.
  *
- * `customer_rank` is requested because it is also the customer filter; `id` is
- * always returned by Odoo but is listed so the intersection reports honestly.
+ * `customer_rank` is requested because it is also the customer filter;
+ * `write_date` because it is the incremental sync's watermark; `id` is always
+ * returned by Odoo but is listed so the intersection reports honestly.
  */
 export const PARTNER_FIELDS: readonly string[] = [
   'id',
   ...PARTNER_COLUMN_MAP.map((m) => m.field),
   'customer_rank',
+  'write_date',
 ]
 
 /** Fields requested from res.partner when it is being read as an address. */
@@ -288,7 +294,13 @@ export const ORDER_FIELDS: readonly string[] = [
   ...ORDER_COLUMN_MAP.map((m) => m.field),
 ]
 
-/** Fields requested from sale.order.line. */
+/**
+ * Fields requested from sale.order.line.
+ *
+ * `write_date` becomes no column - it is requested so the lines contribute to
+ * the incremental watermark, which would otherwise sit behind a line edited
+ * without its order being touched.
+ */
 export const ORDER_LINE_FIELDS: readonly string[] = [
   'id',
   'order_id',
@@ -298,6 +310,7 @@ export const ORDER_LINE_FIELDS: readonly string[] = [
   'price_unit',
   'price_subtotal',
   'discount',
+  'write_date',
 ]
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -572,6 +585,179 @@ export function emptyAggregates(): CustomerAggregates {
     first_order_date: null,
     last_order_date: null,
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// INCREMENTAL SYNC
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// A run pulls only what Odoo has written since the last successful run. The
+// anchor is Odoo's own `write_date`, never this server's clock: the two are not
+// synchronised, and a few seconds of skew is a record that is silently never
+// mirrored.
+
+/**
+ * How far the stored watermark is rewound from the newest `write_date` seen.
+ *
+ * A record's `write_date` is stamped when the row is written, but the
+ * transaction becomes visible to our query when it COMMITS. A long-running
+ * Odoo transaction can therefore appear after a run whose window already
+ * covered its timestamp. Rewinding makes the next window overlap the last one,
+ * so those records are picked up on the following run.
+ *
+ * Overlap is free: every write in this sync is an upsert keyed on
+ * (org_id, erp_id), so re-reading a record it already has changes nothing.
+ */
+export const WATERMARK_OVERLAP_MS = 120_000
+
+/** Which field marks a res.partner as a customer on this Odoo. */
+export type CustomerMarker = 'customer_rank' | 'customer' | null
+
+/**
+ * The customer marker this Odoo has: `customer_rank` on 13+, the `customer`
+ * boolean before that, and neither on an Odoo without the sales app - where
+ * the caller must fall back to the partners its orders reference.
+ */
+export function customerMarker(available: Set<string>): CustomerMarker {
+  if (available.has('customer_rank')) return 'customer_rank'
+  if (available.has('customer')) return 'customer'
+  return null
+}
+
+/** The domain selecting customers, for whichever marker this Odoo has. */
+export function customerDomain(marker: CustomerMarker): unknown[] {
+  if (marker === 'customer_rank') return [['customer_rank', '>', 0]]
+  if (marker === 'customer') return [['customer', '=', true]]
+  return []
+}
+
+/**
+ * Whether a res.partner record is a customer.
+ *
+ * An incremental run pulls changed partners without the customer filter, so
+ * that one pull also catches edits to shipping addresses - which are
+ * themselves res.partner records, usually with no customer marker. The
+ * partitioning the domain would have done therefore happens here instead.
+ */
+export function isCustomerPartner(record: OdooRecord, marker: CustomerMarker): boolean {
+  if (marker === 'customer_rank') {
+    const rank = odooNumber(record.customer_rank)
+    return rank !== null && rank > 0
+  }
+  if (marker === 'customer') return odooBool(record.customer)
+  return false
+}
+
+/**
+ * Add a `write_date` bound to a domain, or return it unchanged for a full pull.
+ */
+export function changedSinceDomain(since: Date | null, base: readonly unknown[] = []): unknown[] {
+  const domain: unknown[] = [...base]
+  if (since) domain.push(['write_date', '>=', toOdooDateTime(since)])
+  return domain
+}
+
+/**
+ * The newest `write_date` across a set of records, as an ISO string.
+ *
+ * Null when no record carried a parseable one, which is how a pull that
+ * returned nothing reports that it has no opinion on the watermark.
+ */
+export function latestWriteDate(records: readonly OdooRecord[]): string | null {
+  let latest: string | null = null
+  for (const record of records) {
+    const written = odooDateTime(record.write_date)
+    if (written !== null && (latest === null || written > latest)) latest = written
+  }
+  return latest
+}
+
+/**
+ * The watermark to store after a successful run.
+ *
+ * Monotonic on purpose. The rewind by {@link WATERMARK_OVERLAP_MS} could
+ * otherwise place the new watermark behind the old one when very little
+ * changed, which would make each quiet run widen the next run's window instead
+ * of narrowing it.
+ *
+ * A run that saw no `write_date` at all keeps the previous watermark rather
+ * than advancing to "now": nothing changed inside the window, so there is
+ * nothing to record, and advancing on this server's clock is exactly the skew
+ * the watermark exists to avoid.
+ */
+export function nextWatermark(
+  observed: readonly (string | null)[],
+  previous: string | null,
+): string | null {
+  let newest: string | null = null
+  for (const value of observed) {
+    if (value !== null && (newest === null || value > newest)) newest = value
+  }
+  if (newest === null) return previous
+
+  const rewound = new Date(new Date(newest).getTime() - WATERMARK_OVERLAP_MS)
+  if (Number.isNaN(rewound.getTime())) return previous
+
+  const candidate = rewound.toISOString()
+  if (previous !== null && previous > candidate) return previous
+  return candidate
+}
+
+/** The orders an incremental run has to rewrite, and which it must still read. */
+export interface OrderRefreshPlan {
+  /** Every order to rewrite, ascending. */
+  all: number[]
+  /** Those the changed-order pull did not return, so they need a separate read. */
+  toFetch: number[]
+}
+
+/**
+ * Decide which orders an incremental run must rewrite.
+ *
+ * Editing a line does not reliably move its order's `write_date`, so changed
+ * lines are probed separately and their orders folded in. An order that got
+ * here only through a changed line still needs its own sale.order record,
+ * because `items_count` and `discount` are recomputed from the full line set
+ * and written onto the order row - hence `toFetch`.
+ */
+export function planOrderRefresh(
+  changedOrders: readonly OdooRecord[],
+  changedLines: readonly OdooRecord[],
+): OrderRefreshPlan {
+  const pulled = new Set<number>()
+  for (const order of changedOrders) {
+    const id = odooNumber(order.id)
+    if (id !== null && Number.isInteger(id)) pulled.add(id)
+  }
+
+  const all = new Set(pulled)
+  for (const line of changedLines) {
+    const orderId = many2oneId(line.order_id)
+    if (orderId !== null) all.add(orderId)
+  }
+
+  const ascending = (a: number, b: number) => a - b
+  return {
+    all: [...all].sort(ascending),
+    toFetch: [...all].filter((id) => !pulled.has(id)).sort(ascending),
+  }
+}
+
+/**
+ * Integer ids out of an Odoo `search`, which returns a bare array of them.
+ *
+ * `search` is what the disappearance sweep uses instead of `search_read`: it
+ * moves ints rather than whole records, so the whole customer list costs a
+ * fraction of a pull even on an org with tens of thousands of them.
+ */
+export function parseIdList(raw: unknown): number[] {
+  if (!Array.isArray(raw)) return []
+  const ids: number[] = []
+  for (const value of raw) {
+    const id = odooNumber(value)
+    if (id !== null && Number.isInteger(id)) ids.push(id)
+  }
+  return ids
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

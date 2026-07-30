@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 -- Insert initial version for new installations
 INSERT INTO schema_version (id, version, description, applied_at, applied_by)
-VALUES (1, 80, 'Module access allowlist: restrict sidebar modules to specific teams and users', NOW(), 'migration')
+VALUES (1, 81, 'Incremental Odoo customer sync: sync_watermark on integration_sync_log', NOW(), 'migration')
 ON CONFLICT (id) DO UPDATE SET 
   version = EXCLUDED.version,
   description = EXCLUDED.description,

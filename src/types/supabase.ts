@@ -2914,6 +2914,7 @@ export type Database = {
           status: string
           sync_direction: string
           sync_type: string
+          sync_watermark: string | null
           trigger_type: string | null
           triggered_by: string | null
         }
@@ -2941,6 +2942,7 @@ export type Database = {
           status: string
           sync_direction?: string
           sync_type: string
+          sync_watermark?: string | null
           trigger_type?: string | null
           triggered_by?: string | null
         }
@@ -2968,6 +2970,7 @@ export type Database = {
           status?: string
           sync_direction?: string
           sync_type?: string
+          sync_watermark?: string | null
           trigger_type?: string | null
           triggered_by?: string | null
         }

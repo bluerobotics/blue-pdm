@@ -24,6 +24,22 @@
  *
  * Odoo is only ever read from: every call goes through odooReadOnlyCall, which
  * rejects a non-read-only model or ORM method before opening a socket.
+ *
+ * ---------------------------------------------------------------------------
+ * INCREMENTAL BY DEFAULT
+ * ---------------------------------------------------------------------------
+ * The first run mirrors everything. Every run after it pulls only what Odoo
+ * has written since the last SUCCESSFUL run, anchored on Odoo's own
+ * `write_date` and resumed from integration_sync_log.sync_watermark.
+ *
+ * Two things the window cannot see are handled separately, because a sync that
+ * quietly stopped noticing them would be worse than a slow one:
+ *
+ *   - A line edited without its order's write_date moving. Changed lines are
+ *     probed on their own and their orders folded into the refresh set.
+ *   - A customer deleted from Odoo, which by definition writes nothing. Step 9
+ *     sweeps with an id-only `search`, which moves ints rather than records and
+ *     so stays cheap enough to run every time.
  */
 
 import { FastifyPluginAsync } from 'fastify'
@@ -46,23 +62,35 @@ import {
   PARTNER_COLUMN_MAP,
   PARTNER_FIELDS,
   accountInputFromRow,
+  changedSinceDomain,
   chunk,
   computeCustomerAggregates,
+  customerDomain,
+  customerMarker,
   emptyAggregates,
   fillMissingColumns,
   intersectFields,
+  isCustomerPartner,
+  latestWriteDate,
   many2oneErpId,
   many2oneId,
   mapOrderLine,
   mapRecord,
   mappedColumns,
+  nextWatermark,
   odooNumber,
   parseFieldsGet,
+  parseIdList,
+  planOrderRefresh,
   resolveStickyAccountId,
   summariseOrderLines,
-  toOdooDateTime,
 } from '../src/customers/odooSync.js'
-import type { AggregateOrderRow, OdooRecord, PartialRow } from '../src/customers/odooSync.js'
+import type {
+  AggregateOrderRow,
+  CustomerMarker,
+  OdooRecord,
+  PartialRow,
+} from '../src/customers/odooSync.js'
 
 /** Rows per Supabase write. A full sync can move 20k customers. */
 const WRITE_CHUNK = 500
@@ -70,6 +98,8 @@ const WRITE_CHUNK = 500
 const READ_PAGE = 1000
 /** Records per Odoo search_read page. */
 const ODOO_PAGE = 500
+/** Ids per Odoo `search` page. Far larger than ODOO_PAGE: these are bare ints. */
+const ODOO_ID_PAGE = 10000
 /** Ids per `IN` clause, kept well under URL and statement limits. */
 const IN_CHUNK = 200
 /** Hard stop on a single model's pull, so a runaway query cannot hang a sync. */
@@ -152,6 +182,35 @@ async function searchReadAll(
     // abandon a sync.
     await progress?.checkpoint(out.length)
     if (page.length < ODOO_PAGE) break
+  }
+  return out
+}
+
+/**
+ * Page through a `search`, which answers with bare ids instead of records.
+ *
+ * This is what makes the disappearance sweep affordable on every run: the
+ * whole customer list comes back as integers, so an org with 20k of them costs
+ * two calls and a few hundred kilobytes rather than a full re-read.
+ */
+async function searchAllIds(
+  cfg: OdooConfig,
+  model: string,
+  domain: unknown[],
+  progress?: ProgressSink,
+): Promise<number[]> {
+  const out: number[] = []
+  for (let offset = 0; out.length < MAX_ODOO_RECORDS; offset += ODOO_ID_PAGE) {
+    const page = parseIdList(
+      await odooCall(cfg, model, 'search', [domain], {
+        limit: ODOO_ID_PAGE,
+        offset,
+        order: 'id asc',
+      }),
+    )
+    out.push(...page)
+    await progress?.tick(out.length)
+    if (page.length < ODOO_ID_PAGE) break
   }
   return out
 }
@@ -294,6 +353,7 @@ const SYNC_PHASES = [
   'Connecting to Odoo',
   'Checking available fields',
   'Reading orders from Odoo',
+  'Finding orders with changed lines',
   'Reading customers from Odoo',
   'Reading shipping addresses',
   'Reading order lines',
@@ -302,6 +362,7 @@ const SYNC_PHASES = [
   'Saving orders',
   'Saving order lines',
   'Recalculating totals',
+  'Checking for removed customers',
   'Finishing up',
 ] as const
 
@@ -346,6 +407,11 @@ interface FinishFields {
   skipped?: number
   error?: string | null
   details?: unknown
+  /**
+   * How far through Odoo's write_date history this run got. Written only on
+   * success, so a run that stopped early leaves its window to be re-read.
+   */
+  watermark?: string | null
 }
 
 /**
@@ -427,23 +493,46 @@ class SyncRun implements ProgressSink {
     status: 'success' | 'failed' | 'cancelled',
     fields: FinishFields = {},
   ): Promise<void> {
+    const closing = {
+      status,
+      completed_at: new Date().toISOString(),
+      heartbeat_at: new Date().toISOString(),
+      phase: status === 'success' ? 'Done' : this.phaseLabel,
+      records_processed: fields.processed ?? 0,
+      records_created: fields.created ?? 0,
+      records_updated: fields.updated ?? 0,
+      records_skipped: fields.skipped ?? 0,
+      error_message: fields.error ?? null,
+      error_details: (fields.details ?? null) as never,
+    }
+
+    // Only a successful run may move the watermark. Anything else leaves the
+    // previous one standing, so the next run re-reads the window this one did
+    // not finish.
+    const advances = status === 'success' && fields.watermark != null
     const { error } = await this.db
       .from('integration_sync_log')
-      .update({
-        status,
-        completed_at: new Date().toISOString(),
-        heartbeat_at: new Date().toISOString(),
-        phase: status === 'success' ? 'Done' : this.phaseLabel,
-        records_processed: fields.processed ?? 0,
-        records_created: fields.created ?? 0,
-        records_updated: fields.updated ?? 0,
-        records_skipped: fields.skipped ?? 0,
-        error_message: fields.error ?? null,
-        error_details: (fields.details ?? null) as never,
-      })
+      .update(advances ? { ...closing, sync_watermark: fields.watermark } : closing)
       .eq('id', this.id)
 
-    if (error) this.log.warn({ err: error, runId: this.id }, '[CustomerSync] finish write failed')
+    if (!error) return
+    this.log.warn({ err: error, runId: this.id }, '[CustomerSync] finish write failed')
+
+    // A database that predates the watermark column rejects the whole update,
+    // which would leave this row saying 'running' until its heartbeat went
+    // stale and blocked the next sync. Closing it without the watermark costs
+    // only the incremental window: the next run does a full pull.
+    if (!advances) return
+    const retry = await this.db
+      .from('integration_sync_log')
+      .update(closing)
+      .eq('id', this.id)
+    if (retry.error) {
+      this.log.warn(
+        { err: retry.error, runId: this.id },
+        '[CustomerSync] finish write failed without the watermark too',
+      )
+    }
   }
 
   private async write(extra: Record<string, unknown>): Promise<void> {
@@ -474,7 +563,7 @@ function offsetProgress(progress: ProgressSink | undefined, base: number): Progr
 }
 
 // Note on where a sync can stop: only the Odoo pagers call `checkpoint`, and
-// they all run in phases 3 to 6, before anything is written. The write phases
+// they all run in phases 3 to 7, before anything is written. The write phases
 // use `tick` alone and are interrupted at their phase boundary instead, which
 // keeps chunked upserts atomic-per-batch. From step 7e onward the handler stops
 // checking entirely: order lines are replaced with a delete followed by an
@@ -591,7 +680,7 @@ const customerRoutes: FastifyPluginAsync = async (fastify) => {
     {
       schema: {
         description:
-          'Mirror customers, orders and order lines from Odoo. Read-only against Odoo; never deletes customers, accounts or enrichment.',
+          'Mirror customers, orders and order lines from Odoo. Incremental by default: pulls only what Odoo has written since the last successful run. Read-only against Odoo; never deletes customers, accounts or enrichment.',
         tags: ['Customers'],
         security: [{ bearerAuth: [] }],
         body: {
@@ -601,7 +690,12 @@ const customerRoutes: FastifyPluginAsync = async (fastify) => {
             since: {
               type: 'string',
               description:
-                'ISO timestamp. Limits the sale.order pull to orders dated on or after this instant. Partners are always pulled in full.',
+                'ISO timestamp overriding the stored watermark. Restricts every pull to records whose Odoo write_date is at or after this instant.',
+            },
+            full: {
+              type: 'boolean',
+              description:
+                'Ignore the stored watermark and re-read everything. Slow, and only needed after changing what the sync maps or to repair a mirror by hand.',
             },
           },
         },
@@ -634,15 +728,16 @@ const customerRoutes: FastifyPluginAsync = async (fastify) => {
       const orgId = request.user.org_id
       const userId = request.user.id
 
-      const body = (request.body ?? {}) as { since?: string }
-      let since: Date | null = null
+      const body = (request.body ?? {}) as { since?: string; full?: boolean }
+      let requestedSince: Date | null = null
       if (body.since) {
         const parsed = new Date(body.since)
         if (Number.isNaN(parsed.getTime())) {
           return sendError(reply, 400, ErrorCode.BAD_REQUEST, '`since` is not a valid timestamp')
         }
-        since = parsed
+        requestedSince = parsed
       }
+      const forceFull = body.full === true
 
       // ── 1. Odoo connection config, loaded exactly like the supplier sync ────
       const { data: integration } = await request.supabase
@@ -690,6 +785,36 @@ const customerRoutes: FastifyPluginAsync = async (fastify) => {
             error_message: 'The sync stopped reporting and was assumed to have died.',
           })
           .eq('id', String(asRow(inFlight).id))
+      }
+
+      // ── 1a-ii. Where the last successful run got to ────────────────────────
+      // Read before the new row is opened so there is no chance of matching it.
+      // Any failure here - including a database that predates the column - is
+      // read as "no watermark", which costs a full pull and never correctness.
+      let previousWatermark: Date | null = null
+      if (!forceFull) {
+        const { data: lastRun, error: watermarkError } = await admin
+          .from('integration_sync_log')
+          .select('sync_watermark')
+          .eq('org_id', orgId)
+          .eq('integration_id', integration.id)
+          .eq('sync_type', 'customers')
+          .eq('status', 'success')
+          .not('sync_watermark', 'is', null)
+          .order('started_at', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+
+        if (watermarkError) {
+          request.log.warn(
+            { err: watermarkError },
+            '[CustomerSync] could not read the last watermark; falling back to a full sync',
+          )
+        } else {
+          const stored = text(asRow(lastRun ?? {}).sync_watermark)
+          const parsed = stored ? new Date(stored) : null
+          if (parsed && !Number.isNaN(parsed.getTime())) previousWatermark = parsed
+        }
       }
 
       // ── 1b. Open the run row ───────────────────────────────────────────────
@@ -820,16 +945,38 @@ const customerRoutes: FastifyPluginAsync = async (fastify) => {
         )
       }
 
+      // ── 2a. Decide between a full mirror and a diff ────────────────────────
+      // `marker` is how a res.partner says it is a customer: customer_rank on
+      // Odoo 13+, the `customer` boolean before that, neither on an Odoo with
+      // no sales app.
+      //
+      // A diff needs write_date on all three models, and a marker to partition
+      // the unfiltered partner pull with. Without any one of those the run
+      // falls back to a full mirror rather than silently mirroring a subset.
+      const marker: CustomerMarker = customerMarker(partnerFieldSet)
+      const canDiff =
+        marker !== null &&
+        partnerFieldSet.has('write_date') &&
+        orderFieldSet.has('write_date') &&
+        lineFieldSet.has('write_date')
+
+      const since = forceFull ? null : (requestedSince ?? previousWatermark)
+      const incremental = canDiff && since !== null
+      request.log.info({
+        msg: '[CustomerSync] sync mode',
+        mode: incremental ? 'incremental' : 'full',
+        since: since?.toISOString() ?? null,
+        canDiff,
+        forceFull,
+      })
+
       // ── 3. Pull sale.order for the window ──────────────────────────────────
       // search_count first so the progress bar has a real denominator. One
       // extra cheap call buys the difference between "3,500 of 20,000" and a
       // number that climbs with no end in sight.
-      const orderDomain: unknown[] = []
-      if (since && orderFieldSet.has('date_order')) {
-        orderDomain.push(['date_order', '>=', toOdooDateTime(since)])
-      }
+      const orderDomain = changedSinceDomain(incremental ? since : null)
       await run.setPhase('Reading orders from Odoo', await searchCount(cfg, 'sale.order', orderDomain))
-      const odooOrders = await searchReadAll(
+      const changedOrders = await searchReadAll(
         cfg,
         'sale.order',
         orderDomain,
@@ -838,30 +985,74 @@ const customerRoutes: FastifyPluginAsync = async (fastify) => {
       )
       if (run.cancelled) return cancelledResponse()
 
-      // ── 4. Pull res.partner, restricted to actual customers ────────────────
-      // customer_rank is the Odoo 13+ marker; `customer` is the pre-13 boolean.
-      // With neither we fall back to the partners referenced by the orders we
-      // just pulled, which is a partial view - so the missing-customer sweep in
-      // step 9 is suppressed, otherwise it would flag every customer outside
-      // the window as gone from Odoo.
+      // ── 3a. Fold in orders whose lines changed underneath them ─────────────
+      // Editing a line does not reliably move its order's write_date, so an
+      // order-only diff would mirror stale line data indefinitely. The probe
+      // asks only for order_id, so it stays cheap even when a lot changed.
+      await run.setPhase('Finding orders with changed lines')
+      let odooOrders = changedOrders
+      let changedLines: OdooRecord[] = []
+      if (incremental && lineFieldSet.has('order_id')) {
+        changedLines = await searchReadAll(
+          cfg,
+          'sale.order.line',
+          changedSinceDomain(since),
+          ['id', 'order_id', 'write_date'],
+          run,
+        )
+        const refresh = planOrderRefresh(changedOrders, changedLines)
+        if (refresh.toFetch.length > 0) {
+          // These orders did not change themselves, but items_count and
+          // discount are recomputed from their lines and written onto the
+          // order row, so the row has to be rewritten alongside them.
+          odooOrders = [
+            ...changedOrders,
+            ...(await readByIds(cfg, 'sale.order', refresh.toFetch, orderPlan.selected, run)),
+          ]
+        }
+      }
+      if (run.cancelled) return cancelledResponse()
+
+      // ── 4. Pull res.partner ────────────────────────────────────────────────
+      // A diff deliberately drops the customer filter: a shipping address is a
+      // res.partner too, and usually carries no customer marker, so filtering
+      // here would mean address edits were never mirrored. One pull covers
+      // both, and `isCustomerPartner` does the partitioning the domain would
+      // have done.
+      //
+      // With no marker at all the fallback is the partners the orders in hand
+      // reference, which is a partial view - so the sweep in step 9 is
+      // suppressed, otherwise it would flag every customer it did not pull as
+      // gone from Odoo.
       let odooPartners: OdooRecord[]
-      let partnerPullIsComplete = true
-      if (partnerFieldSet.has('customer_rank')) {
-        const domain = [['customer_rank', '>', 0]]
+      let changedNonCustomers: OdooRecord[] = []
+      const partnerPullIsComplete = marker !== null
+
+      if (incremental) {
+        const domain = changedSinceDomain(since)
         await run.setPhase(
           'Reading customers from Odoo',
           await searchCount(cfg, 'res.partner', domain),
         )
-        odooPartners = await searchReadAll(cfg, 'res.partner', domain, partnerPlan.selected, run)
-      } else if (partnerFieldSet.has('customer')) {
-        const domain = [['customer', '=', true]]
+        const changedPartners = await searchReadAll(
+          cfg,
+          'res.partner',
+          domain,
+          intersectFields([...PARTNER_FIELDS, ...ADDRESS_FIELDS], partnerFieldSet).selected,
+          run,
+        )
+        odooPartners = changedPartners.filter((partner) => isCustomerPartner(partner, marker))
+        changedNonCustomers = changedPartners.filter(
+          (partner) => !isCustomerPartner(partner, marker),
+        )
+      } else if (marker !== null) {
+        const domain = customerDomain(marker)
         await run.setPhase(
           'Reading customers from Odoo',
           await searchCount(cfg, 'res.partner', domain),
         )
         odooPartners = await searchReadAll(cfg, 'res.partner', domain, partnerPlan.selected, run)
       } else {
-        partnerPullIsComplete = false
         const partnerIds = [
           ...new Set(
             odooOrders
@@ -875,17 +1066,63 @@ const customerRoutes: FastifyPluginAsync = async (fastify) => {
       if (run.cancelled) return cancelledResponse()
 
       // ── 5. Resolve partner_shipping_id, itself a res.partner ───────────────
-      const shippingIds = [
-        ...new Set(
-          odooOrders
-            .map((order) => many2oneId(order.partner_shipping_id))
-            .filter((id): id is number => id !== null),
-        ),
+      // Two sources feed this. The orders being written name the addresses
+      // their rows must point at. Separately, an address already in the mirror
+      // may simply have been edited in Odoo, with no order touched at all -
+      // those arrive in `changedNonCustomers`, and are kept only if we already
+      // store them, so that editing an unrelated vendor does not file it here
+      // as a shipping address.
+      await run.setPhase('Reading shipping addresses')
+      const shippingIds = new Set(
+        odooOrders
+          .map((order) => many2oneId(order.partner_shipping_id))
+          .filter((id): id is number => id !== null),
+      )
+
+      const changedPartnerById = new Map<number, OdooRecord>()
+      for (const partner of changedNonCustomers) {
+        const id = odooNumber(partner.id)
+        if (id !== null) changedPartnerById.set(id, partner)
+      }
+
+      if (changedPartnerById.size > 0) {
+        const candidates = [...changedPartnerById.keys()].map(String)
+        for (const batch of chunk(candidates, IN_CHUNK)) {
+          const rows = await exec(
+            admin
+              .from('customer_addresses')
+              .select('erp_id')
+              .eq('org_id', orgId)
+              .in('erp_id', batch),
+            'customer_addresses erp_id select',
+          )
+          for (const row of rows) {
+            const id = odooNumber(text(row.erp_id))
+            if (id !== null) shippingIds.add(id)
+          }
+        }
+      }
+
+      // Records already in hand from the partner pull cost nothing; the rest
+      // have to be read by id.
+      const addressesInHand = [...shippingIds]
+        .map((id) => changedPartnerById.get(id))
+        .filter((record): record is OdooRecord => record !== undefined)
+      const addressIdsToRead = [...shippingIds].filter((id) => !changedPartnerById.has(id))
+
+      await run.tick(addressesInHand.length, shippingIds.size)
+      const odooAddresses = [
+        ...addressesInHand,
+        ...(addressIdsToRead.length
+          ? await readByIds(
+              cfg,
+              'res.partner',
+              addressIdsToRead,
+              addressPlan.selected,
+              offsetProgress(run, addressesInHand.length),
+            )
+          : []),
       ]
-      await run.setPhase('Reading shipping addresses', shippingIds.length)
-      const odooAddresses = shippingIds.length
-        ? await readByIds(cfg, 'res.partner', shippingIds, addressPlan.selected, run)
-        : []
       if (run.cancelled) return cancelledResponse()
 
       // ── 6. Pull sale.order.line for those orders ───────────────────────────
@@ -918,30 +1155,55 @@ const customerRoutes: FastifyPluginAsync = async (fastify) => {
       const addressColumns = mappedColumns(partnerFieldSet, ADDRESS_COLUMN_MAP)
       const orderColumns = mappedColumns(orderFieldSet, ORDER_COLUMN_MAP)
 
-      // Existing customers are read in full for the columns we may write, so a
-      // field Odoo did not return can be written straight back rather than
-      // blanked.
-      const existingCustomerSelect = [
-        ...new Set(['id', 'erp_id', 'account_id', 'is_active', 'odoo_missing_since', ...customerColumns]),
-      ].join(', ')
-
-      const existingCustomerRows = await selectAllPages(
+      // Two reads of the same table, for two different jobs.
+      //
+      // The wide one preserves data: a field Odoo did not return is written
+      // straight back rather than blanked, which needs every column the sync
+      // may write. It is restricted to the partners actually in hand, because
+      // on an incremental run that is a handful of rows out of tens of
+      // thousands.
+      //
+      // The narrow one is unavoidably whole-table - orders reference customers
+      // this run never pulled, the disappearance sweep has to know every erp_id
+      // there is, and customers.name is NOT NULL so the aggregate rewrite has
+      // to carry it. Three small columns make that affordable.
+      const identityRows = await selectAllPages(
         (from, to) =>
           db
             .from('customers')
-            .select(existingCustomerSelect)
+            .select('id, erp_id, name')
             .eq('org_id', orgId)
             .not('erp_id', 'is', null)
             .order('erp_id', { ascending: true })
             .range(from, to),
-        'customers select',
+        'customers identity select',
         run,
       )
 
+      const pulledErpIds = [
+        ...new Set(
+          odooPartners
+            .map((partner) => odooNumber(partner.id))
+            .filter((id): id is number => id !== null)
+            .map(String),
+        ),
+      ]
+
+      const existingCustomerSelect = [
+        ...new Set(['id', 'erp_id', 'account_id', 'is_active', 'odoo_missing_since', ...customerColumns]),
+      ].join(', ')
+
       const existingByErpId = new Map<string, Row>()
-      for (const row of existingCustomerRows) {
-        const erpId = text(row.erp_id)
-        if (erpId) existingByErpId.set(erpId, row)
+      for (const batch of chunk(pulledErpIds, IN_CHUNK)) {
+        const rows = await exec(
+          db.from('customers').select(existingCustomerSelect).eq('org_id', orgId).in('erp_id', batch),
+          'customers select',
+        )
+        for (const row of rows) {
+          const erpId = text(row.erp_id)
+          if (erpId) existingByErpId.set(erpId, row)
+        }
+        await run.tick(existingByErpId.size, pulledErpIds.length)
       }
 
       // ── 7a. Accounts, for customers that do not have one yet ───────────────
@@ -1058,7 +1320,7 @@ const customerRoutes: FastifyPluginAsync = async (fastify) => {
       }
 
       const customerIdByErpId = new Map<string, string>()
-      for (const row of existingCustomerRows) {
+      for (const row of identityRows) {
         const erpId = text(row.erp_id)
         const id = text(row.id)
         if (erpId && id) customerIdByErpId.set(erpId, id)
@@ -1273,12 +1535,18 @@ const customerRoutes: FastifyPluginAsync = async (fastify) => {
       }
 
       const preparedByErpId = new Map(prepared.map((item) => [item.erpId, item]))
+      const storedNameByErpId = new Map<string, string>()
+      for (const row of identityRows) {
+        const erpId = text(row.erp_id)
+        const name = text(row.name)
+        if (erpId && name) storedNameByErpId.set(erpId, name)
+      }
+
       const nameById = new Map<string, string>()
       const erpIdById = new Map<string, string>()
       for (const [erpId, id] of customerIdByErpId) {
         erpIdById.set(id, erpId)
-        const name =
-          text(preparedByErpId.get(erpId)?.row.name) ?? text(existingByErpId.get(erpId)?.name)
+        const name = text(preparedByErpId.get(erpId)?.row.name) ?? storedNameByErpId.get(erpId)
         if (name) nameById.set(id, name)
       }
 
@@ -1330,10 +1598,44 @@ const customerRoutes: FastifyPluginAsync = async (fastify) => {
       await upsertChunked(db, 'customers', aggregateRows, 'id', 'id', { progress: run })
 
       // ── 9. Flag customers that vanished from Odoo. Never delete. ───────────
-      await run.setPhase('Finishing up')
+      // A deletion writes nothing, so no change window can contain it. The
+      // whole live customer list is fetched instead - but with `search`, which
+      // answers in bare ids, so this costs a couple of calls even against an
+      // Odoo with tens of thousands of customers and can run on every sync.
+      //
+      // It also catches what the old full-pull diff could not: a partner still
+      // in Odoo that has stopped being a customer no longer appears in the
+      // marker's domain, and is now flagged like any other disappearance.
+      await run.setPhase('Checking for removed customers')
       let markedInactive = 0
-      if (partnerPullIsComplete) {
-        const missing = [...existingByErpId.keys()].filter((erpId) => !seenErpIds.has(erpId))
+      if (marker !== null) {
+        const liveErpIds = new Set(
+          (await searchAllIds(cfg, 'res.partner', customerDomain(marker), run)).map(String),
+        )
+
+        // The sweep flags everything the list does not mention, so a list that
+        // is wrong in the wrong direction would deactivate the whole module in
+        // a single run. Two ways it can be wrong, both refused:
+        //
+        //   - Empty against a mirror that has customers. Far likelier to be a
+        //     permissions or connectivity fault than a real mass deletion.
+        //   - Truncated at the pager's ceiling, where the ids past the cut look
+        //     exactly like ids that no longer exist.
+        //
+        // Skipping costs one sync. The next one flags them if it was true.
+        const truncated = liveErpIds.size >= MAX_ODOO_RECORDS
+        const suspiciouslyEmpty = liveErpIds.size === 0 && customerIdByErpId.size > 0
+        if (truncated || suspiciouslyEmpty) {
+          request.log.warn(
+            { liveCustomers: liveErpIds.size, storedCustomers: customerIdByErpId.size, truncated },
+            '[CustomerSync] the live customer list is not trustworthy; skipping the disappearance sweep',
+          )
+        }
+
+        const missing =
+          truncated || suspiciouslyEmpty
+            ? []
+            : [...customerIdByErpId.keys()].filter((erpId) => !liveErpIds.has(erpId))
         for (const batch of chunk(missing, IN_CHUNK)) {
           // Soft-flag only: the row, its account, its orders and any enrichment
           // paid for against it all survive. `is('odoo_missing_since', null)`
@@ -1354,6 +1656,20 @@ const customerRoutes: FastifyPluginAsync = async (fastify) => {
       }
 
       // ── 10. Record the run on the integration and close the log row ────────
+      // The watermark is the newest write_date this run actually saw, rewound
+      // slightly, and it is only reached on the success path - every early
+      // return above leaves the previous one standing so the window is re-read.
+      const watermark = nextWatermark(
+        [
+          latestWriteDate(odooPartners),
+          latestWriteDate(changedNonCustomers),
+          latestWriteDate(odooOrders),
+          latestWriteDate(changedLines),
+          latestWriteDate(odooLines),
+        ],
+        previousWatermark?.toISOString() ?? null,
+      )
+
       const touchedCustomers = customerInserts.length + customerUpdates.length
       await markIntegration(admin, integration.id, 'success', null, touchedCustomers)
       await run.finish('success', {
@@ -1361,6 +1677,7 @@ const customerRoutes: FastifyPluginAsync = async (fastify) => {
         created: customerInserts.length,
         updated: customerUpdates.length,
         skipped: ordersSkippedUnknownPartner,
+        watermark,
       })
       runsInFlight.delete(request)
 
@@ -1368,7 +1685,8 @@ const customerRoutes: FastifyPluginAsync = async (fastify) => {
         success: true,
         run_id: run.id,
         duration_ms: Date.now() - startedAt,
-        window: { since: since ? since.toISOString() : null },
+        mode: incremental ? 'incremental' : 'full',
+        window: { since: since ? since.toISOString() : null, watermark },
         fields_unavailable: fieldsUnavailable,
         partner_pull_complete: partnerPullIsComplete,
         odoo_records: {

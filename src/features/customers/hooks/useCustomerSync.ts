@@ -25,6 +25,11 @@ export interface SyncCounts {
 
 export interface SyncResponse {
   duration_ms?: number
+  /**
+   * 'incremental' when the run pulled only what Odoo had written since the
+   * last successful sync, 'full' when it re-read everything.
+   */
+  mode?: 'full' | 'incremental'
   partner_pull_complete?: boolean
   fields_unavailable?: Record<string, string[]>
   customers?: SyncCounts
@@ -35,7 +40,11 @@ export interface SyncResponse {
 }
 
 export interface CustomerSyncResult {
-  sync: () => Promise<void>
+  /**
+   * Run a sync. Incremental unless `full` is asked for, which is slow and only
+   * needed to repair a mirror by hand.
+   */
+  sync: (options?: { full?: boolean }) => Promise<void>
   stop: () => Promise<void>
   /** True while a run is in flight, whoever started it. */
   syncing: boolean
@@ -264,7 +273,7 @@ export function useCustomerSync(onComplete?: () => void): CustomerSyncResult {
     }
   }, [])
 
-  const sync = useCallback(async () => {
+  const sync = useCallback(async (options?: { full?: boolean }) => {
     const store = usePDMStore.getState()
     if (store.customerSync.active) return
 
@@ -291,13 +300,15 @@ export function useCustomerSync(onComplete?: () => void): CustomerSyncResult {
     startPolling()
 
     try {
+      // An empty body leaves the mode to the server, which resumes from the
+      // watermark of the last successful run. `full` is the only override.
       const response = await fetch(`${apiUrl}/customers/sync`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({}),
+        body: JSON.stringify(options?.full ? { full: true } : {}),
       })
 
       const data = (await response.json()) as SyncResponse & {
@@ -330,7 +341,14 @@ export function useCustomerSync(onComplete?: () => void): CustomerSyncResult {
         const touched = (data.customers?.created ?? 0) + (data.customers?.updated ?? 0)
         setCustomerSync({ active: false, stopping: false, result: data })
         if (!alreadyAnnounced) {
-          addToast('success', `Synced ${touched.toLocaleString()} customers from Odoo`)
+          // Nothing to do is the ordinary outcome of an incremental run, and
+          // reporting it as "Synced 0 customers" reads like a failure.
+          addToast(
+            'success',
+            touched === 0
+              ? 'Already up to date with Odoo'
+              : `Synced ${touched.toLocaleString()} customers from Odoo`,
+          )
         }
         onComplete?.()
         return

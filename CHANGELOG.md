@@ -4,6 +4,19 @@ All notable changes to BluePLM will be documented in this file.
 
 ![1774273238438](image/CHANGELOG/1774273238438.png)
 
+## [3.23.0-beta.4] - 2026-07-30
+
+### Changed
+- **The Odoo customer sync reads only what changed** — every run re-read every partner, every order and every order line in Odoo and rewrote the whole mirror, so a sync cost the same on day 100 as on day 1. Runs now resume from a watermark recorded by the last successful sync and pull only what Odoo has written since, anchored on Odoo's own `write_date` rather than the API server's clock. **The first run after upgrading is still a full mirror** — it is the one that records where it got to; the run after that is the fast one. Requires **schema v81** (run `40-integrations.sql`, then `core.sql`) and **API 2.2.0**.
+- **A sync that is cancelled or fails no longer advances the watermark**, so the window it did not finish is re-read by the next run rather than skipped.
+- **The customer read against Supabase is no longer whole-table-times-every-column** — the wide read that exists to avoid blanking fields Odoo did not return is now restricted to the partners actually pulled, leaving only a narrow `id, erp_id, name` read of the table.
+- **Deleted customers are still detected on every run** — a deletion writes nothing, so no change window can contain it. The sweep now asks Odoo for the live customer list as bare ids instead of whole records, which is cheap enough to run every time. It also catches a partner that is still in Odoo but has stopped being a customer, which the old full-pull diff missed. The sweep refuses to act on a list that came back empty against a non-empty mirror, or one truncated at the pager's ceiling.
+- **An order whose lines changed underneath it is refreshed** — editing a line does not reliably move its order's `write_date`, so changed lines are probed separately and their orders folded in. Without this an incremental sync would mirror stale line totals indefinitely.
+
+### Added
+- **"Full resync"** under the sync button — re-reads everything, ignoring the watermark. Only needed to repair a mirror by hand or after changing what the sync maps.
+- **`full: true`** on `POST /customers/sync`, and `since` redefined against `write_date` rather than `date_order`. The response now reports `mode` and the window it used.
+
 ## [3.23.0-beta.1] - 2026-07-29
 
 ### Added

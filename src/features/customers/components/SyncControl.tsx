@@ -96,19 +96,34 @@ export function SyncControl({ sync }: { sync: CustomerSyncResult }) {
           </div>
         </div>
       ) : (
-        <button
-          onClick={sync.sync}
-          disabled={!sync.canSync}
-          title={
-            sync.canSync
-              ? 'Mirror customers and orders from Odoo'
-              : 'Requires create access on the Customers module'
-          }
-          className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-plm-accent hover:bg-plm-accent/90 text-white rounded text-sm font-medium transition-colors disabled:opacity-50"
-        >
-          <RefreshCw size={15} />
-          <span>Sync from Odoo</span>
-        </button>
+        <>
+          <button
+            onClick={() => void sync.sync()}
+            disabled={!sync.canSync}
+            title={
+              sync.canSync
+                ? 'Pull everything Odoo has changed since the last sync'
+                : 'Requires create access on the Customers module'
+            }
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-plm-accent hover:bg-plm-accent/90 text-white rounded text-sm font-medium transition-colors disabled:opacity-50"
+          >
+            <RefreshCw size={15} />
+            <span>Sync from Odoo</span>
+          </button>
+
+          {/* An ordinary sync already catches edits, additions and deletions.
+              This is the repair tool for the rare case it cannot: a mirror
+              damaged by hand, or a run from before the sync mapped a field it
+              maps now. */}
+          <button
+            onClick={() => void sync.sync({ full: true })}
+            disabled={!sync.canSync}
+            title="Re-read every customer, order and line from Odoo, ignoring what has already been mirrored. Takes as long as the very first sync."
+            className="w-full text-center text-[11px] text-plm-fg-muted hover:text-plm-fg transition-colors disabled:opacity-50"
+          >
+            Full resync
+          </button>
+        </>
       )}
 
       {sync.error && (

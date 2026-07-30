@@ -53,11 +53,16 @@ export function SyncSummary({ result }: { result: SyncResponse }) {
   return (
     <div className="p-2 rounded bg-plm-success/10 border border-plm-success/30 space-y-1">
       <div className="text-xs font-medium text-plm-success">
-        Sync finished
+        {result.mode === 'full' ? 'Full sync finished' : 'Sync finished'}
         {typeof result.duration_ms === 'number'
           ? ` in ${(result.duration_ms / 1000).toFixed(1)}s`
           : ''}
       </div>
+      {result.mode === 'incremental' && (
+        <p className="text-[11px] text-plm-fg-dim">
+          Only what changed in Odoo since the last sync was read.
+        </p>
+      )}
       {lines.map((line) => (
         <div key={line.label} className="flex gap-2 text-[11px] text-plm-fg-muted">
           <span className="w-20 flex-shrink-0 text-plm-fg-dim">{line.label}</span>

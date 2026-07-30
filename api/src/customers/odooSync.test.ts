@@ -5,23 +5,32 @@ import {
   ORDER_COLUMN_MAP,
   PARTNER_COLUMN_MAP,
   PARTNER_FIELDS,
+  WATERMARK_OVERLAP_MS,
   accountInputFromRow,
+  changedSinceDomain,
   chunk,
   computeCustomerAggregates,
+  customerDomain,
+  customerMarker,
   emptyAggregates,
   fillMissingColumns,
   intersectFields,
+  isCustomerPartner,
+  latestWriteDate,
   many2oneErpId,
   many2oneId,
   many2oneName,
   mapOrderLine,
   mapRecord,
   mappedColumns,
+  nextWatermark,
   odooBool,
   odooDateTime,
   odooNumber,
   odooText,
   parseFieldsGet,
+  parseIdList,
+  planOrderRefresh,
   resolveStickyAccountId,
   summariseOrderLines,
   toOdooDateTime,
@@ -715,6 +724,211 @@ describe('computeCustomerAggregates', () => {
       first_order_date: null,
       last_order_date: null,
     })
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// INCREMENTAL SYNC
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('customerMarker', () => {
+  it('prefers customer_rank, which is what Odoo 13+ has', () => {
+    expect(customerMarker(new Set(['customer_rank', 'customer']))).toBe('customer_rank')
+  })
+
+  it('falls back to the pre-13 customer boolean', () => {
+    expect(customerMarker(new Set(['customer']))).toBe('customer')
+  })
+
+  it('reports neither, which is how the caller knows to give up on filtering', () => {
+    expect(customerMarker(new Set(['name']))).toBeNull()
+  })
+})
+
+describe('customerDomain', () => {
+  it('filters on rank for Odoo 13+', () => {
+    expect(customerDomain('customer_rank')).toEqual([['customer_rank', '>', 0]])
+  })
+
+  it('filters on the boolean before that', () => {
+    expect(customerDomain('customer')).toEqual([['customer', '=', true]])
+  })
+
+  it('matches everything when there is no marker to filter on', () => {
+    expect(customerDomain(null)).toEqual([])
+  })
+})
+
+describe('isCustomerPartner', () => {
+  it('reads a positive rank as a customer', () => {
+    expect(isCustomerPartner({ customer_rank: 3 }, 'customer_rank')).toBe(true)
+    expect(isCustomerPartner({ customer_rank: 0 }, 'customer_rank')).toBe(false)
+  })
+
+  it('treats a missing or false rank as not a customer, which a shipping address is', () => {
+    // Odoo sends `false` for an unset value, and an address partner routinely
+    // has no rank at all.
+    expect(isCustomerPartner({ customer_rank: false }, 'customer_rank')).toBe(false)
+    expect(isCustomerPartner({ name: 'Warehouse 2' }, 'customer_rank')).toBe(false)
+  })
+
+  it('reads the pre-13 boolean when that is the marker', () => {
+    expect(isCustomerPartner({ customer: true }, 'customer')).toBe(true)
+    expect(isCustomerPartner({ customer: false }, 'customer')).toBe(false)
+  })
+
+  it('claims nothing when there is no marker', () => {
+    expect(isCustomerPartner({ customer_rank: 3 }, null)).toBe(false)
+  })
+})
+
+describe('changedSinceDomain', () => {
+  it('bounds a domain on write_date in the naive-UTC form Odoo expects', () => {
+    expect(changedSinceDomain(new Date('2024-05-07T10:30:00.000Z'))).toEqual([
+      ['write_date', '>=', '2024-05-07 10:30:00'],
+    ])
+  })
+
+  it('keeps the base clauses alongside the bound', () => {
+    expect(changedSinceDomain(new Date('2024-05-07T10:30:00.000Z'), [['customer_rank', '>', 0]])).toEqual([
+      ['customer_rank', '>', 0],
+      ['write_date', '>=', '2024-05-07 10:30:00'],
+    ])
+  })
+
+  it('adds no bound at all for a full pull', () => {
+    expect(changedSinceDomain(null)).toEqual([])
+    expect(changedSinceDomain(null, [['customer_rank', '>', 0]])).toEqual([
+      ['customer_rank', '>', 0],
+    ])
+  })
+
+  it('does not mutate the base domain it was handed', () => {
+    const base: unknown[] = [['customer_rank', '>', 0]]
+    changedSinceDomain(new Date('2024-05-07T10:30:00.000Z'), base)
+    expect(base).toHaveLength(1)
+  })
+})
+
+describe('latestWriteDate', () => {
+  it('finds the newest write_date regardless of the order records arrived in', () => {
+    expect(
+      latestWriteDate([
+        { write_date: '2024-05-07 10:00:00' },
+        { write_date: '2024-06-01 08:30:00' },
+        { write_date: '2024-05-30 23:59:59' },
+      ]),
+    ).toBe('2024-06-01T08:30:00.000Z')
+  })
+
+  it('ignores records with no usable write_date rather than discarding the batch', () => {
+    expect(
+      latestWriteDate([{ write_date: false }, { write_date: '2024-05-07 10:00:00' }, { id: 1 }]),
+    ).toBe('2024-05-07T10:00:00.000Z')
+  })
+
+  it('has no opinion when a pull returned nothing', () => {
+    expect(latestWriteDate([])).toBeNull()
+    expect(latestWriteDate([{ write_date: false }])).toBeNull()
+  })
+})
+
+describe('nextWatermark', () => {
+  const OVERLAP_MIN = WATERMARK_OVERLAP_MS / 60_000
+
+  it('rewinds the newest write_date it saw, so a late commit is not skipped', () => {
+    // A transaction stamped before the query ran can still become visible
+    // after it. The overlap is what gives the next run a chance to see it.
+    expect(nextWatermark(['2024-06-01T12:00:00.000Z'], null)).toBe('2024-06-01T11:58:00.000Z')
+    expect(OVERLAP_MIN).toBe(2)
+  })
+
+  it('takes the newest across every model the run pulled', () => {
+    expect(
+      nextWatermark(
+        ['2024-06-01T12:00:00.000Z', null, '2024-06-03T09:00:00.000Z', '2024-05-01T00:00:00.000Z'],
+        null,
+      ),
+    ).toBe('2024-06-03T08:58:00.000Z')
+  })
+
+  it('keeps the previous watermark when nothing at all changed', () => {
+    // Advancing to "now" here would use this server's clock, which is the skew
+    // the watermark exists to avoid.
+    expect(nextWatermark([], '2024-06-01T00:00:00.000Z')).toBe('2024-06-01T00:00:00.000Z')
+    expect(nextWatermark([null, null], '2024-06-01T00:00:00.000Z')).toBe('2024-06-01T00:00:00.000Z')
+  })
+
+  it('never moves backwards, so a quiet run cannot widen the next window', () => {
+    // The rewind alone would put this behind the previous watermark.
+    expect(nextWatermark(['2024-06-01T12:00:30.000Z'], '2024-06-01T12:00:00.000Z')).toBe(
+      '2024-06-01T12:00:00.000Z',
+    )
+  })
+
+  it('has nothing to record on a first run that saw nothing', () => {
+    expect(nextWatermark([], null)).toBeNull()
+  })
+})
+
+describe('planOrderRefresh', () => {
+  it('rewrites the orders that changed', () => {
+    const plan = planOrderRefresh([{ id: 7 }, { id: 3 }], [])
+    expect(plan.all).toEqual([3, 7])
+    expect(plan.toFetch).toEqual([])
+  })
+
+  it('folds in an order whose line changed underneath it', () => {
+    // The order's own write_date did not move, so an order-only diff would
+    // leave its lines - and its items_count and discount - stale forever.
+    const plan = planOrderRefresh([{ id: 7 }], [{ order_id: [9, 'SO009'] }])
+    expect(plan.all).toEqual([7, 9])
+    expect(plan.toFetch).toEqual([9])
+  })
+
+  it('does not re-read an order the changed-order pull already returned', () => {
+    const plan = planOrderRefresh([{ id: 7 }], [{ order_id: [7, 'SO007'] }])
+    expect(plan.all).toEqual([7])
+    expect(plan.toFetch).toEqual([])
+  })
+
+  it('collapses many changed lines on one order into a single refresh', () => {
+    const plan = planOrderRefresh(
+      [],
+      [{ order_id: [9, 'SO009'] }, { order_id: [9, 'SO009'] }, { order_id: [4, 'SO004'] }],
+    )
+    expect(plan.all).toEqual([4, 9])
+    expect(plan.toFetch).toEqual([4, 9])
+  })
+
+  it('skips a line whose order_id Odoo did not give', () => {
+    const plan = planOrderRefresh([], [{ order_id: false }, { order_id: [9, 'SO009'] }])
+    expect(plan.all).toEqual([9])
+  })
+
+  it('has nothing to do when nothing changed', () => {
+    expect(planOrderRefresh([], [])).toEqual({ all: [], toFetch: [] })
+  })
+})
+
+describe('parseIdList', () => {
+  it('reads the bare id array an Odoo search answers with', () => {
+    expect(parseIdList([3, 7, 11])).toEqual([3, 7, 11])
+  })
+
+  it('accepts the numeric strings the XML-RPC parser can produce', () => {
+    expect(parseIdList(['3', 7])).toEqual([3, 7])
+  })
+
+  it('drops anything that is not an id, so a junk entry cannot become one', () => {
+    expect(parseIdList([3, false, 'nonsense', null, 1.5, 7])).toEqual([3, 7])
+  })
+
+  it('returns nothing for a response that is not a list', () => {
+    // The disappearance sweep diffs against this, so inventing ids here would
+    // be inventing customers that still exist.
+    expect(parseIdList(false)).toEqual([])
+    expect(parseIdList({ ids: [1] })).toEqual([])
   })
 })
 

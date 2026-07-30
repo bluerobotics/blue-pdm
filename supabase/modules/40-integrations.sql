@@ -209,11 +209,31 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_column THEN NULL;
 END $$;
 
+-- ── Incremental sync watermark ──────────────────────────────────────────────
+-- How far through the source system's change history a run got, expressed in
+-- the SOURCE system's clock rather than this server's - the two are not
+-- synchronised, and a few seconds of skew is a silently dropped record.
+--
+-- It lives on the run row instead of on organization_integrations so that only
+-- a run that reached 'success' can move it. A cancelled or failed run writes a
+-- partial mirror and no watermark, so the next run re-reads that window.
+
+DO $$ BEGIN
+  ALTER TABLE integration_sync_log ADD COLUMN sync_watermark TIMESTAMPTZ;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
 -- Supports the "is one already running for this org" guard the sync takes
 -- before it starts, which is the only thing standing between two clients and
 -- two concurrent syncs racing on the same upserts.
 CREATE INDEX IF NOT EXISTS idx_sync_log_running
   ON integration_sync_log(org_id, integration_id) WHERE status = 'running';
+
+-- Supports reading back the last watermark: the newest successful run of one
+-- sync_type for an org.
+CREATE INDEX IF NOT EXISTS idx_sync_log_watermark
+  ON integration_sync_log(org_id, sync_type, started_at DESC)
+  WHERE status = 'success' AND sync_watermark IS NOT NULL;
 
 -- ===========================================
 -- ODOO SAVED CONFIGURATIONS
@@ -614,6 +634,8 @@ END $$;
 
 COMMENT ON TABLE organization_integrations IS 'Generic integration configurations for orgs';
 COMMENT ON TABLE integration_sync_log IS 'Audit trail for integration sync operations';
+COMMENT ON COLUMN integration_sync_log.sync_watermark IS
+  'How far through the source system''s change history this run got, in the SOURCE system''s clock (for Odoo, res.partner/sale.order write_date). The next run of the same sync_type resumes from the newest successful run''s value. Only written on success, so a cancelled or failed run leaves the window to be re-read.';
 COMMENT ON TABLE odoo_saved_configs IS 'Saved Odoo ERP connection configurations';
 COMMENT ON TABLE webhooks IS 'Webhook configurations for external integrations';
 COMMENT ON TABLE webhook_deliveries IS 'Webhook delivery attempts and history';
