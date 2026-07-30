@@ -2,7 +2,8 @@ import { useState, useEffect, Suspense, lazy } from 'react'
 import { Loader2 } from 'lucide-react'
 
 import { usePDMStore } from '@/stores/pdmStore'
-import { useLoadFiles, useVaultManagement, useStagedCheckins } from '@/hooks'
+import { useLoadFiles, useVaultManagement, useStagedCheckins, useDeniedModules } from '@/hooks'
+import type { ModuleId } from '@/types/modules'
 import { Toast } from '@/components/core'
 import { ChristmasEffects, HalloweenEffects, WeatherEffects } from '@/components/effects/seasonal'
 import { ImpersonationBanner } from '@/components/shared/ImpersonationBanner'
@@ -46,6 +47,7 @@ interface AppShellProps {
 export function AppShell({ showWelcome, isSignInScreen, handleChangeOrg }: AppShellProps) {
   const {
     activeView,
+    setActiveView,
     sidebarVisible,
     setSidebarWidth,
     detailsPanelVisible,
@@ -56,6 +58,17 @@ export function AppShell({ showWelcome, isSignInScreen, handleChangeOrg }: AppSh
     itemPanel,
     customerPanel,
   } = usePDMStore()
+
+  const deniedModules = useDeniedModules()
+
+  // activeView is persisted, so someone whose access was revoked while they
+  // were away would otherwise reopen the app straight into the restricted
+  // module. This is the one place that covers the sidebar and main area alike.
+  useEffect(() => {
+    if (deniedModules.has(activeView as ModuleId)) {
+      setActiveView('explorer')
+    }
+  }, [activeView, deniedModules, setActiveView])
 
   /**
    * Views that own the main area also own the right panel: they open it for

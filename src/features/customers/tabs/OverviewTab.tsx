@@ -1,3 +1,5 @@
+import { useCallback } from 'react'
+
 import { usePDMStore } from '@/stores/pdmStore'
 import type { CustomerBucket } from '@/stores/types'
 
@@ -30,6 +32,13 @@ export function OverviewTab({
   const setCustomerFilters = usePDMStore((s) => s.setCustomerFilters)
   const toggleCustomerFacet = usePDMStore((s) => s.toggleCustomerFacet)
   const setCustomerPanel = usePDMStore((s) => s.setCustomerPanel)
+
+  // Stable so the memoized scatter, the costliest chart here to rebuild, is
+  // not re-rendered by every unrelated change on this tab.
+  const openCustomer = useCallback(
+    (row: CustomerRfmRow) => setCustomerPanel({ customerId: row.customer_id, name: row.name }),
+    [setCustomerPanel],
+  )
 
   return (
     <div className="space-y-3">
@@ -70,13 +79,7 @@ export function OverviewTab({
 
         <CohortHeatmap data={data.cohorts} loading={loading} />
 
-        <RfmScatterChart
-          rows={roster}
-          loading={rosterLoading}
-          onSelect={(row) =>
-            setCustomerPanel({ customerId: row.customer_id, name: row.name })
-          }
-        />
+        <RfmScatterChart rows={roster} loading={rosterLoading} onSelect={openCustomer} />
 
         <TopProductsChart data={data.topProducts} loading={loading} />
       </div>

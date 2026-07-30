@@ -9,6 +9,9 @@
  * 1. Deletes the local files from disk
  * 2. Removes them from the local sync index
  * 3. Updates the store to remove the files from view
+ *
+ * The deletions are registered as expected file changes for the duration, so the
+ * watcher does not read them back as external edits and trigger a vault reload.
  */
 
 import type { Command, CommandResult, LocalFile } from '../types'
@@ -16,6 +19,7 @@ import { getFilesInFolder } from '../types'
 import { log } from '@/lib/logger'
 import { FileOperationTracker } from '../../fileOperationTracker'
 import { removeFromSyncIndex } from '../../cache/localSyncIndex'
+import { beginWatcherSuppression } from '@/lib/fileWatcherSuppression'
 
 function logDiscardOrphaned(
   level: 'info' | 'warn' | 'error' | 'debug',
@@ -113,121 +117,131 @@ export const discardOrphanedCommand: Command<DiscardOrphanedParams> = {
     const pathsBeingProcessed = filesToDiscard.map((f) => f.relativePath)
     ctx.addProcessingFoldersSync(pathsBeingProcessed, 'delete')
 
-    // Progress tracking
-    const toastId = `discard-orphaned-${Date.now()}`
-    ctx.addProgressToast(
-      toastId,
-      `Removing ${total} orphaned file${total !== 1 ? 's' : ''}...`,
-      total,
-    )
+    // Without this the watcher sees our own deletions as external changes once the
+    // batch operation restarts it, and kicks off a full vault reload. Matches the
+    // delete handler; the helper carries a backstop so a missed release cannot
+    // suppress these paths for the rest of the session.
+    const releaseWatcher = beginWatcherSuppression(pathsBeingProcessed, ctx)
 
-    // Yield to let confirmation modal close
-    await new Promise((resolve) => setTimeout(resolve, 0))
-
-    // Delete local files using batch operation
-    const filePaths = filesToDiscard.map((f) => f.path)
-    const batchResult = (await window.electronAPI?.deleteBatch(filePaths, true)) as
-      | {
-          success: boolean
-          results: Array<{ path: string; success: boolean; error?: string }>
-          summary: { total: number; succeeded: number; failed: number; duration: number }
-        }
-      | undefined
-
-    if (!batchResult) {
-      tracker.endOperation('failed', 'No response from system')
-      ctx.removeProcessingFolders(pathsBeingProcessed)
-      ctx.removeToast(toastId)
-      ctx.addToast('error', 'Failed to discard orphaned files - no response from system')
-      return {
-        success: false,
-        message: 'Discard operation failed',
+    try {
+      // Progress tracking
+      const toastId = `discard-orphaned-${Date.now()}`
+      ctx.addProgressToast(
+        toastId,
+        `Removing ${total} orphaned file${total !== 1 ? 's' : ''}...`,
         total,
-        succeeded: 0,
-        failed: total,
+      )
+
+      // Yield to let confirmation modal close
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      // Delete local files using batch operation
+      const filePaths = filesToDiscard.map((f) => f.path)
+      const batchResult = (await window.electronAPI?.deleteBatch(filePaths, true)) as
+        | {
+            success: boolean
+            results: Array<{ path: string; success: boolean; error?: string }>
+            summary: { total: number; succeeded: number; failed: number; duration: number }
+          }
+        | undefined
+
+      if (!batchResult) {
+        tracker.endOperation('failed', 'No response from system')
+        ctx.removeProcessingFolders(pathsBeingProcessed)
+        ctx.removeToast(toastId)
+        ctx.addToast('error', 'Failed to discard orphaned files - no response from system')
+        return {
+          success: false,
+          message: 'Discard operation failed',
+          total,
+          succeeded: 0,
+          failed: total,
+        }
       }
-    }
 
-    const succeeded = batchResult.summary.succeeded
-    const failed = batchResult.summary.failed
+      const succeeded = batchResult.summary.succeeded
+      const failed = batchResult.summary.failed
 
-    // Get paths that were successfully deleted
-    const deletedPaths = batchResult.results.filter((r) => r.success).map((r) => r.path)
+      // Get paths that were successfully deleted
+      const deletedPaths = batchResult.results.filter((r) => r.success).map((r) => r.path)
 
-    // Update progress
-    ctx.updateProgressToast(toastId, total, 100, undefined, `${total}/${total}`)
+      // Update progress
+      ctx.updateProgressToast(toastId, total, 100, undefined, `${total}/${total}`)
 
-    // Remove successfully deleted files from the store
-    if (deletedPaths.length > 0) {
-      ctx.removeFilesFromStore(deletedPaths)
+      // Remove successfully deleted files from the store
+      if (deletedPaths.length > 0) {
+        ctx.removeFilesFromStore(deletedPaths)
 
-      // Remove from sync index so they're not marked as orphaned if recreated
-      if (ctx.activeVaultId) {
-        const relativePaths = filesToDiscard
-          .filter((f) => deletedPaths.includes(f.path))
-          .map((f) => f.relativePath)
-        removeFromSyncIndex(ctx.activeVaultId, relativePaths).catch((err) => {
-          logDiscardOrphaned('warn', 'Failed to update sync index', { error: String(err) })
-        })
+        // Remove from sync index so they're not marked as orphaned if recreated
+        if (ctx.activeVaultId) {
+          const relativePaths = filesToDiscard
+            .filter((f) => deletedPaths.includes(f.path))
+            .map((f) => f.relativePath)
+          removeFromSyncIndex(ctx.activeVaultId, relativePaths).catch((err) => {
+            logDiscardOrphaned('warn', 'Failed to update sync index', { error: String(err) })
+          })
+        }
       }
-    }
 
-    // Clear processing state
-    ctx.removeProcessingFolders(pathsBeingProcessed)
-    ctx.setLastOperationCompletedAt(Date.now())
-    ctx.removeToast(toastId)
+      // Clear processing state
+      ctx.removeProcessingFolders(pathsBeingProcessed)
+      ctx.setLastOperationCompletedAt(Date.now())
+      ctx.removeToast(toastId)
 
-    // Extract errors for feedback
-    const errors: string[] = []
-    for (const result of batchResult.results) {
-      if (!result.success && result.error) {
-        const fileName = result.path.split(/[/\\]/).pop() || result.path
-        errors.push(`${fileName}: ${result.error}`)
-        logDiscardOrphaned('error', 'Failed to delete orphaned file', {
-          path: result.path,
-          error: result.error,
-        })
+      // Extract errors for feedback
+      const errors: string[] = []
+      for (const result of batchResult.results) {
+        if (!result.success && result.error) {
+          const fileName = result.path.split(/[/\\]/).pop() || result.path
+          errors.push(`${fileName}: ${result.error}`)
+          logDiscardOrphaned('error', 'Failed to delete orphaned file', {
+            path: result.path,
+            error: result.error,
+          })
+        }
       }
-    }
 
-    // Show result toast
-    if (failed > 0) {
-      if (errors.length === 1) {
-        ctx.addToast(
-          'warning',
-          `Discarded ${succeeded}/${total} orphaned files. Error: ${errors[0]}`,
-        )
-      } else {
-        ctx.addToast(
-          'warning',
-          `Discarded ${succeeded}/${total} orphaned files. ${errors.length} error(s)`,
-        )
+      // Show result toast
+      if (failed > 0) {
+        if (errors.length === 1) {
+          ctx.addToast(
+            'warning',
+            `Discarded ${succeeded}/${total} orphaned files. Error: ${errors[0]}`,
+          )
+        } else {
+          ctx.addToast(
+            'warning',
+            `Discarded ${succeeded}/${total} orphaned files. ${errors.length} error(s)`,
+          )
+        }
+      } else if (succeeded > 0) {
+        ctx.addToast('success', `Discarded ${succeeded} orphaned file${succeeded > 1 ? 's' : ''}`)
       }
-    } else if (succeeded > 0) {
-      ctx.addToast('success', `Discarded ${succeeded} orphaned file${succeeded > 1 ? 's' : ''}`)
-    }
 
-    logDiscardOrphaned('info', 'Discard orphaned operation complete', {
-      operationId,
-      total,
-      succeeded,
-      failed,
-      durationMs: Math.round(performance.now() - operationStart),
-    })
+      logDiscardOrphaned('info', 'Discard orphaned operation complete', {
+        operationId,
+        total,
+        succeeded,
+        failed,
+        durationMs: Math.round(performance.now() - operationStart),
+      })
 
-    tracker.endOperation(failed === 0 ? 'completed' : 'failed', failed > 0 ? errors[0] : undefined)
+      tracker.endOperation(failed === 0 ? 'completed' : 'failed', failed > 0 ? errors[0] : undefined)
 
-    return {
-      success: failed === 0,
-      message:
-        failed > 0
-          ? `Discarded ${succeeded}/${total} orphaned files`
-          : `Discarded ${succeeded} orphaned file${succeeded > 1 ? 's' : ''}`,
-      total,
-      succeeded,
-      failed,
-      errors: errors.length > 0 ? errors : undefined,
-      duration: batchResult.summary.duration,
+      return {
+        success: failed === 0,
+        message:
+          failed > 0
+            ? `Discarded ${succeeded}/${total} orphaned files`
+            : `Discarded ${succeeded} orphaned file${succeeded > 1 ? 's' : ''}`,
+        total,
+        succeeded,
+        failed,
+        errors: errors.length > 0 ? errors : undefined,
+        duration: batchResult.summary.duration,
+      }
+    } finally {
+      releaseWatcher()
     }
   },
 }

@@ -48,3 +48,6 @@ export { useDeepLinkInstall } from './useDeepLinkInstall'
 // Auto-scroll during drag operations
 export { useAutoScrollOnDrag } from './useAutoScrollOnDrag'
 export type { AutoScrollOptions } from './useAutoScrollOnDrag'
+
+// Admin-restricted modules
+export { useDeniedModules } from './useDeniedModules'

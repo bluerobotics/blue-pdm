@@ -31,6 +31,7 @@ const settingsSections: SettingsSection[] = [
       { id: 'backup', label: 'Backups' },
       { id: 'vaults', label: 'Vaults' },
       { id: 'team-members', label: 'Members & Teams' },
+      { id: 'module-access', label: 'Module Access' },
       { id: 'company-profile', label: 'Company Profile' },
       { id: 'auth-providers', label: 'Sign-In Methods' },
       { id: 'serialization', label: 'Serialization' },

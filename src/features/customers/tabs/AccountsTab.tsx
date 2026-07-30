@@ -1,4 +1,5 @@
-import { useMemo } from 'react'
+import { memo, useMemo, useRef } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { Building2 } from 'lucide-react'
 
 import { usePDMStore } from '@/stores/pdmStore'
@@ -28,6 +29,12 @@ interface AccountRollup {
   leadCustomerName: string
 }
 
+/** Row height in px. Fixed so the virtualizer needs no measurement pass. */
+const ROW_HEIGHT = 48
+
+/** Vertical gap between rows, matching the old space-y-1. */
+const ROW_GAP = 4
+
 /**
  * Account-level rollup, derived from the same RFM rows the customer table uses
  * rather than a separate query.
@@ -35,10 +42,16 @@ interface AccountRollup {
  * The grouping mirrors what enrichment attaches to: several Odoo partners (a
  * company plus its contacts) collapse onto one account so research is paid for
  * once. Customers with no account stand alone.
+ *
+ * Virtualized for the same reason the customer table is: an org whose partners
+ * are mostly individuals rolls up to nearly one account per customer, and this
+ * used to put every one of them in the DOM at once.
  */
 export function AccountsTab({ rows, loading }: AccountsTabProps) {
   const setCustomerPanel = usePDMStore((s) => s.setCustomerPanel)
-  const customerPanel = usePDMStore((s) => s.customerPanel)
+  const openCustomerId = usePDMStore((s) => s.customerPanel?.customerId ?? null)
+
+  const scrollRef = useRef<HTMLDivElement>(null)
 
   const accounts = useMemo(() => {
     const map = new Map<string, AccountRollup>()
@@ -81,9 +94,16 @@ export function AccountsTab({ rows, loading }: AccountsTabProps) {
     return Array.from(map.values()).sort((a, b) => b.spend - a.spend)
   }, [rows])
 
+  const virtualizer = useVirtualizer({
+    count: accounts.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => ROW_HEIGHT + ROW_GAP,
+    overscan: 8,
+  })
+
   if (loading) {
     return (
-      <div className="space-y-1.5">
+      <div className="flex-1 min-h-0 overflow-hidden space-y-1.5">
         {Array.from({ length: 12 }).map((_, index) => (
           <div
             key={index}
@@ -105,51 +125,70 @@ export function AccountsTab({ rows, loading }: AccountsTabProps) {
   }
 
   return (
-    <div className="space-y-1">
-      {accounts.map((account) => {
-        const meta = segmentMeta(account.segment)
-        const isOpen = customerPanel?.customerId === account.leadCustomerId
+    <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto">
+      <div className="relative" style={{ height: virtualizer.getTotalSize() }}>
+        {virtualizer.getVirtualItems().map((virtualRow) => {
+          const account = accounts[virtualRow.index]
 
-        return (
-          <button
-            key={account.key}
-            onClick={() =>
-              setCustomerPanel({
-                customerId: account.leadCustomerId,
-                name: account.leadCustomerName,
-              })
-            }
-            className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg border text-left transition-colors ${
-              isOpen
-                ? 'border-plm-accent/50 bg-plm-selection/30'
-                : 'border-plm-border bg-plm-bg-light hover:border-plm-border-light'
-            }`}
-          >
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <span className="truncate text-sm text-plm-fg">{account.name}</span>
-                <span
-                  className={`px-1.5 py-px rounded text-[10px] font-medium shrink-0 ${meta.badgeClass}`}
-                >
-                  {meta.label}
-                </span>
-              </div>
-              <div className="text-[11px] text-plm-fg-muted truncate">
-                {account.categoryLabel ?? 'Unclassified'}
-                {account.countries.size > 0 && ` · ${Array.from(account.countries).join(', ')}`}
-                {account.contacts > 1 && ` · ${account.contacts} contacts`}
-              </div>
+          return (
+            <div
+              key={account.key}
+              className="absolute left-0 right-0"
+              style={{ height: ROW_HEIGHT, transform: `translateY(${virtualRow.start}px)` }}
+            >
+              <AccountRow
+                account={account}
+                isOpen={openCustomerId === account.leadCustomerId}
+                onOpen={setCustomerPanel}
+              />
             </div>
-
-            <div className="text-right shrink-0">
-              <div className="text-sm tabular-nums text-plm-fg">{formatAmount(account.spend)}</div>
-              <div className="text-[11px] text-plm-fg-muted tabular-nums">
-                {formatCount(account.orders)} orders · {formatRelativeDays(account.recency)}
-              </div>
-            </div>
-          </button>
-        )
-      })}
+          )
+        })}
+      </div>
     </div>
   )
 }
+
+interface AccountRowProps {
+  account: AccountRollup
+  isOpen: boolean
+  onOpen: (panel: { customerId: string; name: string }) => void
+}
+
+const AccountRow = memo(function AccountRow({ account, isOpen, onOpen }: AccountRowProps) {
+  const meta = segmentMeta(account.segment)
+
+  return (
+    <button
+      onClick={() => onOpen({ customerId: account.leadCustomerId, name: account.leadCustomerName })}
+      className={`w-full h-full flex items-center gap-3 px-3 rounded-lg border text-left transition-colors ${
+        isOpen
+          ? 'border-plm-accent/50 bg-plm-selection/30'
+          : 'border-plm-border bg-plm-bg-light hover:border-plm-border-light'
+      }`}
+    >
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="truncate text-sm text-plm-fg">{account.name}</span>
+          <span
+            className={`px-1.5 py-px rounded text-[10px] font-medium shrink-0 ${meta.badgeClass}`}
+          >
+            {meta.label}
+          </span>
+        </div>
+        <div className="text-[11px] text-plm-fg-muted truncate">
+          {account.categoryLabel ?? 'Unclassified'}
+          {account.countries.size > 0 && ` · ${Array.from(account.countries).join(', ')}`}
+          {account.contacts > 1 && ` · ${account.contacts} contacts`}
+        </div>
+      </div>
+
+      <div className="text-right shrink-0">
+        <div className="text-sm tabular-nums text-plm-fg">{formatAmount(account.spend)}</div>
+        <div className="text-[11px] text-plm-fg-muted tabular-nums">
+          {formatCount(account.orders)} orders · {formatRelativeDays(account.recency)}
+        </div>
+      </div>
+    </button>
+  )
+})

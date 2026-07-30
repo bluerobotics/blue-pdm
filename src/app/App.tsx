@@ -3,6 +3,7 @@ import { usePDMStore } from '@/stores/pdmStore'
 import { log } from '@/lib/logger'
 import { refreshMetadataForFiles } from '@/lib/commands/handlers/syncMetadata'
 import { recordMetric } from '@/lib/performanceMetrics'
+import { startLongTaskMonitor } from '@/lib/longTaskMonitor'
 import { SetupScreen } from '@/components/shared/Screens'
 import { OnboardingScreen } from '@/components/shared/Screens'
 import { PerformanceWindow } from '@/features/dev-tools/performance'
@@ -289,6 +290,22 @@ export function App() {
       userAgent: navigator.userAgent.split(' ').slice(-1)[0], // Last part is Chrome version
     })
   }, [])
+
+  // Records what is actually holding the main thread. Interaction feedback -
+  // hover, cursor shape, scroll - stalls whenever anything blocks it, so
+  // without this the view that is open gets blamed for a background subsystem.
+  useEffect(
+    () =>
+      startLongTaskMonitor(() => {
+        const { activeView, customersTab } = usePDMStore.getState()
+        // The customers tabs mount separately and cost wildly different
+        // amounts to render, so "customers" alone does not narrow anything.
+        return activeView === 'customers'
+          ? { view: activeView, tab: customersTab }
+          : { view: activeView }
+      }),
+    [],
+  )
 
   // Get onboarding state
   const onboardingComplete = usePDMStore((s) => s.onboardingComplete)

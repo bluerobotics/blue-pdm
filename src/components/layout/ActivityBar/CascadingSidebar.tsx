@@ -3,6 +3,7 @@ import { useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { usePDMStore, type SidebarView } from '@/stores/pdmStore'
 import { useTranslation } from '@/lib/i18n'
+import { useDeniedModules } from '@/hooks/useDeniedModules'
 import { logNavigation } from '@/lib/userActionLogger'
 import {
   isModuleVisible,
@@ -36,6 +37,7 @@ export function CascadingSidebar({
   const setActiveView = usePDMStore((s) => s.setActiveView)
   const getEffectiveModuleConfig = usePDMStore((s) => s.getEffectiveModuleConfig)
   const moduleConfig = getEffectiveModuleConfig()
+  const deniedModules = useDeniedModules()
   const { t } = useTranslation()
   const isExpanded = useContext(ExpandedContext)
   const [hoveredChild, setHoveredChild] = useState<ModuleId | null>(null)
@@ -49,7 +51,9 @@ export function CascadingSidebar({
   const closeTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   // Filter to only show visible children
-  const visibleChildren = children.filter((child) => isModuleVisible(child.id, moduleConfig))
+  const visibleChildren = children.filter((child) =>
+    isModuleVisible(child.id, moduleConfig, deniedModules),
+  )
 
   // Update scroll state
   const updateScrollState = useCallback(() => {
@@ -135,7 +139,9 @@ export function CascadingSidebar({
 
   const handleChildMouseEnter = (childId: ModuleId, e: React.MouseEvent) => {
     const allChildren = getChildModules(childId, moduleConfig)
-    const childModules = allChildren.filter((c) => isModuleVisible(c.id, moduleConfig))
+    const childModules = allChildren.filter((c) =>
+      isModuleVisible(c.id, moduleConfig, deniedModules),
+    )
     if (childModules.length > 0) {
       if (hoverTimeoutRef.current) {
         clearTimeout(hoverTimeoutRef.current)
@@ -203,7 +209,7 @@ export function CascadingSidebar({
             <div className="flex flex-col pt-[4px]">
               {visibleChildren.map((child) => {
                 const childChildren = getChildModules(child.id, moduleConfig).filter((c) =>
-                  isModuleVisible(c.id, moduleConfig),
+                  isModuleVisible(c.id, moduleConfig, deniedModules),
                 )
                 const hasGrandchildren = childChildren.length > 0
                 const translationKey = moduleTranslationKeys[child.id]

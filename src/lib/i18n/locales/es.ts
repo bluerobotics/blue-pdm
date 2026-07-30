@@ -242,7 +242,6 @@ export const es: TranslationDict = {
     // Products
     products: 'Explorador de productos',
     items: 'Navegador de artículos',
-    boms: 'Listas de materiales',
     // Change Control
     ecr: 'ECRs / Problemas',
     eco: 'ECOs',
@@ -253,47 +252,8 @@ export const es: TranslationDict = {
     // Supply Chain - Suppliers
     supplierDatabase: 'Base de datos de proveedores',
     supplierPortal: 'Portal de proveedores',
-    // Supply Chain - Purchasing
-    purchaseRequests: 'Solicitudes de compra',
-    purchaseOrders: 'Órdenes de compra',
-    invoices: 'Facturas',
-    // Supply Chain - Logistics
-    shipping: 'Envío',
-    receiving: 'Recepción',
     // Customers
     customers: 'Clientes',
-    // Production
-    manufacturingOrders: 'Órdenes de fabricación',
-    travellers: 'Hojas de ruta',
-    workInstructions: 'Instrucciones de trabajo',
-    productionSchedule: 'Programa de producción',
-    routings: 'Rutas',
-    workCenters: 'Centros de trabajo',
-    processFlows: 'Flujos de proceso',
-    equipment: 'Equipos',
-    // Production - Analytics
-    productionAnalytics: 'Analítica',
-    yieldTracking: 'Seguimiento de rendimiento',
-    errorCodes: 'Códigos de error',
-    downtime: 'Tiempo de inactividad',
-    oee: 'Panel OEE',
-    scrapTracking: 'Seguimiento de desperdicio',
-    // Quality
-    fai: 'Inspección de primer artículo (FAI)',
-    ncr: 'Informe de no conformidad (NCR)',
-    imr: 'Informe de material entrante (IMR)',
-    scar: 'Acción correctiva de proveedor (SCAR)',
-    capa: 'Acción correctiva y preventiva (CAPA)',
-    rma: 'Autorización de devolución de material (RMA)',
-    certificates: 'Certificados',
-    calibration: 'Calibración',
-    qualityTemplates: 'Plantillas',
-    // Accounting
-    accountsPayable: 'Cuentas por pagar (AP)',
-    accountsReceivable: 'Cuentas por cobrar (AR)',
-    generalLedger: 'Libro mayor',
-    costTracking: 'Seguimiento de costos',
-    budgets: 'Presupuestos',
     // Integrations
     googleDrive: 'Google Drive',
     // System

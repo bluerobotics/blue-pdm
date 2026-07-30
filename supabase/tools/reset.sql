@@ -146,6 +146,7 @@ DROP TABLE IF EXISTS vault_access CASCADE;
 DROP TABLE IF EXISTS vaults CASCADE;
 
 -- Teams & permissions
+DROP TABLE IF EXISTS module_access CASCADE;
 DROP TABLE IF EXISTS user_permissions CASCADE;
 DROP TABLE IF EXISTS user_job_titles CASCADE;
 DROP TABLE IF EXISTS job_titles CASCADE;
@@ -274,6 +275,10 @@ DROP FUNCTION IF EXISTS is_org_admin(UUID) CASCADE;
 DROP FUNCTION IF EXISTS user_has_permission(UUID, TEXT, permission_action, UUID) CASCADE;
 DROP FUNCTION IF EXISTS user_has_team_permission(TEXT, permission_action, UUID) CASCADE;
 DROP FUNCTION IF EXISTS get_user_permissions(UUID, UUID) CASCADE;
+DROP FUNCTION IF EXISTS user_can_access_module(TEXT, UUID) CASCADE;
+DROP FUNCTION IF EXISTS get_denied_modules() CASCADE;
+DROP FUNCTION IF EXISTS get_module_access_config() CASCADE;
+DROP FUNCTION IF EXISTS set_module_access(TEXT, UUID[], UUID[]) CASCADE;
 DROP FUNCTION IF EXISTS get_user_vault_access(UUID) CASCADE;
 DROP FUNCTION IF EXISTS create_default_job_titles(UUID, UUID) CASCADE;
 DROP FUNCTION IF EXISTS create_default_permission_teams(UUID, UUID) CASCADE;

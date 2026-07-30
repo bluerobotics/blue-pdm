@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 -- Insert initial version for new installations
 INSERT INTO schema_version (id, version, description, applied_at, applied_by)
-VALUES (1, 76, 'Align permission model: admin grant implies all actions', NOW(), 'migration')
+VALUES (1, 80, 'Module access allowlist: restrict sidebar modules to specific teams and users', NOW(), 'migration')
 ON CONFLICT (id) DO UPDATE SET 
   version = EXCLUDED.version,
   description = EXCLUDED.description,
@@ -426,6 +426,40 @@ CREATE TABLE IF NOT EXISTS user_permissions (
 CREATE INDEX IF NOT EXISTS idx_user_permissions_user_id ON user_permissions(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_permissions_resource ON user_permissions(resource);
 
+-- ===========================================
+-- MODULE ACCESS (Sidebar module allowlist)
+-- ===========================================
+-- Controls which teams / individual users may see a sidebar module.
+--
+-- This is deliberately an ALLOWLIST WITH AN OPEN DEFAULT, not a permission
+-- grant: a module with no rows here is visible to the whole org. Only once an
+-- admin adds a subject does the module become restricted to exactly the listed
+-- teams and users (plus org admins). Modelling it as a normal team_permissions
+-- resource would have meant every existing team needing an explicit 'view'
+-- grant before it could see anything, so restricting one module would have
+-- silently hidden all the others.
+--
+-- module_id is the ModuleId from src/types/modules.ts ('customers'), NOT the
+-- 'module:customers' resource string used by team_permissions.
+
+CREATE TABLE IF NOT EXISTS module_access (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  module_id TEXT NOT NULL,
+  team_id UUID REFERENCES teams(id) ON DELETE CASCADE,
+  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+  granted_at TIMESTAMPTZ DEFAULT NOW(),
+  granted_by UUID REFERENCES users(id),
+  -- Exactly one subject per row
+  CHECK ((team_id IS NULL) <> (user_id IS NULL))
+);
+
+CREATE INDEX IF NOT EXISTS idx_module_access_org_module ON module_access(org_id, module_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_module_access_team
+  ON module_access(org_id, module_id, team_id) WHERE team_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_module_access_user
+  ON module_access(org_id, module_id, user_id) WHERE user_id IS NOT NULL;
+
 -- RLS for teams
 ALTER TABLE teams ENABLE ROW LEVEL SECURITY;
 ALTER TABLE team_members ENABLE ROW LEVEL SECURITY;
@@ -433,6 +467,7 @@ ALTER TABLE team_reviewers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE team_permissions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE permission_presets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_permissions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE module_access ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "Users can view org teams" ON teams;
 CREATE POLICY "Users can view org teams"
@@ -504,6 +539,16 @@ DROP POLICY IF EXISTS "Admins can manage user permissions" ON user_permissions;
 CREATE POLICY "Admins can manage user permissions"
   ON user_permissions FOR ALL
   USING (user_id IN (SELECT id FROM users WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid())) AND is_org_admin());
+
+DROP POLICY IF EXISTS "Users can view module access" ON module_access;
+CREATE POLICY "Users can view module access"
+  ON module_access FOR SELECT
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+DROP POLICY IF EXISTS "Admins can manage module access" ON module_access;
+CREATE POLICY "Admins can manage module access"
+  ON module_access FOR ALL
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND is_org_admin());
 
 -- ===========================================
 -- JOB TITLES
@@ -2039,6 +2084,226 @@ END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 GRANT EXECUTE ON FUNCTION get_user_module_defaults() TO authenticated;
+
+-- ===========================================
+-- MODULE ACCESS FUNCTIONS
+-- ===========================================
+-- See the module_access table above for the allowlist semantics: no rows for a
+-- module means everyone can see it.
+
+-- Deliberately no DROP for user_can_access_module: the customers module's RLS
+-- policies depend on it, and a DROP ... CASCADE here would silently delete
+-- those policies when core.sql is re-run on an existing install, leaving the
+-- customer tables unreadable. CREATE OR REPLACE is enough while the signature
+-- is stable; a signature change needs the dependent policies dropped first.
+DROP FUNCTION IF EXISTS get_denied_modules() CASCADE;
+DROP FUNCTION IF EXISTS get_module_access_config() CASCADE;
+DROP FUNCTION IF EXISTS set_module_access(TEXT, UUID[], UUID[]) CASCADE;
+
+-- Can this user see the given module? Safe to call from RLS policies.
+CREATE OR REPLACE FUNCTION user_can_access_module(
+  p_module_id TEXT,
+  p_user_id UUID DEFAULT NULL
+) RETURNS BOOLEAN AS $$
+DECLARE
+  v_user_id UUID;
+  v_org_id UUID;
+BEGIN
+  v_user_id := COALESCE(p_user_id, auth.uid());
+
+  IF v_user_id IS NULL THEN
+    RETURN false;
+  END IF;
+
+  SELECT org_id INTO v_org_id FROM users WHERE id = v_user_id;
+
+  IF v_org_id IS NULL THEN
+    RETURN false;
+  END IF;
+
+  IF is_org_admin(v_user_id) THEN
+    RETURN true;
+  END IF;
+
+  -- Unrestricted until an admin adds a subject
+  IF NOT EXISTS (
+    SELECT 1 FROM module_access ma
+    WHERE ma.org_id = v_org_id AND ma.module_id = p_module_id
+  ) THEN
+    RETURN true;
+  END IF;
+
+  RETURN EXISTS (
+    SELECT 1 FROM module_access ma
+    WHERE ma.org_id = v_org_id
+      AND ma.module_id = p_module_id
+      AND ma.user_id = v_user_id
+  ) OR EXISTS (
+    SELECT 1 FROM module_access ma
+    JOIN team_members tm ON tm.team_id = ma.team_id
+    WHERE ma.org_id = v_org_id
+      AND ma.module_id = p_module_id
+      AND tm.user_id = v_user_id
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER STABLE;
+
+GRANT EXECUTE ON FUNCTION user_can_access_module(TEXT, UUID) TO authenticated;
+
+-- Modules the caller is restricted out of. Returns the denied set rather than
+-- the allowed set because the open default makes it empty for almost everyone.
+CREATE OR REPLACE FUNCTION get_denied_modules()
+RETURNS TEXT[] AS $$
+DECLARE
+  v_user_id UUID;
+  v_org_id UUID;
+  v_denied TEXT[];
+BEGIN
+  v_user_id := auth.uid();
+
+  IF v_user_id IS NULL THEN
+    RETURN ARRAY[]::TEXT[];
+  END IF;
+
+  SELECT org_id INTO v_org_id FROM users WHERE id = v_user_id;
+
+  IF v_org_id IS NULL OR is_org_admin(v_user_id) THEN
+    RETURN ARRAY[]::TEXT[];
+  END IF;
+
+  SELECT COALESCE(array_agg(restricted.module_id), ARRAY[]::TEXT[])
+  INTO v_denied
+  FROM (
+    SELECT DISTINCT ma.module_id
+    FROM module_access ma
+    WHERE ma.org_id = v_org_id
+  ) restricted
+  WHERE NOT EXISTS (
+    SELECT 1
+    FROM module_access allowed
+    LEFT JOIN team_members tm
+      ON tm.team_id = allowed.team_id AND tm.user_id = v_user_id
+    WHERE allowed.org_id = v_org_id
+      AND allowed.module_id = restricted.module_id
+      AND (allowed.user_id = v_user_id OR tm.user_id IS NOT NULL)
+  );
+
+  RETURN v_denied;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER STABLE;
+
+GRANT EXECUTE ON FUNCTION get_denied_modules() TO authenticated;
+
+-- Full allowlist for the admin UI
+CREATE OR REPLACE FUNCTION get_module_access_config()
+RETURNS TABLE (
+  module_id TEXT,
+  team_id UUID,
+  user_id UUID
+) AS $$
+DECLARE
+  v_org_id UUID;
+BEGIN
+  SELECT org_id INTO v_org_id FROM users WHERE id = auth.uid();
+
+  IF v_org_id IS NULL THEN
+    RAISE EXCEPTION 'Not authorized';
+  END IF;
+
+  IF NOT is_org_admin() THEN
+    RAISE EXCEPTION 'Only admins can view module access';
+  END IF;
+
+  RETURN QUERY
+  SELECT ma.module_id, ma.team_id, ma.user_id
+  FROM module_access ma
+  WHERE ma.org_id = v_org_id
+  ORDER BY ma.module_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION get_module_access_config() TO authenticated;
+
+-- Replace the allowlist for one module (admins only).
+-- Passing two empty arrays clears it, restoring the module to everyone.
+CREATE OR REPLACE FUNCTION set_module_access(
+  p_module_id TEXT,
+  p_team_ids UUID[] DEFAULT ARRAY[]::UUID[],
+  p_user_ids UUID[] DEFAULT ARRAY[]::UUID[]
+) RETURNS JSON AS $$
+DECLARE
+  v_user_id UUID;
+  v_org_id UUID;
+BEGIN
+  v_user_id := auth.uid();
+  SELECT org_id INTO v_org_id FROM users WHERE id = v_user_id;
+
+  IF v_org_id IS NULL THEN
+    RETURN json_build_object('success', false, 'error', 'Not authorized');
+  END IF;
+
+  IF NOT is_org_admin() THEN
+    RETURN json_build_object('success', false, 'error', 'Only admins can set module access');
+  END IF;
+
+  IF p_module_id IS NULL OR p_module_id = '' THEN
+    RETURN json_build_object('success', false, 'error', 'Module is required');
+  END IF;
+
+  DELETE FROM module_access
+  WHERE org_id = v_org_id AND module_id = p_module_id;
+
+  -- Subqueries scope the insert to the caller's org, so ids from another org
+  -- are dropped instead of silently granting cross-org access.
+  INSERT INTO module_access (org_id, module_id, team_id, granted_by)
+  SELECT v_org_id, p_module_id, t.id, v_user_id
+  FROM teams t
+  WHERE t.org_id = v_org_id
+    AND t.id = ANY(COALESCE(p_team_ids, ARRAY[]::UUID[]));
+
+  INSERT INTO module_access (org_id, module_id, user_id, granted_by)
+  SELECT v_org_id, p_module_id, u.id, v_user_id
+  FROM users u
+  WHERE u.org_id = v_org_id
+    AND u.id = ANY(COALESCE(p_user_ids, ARRAY[]::UUID[]));
+
+  RETURN json_build_object(
+    'success', true,
+    'restricted', EXISTS (
+      SELECT 1 FROM module_access
+      WHERE org_id = v_org_id AND module_id = p_module_id
+    )
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION set_module_access(TEXT, UUID[], UUID[]) TO authenticated;
+
+-- Drop permission rows for modules removed from the app, so the permissions
+-- matrix stops offering resources that no longer exist.
+DELETE FROM team_permissions WHERE resource IN (
+  'module:boms', 'module:purchase-requests', 'module:purchase-orders', 'module:invoices',
+  'module:shipping', 'module:receiving', 'module:manufacturing-orders', 'module:travellers',
+  'module:work-instructions', 'module:production-schedule', 'module:routings',
+  'module:work-centers', 'module:process-flows', 'module:equipment',
+  'module:yield-tracking', 'module:error-codes', 'module:downtime', 'module:oee',
+  'module:scrap-tracking', 'module:fai', 'module:ncr', 'module:imr', 'module:scar',
+  'module:capa', 'module:rma', 'module:certificates', 'module:calibration',
+  'module:quality-templates', 'module:accounts-payable', 'module:accounts-receivable',
+  'module:general-ledger', 'module:cost-tracking', 'module:budgets'
+);
+
+DELETE FROM user_permissions WHERE resource IN (
+  'module:boms', 'module:purchase-requests', 'module:purchase-orders', 'module:invoices',
+  'module:shipping', 'module:receiving', 'module:manufacturing-orders', 'module:travellers',
+  'module:work-instructions', 'module:production-schedule', 'module:routings',
+  'module:work-centers', 'module:process-flows', 'module:equipment',
+  'module:yield-tracking', 'module:error-codes', 'module:downtime', 'module:oee',
+  'module:scrap-tracking', 'module:fai', 'module:ncr', 'module:imr', 'module:scar',
+  'module:capa', 'module:rma', 'module:certificates', 'module:calibration',
+  'module:quality-templates', 'module:accounts-payable', 'module:accounts-receivable',
+  'module:general-ledger', 'module:cost-tracking', 'module:budgets'
+);
 
 -- ===========================================
 -- COLUMN DEFAULTS FUNCTIONS

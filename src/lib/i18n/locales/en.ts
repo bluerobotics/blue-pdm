@@ -27,7 +27,8 @@ export const en: TranslationDict = {
     addDesignation: 'Add designation',
     designationName: 'Designation name',
     noDesignations: 'No designations defined yet.',
-    deleteDesignationConfirm: 'Delete this designation? Items using it will revert to their default.',
+    deleteDesignationConfirm:
+      'Delete this designation? Items using it will revert to their default.',
     noPermission: 'You do not have permission to manage item designations.',
   },
   // Common
@@ -279,7 +280,6 @@ export const en: TranslationDict = {
     // Products
     products: 'Product Explorer',
     items: 'Item Browser',
-    boms: 'BOMs',
     // Change Control
     ecr: 'ECRs / Issues',
     eco: 'ECOs',
@@ -290,47 +290,8 @@ export const en: TranslationDict = {
     // Supply Chain - Suppliers
     supplierDatabase: 'Supplier Database',
     supplierPortal: 'Supplier Portal',
-    // Supply Chain - Purchasing
-    purchaseRequests: 'Purchase Requests',
-    purchaseOrders: 'Purchase Orders',
-    invoices: 'Invoices',
-    // Supply Chain - Logistics
-    shipping: 'Shipping',
-    receiving: 'Receiving',
     // Customers
     customers: 'Customers',
-    // Production
-    manufacturingOrders: 'Manufacturing Orders',
-    travellers: 'Travellers',
-    workInstructions: 'Work Instructions',
-    productionSchedule: 'Production Schedule',
-    routings: 'Routings',
-    workCenters: 'Work Centers',
-    processFlows: 'Process Flows',
-    equipment: 'Equipment',
-    // Production - Analytics
-    productionAnalytics: 'Analytics',
-    yieldTracking: 'Yield Tracking',
-    errorCodes: 'Error Codes',
-    downtime: 'Downtime',
-    oee: 'OEE Dashboard',
-    scrapTracking: 'Scrap Tracking',
-    // Quality
-    fai: 'First Article Inspection (FAI)',
-    ncr: 'Non-Conformance Report (NCR)',
-    imr: 'Incoming Material Report (IMR)',
-    scar: 'Supplier Corrective Action (SCAR)',
-    capa: 'Corrective & Preventive Action (CAPA)',
-    rma: 'Return Material Authorization (RMA)',
-    certificates: 'Certificates',
-    calibration: 'Calibration',
-    qualityTemplates: 'Templates',
-    // Accounting
-    accountsPayable: 'Accounts Payable (AP)',
-    accountsReceivable: 'Accounts Receivable (AR)',
-    generalLedger: 'General Ledger',
-    costTracking: 'Cost Tracking',
-    budgets: 'Budgets',
     // Integrations
     googleDrive: 'Google Drive',
     // System
@@ -516,7 +477,8 @@ export const en: TranslationDict = {
       pushSuccess: 'Pushed metadata to {matched} characteristic(s) and saved the drawing',
       pushSavedWarn:
         'Pushed metadata to {matched} characteristic(s), but the drawing could not be saved automatically — save it in SOLIDWORKS.',
-      pushNoneMatched: 'No matching characteristics found in the SOLIDWORKS drawing (matched by balloon number).',
+      pushNoneMatched:
+        'No matching characteristics found in the SOLIDWORKS drawing (matched by balloon number).',
       pushNoChanges: 'No unpushed changes to send to SOLIDWORKS.',
       pushFailed: 'Failed to push to SOLIDWORKS',
       unpushedBadge: '{count} unpushed',
@@ -646,7 +608,8 @@ export const en: TranslationDict = {
     swCannotCommunicate: "SolidWorks is running but BluePLM can't communicate with it.",
     reconnecting: 'Reconnecting...',
     reconnect: 'Reconnect',
-    reconnectHint: 'If reconnecting doesn\'t work, save your work in SolidWorks first, then restart it.',
+    reconnectHint:
+      "If reconnecting doesn't work, save your work in SolidWorks first, then restart it.",
     noActiveFiles: 'No active files',
     newFiles: 'New Files',
     deselectAll: 'Deselect All',
@@ -657,14 +620,16 @@ export const en: TranslationDict = {
     discard: 'Discard',
     noFilesCheckedOut: 'No files checked out',
     checkedOutByOthers: 'Checked Out by Others',
-    forceReleaseTooltip: "Immediately release the checkout. User's unsaved changes will be orphaned.",
+    forceReleaseTooltip:
+      "Immediately release the checkout. User's unsaved changes will be orphaned.",
     adminForceReleaseHint: 'Admin: Select files to force release checkout',
     deletedFromServer: 'Deleted from Server',
     reuploadTooltip: 'Re-upload these files to the server as new files',
     reupload: 'Re-upload',
     deleteOrphanedTooltip: 'Delete these orphaned local files',
     deleteLocal: 'Delete Local',
-    deletedFromServerHint: 'Another user deleted these files from the server. Your local copies are orphaned.',
+    deletedFromServerHint:
+      'Another user deleted these files from the server. Your local copies are orphaned.',
     totalSyncedFiles: 'Total synced files:',
     totalCheckedOut: 'Total checked out:',
     newFilesToSync: 'New files to sync:',
@@ -673,7 +638,8 @@ export const en: TranslationDict = {
     deleteRecycleBinHint: 'This will move the files to your Recycle Bin.',
     checkInFromDifferentComputer: 'Check In From Different Computer',
     cannotCheckInMachineOffline: 'Cannot Check In - Machine Offline',
-    checkInFromOriginalHint: 'This ensures no unsaved work is lost. Please check in from the original computer, or wait for it to come online.',
+    checkInFromOriginalHint:
+      'This ensures no unsaved work is lost. Please check in from the original computer, or wait for it to come online.',
     forceCheckIn: 'Force Check In',
     ok: 'OK',
   },
@@ -713,7 +679,8 @@ export const en: TranslationDict = {
     emptyTrash: 'Empty Trash',
     autoDeleteNotice: 'Files are automatically deleted after 30 days',
     warning: 'Warning:',
-    emptyTrashWarningMessage: 'This action cannot be undone. All files in the trash will be permanently deleted.',
+    emptyTrashWarningMessage:
+      'This action cannot be undone. All files in the trash will be permanently deleted.',
     emptying: 'Emptying...',
   },
 
@@ -841,7 +808,8 @@ export const en: TranslationDict = {
     stepExportConfiguration: 'STEP Export Configuration',
     loadingConfigurations: 'Loading configurations...',
     defaultConfiguration: 'Default configuration',
-    noConfigurationsAvailable: 'No configurations available (SolidWorks service may not be running)',
+    noConfigurationsAvailable:
+      'No configurations available (SolidWorks service may not be running)',
     material: 'Material',
     materialPlaceholder: 'e.g., 6061-T6 Aluminum',
     finish: 'Finish',

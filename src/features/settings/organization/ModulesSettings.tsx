@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 import { log } from '@/lib/logger'
 import { usePDMStore } from '@/stores/pdmStore'
+import { useDeniedModules } from '@/hooks/useDeniedModules'
 import { supabase } from '@/lib/supabase'
 import { ModulesEditor } from './ModulesEditor'
 
@@ -38,6 +39,8 @@ export function ModulesSettings() {
     organization,
     setActiveView,
   } = usePDMStore()
+
+  const deniedModules = useDeniedModules()
 
   const [isSaving, setIsSaving] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
@@ -211,7 +214,11 @@ export function ModulesSettings() {
       </div>
 
       {/* Main Module Editor */}
-      <ModulesEditor config={moduleConfig} onConfigChange={setModuleConfig} />
+      <ModulesEditor
+        config={moduleConfig}
+        onConfigChange={setModuleConfig}
+        deniedModuleIds={deniedModules}
+      />
 
       {/* Teams with Module Defaults */}
       {teamsWithModules.length > 0 && (

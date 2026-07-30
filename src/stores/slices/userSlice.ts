@@ -22,6 +22,7 @@ export const createUserSlice: StateCreator<
   userWorkflowRoleIds: [],
   permissionsLoaded: false,
   permissionsLastUpdated: 0,
+  deniedModules: [],
 
   // Actions
   setUser: (user: User | null) => set({ user, isAuthenticated: !!user }),
@@ -39,6 +40,7 @@ export const createUserSlice: StateCreator<
       isConnecting: false,
       impersonatedUser: null,
       userWorkflowRoleIds: [],
+      deniedModules: [],
     }),
 
   // Get effective role (considering user impersonation)
@@ -270,6 +272,27 @@ export const createUserSlice: StateCreator<
     }
   },
 
+  loadModuleAccess: async () => {
+    const { user } = get()
+    if (!user) {
+      set({ deniedModules: [] })
+      return
+    }
+
+    try {
+      const { supabase } = await import('../../lib/supabase')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { data, error } = await (supabase.rpc as any)('get_denied_modules') // TODO: type this
+      if (error) throw error
+      set({ deniedModules: (data || []) as ModuleId[] })
+    } catch (error) {
+      // Fail open: a database that predates the module_access table has no
+      // restrictions to enforce, and hiding every module would be worse than
+      // showing a restricted one.
+      set({ deniedModules: [] })
+    }
+  },
+
   hasPermission: (resource: string, action: string) => {
     const { user, impersonatedUser, userPermissions } = get()
 
@@ -296,6 +319,20 @@ export const createUserSlice: StateCreator<
 
     const resourcePerms = userPermissions[resource] || []
     return resourcePerms.includes(action) || resourcePerms.includes('admin')
+  },
+
+  canAccessModule: (moduleId: ModuleId) => {
+    const { user, impersonatedUser, deniedModules } = get()
+
+    // Impersonation loads the target user's teams but not their module access,
+    // so fall back to the impersonated role rather than the real admin's.
+    if (impersonatedUser) {
+      return impersonatedUser.role === 'admin' || !deniedModules.includes(moduleId)
+    }
+
+    if (user?.role === 'admin') return true
+
+    return !deniedModules.includes(moduleId)
   },
 
   // Update organization with partial data (for local state sync after API calls)

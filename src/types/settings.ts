@@ -7,6 +7,7 @@ export type SettingsTab =
   | 'modules' // Displays as "Sidebar" in UI
   | 'vaults'
   | 'team-members'
+  | 'module-access'
   | 'company-profile'
   | 'auth-providers'
   | 'serialization'

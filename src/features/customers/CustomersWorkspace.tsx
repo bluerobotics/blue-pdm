@@ -72,10 +72,13 @@ export function CustomersWorkspace() {
     exportCustomersCsv(roster.visible)
   }, [roster.visible])
 
+  const refreshAnalytics = analytics.refresh
+  const refreshRoster = roster.refresh
+
   const refresh = useCallback(() => {
-    analytics.refresh()
-    roster.refresh()
-  }, [analytics, roster])
+    refreshAnalytics()
+    refreshRoster()
+  }, [refreshAnalytics, refreshRoster])
 
   const hasAnyData =
     (analytics.data.summary?.total_customers ?? 0) > 0 || roster.rows.length > 0
@@ -187,11 +190,12 @@ export function CustomersWorkspace() {
         </div>
       )}
 
-      {/* The table scrolls internally so its header can stay sticky; the other
-          tabs are ordinary flowing content and scroll here. */}
+      {/* The two virtualized tabs scroll internally - the table so its header
+          can stay sticky, and both so the virtualizer has a scroll element of
+          its own. Overview is ordinary flowing content and scrolls here. */}
       <div
         className={`flex-1 min-h-0 p-4 ${
-          tab === 'customers' ? 'flex flex-col overflow-hidden' : 'overflow-auto'
+          tab === 'overview' ? 'overflow-auto' : 'flex flex-col overflow-hidden'
         }`}
       >
         {tab === 'overview' && (

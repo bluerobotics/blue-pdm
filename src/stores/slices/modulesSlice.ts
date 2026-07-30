@@ -225,7 +225,8 @@ export const createModulesSlice: StateCreator<
     }
 
     try {
-      const { data, error } = await (supabase.rpc as any)('get_org_module_defaults', { // TODO: type this
+      const { data, error } = await (supabase.rpc as any)('get_org_module_defaults', {
+        // TODO: type this
         p_org_id: organization.id,
       })
 
@@ -272,7 +273,8 @@ export const createModulesSlice: StateCreator<
     }
 
     try {
-      const { error } = await (supabase.rpc as any)('set_org_module_defaults', { // TODO: type this
+      const { error } = await (supabase.rpc as any)('set_org_module_defaults', {
+        // TODO: type this
         p_org_id: organization.id,
         p_enabled_modules: moduleConfig.enabledModules,
         p_enabled_groups: moduleConfig.enabledGroups,
@@ -300,7 +302,8 @@ export const createModulesSlice: StateCreator<
     }
 
     try {
-      const { error } = await (supabase.rpc as any)('force_org_module_defaults', { // TODO: type this
+      const { error } = await (supabase.rpc as any)('force_org_module_defaults', {
+        // TODO: type this
         p_org_id: organization.id,
         p_enabled_modules: moduleConfig.enabledModules,
         p_enabled_groups: moduleConfig.enabledGroups,
@@ -324,7 +327,8 @@ export const createModulesSlice: StateCreator<
 
   loadTeamModuleDefaults: async (teamId: string) => {
     try {
-      const { data, error } = await (supabase.rpc as any)('get_team_module_defaults', { // TODO: type this
+      const { data, error } = await (supabase.rpc as any)('get_team_module_defaults', {
+        // TODO: type this
         p_team_id: teamId,
       })
 
@@ -363,7 +367,8 @@ export const createModulesSlice: StateCreator<
     const configToSave = config || moduleConfig
 
     try {
-      const { error } = await (supabase.rpc as any)('set_team_module_defaults', { // TODO: type this
+      const { error } = await (supabase.rpc as any)('set_team_module_defaults', {
+        // TODO: type this
         p_team_id: teamId,
         p_enabled_modules: configToSave.enabledModules,
         p_enabled_groups: configToSave.enabledGroups,
@@ -383,7 +388,8 @@ export const createModulesSlice: StateCreator<
 
   clearTeamModuleDefaults: async (teamId: string) => {
     try {
-      const { error } = await (supabase.rpc as any)('clear_team_module_defaults', { // TODO: type this
+      const { error } = await (supabase.rpc as any)('clear_team_module_defaults', {
+        // TODO: type this
         p_team_id: teamId,
       })
 
@@ -429,7 +435,11 @@ export const createModulesSlice: StateCreator<
   },
 
   isModuleVisible: (moduleId) => {
-    const { moduleConfig } = get()
-    return isModuleVisible(moduleId, moduleConfig)
+    const { moduleConfig, deniedModules } = get()
+    return isModuleVisible(
+      moduleId,
+      moduleConfig,
+      deniedModules.length > 0 ? new Set(deniedModules) : undefined,
+    )
   },
 })

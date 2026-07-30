@@ -230,7 +230,6 @@ export const zhTW: TranslationDict = {
     // 產品
     products: '產品瀏覽器',
     items: '物料瀏覽器',
-    boms: '物料清單',
     // 變更控制
     ecr: 'ECR / 問題',
     eco: 'ECO',
@@ -241,47 +240,8 @@ export const zhTW: TranslationDict = {
     // 供應鏈 - 供應商
     supplierDatabase: '供應商資料庫',
     supplierPortal: '供應商入口',
-    // 供應鏈 - 採購
-    purchaseRequests: '採購申請',
-    purchaseOrders: '採購訂單',
-    invoices: '發票',
-    // 供應鏈 - 物流
-    shipping: '出貨',
-    receiving: '收貨',
     // 客戶
     customers: '客戶',
-    // 生產
-    manufacturingOrders: '生產訂單',
-    travellers: '製程流轉卡',
-    workInstructions: '作業指導書',
-    productionSchedule: '生產計畫',
-    routings: '製程路線',
-    workCenters: '工作中心',
-    processFlows: '製程流程',
-    equipment: '設備',
-    // 生產 - 分析
-    productionAnalytics: '生產分析',
-    yieldTracking: '良率追蹤',
-    errorCodes: '錯誤代碼',
-    downtime: '停機時間',
-    oee: 'OEE 儀表板',
-    scrapTracking: '報廢追蹤',
-    // 品質
-    fai: '首件檢驗 (FAI)',
-    ncr: '不合格報告 (NCR)',
-    imr: '進料檢驗報告 (IMR)',
-    scar: '供應商矯正措施 (SCAR)',
-    capa: '矯正與預防措施 (CAPA)',
-    rma: '退貨授權 (RMA)',
-    certificates: '證書',
-    calibration: '校正',
-    qualityTemplates: '範本',
-    // 財務
-    accountsPayable: '應付帳款 (AP)',
-    accountsReceivable: '應收帳款 (AR)',
-    generalLedger: '總帳',
-    costTracking: '成本追蹤',
-    budgets: '預算',
     // 整合
     googleDrive: 'Google 雲端硬碟',
     // 系統

@@ -1,9 +1,9 @@
 import { lazy, Suspense } from 'react'
 import { usePDMStore } from '@/stores/pdmStore'
-import { useLoadFiles, useVaultManagement } from '@/hooks'
+import { useLoadFiles, useVaultManagement, useDeniedModules } from '@/hooks'
 import { MODULE_LABELS, getModuleTitle } from '@/constants/moduleLabels'
-import { isModuleVisible } from '@/types/modules'
-import { Loader2, Construction, List } from 'lucide-react'
+import { isModuleVisible, type ModuleId } from '@/types/modules'
+import { Loader2, List, Lock } from 'lucide-react'
 
 // Eagerly loaded views (always needed)
 import { SettingsNavigation } from '@/features/settings'
@@ -87,13 +87,17 @@ function ModuleDisabled({ moduleName }: { moduleName: string }) {
   )
 }
 
-// Placeholder for modules not yet implemented
-function ModuleComingSoon({ moduleName }: { moduleName: string }) {
+// Fallback for modules an admin has restricted to other teams
+function ModuleNoAccess({ moduleName }: { moduleName: string }) {
   return (
-    <div className="flex flex-col items-center justify-center h-48 text-plm-fg-muted p-4 text-center">
-      <Construction size={32} className="mb-3 text-plm-accent" />
-      <p className="text-sm font-medium">{moduleName}</p>
-      <p className="text-xs mt-1 text-plm-fg-dim">Coming soon</p>
+    <div className="flex flex-col items-center justify-center h-32 text-plm-fg-muted p-4 text-center">
+      <Lock size={20} className="mb-2 text-plm-fg-dim" />
+      <p className="text-sm">
+        You do not have access to <span className="font-medium">{moduleName}</span>.
+      </p>
+      <p className="text-xs mt-1 text-plm-fg-dim">
+        Ask an administrator to grant your team access.
+      </p>
     </div>
   )
 }
@@ -108,6 +112,7 @@ export function Sidebar() {
   const setSettingsTab = usePDMStore((s) => s.setSettingsTab)
   const treeRowSize = usePDMStore((s) => s.treeRowSize)
   const setTreeRowSize = usePDMStore((s) => s.setTreeRowSize)
+  const deniedModules = useDeniedModules()
 
   // Call hooks directly instead of receiving as props
   const { loadFiles } = useLoadFiles()
@@ -122,12 +127,18 @@ export function Sidebar() {
       return <SettingsNavigation activeTab={settingsTab} onTabChange={setSettingsTab} />
     }
 
-    // Check if the module is enabled for all other views
-    const moduleId = activeView as string
-    const isEnabled = isModuleVisible(moduleId as any, moduleConfig) // TODO: type this
-
     // Get the module name from the constants
     const moduleName = MODULE_LABELS[activeView] || activeView
+
+    // AppShell redirects away from restricted modules, but that runs in an
+    // effect, so guard the render too rather than flashing the real view.
+    if (deniedModules.has(activeView as ModuleId)) {
+      return <ModuleNoAccess moduleName={moduleName} />
+    }
+
+    // Check if the module is enabled for all other views
+    const moduleId = activeView as string
+    const isEnabled = isModuleVisible(moduleId as any, moduleConfig, deniedModules) // TODO: type this
 
     switch (activeView) {
       // ============================================
@@ -196,13 +207,6 @@ export function Sidebar() {
       // ============================================
       // Note: 'items' (Quality / Item Browser) renders full-width in MainContent,
       // not in the sidebar. See MainContent.tsx.
-
-      case 'boms':
-        return isEnabled ? (
-          <ModuleComingSoon moduleName={moduleName} />
-        ) : (
-          <ModuleDisabled moduleName={moduleName} />
-        )
 
       case 'products':
         return isEnabled ? (
@@ -295,92 +299,6 @@ export function Sidebar() {
         )
 
       // ============================================
-      // SUPPLY CHAIN - PURCHASING
-      // ============================================
-      case 'purchase-requests':
-      case 'purchase-orders':
-      case 'invoices':
-        return isEnabled ? (
-          <ModuleComingSoon moduleName={moduleName} />
-        ) : (
-          <ModuleDisabled moduleName={moduleName} />
-        )
-
-      // ============================================
-      // SUPPLY CHAIN - LOGISTICS
-      // ============================================
-      case 'shipping':
-      case 'receiving':
-        return isEnabled ? (
-          <ModuleComingSoon moduleName={moduleName} />
-        ) : (
-          <ModuleDisabled moduleName={moduleName} />
-        )
-
-      // ============================================
-      // PRODUCTION
-      // ============================================
-      case 'manufacturing-orders':
-      case 'travellers':
-      case 'work-instructions':
-      case 'production-schedule':
-      case 'routings':
-      case 'work-centers':
-      case 'process-flows':
-      case 'equipment':
-        return isEnabled ? (
-          <ModuleComingSoon moduleName={moduleName} />
-        ) : (
-          <ModuleDisabled moduleName={moduleName} />
-        )
-
-      // ============================================
-      // PRODUCTION - ANALYTICS
-      // ============================================
-      case 'yield-tracking':
-      case 'error-codes':
-      case 'downtime':
-      case 'oee':
-      case 'scrap-tracking':
-        return isEnabled ? (
-          <ModuleComingSoon moduleName={moduleName} />
-        ) : (
-          <ModuleDisabled moduleName={moduleName} />
-        )
-
-      // ============================================
-      // QUALITY
-      // ============================================
-      case 'fai':
-      case 'ncr':
-      case 'imr':
-      case 'scar':
-      case 'capa':
-      case 'rma':
-      case 'certificates':
-      case 'calibration':
-      case 'quality-templates':
-        return isEnabled ? (
-          <ModuleComingSoon moduleName={moduleName} />
-        ) : (
-          <ModuleDisabled moduleName={moduleName} />
-        )
-
-      // ============================================
-      // ACCOUNTING
-      // ============================================
-      case 'accounts-payable':
-      case 'accounts-receivable':
-      case 'general-ledger':
-      case 'cost-tracking':
-      case 'budgets':
-        return isEnabled ? (
-          <ModuleComingSoon moduleName={moduleName} />
-        ) : (
-          <ModuleDisabled moduleName={moduleName} />
-        )
-
-      // ============================================
       // INTEGRATIONS
       // ============================================
       case 'google-drive':
@@ -406,7 +324,7 @@ export function Sidebar() {
 
       default:
         // Default to explorer if enabled, otherwise show disabled message
-        return isModuleVisible('explorer', moduleConfig) ? (
+        return isModuleVisible('explorer', moduleConfig, deniedModules) ? (
           <Suspense fallback={<ViewLoading />}>
             <FileTree onOpenVault={handleOpenVault} onOpenRecentVault={handleOpenRecentVault} />
           </Suspense>

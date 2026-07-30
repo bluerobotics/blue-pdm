@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { usePDMStore, type SidebarView } from '@/stores/pdmStore'
 import { useTranslation } from '@/lib/i18n'
+import { useDeniedModules } from '@/hooks/useDeniedModules'
 import {
   MODULES,
   isModuleVisible,
@@ -44,6 +45,7 @@ export function ActivityBar() {
 
   // Use effective module config (considers impersonation)
   const moduleConfig = getEffectiveModuleConfig()
+  const deniedModules = useDeniedModules()
 
   const { t } = useTranslation()
 
@@ -74,7 +76,7 @@ export function ActivityBar() {
         if (group) {
           // Only show if group has visible children
           const childModules = getChildModules(group.id, moduleConfig).filter((child) =>
-            isModuleVisible(child.id, moduleConfig),
+            isModuleVisible(child.id, moduleConfig, deniedModules),
           )
           if (childModules.length > 0) {
             items.push({ type: 'group', id: group.id, group })
@@ -87,13 +89,13 @@ export function ActivityBar() {
 
         // Only show if visible AND is top-level (no parent)
         const hasParent = moduleConfig.moduleParents?.[moduleId]
-        if (!hasParent && isModuleVisible(moduleId, moduleConfig)) {
+        if (!hasParent && isModuleVisible(moduleId, moduleConfig, deniedModules)) {
           items.push({ type: 'module', id: moduleId, module })
         }
       }
     }
     return items
-  }, [moduleConfig])
+  }, [moduleConfig, deniedModules])
 
   // For backward compat - list of just visible module IDs for divider positioning
   const visibleModules = useMemo(() => {
@@ -108,13 +110,13 @@ export function ActivityBar() {
     let visibleIdx = -1
     for (let origIdx = 0; origIdx < moduleConfig.moduleOrder.length; origIdx++) {
       const moduleId = moduleConfig.moduleOrder[origIdx]
-      if (isModuleVisible(moduleId, moduleConfig)) {
+      if (isModuleVisible(moduleId, moduleConfig, deniedModules)) {
         visibleIdx++
         map.set(origIdx, visibleIdx)
       }
     }
     return map
-  }, [moduleConfig])
+  }, [moduleConfig, deniedModules])
 
   // Determine where to show dividers based on position
   const getDividerAfterVisibleIndex = useMemo(() => {
@@ -224,7 +226,7 @@ export function ActivityBar() {
                       // Render custom group
                       const { group } = item
                       const childModules = getChildModules(group.id, moduleConfig).filter((child) =>
-                        isModuleVisible(child.id, moduleConfig),
+                        isModuleVisible(child.id, moduleConfig, deniedModules),
                       )
 
                       // Navigate to the first visible child module when the group is clicked
@@ -250,7 +252,7 @@ export function ActivityBar() {
 
                       // Get visible child modules (using config's moduleParents)
                       const childModules = getChildModules(moduleId, moduleConfig).filter((child) =>
-                        isModuleVisible(child.id, moduleConfig),
+                        isModuleVisible(child.id, moduleConfig, deniedModules),
                       )
                       const moduleHasChildren = childModules.length > 0
 

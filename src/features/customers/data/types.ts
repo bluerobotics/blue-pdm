@@ -28,6 +28,12 @@ export interface AnalyticsSummary {
   churned_customers: number
   gone_customers: number
   unclassified_accounts: number
+  /**
+   * Lifecycle rollup over every customer in the org, computed from the same
+   * scan as the counts above rather than by a second RPC. The sidebar facet
+   * counts read this.
+   */
+  segment_counts: SegmentCount[]
 }
 
 export interface TimeseriesPoint {
@@ -114,6 +120,86 @@ export interface SegmentCount {
   segment: string
   buyers: number
   revenue: number
+}
+
+/**
+ * Shapes inside the customer_detail JSONB document.
+ *
+ * Unlike the row types above these are keys of one object, so the names come
+ * from the jsonb_build_object calls in the RPC, not from a RETURNS TABLE.
+ */
+export interface CustomerDetailRecord {
+  id: string
+  name: string
+  email: string | null
+  phone: string | null
+  company: string | null
+  is_company: boolean | null
+  website: string | null
+  vat: string | null
+  job_title: string | null
+  industry: string | null
+  street: string | null
+  street2: string | null
+  city: string | null
+  state: string | null
+  zip: string | null
+  country: string | null
+  erp_id: string | null
+  account_id: string | null
+  total_spent: number | null
+  order_count: number | null
+  item_count: number | null
+  first_order_date: string | null
+  last_order_date: string | null
+  is_active: boolean | null
+  odoo_missing_since: string | null
+}
+
+export interface CustomerOrderRecord {
+  id: string
+  erp_id: string | null
+  order_date: string | null
+  status: string | null
+  total: number | null
+  discount: number | null
+  items_count: number | null
+}
+
+export interface CustomerProductRecord {
+  key: string
+  name: string
+  quantity: number
+  revenue: number
+}
+
+export interface EnrichmentSource {
+  id: string
+  url: string
+  title: string | null
+  quote: string | null
+}
+
+export interface EnrichmentRecord {
+  id: string
+  category: string | null
+  subcategory: string | null
+  confidence: number | null
+  report: string | null
+  evidence_found: boolean
+  needs_review: boolean | null
+  model: string | null
+  researched_at: string | null
+  sources: EnrichmentSource[]
+}
+
+/** Raw return value of the customer_detail RPC. */
+export interface CustomerDetailPayload {
+  customer: CustomerDetailRecord | null
+  accountName: string | null
+  orders: CustomerOrderRecord[]
+  products: CustomerProductRecord[]
+  enrichment: EnrichmentRecord | null
 }
 
 /** Everything the Overview tab renders, resolved in one parallel fetch. */

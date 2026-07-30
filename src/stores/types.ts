@@ -38,7 +38,6 @@ export type SidebarView =
   | 'trash'
   // Items
   | 'items'
-  | 'boms'
   | 'products'
   // Change Control
   | 'ecr'
@@ -49,46 +48,8 @@ export type SidebarView =
   // Supply Chain - Suppliers
   | 'supplier-database'
   | 'supplier-portal'
-  // Supply Chain - Purchasing
-  | 'purchase-requests'
-  | 'purchase-orders'
-  | 'invoices'
-  // Supply Chain - Logistics
-  | 'shipping'
-  | 'receiving'
   // Customers
   | 'customers'
-  // Production
-  | 'manufacturing-orders'
-  | 'travellers'
-  | 'work-instructions'
-  | 'production-schedule'
-  | 'routings'
-  | 'work-centers'
-  | 'process-flows'
-  | 'equipment'
-  // Production - Analytics
-  | 'yield-tracking'
-  | 'error-codes'
-  | 'downtime'
-  | 'oee'
-  | 'scrap-tracking'
-  // Quality
-  | 'fai'
-  | 'ncr'
-  | 'imr'
-  | 'scar'
-  | 'capa'
-  | 'rma'
-  | 'certificates'
-  | 'calibration'
-  | 'quality-templates'
-  // Accounting
-  | 'accounts-payable'
-  | 'accounts-receivable'
-  | 'general-ledger'
-  | 'cost-tracking'
-  | 'budgets'
   // Integrations
   | 'google-drive'
   // System
@@ -862,6 +823,11 @@ export interface UserSlice {
   userWorkflowRoleIds: string[]
   permissionsLoaded: boolean
   permissionsLastUpdated: number
+  /**
+   * Modules an admin has restricted to other teams/users. Empty for admins and
+   * for every module nobody has restricted, which is the normal case.
+   */
+  deniedModules: ModuleId[]
 
   // Actions
   setUser: (user: User | null) => void
@@ -888,7 +854,9 @@ export interface UserSlice {
   getEffectiveModuleConfig: () => ModuleConfig
   loadUserPermissions: () => Promise<void>
   loadUserWorkflowRoles: () => Promise<void>
+  loadModuleAccess: () => Promise<void>
   hasPermission: (resource: string, action: string) => boolean
+  canAccessModule: (moduleId: ModuleId) => boolean
   updateOrganization: (updates: Partial<Organization>) => void
 }
 

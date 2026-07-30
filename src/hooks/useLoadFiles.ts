@@ -123,6 +123,11 @@ export function useLoadFiles() {
         return currentActive !== loadingForVaultId
       }
 
+      // Gates the auto-discard below. The catch swallows errors rather than
+      // rethrowing, so a failed pass also reaches that code; only a pass that
+      // actually committed has an orphan list worth acting on.
+      let committedMerge = false
+
       try {
         // Run local file scan and server fetch in PARALLEL for faster boot
         // Note: listWorkingFiles now returns FAST (no blocking hash computation)
@@ -1498,6 +1503,7 @@ export function useLoadFiles() {
 
         setFiles(localFiles)
         setFilesLoaded(true) // Mark that initial load is complete
+        committedMerge = true
 
         // Only recorded once the merge actually committed, so a failed or aborted
         // pass can never make the next one skip.
@@ -1513,9 +1519,10 @@ export function useLoadFiles() {
         )
 
         // TODO(decompose): Extract to hooks/useLoadFiles/backgroundTasks.ts — all post-render
-        // background work (~450 lines): user info lazy-load, hash computation, auto-download
-        // of cloud files, auto-download of updates, auto-discard of orphaned files.
-        // Takes isVaultStale, localFiles, organization, user, and store actions.
+        // background work (~400 lines): user info lazy-load, hash computation, auto-download
+        // of cloud files, auto-download of updates. Takes isVaultStale, localFiles,
+        // organization, user, and store actions. Auto-discard deliberately does not belong
+        // here: it mutates the filesystem and so has to stay inside the exclusive load.
 
         // Background tasks (non-blocking) - run after UI renders
         if (user && window.electronAPI) {
@@ -1929,53 +1936,6 @@ export function useLoadFiles() {
                 }
               }
             }
-
-            // 4. Auto-discard orphaned files (if enabled)
-            // Orphaned files are local files that were previously synced but no longer exist on the server
-            // (deleted by another user). They have diffStatus === 'deleted_remote'.
-            // IMPORTANT: Skip on silent refreshes to prevent infinite loops
-            const { autoDiscardOrphanedFiles } = usePDMStore.getState()
-
-            if (!silent && autoDiscardOrphanedFiles && !isVaultStale()) {
-              const latestFiles = usePDMStore.getState().files
-
-              // Get orphaned files (local files that were synced but no longer on server)
-              const orphanedFiles = latestFiles.filter(
-                (f) => !f.isDirectory && f.diffStatus === 'deleted_remote',
-              )
-
-              if (orphanedFiles.length > 0) {
-                window.electronAPI?.log('info', '[AutoDiscard] Discarding orphaned files', {
-                  count: orphanedFiles.length,
-                  files: orphanedFiles.map((f) => ({
-                    name: f.name,
-                    relativePath: f.relativePath,
-                  })),
-                })
-
-                try {
-                  const result = await executeCommand('discard-orphaned', { files: orphanedFiles })
-                  if (result.succeeded > 0) {
-                    addToast(
-                      'info',
-                      `Auto-discarded ${result.succeeded} orphaned file${result.succeeded > 1 ? 's' : ''}`,
-                    )
-                  }
-                  if (result.failed > 0) {
-                    window.electronAPI?.log('warn', '[AutoDiscard] Some files failed to discard', {
-                      failed: result.failed,
-                      errors: result.errors,
-                    })
-                  }
-                } catch (error) {
-                  window.electronAPI?.log(
-                    'error',
-                    '[AutoDiscard] Failed to discard orphaned files',
-                    { error: String(error) },
-                  )
-                }
-              }
-            }
           }, 50) // Small delay to let React render first
         }
       } catch (error) {
@@ -1989,6 +1949,60 @@ export function useLoadFiles() {
         if (!silent) {
           setIsLoading(false)
           setTimeout(() => setStatusMessage(''), 3000)
+        }
+      }
+
+      // Auto-discard orphaned files: local files that were previously synced but
+      // are no longer on the server, because another user deleted them. They carry
+      // diffStatus 'deleted_remote'.
+      //
+      // Awaited here rather than in the fire-and-forget block above so that it runs
+      // inside runExclusiveLoad. Discarding deletes from disk and bumps the file
+      // mutation epoch; run without the lock held it landed mid-scan of whichever
+      // pass started next, and that pass then correctly refused to commit its merge
+      // and reran a full scan. Holding the lock means a queued pass does not begin
+      // scanning until the deletion is done.
+      //
+      // Every abort path above returns out of the try, so only a committed merge
+      // reaches this. Silent refreshes never discard, which stops a watcher-driven
+      // refresh from chaining into another one.
+      if (committedMerge && !silent && user && window.electronAPI && !isVaultStale()) {
+        const { autoDiscardOrphanedFiles, addToast, files: latestFiles } = usePDMStore.getState()
+
+        const orphanedFiles = autoDiscardOrphanedFiles
+          ? latestFiles.filter((f) => !f.isDirectory && f.diffStatus === 'deleted_remote')
+          : []
+
+        if (orphanedFiles.length > 0) {
+          window.electronAPI.log('info', '[AutoDiscard] Discarding orphaned files', {
+            count: orphanedFiles.length,
+            files: orphanedFiles.map((f) => ({
+              name: f.name,
+              relativePath: f.relativePath,
+            })),
+          })
+
+          try {
+            const result = await executeCommand('discard-orphaned', { files: orphanedFiles })
+            if (result.succeeded > 0) {
+              addToast(
+                'info',
+                `Auto-discarded ${result.succeeded} orphaned file${result.succeeded > 1 ? 's' : ''}`,
+              )
+            }
+            if (result.failed > 0) {
+              window.electronAPI?.log('warn', '[AutoDiscard] Some files failed to discard', {
+                failed: result.failed,
+                errors: result.errors,
+              })
+            }
+          } catch (error) {
+            // Swallowed: a failed discard must not reject the load promise, which
+            // would surface as a failed refresh to every caller.
+            window.electronAPI?.log('error', '[AutoDiscard] Failed to discard orphaned files', {
+              error: String(error),
+            })
+          }
         }
       }
     },

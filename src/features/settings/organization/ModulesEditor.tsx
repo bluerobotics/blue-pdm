@@ -95,6 +95,13 @@ export interface ModulesEditorProps {
   config: ModuleConfig
   onConfigChange: (config: ModuleConfig) => void
   showDescription?: boolean
+  /**
+   * Modules an admin has restricted away from the current user. They stay
+   * listed so the sidebar order still makes sense, but cannot be turned on.
+   * Left unset when editing someone else's defaults (org or team), where the
+   * current user's own restrictions are irrelevant.
+   */
+  deniedModuleIds?: ReadonlySet<ModuleId>
 }
 
 // Combined order list item component
@@ -110,6 +117,7 @@ function OrderListItemComponent({
   isDragging,
   dropIndicator,
   onEditGroup,
+  deniedModuleIds,
 }: {
   item: OrderListItem
   index: number
@@ -122,6 +130,7 @@ function OrderListItemComponent({
   isDragging: boolean
   dropIndicator: { index: number; position: 'before' | 'after' } | null
   onEditGroup: (group: { id: string; name: string; icon: string; iconColor: string | null }) => void
+  deniedModuleIds?: ReadonlySet<ModuleId>
 }) {
   const showDropBefore = dropIndicator?.index === index && dropIndicator.position === 'before'
   const showDropAfter = dropIndicator?.index === index && dropIndicator.position === 'after'
@@ -405,8 +414,9 @@ function OrderListItemComponent({
   const module = MODULES.find((m) => m.id === moduleId)
   if (!module) return null
 
-  const isVisible = isModuleVisible(moduleId, config)
-  const canToggle = canToggleModule(moduleId, config)
+  const isDenied = deniedModuleIds?.has(moduleId) ?? false
+  const isVisible = isModuleVisible(moduleId, config, deniedModuleIds)
+  const canToggle = canToggleModule(moduleId, config) && !isDenied
   const isGroupEnabled = config.enabledGroups[module.group]
   const group = MODULE_GROUPS.find((g) => g.id === module.group)
   const isDisabledByGroup = group?.isMasterToggle && !isGroupEnabled
@@ -452,7 +462,7 @@ function OrderListItemComponent({
         } ${
           isDragging
             ? 'opacity-50 border-plm-accent bg-plm-accent/10'
-            : !module.implemented
+            : !module.implemented || isDenied
               ? 'border-plm-border/30 bg-plm-bg-secondary/50 opacity-50'
               : isEnabled && isVisible
                 ? 'border-plm-success/30 bg-gradient-to-r from-plm-success/5 to-transparent hover:from-plm-success/10 shadow-[inset_0_0_0_1px_rgba(34,197,94,0.1)]'
@@ -498,6 +508,15 @@ function OrderListItemComponent({
             {!module.implemented && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-plm-warning/20 text-plm-warning">
                 In Development
+              </span>
+            )}
+            {isDenied && (
+              <span
+                className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-plm-bg-lighter text-plm-fg-dim"
+                title="An administrator has restricted this module to other teams"
+              >
+                <Lock size={9} />
+                No Access
               </span>
             )}
             {module.required && (
@@ -706,11 +725,13 @@ function OrderListItemComponent({
               : 'bg-plm-bg-secondary border border-plm-border hover:bg-plm-highlight/50'
           }`}
           title={
-            !canToggle
-              ? 'This module cannot be disabled'
-              : isDisabledByGroup
-                ? 'Enable the group first'
-                : undefined
+            isDenied
+              ? 'Restricted by your administrator'
+              : !canToggle
+                ? 'This module cannot be disabled'
+                : isDisabledByGroup
+                  ? 'Enable the group first'
+                  : undefined
           }
         >
           {/* Status indicator dot */}
@@ -835,6 +856,7 @@ export function ModulesEditor({
   config,
   onConfigChange,
   showDescription = true,
+  deniedModuleIds,
 }: ModulesEditorProps) {
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [dropIndicator, setDropIndicator] = useState<{
@@ -1100,6 +1122,7 @@ export function ModulesEditor({
                 isDragging={dragIndex === index}
                 dropIndicator={dropIndicator}
                 onEditGroup={handleEditGroup}
+                deniedModuleIds={deniedModuleIds}
               />
             </div>
           ))}
@@ -1126,6 +1149,15 @@ export function ModulesEditor({
           </span>
           <span>Feature in progress</span>
         </div>
+        {deniedModuleIds && deniedModuleIds.size > 0 && (
+          <div className="flex items-center gap-1.5">
+            <span className="flex items-center gap-1 text-[10px] px-1 py-0.5 rounded bg-plm-bg-lighter text-plm-fg-dim">
+              <Lock size={9} />
+              No Access
+            </span>
+            <span>Restricted to other teams by an admin</span>
+          </div>
+        )}
       </div>
 
       {/* Submenu Info */}

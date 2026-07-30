@@ -236,6 +236,9 @@ export function useAuth() {
 
             // Load user's workflow roles for real-time sync
             usePDMStore.getState().loadUserWorkflowRoles()
+
+            // Load which modules an admin has restricted away from this user
+            usePDMStore.getState().loadModuleAccess()
           } else {
             log.warn('[Auth]', 'No organization found', { error: orgError })
             if (connectingTimeout) clearTimeout(connectingTimeout)

@@ -3,16 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { log } from '@/lib/logger'
 import { usePDMStore } from '@/stores/pdmStore'
 
-import {
-  fetchCategoryBreakdown,
-  fetchCohorts,
-  fetchGeoBreakdown,
-  fetchSegmentCounts,
-  fetchSummary,
-  fetchTimeseries,
-  fetchTopAccounts,
-  fetchTopProducts,
-} from '../data/api'
+import { customerQueries, type DateWindow } from '../data/api'
+import { clearCustomerCache, load, peek, setGeneration } from '../data/cache'
 import { EMPTY_ANALYTICS, type CustomerAnalyticsData } from '../data/types'
 import { rangeOption, resolveWindow } from '../lib/ranges'
 
@@ -29,10 +21,13 @@ export interface CustomerAnalyticsResult {
 /**
  * Loads everything the Overview tab needs in one parallel round of RPCs.
  *
- * The eight calls are independent, so they are issued together rather than
+ * The seven calls are independent, so they are issued together rather than
  * awaited in sequence; the slowest one sets the total latency instead of the
  * sum. A monotonic request id guards against a slow earlier response landing
  * after a faster later one and overwriting fresh data with stale.
+ *
+ * Results go through the shared cache, so re-entering the view paints from the
+ * previous load immediately and only revalidates behind the scenes.
  */
 export function useCustomerAnalytics(): CustomerAnalyticsResult {
   const organization = usePDMStore((s) => s.organization)
@@ -40,50 +35,68 @@ export function useCustomerAnalytics(): CustomerAnalyticsResult {
   const bucket = usePDMStore((s) => s.customerFilters.bucket)
   const dataVersion = usePDMStore((s) => s.customerDataVersion)
 
-  const [data, setData] = useState<CustomerAnalyticsData>(EMPTY_ANALYTICS)
-  const [loading, setLoading] = useState(true)
-  const [refreshing, setRefreshing] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [nonce, setNonce] = useState(0)
-
-  const requestId = useRef(0)
-  const hasLoaded = useRef(false)
-
   // Memoized on the preset alone. Without this the window would resolve to new
   // ISO strings on every render and loop the effect forever. A manual refresh
   // deliberately does not move the window - it re-runs the same query.
   const window = useMemo(() => resolveWindow(range), [range])
 
   const orgId = organization?.id
+  const months = rangeOption(range).cohortMonths
+
+  const queries = useMemo(
+    () => (orgId ? buildQueries(orgId, window, bucket, months) : null),
+    [orgId, window, bucket, months],
+  )
+
+  // Seeded from whatever the cache already holds so a revisit renders the
+  // previous numbers on the first frame instead of a wall of skeletons.
+  const [data, setData] = useState<CustomerAnalyticsData>(
+    () => (queries ? readCache(queries) : null) ?? EMPTY_ANALYTICS,
+  )
+  const [loading, setLoading] = useState(() => !(queries && readCache(queries)))
+  const [refreshing, setRefreshing] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [nonce, setNonce] = useState(0)
+
+  const requestId = useRef(0)
+  const hasLoaded = useRef(!loading)
 
   useEffect(() => {
-    if (!orgId) {
+    if (!queries) {
       setData(EMPTY_ANALYTICS)
       setLoading(false)
       return
     }
 
-    const id = ++requestId.current
-    const isFirstLoad = !hasLoaded.current
+    setGeneration(dataVersion)
 
-    if (isFirstLoad) setLoading(true)
-    else setRefreshing(true)
+    const id = ++requestId.current
+    const seeded = readCache(queries)
+
+    if (seeded) {
+      setData(seeded)
+      setLoading(false)
+      hasLoaded.current = true
+    }
+
+    if (hasLoaded.current) setRefreshing(true)
+    else setLoading(true)
     setError(null)
 
-    const months = rangeOption(range).cohortMonths
+    const startedAt = performance.now()
 
     Promise.all([
-      fetchSummary(orgId, window),
-      fetchTimeseries(orgId, window, bucket),
-      fetchTopAccounts(orgId, window),
-      fetchCategoryBreakdown(orgId, window),
-      fetchGeoBreakdown(orgId, window),
-      fetchCohorts(orgId, months),
-      fetchTopProducts(orgId, window),
-      fetchSegmentCounts(orgId),
+      load(queries.summary),
+      load(queries.timeseries),
+      load(queries.topAccounts),
+      load(queries.categories),
+      load(queries.geo),
+      load(queries.cohorts),
+      load(queries.topProducts),
     ])
-      .then(
-        ([
+      .then(([summary, timeseries, topAccounts, categories, geo, cohorts, topProducts]) => {
+        if (id !== requestId.current) return
+        setData({
           summary,
           timeseries,
           topAccounts,
@@ -91,22 +104,15 @@ export function useCustomerAnalytics(): CustomerAnalyticsResult {
           geo,
           cohorts,
           topProducts,
-          segmentCounts,
-        ]) => {
-          if (id !== requestId.current) return
-          setData({
-            summary,
-            timeseries,
-            topAccounts,
-            categories,
-            geo,
-            cohorts,
-            topProducts,
-            segmentCounts,
-          })
-          hasLoaded.current = true
-        },
-      )
+          segmentCounts: summary?.segment_counts ?? [],
+        })
+        hasLoaded.current = true
+        log.info('[Customers]', 'Dashboard loaded', {
+          ms: Math.round(performance.now() - startedAt),
+          range,
+          customers: summary?.total_customers ?? 0,
+        })
+      })
       .catch((cause: unknown) => {
         if (id !== requestId.current) return
         const message = cause instanceof Error ? cause.message : String(cause)
@@ -118,9 +124,66 @@ export function useCustomerAnalytics(): CustomerAnalyticsResult {
         setLoading(false)
         setRefreshing(false)
       })
-  }, [orgId, window, bucket, range, nonce, dataVersion])
+  }, [queries, dataVersion, range, nonce])
 
-  const refresh = useCallback(() => setNonce((value) => value + 1), [])
+  // Refresh means "go back to the database", so the cache is dropped rather
+  // than allowed to serve its still-fresh copies.
+  const refresh = useCallback(() => {
+    clearCustomerCache()
+    setNonce((value) => value + 1)
+  }, [])
 
   return { data, loading, error, refreshing, refresh, window }
+}
+
+type AnalyticsQueries = ReturnType<typeof buildQueries>
+
+function buildQueries(orgId: string, window: DateWindow, bucket: string, months: number) {
+  return {
+    summary: customerQueries.summary(orgId, window),
+    timeseries: customerQueries.timeseries(orgId, window, bucket),
+    topAccounts: customerQueries.topAccounts(orgId, window),
+    categories: customerQueries.categories(orgId, window),
+    geo: customerQueries.geo(orgId, window),
+    cohorts: customerQueries.cohorts(orgId, months),
+    topProducts: customerQueries.topProducts(orgId, window),
+  }
+}
+
+/**
+ * The cached payload, but only if every part of it is present - a half-filled
+ * dashboard would render some panels against this range and others against the
+ * last one.
+ */
+function readCache(queries: AnalyticsQueries): CustomerAnalyticsData | null {
+  const summary = peek(queries.summary)
+  const timeseries = peek(queries.timeseries)
+  const topAccounts = peek(queries.topAccounts)
+  const categories = peek(queries.categories)
+  const geo = peek(queries.geo)
+  const cohorts = peek(queries.cohorts)
+  const topProducts = peek(queries.topProducts)
+
+  if (
+    summary === undefined ||
+    !timeseries ||
+    !topAccounts ||
+    !categories ||
+    !geo ||
+    !cohorts ||
+    !topProducts
+  ) {
+    return null
+  }
+
+  return {
+    summary,
+    timeseries,
+    topAccounts,
+    categories,
+    geo,
+    cohorts,
+    topProducts,
+    segmentCounts: summary?.segment_counts ?? [],
+  }
 }

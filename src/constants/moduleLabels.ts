@@ -17,7 +17,6 @@ export const MODULE_LABELS: Record<SidebarView, string> = {
   trash: 'Trash',
   // Items
   items: 'Item Browser',
-  boms: 'BOMs',
   products: 'Products',
   // Change Control
   ecr: 'ECRs / Issues',
@@ -28,46 +27,8 @@ export const MODULE_LABELS: Record<SidebarView, string> = {
   // Supply Chain - Suppliers
   'supplier-database': 'Supplier Database',
   'supplier-portal': 'Supplier Portal',
-  // Supply Chain - Purchasing
-  'purchase-requests': 'Purchase Requests',
-  'purchase-orders': 'Purchase Orders',
-  invoices: 'Invoices',
-  // Supply Chain - Logistics
-  shipping: 'Shipping',
-  receiving: 'Receiving',
   // Customers
   customers: 'Customers',
-  // Production
-  'manufacturing-orders': 'Manufacturing Orders',
-  travellers: 'Travellers',
-  'work-instructions': 'Work Instructions',
-  'production-schedule': 'Production Schedule',
-  routings: 'Routings',
-  'work-centers': 'Work Centers',
-  'process-flows': 'Process Flows',
-  equipment: 'Equipment',
-  // Production - Analytics
-  'yield-tracking': 'Yield Tracking',
-  'error-codes': 'Error Codes',
-  downtime: 'Downtime',
-  oee: 'OEE Dashboard',
-  'scrap-tracking': 'Scrap Tracking',
-  // Quality
-  fai: 'First Article Inspection (FAI)',
-  ncr: 'Non-Conformance Report (NCR)',
-  imr: 'Incoming Material Report (IMR)',
-  scar: 'Supplier Corrective Action (SCAR)',
-  capa: 'Corrective & Preventive Action (CAPA)',
-  rma: 'Return Material Authorization (RMA)',
-  certificates: 'Certificates',
-  calibration: 'Calibration',
-  'quality-templates': 'Templates',
-  // Accounting
-  'accounts-payable': 'Accounts Payable',
-  'accounts-receivable': 'Accounts Receivable',
-  'general-ledger': 'General Ledger',
-  'cost-tracking': 'Cost Tracking',
-  budgets: 'Budgets',
   // Integrations
   'google-drive': 'Google Drive',
   // System

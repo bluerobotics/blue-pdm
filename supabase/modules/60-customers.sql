@@ -596,10 +596,26 @@ CREATE TRIGGER seed_customer_categories_on_org_create
 -- Enrichment tables are gated on system:customer-enrichment / 'admin' for
 -- writes, because a write there spends money.
 --
+-- Every SELECT additionally goes through user_can_access_module('customers'),
+-- the admin-managed team/user allowlist from core.sql. That check is open by
+-- default (no allowlist rows means everyone passes), so it only bites once an
+-- admin restricts the module. It is wrapped in a scalar subquery for the same
+-- InitPlan reason as auth.uid() below.
+--
 -- NOTE: user_has_permission() in SQL matches the action EXACTLY - unlike the
 -- TypeScript helper it does NOT treat 'admin' as implying 'view'. So every
 -- SELECT policy below is plain org membership; never assume the 'admin' grant
 -- covers reads.
+--
+-- PERFORMANCE: auth.uid() is wrapped as `(SELECT auth.uid())` in every policy,
+-- and it must stay that way. Bare `auth.uid()` is treated as a correlated
+-- expression and re-evaluated for every row scanned; wrapping it makes the
+-- planner hoist the whole membership lookup into a once-per-query InitPlan.
+-- The analytics RPCs below aggregate over every order and customer in the org,
+-- so the difference is the entire cost of the Customers dashboard.
+--
+-- `TO authenticated` is likewise deliberate: without it the policy is also
+-- evaluated for the anon role, which can never satisfy it anyway.
 
 ALTER TABLE customer_categories ENABLE ROW LEVEL SECURITY;
 ALTER TABLE customer_accounts ENABLE ROW LEVEL SECURITY;
@@ -615,194 +631,194 @@ ALTER TABLE customer_enrichment_run_items ENABLE ROW LEVEL SECURITY;
 -- Customer Categories
 DROP POLICY IF EXISTS "Users can view customer categories" ON customer_categories;
 CREATE POLICY "Users can view customer categories"
-  ON customer_categories FOR SELECT
-  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+  ON customer_categories FOR SELECT TO authenticated
+  USING (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND (SELECT user_can_access_module('customers')));
 
 DROP POLICY IF EXISTS "Managers can insert customer categories" ON customer_categories;
 CREATE POLICY "Managers can insert customer categories"
-  ON customer_categories FOR INSERT
-  WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('module:customers', 'create'));
+  ON customer_categories FOR INSERT TO authenticated
+  WITH CHECK (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('module:customers', 'create'));
 
 DROP POLICY IF EXISTS "Managers can update customer categories" ON customer_categories;
 CREATE POLICY "Managers can update customer categories"
-  ON customer_categories FOR UPDATE
-  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('module:customers', 'edit'));
+  ON customer_categories FOR UPDATE TO authenticated
+  USING (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('module:customers', 'edit'));
 
 DROP POLICY IF EXISTS "Managers can delete customer categories" ON customer_categories;
 CREATE POLICY "Managers can delete customer categories"
-  ON customer_categories FOR DELETE
-  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('module:customers', 'delete'));
+  ON customer_categories FOR DELETE TO authenticated
+  USING (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('module:customers', 'delete'));
 
 -- Customer Accounts
 DROP POLICY IF EXISTS "Users can view customer accounts" ON customer_accounts;
 CREATE POLICY "Users can view customer accounts"
-  ON customer_accounts FOR SELECT
-  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+  ON customer_accounts FOR SELECT TO authenticated
+  USING (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND (SELECT user_can_access_module('customers')));
 
 DROP POLICY IF EXISTS "Managers can insert customer accounts" ON customer_accounts;
 CREATE POLICY "Managers can insert customer accounts"
-  ON customer_accounts FOR INSERT
-  WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('module:customers', 'create'));
+  ON customer_accounts FOR INSERT TO authenticated
+  WITH CHECK (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('module:customers', 'create'));
 
 DROP POLICY IF EXISTS "Managers can update customer accounts" ON customer_accounts;
 CREATE POLICY "Managers can update customer accounts"
-  ON customer_accounts FOR UPDATE
-  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('module:customers', 'edit'));
+  ON customer_accounts FOR UPDATE TO authenticated
+  USING (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('module:customers', 'edit'));
 
 DROP POLICY IF EXISTS "Managers can delete customer accounts" ON customer_accounts;
 CREATE POLICY "Managers can delete customer accounts"
-  ON customer_accounts FOR DELETE
-  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('module:customers', 'delete'));
+  ON customer_accounts FOR DELETE TO authenticated
+  USING (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('module:customers', 'delete'));
 
 -- Customers
 DROP POLICY IF EXISTS "Users can view org customers" ON customers;
 CREATE POLICY "Users can view org customers"
-  ON customers FOR SELECT
-  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+  ON customers FOR SELECT TO authenticated
+  USING (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND (SELECT user_can_access_module('customers')));
 
 DROP POLICY IF EXISTS "Managers can insert customers" ON customers;
 CREATE POLICY "Managers can insert customers"
-  ON customers FOR INSERT
-  WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('module:customers', 'create'));
+  ON customers FOR INSERT TO authenticated
+  WITH CHECK (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('module:customers', 'create'));
 
 DROP POLICY IF EXISTS "Managers can update customers" ON customers;
 CREATE POLICY "Managers can update customers"
-  ON customers FOR UPDATE
-  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('module:customers', 'edit'));
+  ON customers FOR UPDATE TO authenticated
+  USING (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('module:customers', 'edit'));
 
 DROP POLICY IF EXISTS "Managers can delete customers" ON customers;
 CREATE POLICY "Managers can delete customers"
-  ON customers FOR DELETE
-  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('module:customers', 'delete'));
+  ON customers FOR DELETE TO authenticated
+  USING (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('module:customers', 'delete'));
 
 -- Customer Addresses
 DROP POLICY IF EXISTS "Users can view customer addresses" ON customer_addresses;
 CREATE POLICY "Users can view customer addresses"
-  ON customer_addresses FOR SELECT
-  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+  ON customer_addresses FOR SELECT TO authenticated
+  USING (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND (SELECT user_can_access_module('customers')));
 
 DROP POLICY IF EXISTS "Managers can insert customer addresses" ON customer_addresses;
 CREATE POLICY "Managers can insert customer addresses"
-  ON customer_addresses FOR INSERT
-  WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('module:customers', 'create'));
+  ON customer_addresses FOR INSERT TO authenticated
+  WITH CHECK (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('module:customers', 'create'));
 
 DROP POLICY IF EXISTS "Managers can update customer addresses" ON customer_addresses;
 CREATE POLICY "Managers can update customer addresses"
-  ON customer_addresses FOR UPDATE
-  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('module:customers', 'edit'));
+  ON customer_addresses FOR UPDATE TO authenticated
+  USING (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('module:customers', 'edit'));
 
 DROP POLICY IF EXISTS "Managers can delete customer addresses" ON customer_addresses;
 CREATE POLICY "Managers can delete customer addresses"
-  ON customer_addresses FOR DELETE
-  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('module:customers', 'delete'));
+  ON customer_addresses FOR DELETE TO authenticated
+  USING (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('module:customers', 'delete'));
 
 -- Customer Orders
 DROP POLICY IF EXISTS "Users can view customer orders" ON customer_orders;
 CREATE POLICY "Users can view customer orders"
-  ON customer_orders FOR SELECT
-  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+  ON customer_orders FOR SELECT TO authenticated
+  USING (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND (SELECT user_can_access_module('customers')));
 
 DROP POLICY IF EXISTS "Managers can insert customer orders" ON customer_orders;
 CREATE POLICY "Managers can insert customer orders"
-  ON customer_orders FOR INSERT
-  WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('module:customers', 'create'));
+  ON customer_orders FOR INSERT TO authenticated
+  WITH CHECK (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('module:customers', 'create'));
 
 DROP POLICY IF EXISTS "Managers can update customer orders" ON customer_orders;
 CREATE POLICY "Managers can update customer orders"
-  ON customer_orders FOR UPDATE
-  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('module:customers', 'edit'));
+  ON customer_orders FOR UPDATE TO authenticated
+  USING (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('module:customers', 'edit'));
 
 DROP POLICY IF EXISTS "Managers can delete customer orders" ON customer_orders;
 CREATE POLICY "Managers can delete customer orders"
-  ON customer_orders FOR DELETE
-  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('module:customers', 'delete'));
+  ON customer_orders FOR DELETE TO authenticated
+  USING (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('module:customers', 'delete'));
 
 -- Customer Order Lines
 DROP POLICY IF EXISTS "Users can view customer order lines" ON customer_order_lines;
 CREATE POLICY "Users can view customer order lines"
-  ON customer_order_lines FOR SELECT
-  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+  ON customer_order_lines FOR SELECT TO authenticated
+  USING (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND (SELECT user_can_access_module('customers')));
 
 DROP POLICY IF EXISTS "Managers can insert customer order lines" ON customer_order_lines;
 CREATE POLICY "Managers can insert customer order lines"
-  ON customer_order_lines FOR INSERT
-  WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('module:customers', 'create'));
+  ON customer_order_lines FOR INSERT TO authenticated
+  WITH CHECK (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('module:customers', 'create'));
 
 DROP POLICY IF EXISTS "Managers can update customer order lines" ON customer_order_lines;
 CREATE POLICY "Managers can update customer order lines"
-  ON customer_order_lines FOR UPDATE
-  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('module:customers', 'edit'));
+  ON customer_order_lines FOR UPDATE TO authenticated
+  USING (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('module:customers', 'edit'));
 
 DROP POLICY IF EXISTS "Managers can delete customer order lines" ON customer_order_lines;
 CREATE POLICY "Managers can delete customer order lines"
-  ON customer_order_lines FOR DELETE
-  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('module:customers', 'delete'));
+  ON customer_order_lines FOR DELETE TO authenticated
+  USING (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('module:customers', 'delete'));
 
 -- Customer Enrichments
 -- No DELETE policy on any enrichment table: deleting research is never a
 -- normal operation, so it is simply not reachable through the client.
 DROP POLICY IF EXISTS "Users can view customer enrichments" ON customer_enrichments;
 CREATE POLICY "Users can view customer enrichments"
-  ON customer_enrichments FOR SELECT
-  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+  ON customer_enrichments FOR SELECT TO authenticated
+  USING (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND (SELECT user_can_access_module('customers')));
 
 DROP POLICY IF EXISTS "Enrichment admins can insert enrichments" ON customer_enrichments;
 CREATE POLICY "Enrichment admins can insert enrichments"
-  ON customer_enrichments FOR INSERT
-  WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('system:customer-enrichment', 'admin'));
+  ON customer_enrichments FOR INSERT TO authenticated
+  WITH CHECK (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('system:customer-enrichment', 'admin'));
 
 DROP POLICY IF EXISTS "Enrichment admins can update enrichments" ON customer_enrichments;
 CREATE POLICY "Enrichment admins can update enrichments"
-  ON customer_enrichments FOR UPDATE
-  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('system:customer-enrichment', 'admin'));
+  ON customer_enrichments FOR UPDATE TO authenticated
+  USING (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('system:customer-enrichment', 'admin'));
 
 -- Customer Enrichment Sources
 DROP POLICY IF EXISTS "Users can view enrichment sources" ON customer_enrichment_sources;
 CREATE POLICY "Users can view enrichment sources"
-  ON customer_enrichment_sources FOR SELECT
-  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+  ON customer_enrichment_sources FOR SELECT TO authenticated
+  USING (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND (SELECT user_can_access_module('customers')));
 
 DROP POLICY IF EXISTS "Enrichment admins can insert enrichment sources" ON customer_enrichment_sources;
 CREATE POLICY "Enrichment admins can insert enrichment sources"
-  ON customer_enrichment_sources FOR INSERT
-  WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('system:customer-enrichment', 'admin'));
+  ON customer_enrichment_sources FOR INSERT TO authenticated
+  WITH CHECK (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('system:customer-enrichment', 'admin'));
 
 DROP POLICY IF EXISTS "Enrichment admins can update enrichment sources" ON customer_enrichment_sources;
 CREATE POLICY "Enrichment admins can update enrichment sources"
-  ON customer_enrichment_sources FOR UPDATE
-  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('system:customer-enrichment', 'admin'));
+  ON customer_enrichment_sources FOR UPDATE TO authenticated
+  USING (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('system:customer-enrichment', 'admin'));
 
 -- Customer Enrichment Runs
 DROP POLICY IF EXISTS "Users can view enrichment runs" ON customer_enrichment_runs;
 CREATE POLICY "Users can view enrichment runs"
-  ON customer_enrichment_runs FOR SELECT
-  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+  ON customer_enrichment_runs FOR SELECT TO authenticated
+  USING (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND (SELECT user_can_access_module('customers')));
 
 DROP POLICY IF EXISTS "Enrichment admins can insert enrichment runs" ON customer_enrichment_runs;
 CREATE POLICY "Enrichment admins can insert enrichment runs"
-  ON customer_enrichment_runs FOR INSERT
-  WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('system:customer-enrichment', 'admin'));
+  ON customer_enrichment_runs FOR INSERT TO authenticated
+  WITH CHECK (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('system:customer-enrichment', 'admin'));
 
 DROP POLICY IF EXISTS "Enrichment admins can update enrichment runs" ON customer_enrichment_runs;
 CREATE POLICY "Enrichment admins can update enrichment runs"
-  ON customer_enrichment_runs FOR UPDATE
-  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('system:customer-enrichment', 'admin'));
+  ON customer_enrichment_runs FOR UPDATE TO authenticated
+  USING (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('system:customer-enrichment', 'admin'));
 
 -- Customer Enrichment Run Items
 DROP POLICY IF EXISTS "Users can view enrichment run items" ON customer_enrichment_run_items;
 CREATE POLICY "Users can view enrichment run items"
-  ON customer_enrichment_run_items FOR SELECT
-  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+  ON customer_enrichment_run_items FOR SELECT TO authenticated
+  USING (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND (SELECT user_can_access_module('customers')));
 
 DROP POLICY IF EXISTS "Enrichment admins can insert enrichment run items" ON customer_enrichment_run_items;
 CREATE POLICY "Enrichment admins can insert enrichment run items"
-  ON customer_enrichment_run_items FOR INSERT
-  WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('system:customer-enrichment', 'admin'));
+  ON customer_enrichment_run_items FOR INSERT TO authenticated
+  WITH CHECK (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('system:customer-enrichment', 'admin'));
 
 DROP POLICY IF EXISTS "Enrichment admins can update enrichment run items" ON customer_enrichment_run_items;
 CREATE POLICY "Enrichment admins can update enrichment run items"
-  ON customer_enrichment_run_items FOR UPDATE
-  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('system:customer-enrichment', 'admin'));
+  ON customer_enrichment_run_items FOR UPDATE TO authenticated
+  USING (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('system:customer-enrichment', 'admin'));
 
 -- ===========================================
 -- REALTIME
@@ -942,6 +958,19 @@ $$ LANGUAGE sql IMMUTABLE;
 CREATE INDEX IF NOT EXISTS idx_customer_orders_analytics
   ON customer_orders(org_id, order_date DESC, status);
 
+-- Acquisition counts window on first_order_date, not last_order_date: the acq
+-- CTE in customer_analytics_summary and the acquired CTE in
+-- customer_revenue_timeseries both range-scan it. Only last_order_date was
+-- indexed, so those two fell back to a full scan of the org's customers.
+CREATE INDEX IF NOT EXISTS idx_customers_first_order_date
+  ON customers(org_id, first_order_date)
+  WHERE first_order_date IS NOT NULL;
+
+-- The detail panel asks for one customer's orders newest-first. The plain
+-- customer_id index gets the rows but leaves the sort to be done in memory.
+CREATE INDEX IF NOT EXISTS idx_customer_orders_customer_date
+  ON customer_orders(customer_id, order_date DESC);
+
 -- -------------------------------------------
 -- Headline KPIs, with the preceding window for deltas
 -- -------------------------------------------
@@ -973,7 +1002,8 @@ CREATE FUNCTION customer_analytics_summary(
   at_risk_customers BIGINT,
   churned_customers BIGINT,
   gone_customers BIGINT,
-  unclassified_accounts BIGINT
+  unclassified_accounts BIGINT,
+  segment_counts JSONB
 ) AS $$
   WITH win AS (
     SELECT
@@ -1013,6 +1043,19 @@ CREATE FUNCTION customer_analytics_summary(
     WHERE c.org_id = p_org_id
       AND c.first_order_date IS NOT NULL
   ),
+  -- Referenced by both life and by_segment, so Postgres materialises it and
+  -- the org's customers are scanned once for the KPI counts and the sidebar
+  -- facet counts together.
+  seg AS (
+    SELECT
+      c.is_active,
+      COALESCE(c.total_spent, 0)::NUMERIC AS total_spent,
+      customer_lifecycle_segment(
+        COALESCE(c.order_count, 0), c.first_order_date, c.last_order_date, p_to
+      ) AS segment
+    FROM customers c
+    WHERE c.org_id = p_org_id
+  ),
   life AS (
     SELECT
       COUNT(*)::BIGINT AS total_customers,
@@ -1020,15 +1063,27 @@ CREATE FUNCTION customer_analytics_summary(
       COUNT(*) FILTER (WHERE seg.segment = 'at_risk')::BIGINT          AS at_risk_customers,
       COUNT(*) FILTER (WHERE seg.segment = 'churned')::BIGINT          AS churned_customers,
       COUNT(*) FILTER (WHERE seg.is_active IS FALSE)::BIGINT           AS gone_customers
-    FROM (
-      SELECT
-        c.is_active,
-        customer_lifecycle_segment(
-          COALESCE(c.order_count, 0), c.first_order_date, c.last_order_date, p_to
-        ) AS segment
-      FROM customers c
-      WHERE c.org_id = p_org_id
-    ) seg
+    FROM seg
+  ),
+  by_segment AS (
+    SELECT
+      seg.segment                                AS segment,
+      COUNT(*)::BIGINT                           AS buyers,
+      COALESCE(SUM(seg.total_spent), 0)::NUMERIC AS revenue
+    FROM seg
+    GROUP BY seg.segment
+  ),
+  -- Aggregated to JSONB rather than returned as rows so the whole dashboard
+  -- header still comes back as a single row from a single round trip.
+  segments AS (
+    SELECT COALESCE(
+      jsonb_agg(
+        jsonb_build_object('segment', b.segment, 'buyers', b.buyers, 'revenue', b.revenue)
+        ORDER BY b.segment
+      ),
+      '[]'::JSONB
+    ) AS segment_counts
+    FROM by_segment b
   ),
   unclassified AS (
     SELECT COUNT(*)::BIGINT AS unclassified_accounts
@@ -1059,12 +1114,14 @@ CREATE FUNCTION customer_analytics_summary(
     l.at_risk_customers,
     l.churned_customers,
     l.gone_customers,
-    u.unclassified_accounts
+    u.unclassified_accounts,
+    sc.segment_counts
   FROM win w
   CROSS JOIN prev p
   CROSS JOIN acq a
   CROSS JOIN life l
-  CROSS JOIN unclassified u;
+  CROSS JOIN unclassified u
+  CROSS JOIN segments sc;
 $$ LANGUAGE sql STABLE;
 
 -- -------------------------------------------
@@ -1535,10 +1592,16 @@ CREATE FUNCTION customer_rfm(
 $$ LANGUAGE sql STABLE;
 
 -- -------------------------------------------
--- Segment counts for the sidebar
+-- Segment counts, standalone
 -- -------------------------------------------
--- Deliberately separate from customer_rfm: the sidebar needs counts over every
+-- Deliberately separate from customer_rfm: these are counts over every
 -- customer, and must stay correct even when the table's row cap truncates.
+--
+-- The dashboard no longer calls this - customer_analytics_summary returns the
+-- same rollup as its segment_counts JSONB, computed from the scan of customers
+-- it was already doing. Kept because it is a granted RPC and an app version
+-- older than the schema still calls it; it is the cheap standalone entry point
+-- for anything that wants the counts without the rest of the KPI header.
 
 DROP FUNCTION IF EXISTS customer_segment_counts(UUID, TIMESTAMPTZ);
 CREATE FUNCTION customer_segment_counts(
@@ -1561,6 +1624,107 @@ CREATE FUNCTION customer_segment_counts(
   ORDER BY 1;
 $$ LANGUAGE sql STABLE;
 
+-- -------------------------------------------
+-- Everything the detail panel shows, in one round trip
+-- -------------------------------------------
+-- The panel used to issue the customer, its orders and then a fan-out for
+-- lines/account/enrichment/sources as separate requests, three of them
+-- strictly sequential because each needed an id from the one before. Arrow-
+-- keying down the table re-ran that whole chain per row.
+--
+-- Returning one JSONB document collapses it to a single request. The shape
+-- mirrors the CustomerDetail interface in useCustomerDetail.ts - the two must
+-- change together.
+--
+-- SECURITY INVOKER like the rest of this section, so p_customer_id needs no
+-- org argument: a customer in another org simply is not visible and the
+-- function returns a null customer.
+DROP FUNCTION IF EXISTS customer_detail(UUID, INTEGER);
+CREATE FUNCTION customer_detail(
+  p_customer_id UUID,
+  p_order_limit INTEGER DEFAULT 100
+) RETURNS JSONB AS $$
+  WITH target AS (
+    SELECT
+      c.id, c.name, c.email, c.phone, c.company, c.is_company, c.website, c.vat,
+      c.job_title, c.industry, c.street, c.street2, c.city, c.state, c.zip,
+      c.country, c.erp_id, c.account_id, c.total_spent, c.order_count,
+      c.item_count, c.first_order_date, c.last_order_date, c.is_active,
+      c.odoo_missing_since
+    FROM customers c
+    WHERE c.id = p_customer_id
+  ),
+  recent_orders AS (
+    SELECT co.id, co.erp_id, co.order_date, co.status, co.total, co.discount, co.items_count
+    FROM customer_orders co
+    WHERE co.customer_id = p_customer_id
+    ORDER BY co.order_date DESC NULLS LAST
+    LIMIT GREATEST(COALESCE(p_order_limit, 100), 1)
+  ),
+  -- Rolled up over the orders actually returned, so the product list always
+  -- agrees with the order list next to it.
+  products AS (
+    SELECT
+      COALESCE(NULLIF(ol.product_erp_id, ''), ol.product_name, 'unknown')        AS product_key,
+      COALESCE(MAX(ol.product_name), 'Odoo product #' || MAX(ol.product_erp_id)) AS product_name,
+      COALESCE(SUM(ol.quantity), 0)::NUMERIC                                     AS quantity,
+      COALESCE(SUM(ol.price_subtotal), 0)::NUMERIC                               AS revenue
+    FROM customer_order_lines ol
+    JOIN recent_orders o ON o.id = ol.order_id
+    GROUP BY 1
+  ),
+  current_enrichment AS (
+    SELECT e.id, e.category, e.subcategory, e.confidence, e.report,
+           e.evidence_found, e.needs_review, e.model, e.researched_at
+    FROM customer_enrichments e
+    WHERE e.is_current
+      AND e.account_id = (SELECT t.account_id FROM target t)
+    LIMIT 1
+  )
+  SELECT jsonb_build_object(
+    'customer', (SELECT to_jsonb(t) FROM target t),
+    'accountName', (
+      SELECT COALESCE(NULLIF(a.display_name, ''), a.account_key)
+      FROM customer_accounts a
+      WHERE a.id = (SELECT t.account_id FROM target t)
+    ),
+    'orders', COALESCE(
+      (SELECT jsonb_agg(to_jsonb(o) ORDER BY o.order_date DESC NULLS LAST) FROM recent_orders o),
+      '[]'::JSONB
+    ),
+    'products', COALESCE(
+      (
+        SELECT jsonb_agg(
+          jsonb_build_object(
+            'key', p.product_key,
+            'name', p.product_name,
+            'quantity', p.quantity,
+            'revenue', p.revenue
+          ) ORDER BY p.revenue DESC
+        )
+        FROM products p
+      ),
+      '[]'::JSONB
+    ),
+    'enrichment', (
+      SELECT to_jsonb(e) || jsonb_build_object(
+        'sources', COALESCE(
+          (
+            SELECT jsonb_agg(
+              jsonb_build_object('id', s.id, 'url', s.url, 'title', s.title, 'quote', s.quote)
+              ORDER BY s.url
+            )
+            FROM customer_enrichment_sources s
+            WHERE s.enrichment_id = e.id
+          ),
+          '[]'::JSONB
+        )
+      )
+      FROM current_enrichment e
+    )
+  );
+$$ LANGUAGE sql STABLE;
+
 GRANT EXECUTE ON FUNCTION customer_non_revenue_statuses() TO authenticated;
 GRANT EXECUTE ON FUNCTION customer_order_is_revenue(TEXT) TO authenticated;
 GRANT EXECUTE ON FUNCTION customer_lifecycle_segment(INTEGER, TIMESTAMPTZ, TIMESTAMPTZ, TIMESTAMPTZ) TO authenticated;
@@ -1573,6 +1737,7 @@ GRANT EXECUTE ON FUNCTION customer_cohort_retention(UUID, INTEGER) TO authentica
 GRANT EXECUTE ON FUNCTION customer_top_products(UUID, TIMESTAMPTZ, TIMESTAMPTZ, INTEGER) TO authenticated;
 GRANT EXECUTE ON FUNCTION customer_rfm(UUID, TIMESTAMPTZ, INTEGER) TO authenticated;
 GRANT EXECUTE ON FUNCTION customer_segment_counts(UUID, TIMESTAMPTZ) TO authenticated;
+GRANT EXECUTE ON FUNCTION customer_detail(UUID, INTEGER) TO authenticated;
 
 COMMENT ON FUNCTION customer_non_revenue_statuses() IS
   'Odoo sale.order states excluded from revenue. Mirrors NON_REVENUE_ORDER_STATES in api/src/customers/odooSync.ts - the two must be changed together or the dashboard will disagree with customers.total_spent.';
@@ -1584,7 +1749,7 @@ COMMENT ON FUNCTION customer_lifecycle_segment(INTEGER, TIMESTAMPTZ, TIMESTAMPTZ
 -- SCHEMA VERSION
 -- ===========================================
 
-SELECT update_schema_version(78, 'Cancellable Odoo customer sync: live progress, heartbeat and cancel columns on integration_sync_log');
+SELECT update_schema_version(79, 'Customers dashboard performance: InitPlan-cacheable RLS on all customer tables, first_order_date and per-customer order indexes, segment counts folded into customer_analytics_summary, single-round-trip customer_detail RPC');
 
 -- ===========================================
 -- END OF CUSTOMERS MODULE

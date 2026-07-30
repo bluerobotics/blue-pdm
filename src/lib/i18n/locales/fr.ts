@@ -244,7 +244,6 @@ export const fr: TranslationDict = {
     // Products
     products: 'Explorateur de produits',
     items: "Navigateur d'articles",
-    boms: 'Nomenclatures',
     // Change Control
     ecr: 'ECRs / Problèmes',
     eco: 'ECOs',
@@ -255,47 +254,8 @@ export const fr: TranslationDict = {
     // Supply Chain - Suppliers
     supplierDatabase: 'Base de données fournisseurs',
     supplierPortal: 'Portail fournisseurs',
-    // Supply Chain - Purchasing
-    purchaseRequests: "Demandes d'achat",
-    purchaseOrders: 'Bons de commande',
-    invoices: 'Factures',
-    // Supply Chain - Logistics
-    shipping: 'Expédition',
-    receiving: 'Réception',
     // Customers
     customers: 'Clients',
-    // Production
-    manufacturingOrders: 'Ordres de fabrication',
-    travellers: 'Fiches suiveuses',
-    workInstructions: 'Instructions de travail',
-    productionSchedule: 'Planning de production',
-    routings: 'Gammes',
-    workCenters: 'Centres de travail',
-    processFlows: 'Flux de processus',
-    equipment: 'Équipements',
-    // Production - Analytics
-    productionAnalytics: 'Analytique',
-    yieldTracking: 'Suivi des rendements',
-    errorCodes: "Codes d'erreur",
-    downtime: "Temps d'arrêt",
-    oee: 'Tableau de bord TRS',
-    scrapTracking: 'Suivi des rebuts',
-    // Quality
-    fai: 'Inspection premier article (FAI)',
-    ncr: 'Rapport de non-conformité (NCR)',
-    imr: 'Rapport matière entrante (IMR)',
-    scar: 'Action corrective fournisseur (SCAR)',
-    capa: 'Action corrective & préventive (CAPA)',
-    rma: 'Autorisation retour matériel (RMA)',
-    certificates: 'Certificats',
-    calibration: 'Étalonnage',
-    qualityTemplates: 'Modèles',
-    // Accounting
-    accountsPayable: 'Comptes fournisseurs (AP)',
-    accountsReceivable: 'Comptes clients (AR)',
-    generalLedger: 'Grand livre',
-    costTracking: 'Suivi des coûts',
-    budgets: 'Budgets',
     // Integrations
     googleDrive: 'Google Drive',
     // System

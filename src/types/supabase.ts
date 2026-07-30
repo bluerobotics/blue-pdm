@@ -7941,6 +7941,7 @@ export type Database = {
           prev_revenue: number
           prev_units: number
           revenue: number
+          segment_counts: Json
           total_customers: number
           unclassified_accounts: number
           units: number
@@ -7968,6 +7969,10 @@ export type Database = {
           retention: number
           revenue: number
         }[]
+      }
+      customer_detail: {
+        Args: { p_customer_id: string; p_order_limit?: number }
+        Returns: Json
       }
       customer_geo_breakdown: {
         Args: { p_from: string; p_org_id: string; p_to: string }

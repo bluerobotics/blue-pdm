@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { ArrowDown, ArrowUp, CircleSlash } from 'lucide-react'
 
@@ -61,8 +61,19 @@ interface CustomerTableProps {
   truncated: boolean
 }
 
+/**
+ * How long the arrow keys have to settle before the detail panel follows.
+ *
+ * Holding the key down used to fire a full detail load per row crossed. Long
+ * enough to swallow a key repeat, short enough that a deliberate single press
+ * still feels instant.
+ */
+const FOLLOW_DELAY_MS = 120
+
 export function CustomerTable({ rows, loading, totalCount, truncated }: CustomerTableProps) {
-  const customerPanel = usePDMStore((s) => s.customerPanel)
+  // Subscribing to the id rather than the whole panel object keeps the table
+  // from re-rendering when only the panel's name changes.
+  const openCustomerId = usePDMStore((s) => s.customerPanel?.customerId ?? null)
   const setCustomerPanel = usePDMStore((s) => s.setCustomerPanel)
 
   const [sortKey, setSortKey] = useState<SortKey>('total_spent')
@@ -98,8 +109,11 @@ export function CustomerTable({ rows, loading, totalCount, truncated }: Customer
     overscan: 12,
   })
 
-  const openRow = useCallback(
-    (row: CustomerRfmRow) => setCustomerPanel({ customerId: row.customer_id, name: row.name }),
+  const selectRow = useCallback(
+    (index: number, row: CustomerRfmRow) => {
+      setFocusIndex(index)
+      setCustomerPanel({ customerId: row.customer_id, name: row.name })
+    },
     [setCustomerPanel],
   )
 
@@ -117,7 +131,11 @@ export function CustomerTable({ rows, loading, totalCount, truncated }: Customer
   )
 
   // Arrow-key navigation moves a focus ring through the rows and opens the
-  // detail panel as it goes, so the panel tracks the selection like a mail client.
+  // detail panel as it goes, so the panel tracks the selection like a mail
+  // client. The ring moves on the keystroke; the panel follows once the keys
+  // stop, so scrolling through a hundred rows costs one query, not a hundred.
+  const followTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
@@ -133,14 +151,22 @@ export function CustomerTable({ rows, loading, totalCount, truncated }: Customer
           Math.min(sorted.length - 1, current + (event.key === 'ArrowDown' ? 1 : -1)),
         )
         virtualizer.scrollToIndex(next, { align: 'auto' })
-        const row = sorted[next]
-        if (row) setCustomerPanel({ customerId: row.customer_id, name: row.name })
+
+        if (followTimer.current) clearTimeout(followTimer.current)
+        followTimer.current = setTimeout(() => {
+          const row = sorted[next]
+          if (row) setCustomerPanel({ customerId: row.customer_id, name: row.name })
+        }, FOLLOW_DELAY_MS)
+
         return next
       })
     }
 
     window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
+    return () => {
+      window.removeEventListener('keydown', handler)
+      if (followTimer.current) clearTimeout(followTimer.current)
+    }
   }, [sorted, virtualizer, setCustomerPanel])
 
   if (loading) return <TableSkeleton />
@@ -188,87 +214,18 @@ export function CustomerTable({ rows, loading, totalCount, truncated }: Customer
           <div className="relative" style={{ height: virtualizer.getTotalSize() }}>
             {virtualizer.getVirtualItems().map((virtualRow) => {
               const row = sorted[virtualRow.index]
-              const meta = segmentMeta(row.segment)
-              const isOpen = customerPanel?.customerId === row.customer_id
-              const isFocused = focusIndex === virtualRow.index
 
               return (
-                <div
+                <Row
                   key={row.customer_id}
-                  onClick={() => {
-                    setFocusIndex(virtualRow.index)
-                    openRow(row)
-                  }}
-                  className={`absolute left-0 right-0 flex items-center border-b border-plm-border/40 cursor-pointer text-xs transition-colors ${
-                    isOpen
-                      ? 'bg-plm-selection/40'
-                      : isFocused
-                        ? 'bg-plm-highlight'
-                        : 'hover:bg-plm-bg-lighter/60'
-                  }`}
-                  style={{ height: virtualRow.size, transform: `translateY(${virtualRow.start}px)` }}
-                >
-                  <div className="px-2.5 shrink-0 min-w-0" style={{ width: COLUMNS[0].width }}>
-                    <div className="truncate text-plm-fg">{row.name}</div>
-                    {row.account_name && row.account_name !== row.name && (
-                      <div className="truncate text-[10px] text-plm-fg-muted -mt-0.5">
-                        {row.account_name}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="px-2.5 shrink-0" style={{ width: COLUMNS[1].width }}>
-                    <span
-                      className={`inline-block px-1.5 py-px rounded text-[10px] font-medium ${meta.badgeClass}`}
-                      title={meta.description}
-                    >
-                      {meta.label}
-                    </span>
-                  </div>
-
-                  <div
-                    className="px-2.5 shrink-0 truncate text-plm-fg-dim"
-                    style={{ width: COLUMNS[2].width }}
-                  >
-                    {row.category_label ?? <span className="text-plm-fg-muted">Unclassified</span>}
-                  </div>
-
-                  <div
-                    className="px-2.5 shrink-0 truncate text-plm-fg-dim"
-                    style={{ width: COLUMNS[3].width }}
-                  >
-                    {row.country ?? '-'}
-                  </div>
-
-                  <div
-                    className="px-2.5 shrink-0 text-right tabular-nums text-plm-fg"
-                    style={{ width: COLUMNS[4].width }}
-                  >
-                    {formatAmount(row.total_spent)}
-                  </div>
-
-                  <div
-                    className="px-2.5 shrink-0 text-right tabular-nums text-plm-fg-dim"
-                    style={{ width: COLUMNS[5].width }}
-                  >
-                    {formatCount(row.order_count)}
-                  </div>
-
-                  <div
-                    className="px-2.5 shrink-0 text-right text-plm-fg-dim"
-                    style={{ width: COLUMNS[6].width }}
-                  >
-                    {formatRelativeDays(row.recency_days)}
-                  </div>
-
-                  <div
-                    className="px-2.5 shrink-0 text-right tabular-nums text-plm-fg-muted"
-                    style={{ width: COLUMNS[7].width }}
-                    title="Recency, frequency and monetary quintiles (5 is best)"
-                  >
-                    {row.r_score ? `${row.r_score}${row.f_score}${row.m_score}` : '-'}
-                  </div>
-                </div>
+                  row={row}
+                  index={virtualRow.index}
+                  height={virtualRow.size}
+                  offset={virtualRow.start}
+                  isOpen={openCustomerId === row.customer_id}
+                  isFocused={focusIndex === virtualRow.index}
+                  onSelect={selectRow}
+                />
               )
             })}
           </div>
@@ -289,6 +246,96 @@ export function CustomerTable({ rows, loading, totalCount, truncated }: Customer
     </div>
   )
 }
+
+interface RowProps {
+  row: CustomerRfmRow
+  index: number
+  height: number
+  offset: number
+  isOpen: boolean
+  isFocused: boolean
+  onSelect: (index: number, row: CustomerRfmRow) => void
+}
+
+/**
+ * Memoized because the parent re-renders on every scroll tick, every sort and
+ * every selection change. Without this each of those rebuilt all ~30 visible
+ * rows; now only the two whose isOpen or isFocused actually flipped re-render.
+ */
+const Row = memo(function Row({
+  row,
+  index,
+  height,
+  offset,
+  isOpen,
+  isFocused,
+  onSelect,
+}: RowProps) {
+  const meta = segmentMeta(row.segment)
+
+  return (
+    <div
+      onClick={() => onSelect(index, row)}
+      className={`absolute left-0 right-0 flex items-center border-b border-plm-border/40 cursor-pointer text-xs transition-colors ${
+        isOpen ? 'bg-plm-selection/40' : isFocused ? 'bg-plm-highlight' : 'hover:bg-plm-bg-lighter/60'
+      }`}
+      style={{ height, transform: `translateY(${offset}px)` }}
+    >
+      <div className="px-2.5 shrink-0 min-w-0" style={{ width: COLUMNS[0].width }}>
+        <div className="truncate text-plm-fg">{row.name}</div>
+        {row.account_name && row.account_name !== row.name && (
+          <div className="truncate text-[10px] text-plm-fg-muted -mt-0.5">{row.account_name}</div>
+        )}
+      </div>
+
+      <div className="px-2.5 shrink-0" style={{ width: COLUMNS[1].width }}>
+        <span
+          className={`inline-block px-1.5 py-px rounded text-[10px] font-medium ${meta.badgeClass}`}
+          title={meta.description}
+        >
+          {meta.label}
+        </span>
+      </div>
+
+      <div className="px-2.5 shrink-0 truncate text-plm-fg-dim" style={{ width: COLUMNS[2].width }}>
+        {row.category_label ?? <span className="text-plm-fg-muted">Unclassified</span>}
+      </div>
+
+      <div className="px-2.5 shrink-0 truncate text-plm-fg-dim" style={{ width: COLUMNS[3].width }}>
+        {row.country ?? '-'}
+      </div>
+
+      <div
+        className="px-2.5 shrink-0 text-right tabular-nums text-plm-fg"
+        style={{ width: COLUMNS[4].width }}
+      >
+        {formatAmount(row.total_spent)}
+      </div>
+
+      <div
+        className="px-2.5 shrink-0 text-right tabular-nums text-plm-fg-dim"
+        style={{ width: COLUMNS[5].width }}
+      >
+        {formatCount(row.order_count)}
+      </div>
+
+      <div
+        className="px-2.5 shrink-0 text-right text-plm-fg-dim"
+        style={{ width: COLUMNS[6].width }}
+      >
+        {formatRelativeDays(row.recency_days)}
+      </div>
+
+      <div
+        className="px-2.5 shrink-0 text-right tabular-nums text-plm-fg-muted"
+        style={{ width: COLUMNS[7].width }}
+        title="Recency, frequency and monetary quintiles (5 is best)"
+      >
+        {row.r_score ? `${row.r_score}${row.f_score}${row.m_score}` : '-'}
+      </div>
+    </div>
+  )
+})
 
 function TableSkeleton() {
   return (

@@ -239,7 +239,6 @@ export const pt: TranslationDict = {
     // Products
     products: 'Explorador de Produtos',
     items: 'Navegador de Artigos',
-    boms: 'Listas de Materiais',
     // Change Control
     ecr: 'ECRs / Problemas',
     eco: 'ECOs',
@@ -250,47 +249,8 @@ export const pt: TranslationDict = {
     // Supply Chain - Suppliers
     supplierDatabase: 'Base de Dados de Fornecedores',
     supplierPortal: 'Portal de Fornecedores',
-    // Supply Chain - Purchasing
-    purchaseRequests: 'Requisições de Compra',
-    purchaseOrders: 'Ordens de Compra',
-    invoices: 'Faturas',
-    // Supply Chain - Logistics
-    shipping: 'Expedição',
-    receiving: 'Receção',
     // Customers
     customers: 'Clientes',
-    // Production
-    manufacturingOrders: 'Ordens de Fabrico',
-    travellers: 'Guias de Produção',
-    workInstructions: 'Instruções de Trabalho',
-    productionSchedule: 'Planeamento de Produção',
-    routings: 'Roteiros',
-    workCenters: 'Centros de Trabalho',
-    processFlows: 'Fluxos de Processo',
-    equipment: 'Equipamentos',
-    // Production - Analytics
-    productionAnalytics: 'Análises',
-    yieldTracking: 'Acompanhamento de Rendimento',
-    errorCodes: 'Códigos de Erro',
-    downtime: 'Tempo de Paragem',
-    oee: 'Painel OEE',
-    scrapTracking: 'Acompanhamento de Sucata',
-    // Quality
-    fai: 'Inspeção de Primeiro Artigo (FAI)',
-    ncr: 'Relatório de Não Conformidade (NCR)',
-    imr: 'Relatório de Material Recebido (IMR)',
-    scar: 'Ação Corretiva de Fornecedor (SCAR)',
-    capa: 'Ação Corretiva e Preventiva (CAPA)',
-    rma: 'Autorização de Devolução de Material (RMA)',
-    certificates: 'Certificados',
-    calibration: 'Calibração',
-    qualityTemplates: 'Modelos',
-    // Accounting
-    accountsPayable: 'Contas a Pagar (AP)',
-    accountsReceivable: 'Contas a Receber (AR)',
-    generalLedger: 'Razão Geral',
-    costTracking: 'Acompanhamento de Custos',
-    budgets: 'Orçamentos',
     // Integrations
     googleDrive: 'Google Drive',
     // System

@@ -230,7 +230,6 @@ export const zhCN: TranslationDict = {
     // 产品
     products: '产品浏览器',
     items: '物料浏览器',
-    boms: '物料清单',
     // 变更控制
     ecr: 'ECR / 问题',
     eco: 'ECO',
@@ -241,47 +240,8 @@ export const zhCN: TranslationDict = {
     // 供应链 - 供应商
     supplierDatabase: '供应商数据库',
     supplierPortal: '供应商门户',
-    // 供应链 - 采购
-    purchaseRequests: '采购申请',
-    purchaseOrders: '采购订单',
-    invoices: '发票',
-    // 供应链 - 物流
-    shipping: '发货',
-    receiving: '收货',
     // 客户
     customers: '客户',
-    // 生产
-    manufacturingOrders: '生产订单',
-    travellers: '工艺流转卡',
-    workInstructions: '作业指导书',
-    productionSchedule: '生产计划',
-    routings: '工艺路线',
-    workCenters: '工作中心',
-    processFlows: '工艺流程',
-    equipment: '设备',
-    // 生产 - 分析
-    productionAnalytics: '生产分析',
-    yieldTracking: '良率追踪',
-    errorCodes: '错误代码',
-    downtime: '停机时间',
-    oee: 'OEE 仪表板',
-    scrapTracking: '报废追踪',
-    // 质量
-    fai: '首件检验 (FAI)',
-    ncr: '不合格报告 (NCR)',
-    imr: '来料检验报告 (IMR)',
-    scar: '供应商纠正措施 (SCAR)',
-    capa: '纠正与预防措施 (CAPA)',
-    rma: '退货授权 (RMA)',
-    certificates: '证书',
-    calibration: '校准',
-    qualityTemplates: '模板',
-    // 财务
-    accountsPayable: '应付账款 (AP)',
-    accountsReceivable: '应收账款 (AR)',
-    generalLedger: '总账',
-    costTracking: '成本追踪',
-    budgets: '预算',
     // 集成
     googleDrive: 'Google 云端硬盘',
     // 系统

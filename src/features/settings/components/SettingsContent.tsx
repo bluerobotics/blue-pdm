@@ -23,6 +23,9 @@ const VaultsSettings = lazy(() =>
 const TeamMembersSettings = lazy(() =>
   import('../organization/TeamMembersSettings').then((m) => ({ default: m.TeamMembersSettings })),
 )
+const ModuleAccessSettings = lazy(() =>
+  import('../organization/ModuleAccessSettings').then((m) => ({ default: m.ModuleAccessSettings })),
+)
 const CompanyProfileSettings = lazy(() =>
   import('../organization/CompanyProfileSettings').then((m) => ({
     default: m.CompanyProfileSettings,
@@ -123,6 +126,8 @@ export function SettingsContent({ activeTab }: SettingsContentProps) {
         return <VaultsSettings />
       case 'team-members':
         return <TeamMembersSettings />
+      case 'module-access':
+        return <ModuleAccessSettings />
       case 'company-profile':
         return <CompanyProfileSettings />
       case 'auth-providers':

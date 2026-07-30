@@ -26,7 +26,7 @@ import { supabase } from './supabase'
 
 // The schema version this app version expects
 // Increment this when releasing app updates that require schema changes
-export const EXPECTED_SCHEMA_VERSION = 78
+export const EXPECTED_SCHEMA_VERSION = 80
 
 // Minimum schema version that will still work (for soft warnings vs hard errors)
 // Set this to allow some backwards compatibility
@@ -111,6 +111,8 @@ export const VERSION_DESCRIPTIONS: Record<number, string> = {
   76: 'Align the permission model: an admin grant on a resource implies all actions, and is_org_admin accepts users.role = admin as well as the Administrators team',
   77: 'Customers analysis workspace: aggregate RPCs for revenue timeseries, cohorts, RFM, Pareto concentration and category/geo breakdowns',
   78: 'Cancellable Odoo customer sync: phase, progress, heartbeat and cancel columns on integration_sync_log',
+  79: 'Customers dashboard performance: InitPlan-cacheable RLS, first_order_date and per-customer order indexes, segment counts in customer_analytics_summary, single-round-trip customer_detail RPC',
+  80: 'Module access allowlist: module_access table plus user_can_access_module/get_denied_modules/get_module_access_config/set_module_access, and removal of permission rows for retired modules',
   // Note: Process templates module (v26+) is optional - see modules/process-templates.sql
 }
 
