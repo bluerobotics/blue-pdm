@@ -12,6 +12,7 @@ import { AppShell } from '@/components/layout'
 import { executeTerminalCommand } from '@/lib/commands/parser'
 import { logUserAction, logExplorer } from '@/lib/userActionLogger'
 import { checkSchemaCompatibility } from '@/lib/schemaVersion'
+import { checkApiVersion } from '@/lib/apiVersion'
 import {
   getAccessibleVaults,
   syncFolder,
@@ -527,6 +528,41 @@ export function App() {
     // Effect intentionally only depends on org/offline changes, not on every schema check
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [organization?.id, isOfflineMode])
+
+  // Which organization's API has been checked. Keyed on the id rather than a
+  // boolean because api_url arrives from org settings a moment after the
+  // organization does, and the check has to wait for it.
+  const apiVersionCheckedForRef = useRef<string | null>(null)
+
+  // Warn when the deployed API is older than this app expects. A stale API
+  // answers 404 for routes the app has already shipped, which otherwise shows
+  // up as a feature quietly doing nothing rather than as a version problem.
+  useEffect(() => {
+    if (!organization?.id || isOfflineMode || !apiServerUrl) return
+    if (apiVersionCheckedForRef.current === organization.id) return
+
+    apiVersionCheckedForRef.current = organization.id
+
+    void (async () => {
+      try {
+        const result = await checkApiVersion()
+        if (!result) return
+
+        log.debug('[ApiVersion]', 'Check result', {
+          status: result.status,
+          apiVersion: result.apiVersion,
+        })
+
+        if (result.status === 'incompatible') {
+          addToast('error', `${result.message}: ${result.details}`, 0)
+        } else if (result.status === 'outdated' || result.status === 'unknown') {
+          addToast('warning', `${result.message}. ${result.details}`, 10000)
+        }
+      } catch (error) {
+        log.error('[ApiVersion]', 'Error checking API version', { error: error })
+      }
+    })()
+  }, [organization?.id, isOfflineMode, apiServerUrl, addToast])
 
   // CLI command listener - always active so CLI works even when terminal is hidden
   useEffect(() => {

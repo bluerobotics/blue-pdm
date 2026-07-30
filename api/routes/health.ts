@@ -93,9 +93,13 @@ const healthRoutes: FastifyPluginAsync = async (fastify) => {
         status: allHealthy ? 'healthy' : 'degraded',
         timestamp: new Date().toISOString(),
         version: API_VERSION,
+        // BUILD_COMMIT_SHA is baked into the image at build time, so it is the
+        // only one of these that survives a deploy from the registry rather
+        // than from the platform's own git integration.
         build:
           process.env.RAILWAY_GIT_COMMIT_SHA?.substring(0, 7) ||
           process.env.RENDER_GIT_COMMIT?.substring(0, 7) ||
+          process.env.BUILD_COMMIT_SHA?.substring(0, 7) ||
           null,
         checks: {
           database: {

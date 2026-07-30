@@ -5,6 +5,13 @@ import { supabase } from '@/lib/supabase'
 import { usePDMStore } from '@/stores/pdmStore'
 import type { CustomerSyncRun } from '@/stores/types'
 
+import {
+  OUTDATED_API_MESSAGE,
+  ROUTE_MISSING_MESSAGE,
+  recordPollFailure,
+  resetPollFailures,
+} from './syncPollFailures'
+
 /** The subset of POST /customers/sync's body the UI reports on. */
 export interface SyncCounts {
   created?: number
@@ -103,6 +110,29 @@ function stopPolling(): void {
 }
 
 /**
+ * Record a failed status read, and abandon the run once they stop being a
+ * blip.
+ *
+ * Only surfaces an error while a run is believed to be active. A failed read on
+ * mount, with nothing in flight, is worth a log line and nothing more.
+ */
+function noteStatusFailure(status: number | null, cause?: unknown): void {
+  const failure = recordPollFailure(status)
+  log.warn('[Customers]', 'Sync status poll failed', {
+    status,
+    consecutiveFailures: failure.consecutive,
+    ...(cause === undefined ? {} : { error: cause }),
+  })
+
+  const store = usePDMStore.getState()
+  if (!store.customerSync.active || !failure.exhausted) return
+
+  stopPolling()
+  awaitingRunAfter = null
+  store.setCustomerSync({ active: false, stopping: false, error: failure.message })
+}
+
+/**
  * Runs the Odoo customer sync.
  *
  * All state lives in the store, so every caller of this hook sees the same run
@@ -148,7 +178,11 @@ export function useCustomerSync(onComplete?: () => void): CustomerSyncResult {
   const refreshStatus = useCallback(async (): Promise<CustomerSyncRun | null> => {
     try {
       const response = await request('/customers/sync/status', 'GET')
-      if (!response || !response.ok) return null
+      if (!response || !response.ok) {
+        noteStatusFailure(response?.status ?? null)
+        return null
+      }
+      resetPollFailures()
 
       const data = (await response.json()) as { run: CustomerSyncRun | null }
       const run = data.run ?? null
@@ -194,7 +228,7 @@ export function useCustomerSync(onComplete?: () => void): CustomerSyncResult {
 
       return run
     } catch (cause) {
-      log.warn('[Customers]', 'Sync status poll failed', { error: cause })
+      noteStatusFailure(null, cause)
       return null
     }
   }, [request, addToast])
@@ -252,6 +286,7 @@ export function useCustomerSync(onComplete?: () => void): CustomerSyncResult {
     // first poll comes back. Polls are held from reporting completion until a
     // run newer than this one appears.
     awaitingRunAfter = store.customerSync.run?.run_id ?? ''
+    resetPollFailures()
     setCustomerSync({ active: true, stopping: false })
     startPolling()
 
@@ -364,10 +399,21 @@ export function useCustomerSync(onComplete?: () => void): CustomerSyncResult {
       const response = await request('/customers/sync/cancel', 'POST')
       if (!response || !response.ok) {
         setCustomerSync({ stopping: false })
-        if (response) {
-          const data = (await response.json()) as { message?: string }
-          addToast('error', data.message || 'Could not stop the sync.')
+        if (!response) return
+
+        const data = (await response.json().catch(() => ({}))) as { message?: string }
+
+        // The API has no cancel route, so there is nothing to wait for and
+        // nothing more this view can show. Say so where it stays put, rather
+        // than in a toast that scrolls away leaving the spinner running.
+        if (response.status === 404 && data.message === ROUTE_MISSING_MESSAGE) {
+          stopPolling()
+          awaitingRunAfter = null
+          setCustomerSync({ active: false, error: OUTDATED_API_MESSAGE })
+          return
         }
+
+        addToast('error', data.message || 'Could not stop the sync.')
         return
       }
       await refreshStatus()

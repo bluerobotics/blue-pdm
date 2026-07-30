@@ -10,6 +10,7 @@
  * - Version 1.1.0: Added Odoo integrations (v2.16.0)
  * - Version 1.2.0: Invite flow includes org code, re-invite cleanup (v2.16.8)
  * - Version 2.0.0: Major API refactor with improved architecture
+ * - Version 2.1.0: Customer sync reports progress and can be stopped (v3.23.0)
  *
  * When making API changes:
  * 1. Increment version in api/package.json
@@ -21,7 +22,7 @@ import { usePDMStore } from '../stores/pdmStore'
 
 // The API version this app version expects
 // Uses semver: MAJOR.MINOR.PATCH
-export const EXPECTED_API_VERSION = '2.0.0'
+export const EXPECTED_API_VERSION = '2.1.0'
 
 // Minimum API version that will still work (for soft warnings vs hard errors)
 // Breaking changes should bump the major version and update this
@@ -33,6 +34,7 @@ export const API_VERSION_DESCRIPTIONS: Record<string, string> = {
   '1.1.0': 'Added Odoo integrations',
   '1.2.0': 'Invite flow includes org code, automatic re-invite cleanup',
   '2.0.0': 'Major API refactor with improved architecture',
+  '2.1.0': 'Customer sync reports live progress and can be stopped',
 }
 
 export interface ApiVersionCheckResult {
