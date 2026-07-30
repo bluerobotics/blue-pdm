@@ -54,6 +54,11 @@ const SuppliersView = lazy(() =>
 const SupplierPortalView = lazy(() =>
   import('@/features/supply-chain/portal').then((m) => ({ default: m.SupplierPortalView })),
 )
+const CustomersNavigator = lazy(() =>
+  import('@/features/customers/CustomersNavigator').then((m) => ({
+    default: m.CustomersNavigator,
+  })),
+)
 const GoogleDriveView = lazy(() =>
   import('@/features/integrations/google-drive').then((m) => ({ default: m.GoogleDriveView })),
 )
@@ -272,6 +277,18 @@ export function Sidebar() {
         return isEnabled ? (
           <Suspense fallback={<ViewLoading />}>
             <SupplierPortalView />
+          </Suspense>
+        ) : (
+          <ModuleDisabled moduleName={moduleName} />
+        )
+
+      // ============================================
+      // CUSTOMERS
+      // ============================================
+      case 'customers':
+        return isEnabled ? (
+          <Suspense fallback={<ViewLoading />}>
+            <CustomersNavigator />
           </Suspense>
         ) : (
           <ModuleDisabled moduleName={moduleName} />

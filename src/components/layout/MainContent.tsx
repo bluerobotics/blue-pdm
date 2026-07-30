@@ -26,6 +26,12 @@ const ReviewPreviewPane = lazy(() =>
 const ItemBrowserView = lazy(() =>
   import('@/features/items/itemBrowser').then((m) => ({ default: m.ItemBrowserView })),
 )
+// Lazy so Recharts, which only this view uses, stays out of the initial bundle
+const CustomersWorkspace = lazy(() =>
+  import('@/features/customers/CustomersWorkspace').then((m) => ({
+    default: m.CustomersWorkspace,
+  })),
+)
 
 // Loading fallback for lazy-loaded components
 function ContentLoading() {
@@ -52,6 +58,7 @@ interface MainContentProps {
  * - Settings
  * - Google Drive
  * - Workflows
+ * - Customers
  * - File Browser (default)
  */
 export function MainContent({
@@ -77,9 +84,9 @@ export function MainContent({
     >
       {/* Tab bar (browser-like tabs) - shown when FilePane is visible (not settings, google-drive, workflows, or reviews) */}
       {!showWelcome &&
-        !['settings', 'google-drive', 'workflows', 'reviews', 'items'].includes(activeView) && (
-          <TabBar />
-        )}
+        !['settings', 'google-drive', 'workflows', 'reviews', 'items', 'customers'].includes(
+          activeView,
+        ) && <TabBar />}
 
       {showWelcome ? (
         <WelcomeScreen onOpenRecentVault={handleOpenRecentVault} onChangeOrg={handleChangeOrg} />
@@ -100,6 +107,12 @@ export function MainContent({
         /* Item Browser (Quality) - replaces entire main content area (full width, lazy loaded) */
         <Suspense fallback={<ContentLoading />}>
           <ItemBrowserView />
+        </Suspense>
+      ) : activeView === 'customers' ? (
+        /* Customers analysis workspace - main area only; the sidebar keeps the
+           segment navigator and the right panel holds the customer detail */
+        <Suspense fallback={<ContentLoading />}>
+          <CustomersWorkspace />
         </Suspense>
       ) : activeView === 'reviews' ? (
         /* Reviews View - full-screen PDF preview or empty state */

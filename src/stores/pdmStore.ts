@@ -62,6 +62,7 @@ import {
   createOperationLogSlice,
   createAnnotationsSlice,
   createItemBrowserSlice,
+  createCustomersSlice,
 } from './slices'
 import { defaultCardViewFields } from './slices/settingsSlice'
 
@@ -89,6 +90,7 @@ export const usePDMStore = create<PDMStoreState>()(
       ...createOperationLogSlice(...a),
       ...createAnnotationsSlice(...a),
       ...createItemBrowserSlice(...a),
+      ...createCustomersSlice(...a),
     }),
     {
       name: 'blue-plm-storage',
@@ -149,6 +151,9 @@ export const usePDMStore = create<PDMStoreState>()(
         itemListRowSize: state.itemListRowSize,
         itemIconSize: state.itemIconSize,
         itemColumns: state.itemColumns,
+        // Only the tab: customer filters are intentionally session-scoped,
+        // see DEFAULT_CUSTOMER_FILTERS in slices/customersSlice.ts
+        customersTab: state.customersTab,
 
         // ═══════════════════════════════════════════════════════════════
         // Theme & Appearance

@@ -1,6 +1,7 @@
 import { getSupabaseClient } from './client'
 import type { PermissionAction } from '../../types/permissions'
 import type { ModuleConfig as ModuleConfigType } from '../../types/modules'
+import { mergeModuleOrder } from '../../types/modules'
 
 // ============================================
 // User Role Management
@@ -308,7 +309,7 @@ export async function loadImpersonatedUserContext(targetUserId: string): Promise
       moduleConfig = {
         enabledModules: moduleData.enabled_modules || {},
         enabledGroups: moduleData.enabled_groups || {},
-        moduleOrder: moduleData.module_order || [],
+        moduleOrder: mergeModuleOrder(moduleData.module_order || []),
         dividers: moduleData.dividers || [],
         moduleParents: moduleData.module_parents || {},
         moduleIconColors: moduleData.module_icon_colors || {},

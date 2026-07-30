@@ -2891,12 +2891,20 @@ export type Database = {
       }
       integration_sync_log: {
         Row: {
+          cancel_requested: boolean
+          cancel_requested_by: string | null
           completed_at: string | null
           error_details: Json | null
           error_message: string | null
+          heartbeat_at: string | null
           id: string
           integration_id: string
           org_id: string
+          phase: string | null
+          phase_count: number | null
+          phase_index: number | null
+          progress_current: number | null
+          progress_total: number | null
           records_created: number | null
           records_errored: number | null
           records_processed: number | null
@@ -2910,12 +2918,20 @@ export type Database = {
           triggered_by: string | null
         }
         Insert: {
+          cancel_requested?: boolean
+          cancel_requested_by?: string | null
           completed_at?: string | null
           error_details?: Json | null
           error_message?: string | null
+          heartbeat_at?: string | null
           id?: string
           integration_id: string
           org_id: string
+          phase?: string | null
+          phase_count?: number | null
+          phase_index?: number | null
+          progress_current?: number | null
+          progress_total?: number | null
           records_created?: number | null
           records_errored?: number | null
           records_processed?: number | null
@@ -2929,12 +2945,20 @@ export type Database = {
           triggered_by?: string | null
         }
         Update: {
+          cancel_requested?: boolean
+          cancel_requested_by?: string | null
           completed_at?: string | null
           error_details?: Json | null
           error_message?: string | null
+          heartbeat_at?: string | null
           id?: string
           integration_id?: string
           org_id?: string
+          phase?: string | null
+          phase_count?: number | null
+          phase_index?: number | null
+          progress_current?: number | null
+          progress_total?: number | null
           records_created?: number | null
           records_errored?: number | null
           records_processed?: number | null
@@ -2948,6 +2972,13 @@ export type Database = {
           triggered_by?: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "integration_sync_log_cancel_requested_by_fkey"
+            columns: ["cancel_requested_by"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "integration_sync_log_integration_id_fkey"
             columns: ["integration_id"]
@@ -7889,6 +7920,133 @@ export type Database = {
           p_vault_id: string
         }
         Returns: string
+      }
+      customer_analytics_summary: {
+        Args: { p_from: string; p_org_id: string; p_to: string }
+        Returns: {
+          active_customers: number
+          aov: number
+          at_risk_customers: number
+          buyers: number
+          churned_customers: number
+          discount: number
+          gone_customers: number
+          new_customers: number
+          orders: number
+          prev_aov: number
+          prev_buyers: number
+          prev_discount: number
+          prev_new_customers: number
+          prev_orders: number
+          prev_revenue: number
+          prev_units: number
+          revenue: number
+          total_customers: number
+          unclassified_accounts: number
+          units: number
+        }[]
+      }
+      customer_category_breakdown: {
+        Args: { p_from: string; p_org_id: string; p_to: string }
+        Returns: {
+          buyers: number
+          category: string | null
+          category_label: string | null
+          orders: number
+          revenue: number
+          subcategory: string | null
+          subcategory_label: string | null
+        }[]
+      }
+      customer_cohort_retention: {
+        Args: { p_months?: number; p_org_id: string }
+        Returns: {
+          buyers: number
+          cohort_month: string
+          cohort_size: number
+          month_index: number
+          retention: number
+          revenue: number
+        }[]
+      }
+      customer_geo_breakdown: {
+        Args: { p_from: string; p_org_id: string; p_to: string }
+        Returns: {
+          buyers: number
+          country: string | null
+          orders: number
+          revenue: number
+        }[]
+      }
+      customer_revenue_timeseries: {
+        Args: { p_bucket?: string; p_from: string; p_org_id: string; p_to: string }
+        Returns: {
+          bucket_start: string
+          buyers: number
+          new_customers: number
+          orders: number
+          revenue: number
+          units: number
+        }[]
+      }
+      customer_rfm: {
+        Args: { p_as_of?: string; p_limit?: number; p_org_id: string }
+        Returns: {
+          account_id: string | null
+          account_name: string | null
+          category: string | null
+          category_label: string | null
+          city: string | null
+          country: string | null
+          customer_id: string
+          email: string | null
+          f_score: number | null
+          first_order_date: string | null
+          is_active: boolean | null
+          last_order_date: string | null
+          m_score: number | null
+          name: string
+          order_count: number
+          r_score: number | null
+          recency_days: number | null
+          segment: string
+          subcategory: string | null
+          total_spent: number
+        }[]
+      }
+      customer_segment_counts: {
+        Args: { p_as_of?: string; p_org_id: string }
+        Returns: {
+          buyers: number
+          revenue: number
+          segment: string
+        }[]
+      }
+      customer_top_accounts: {
+        Args: { p_from: string; p_limit?: number; p_org_id: string; p_to: string }
+        Returns: {
+          account_id: string | null
+          buyers: number
+          cumulative_share: number | null
+          group_key: string
+          label: string | null
+          orders: number
+          rank_index: number
+          revenue: number
+          share: number | null
+        }[]
+      }
+      customer_top_products: {
+        Args: { p_from: string; p_limit?: number; p_org_id: string; p_to: string }
+        Returns: {
+          buyers: number
+          orders: number
+          product_erp_id: string | null
+          product_key: string
+          product_name: string | null
+          quantity: number
+          revenue: number
+        }[]
       }
       deactivate_solidworks_license: {
         Args: { p_assignment_id: string }

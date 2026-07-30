@@ -54,7 +54,19 @@ export function AppShell({ showWelcome, isSignInScreen, handleChangeOrg }: AppSh
     setRightPanelWidth,
     rightPanelTabs,
     itemPanel,
+    customerPanel,
   } = usePDMStore()
+
+  /**
+   * Views that own the main area also own the right panel: they open it for
+   * their own detail context rather than the file-based tabs, so the generic
+   * tab condition must not apply to them.
+   */
+  const detailOwningViews = ['items', 'customers', 'workflows']
+  const rightPanelOpen =
+    (activeView === 'items' && !!itemPanel) ||
+    (activeView === 'customers' && !!customerPanel) ||
+    (!detailOwningViews.includes(activeView) && rightPanelVisible && rightPanelTabs.length > 0)
 
   // Call hooks directly instead of receiving as props
   const { loadFiles } = useLoadFiles()
@@ -160,26 +172,19 @@ export function AppShell({ showWelcome, isSignInScreen, handleChangeOrg }: AppSh
         />
 
         {/* Right Panel (lazy loaded) */}
-        {((activeView === 'items' && !!itemPanel) ||
-          (activeView !== 'items' &&
-            activeView !== 'workflows' &&
-            rightPanelVisible &&
-            rightPanelTabs.length > 0)) &&
-          !showWelcome && (
-            <>
-              <ResizeHandle
-                direction="horizontal"
-                onResizeStart={() => setIsResizingRightPanel(true)}
-              />
-              <div
-                className={isResizingSidebar || isResizingRightPanel ? 'pointer-events-none' : ''}
-              >
-                <Suspense fallback={<ContentLoading />}>
-                  <RightPanel />
-                </Suspense>
-              </div>
-            </>
-          )}
+        {rightPanelOpen && !showWelcome && (
+          <>
+            <ResizeHandle
+              direction="horizontal"
+              onResizeStart={() => setIsResizingRightPanel(true)}
+            />
+            <div className={isResizingSidebar || isResizingRightPanel ? 'pointer-events-none' : ''}>
+              <Suspense fallback={<ContentLoading />}>
+                <RightPanel />
+              </Suspense>
+            </div>
+          </>
+        )}
       </div>
 
       <Toast />

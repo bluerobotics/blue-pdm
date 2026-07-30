@@ -5,6 +5,8 @@
  * Migrations run in order when the app loads with older persisted data.
  */
 
+import { mergeModuleOrder, type ModuleId } from '../types/modules'
+
 export interface StoreMigration {
   version: number
   description: string
@@ -12,7 +14,7 @@ export interface StoreMigration {
 }
 
 // Current schema version - increment when adding migrations
-export const CURRENT_STORE_VERSION = 9
+export const CURRENT_STORE_VERSION = 10
 
 // In-development Quality modules that were previously nested under the
 // 'group-quality' cascade menu and are now removed from the default sidebar.
@@ -193,6 +195,25 @@ export const migrations: StoreMigration[] = [
       // and adjusted Rev/Description widths) applies. Users can re-customize.
       const { itemColumns: _removed, ...rest } = state as Record<string, unknown>
       return rest
+    },
+  },
+  {
+    version: 10,
+    description: 'Restore modules missing from a saved sidebar order, including Customers',
+    migrate: (state) => {
+      const moduleConfig = state.moduleConfig
+      if (!moduleConfig || typeof moduleConfig !== 'object') return state
+
+      const config = moduleConfig as Record<string, unknown>
+      if (!Array.isArray(config.moduleOrder)) return state
+
+      return {
+        ...state,
+        moduleConfig: {
+          ...config,
+          moduleOrder: mergeModuleOrder(config.moduleOrder as ModuleId[]),
+        },
+      }
     },
   },
 ]

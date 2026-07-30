@@ -26,7 +26,7 @@ import { supabase } from './supabase'
 
 // The schema version this app version expects
 // Increment this when releasing app updates that require schema changes
-export const EXPECTED_SCHEMA_VERSION = 76
+export const EXPECTED_SCHEMA_VERSION = 78
 
 // Minimum schema version that will still work (for soft warnings vs hard errors)
 // Set this to allow some backwards compatibility
@@ -109,6 +109,8 @@ export const VERSION_DESCRIPTIONS: Record<number, string> = {
   74: 'Add customers module: Odoo customer sync (customers, addresses, orders, order lines) and AI enrichment (accounts, enrichments, sources, runs) with a seeded category taxonomy',
   75: 'Move integration credentials into a service-role-only table so org members can no longer read ERP API keys',
   76: 'Align the permission model: an admin grant on a resource implies all actions, and is_org_admin accepts users.role = admin as well as the Administrators team',
+  77: 'Customers analysis workspace: aggregate RPCs for revenue timeseries, cohorts, RFM, Pareto concentration and category/geo breakdowns',
+  78: 'Cancellable Odoo customer sync: phase, progress, heartbeat and cancel columns on integration_sync_log',
   // Note: Process templates module (v26+) is optional - see modules/process-templates.sql
 }
 

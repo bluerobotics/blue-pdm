@@ -154,6 +154,67 @@ CREATE INDEX IF NOT EXISTS idx_sync_log_org_id ON integration_sync_log(org_id);
 CREATE INDEX IF NOT EXISTS idx_sync_log_integration_id ON integration_sync_log(integration_id);
 CREATE INDEX IF NOT EXISTS idx_sync_log_started_at ON integration_sync_log(started_at DESC);
 
+-- ── Live progress and cooperative cancellation ──────────────────────────────
+-- The table was originally an after-the-fact audit trail: one row written once
+-- a sync had already finished. These columns let a row be written when the run
+-- STARTS and updated as it goes, so a client can watch a sync it did not start
+-- and ask it to stop.
+--
+-- status carries 'running' and 'cancelled' in addition to the historical
+-- 'success' / 'failed'. It is free-text, so no enum change is needed.
+--
+-- heartbeat_at is what separates "still working" from "the server died holding
+-- a running row". A reader treats a run whose heartbeat has gone quiet as dead
+-- rather than trusting status alone.
+
+DO $$ BEGIN
+  ALTER TABLE integration_sync_log ADD COLUMN phase TEXT;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  ALTER TABLE integration_sync_log ADD COLUMN phase_index INT;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  ALTER TABLE integration_sync_log ADD COLUMN phase_count INT;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+-- progress_total stays NULL until the count is known; the reader shows a bare
+-- running figure rather than inventing a denominator.
+DO $$ BEGIN
+  ALTER TABLE integration_sync_log ADD COLUMN progress_current INT;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  ALTER TABLE integration_sync_log ADD COLUMN progress_total INT;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  ALTER TABLE integration_sync_log ADD COLUMN cancel_requested BOOLEAN NOT NULL DEFAULT FALSE;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  ALTER TABLE integration_sync_log ADD COLUMN cancel_requested_by UUID REFERENCES users(id);
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  ALTER TABLE integration_sync_log ADD COLUMN heartbeat_at TIMESTAMPTZ;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+-- Supports the "is one already running for this org" guard the sync takes
+-- before it starts, which is the only thing standing between two clients and
+-- two concurrent syncs racing on the same upserts.
+CREATE INDEX IF NOT EXISTS idx_sync_log_running
+  ON integration_sync_log(org_id, integration_id) WHERE status = 'running';
+
 -- ===========================================
 -- ODOO SAVED CONFIGURATIONS
 -- ===========================================

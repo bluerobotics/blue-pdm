@@ -417,10 +417,8 @@ export const MODULES: ModuleDefinition[] = [
     name: 'Customers',
     group: 'supply-chain',
     icon: 'Users',
-    defaultEnabled: true,
-    // Flip to true once CustomersView ships; until then the tab shows Coming Soon
-    // rather than mounting a view that does not exist.
-    implemented: false,
+    defaultEnabled: false, // Hidden by default
+    implemented: true,
   },
   {
     id: 'supplier-portal',
@@ -954,6 +952,46 @@ export function getDefaultModuleConfig(): ModuleConfig {
     moduleIconColors: getDefaultModuleIconColors(),
     customGroups: [...DEFAULT_CUSTOM_GROUPS],
   }
+}
+
+/**
+ * Reconcile a saved sidebar order with the modules the app ships today.
+ *
+ * A saved order is a snapshot from whenever the sidebar was last customized,
+ * so modules added afterwards are absent from it. The sidebar renders strictly
+ * from this list, which makes a new module invisible rather than merely
+ * misplaced, so anything missing has to be put back. Appending would bury it
+ * under Settings, so each one is instead anchored to its nearest neighbour
+ * from the default order - that keeps it in its own section even when the user
+ * has moved that section somewhere else.
+ */
+export function mergeModuleOrder(
+  savedOrder: ModuleId[],
+  defaults: ModuleId[] = DEFAULT_MODULE_ORDER,
+): ModuleId[] {
+  const result = [...savedOrder]
+  const present = new Set(savedOrder)
+
+  defaults.forEach((moduleId, defaultIndex) => {
+    if (present.has(moduleId)) return
+    present.add(moduleId)
+
+    let insertAt: number | null = null
+
+    for (let i = defaultIndex - 1; i >= 0 && insertAt === null; i--) {
+      const idx = result.indexOf(defaults[i])
+      if (idx >= 0) insertAt = idx + 1
+    }
+
+    for (let i = defaultIndex + 1; i < defaults.length && insertAt === null; i++) {
+      const idx = result.indexOf(defaults[i])
+      if (idx >= 0) insertAt = idx
+    }
+
+    result.splice(insertAt ?? result.length, 0, moduleId)
+  })
+
+  return result
 }
 
 // Helper to check if a module should be visible

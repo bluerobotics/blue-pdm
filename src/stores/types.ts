@@ -2043,6 +2043,108 @@ export interface ItemBrowserSlice {
 }
 
 // ============================================================================
+// Customers Slice
+// ============================================================================
+
+export type CustomersTab = 'overview' | 'customers' | 'accounts'
+
+export type CustomerBucket = 'day' | 'week' | 'month' | 'quarter'
+
+/** Preset windows offered by the workspace command bar. */
+export type CustomerRangeId = '30d' | '90d' | '12m' | '24m' | 'ytd' | 'all'
+
+/** Odoo-presence filter, distinct from the lifecycle segment filter. */
+export type CustomerPresence = 'all' | 'active' | 'gone'
+
+export interface CustomerFilters {
+  range: CustomerRangeId
+  bucket: CustomerBucket
+  search: string
+  /**
+   * Lifecycle segments from customer_lifecycle_segment(). Typed as string[]
+   * rather than the feature's SegmentId union so the store stays independent
+   * of src/features.
+   */
+  segments: string[]
+  /** Composite taxonomy keys: 'category' or 'category::subcategory'. */
+  categories: string[]
+  countries: string[]
+  presence: CustomerPresence
+}
+
+/** The customer currently open in the right-hand detail panel. */
+export interface CustomerPanelState {
+  customerId: string
+  name: string
+}
+
+/**
+ * A sync run as reported by GET /customers/sync/status.
+ *
+ * Mirrors an integration_sync_log row. `stale` is computed by the server: it
+ * means the run still says 'running' but the process that owned it has stopped
+ * reporting, so it is never coming back.
+ */
+export interface CustomerSyncRun {
+  run_id: string
+  status: 'running' | 'success' | 'failed' | 'cancelled' | string
+  phase: string | null
+  phase_index: number | null
+  phase_count: number | null
+  progress_current: number | null
+  progress_total: number | null
+  started_at: string | null
+  completed_at: string | null
+  heartbeat_at: string | null
+  cancel_requested: boolean
+  error_message: string | null
+  records_created: number | null
+  records_updated: number | null
+  stale: boolean
+}
+
+/**
+ * Everything the UI knows about the Odoo customer sync.
+ *
+ * This lives in the store rather than in the hook because the sidebar
+ * navigator and the main-area workspace are separate React subtrees. When each
+ * held its own useState, both rendered an enabled button and clicking one left
+ * the other live - which was the whole two-buttons bug.
+ */
+export interface CustomerSyncState {
+  /** True from the moment a start is requested until the run leaves 'running'. */
+  active: boolean
+  /** Set while a cancel request is in flight or awaiting the run's next checkpoint. */
+  stopping: boolean
+  run: CustomerSyncRun | null
+  /** Populated by the final response of a sync this client started. */
+  result: unknown | null
+  error: string | null
+}
+
+export interface CustomersSlice {
+  customersTab: CustomersTab
+  customerFilters: CustomerFilters
+  customerPanel: CustomerPanelState | null
+  customerSync: CustomerSyncState
+  /**
+   * Bumped after a sync completes. The sidebar navigator and the main-area
+   * workspace are separate React subtrees that cannot pass callbacks to each
+   * other, so they both watch this counter to know when to refetch.
+   */
+  customerDataVersion: number
+
+  setCustomersTab: (tab: CustomersTab) => void
+  invalidateCustomerData: () => void
+  setCustomerFilters: (patch: Partial<CustomerFilters>) => void
+  /** Adds or removes one value from a multi-select facet. Used by cross-filtering. */
+  toggleCustomerFacet: (facet: 'segments' | 'categories' | 'countries', value: string) => void
+  resetCustomerFilters: () => void
+  setCustomerPanel: (panel: CustomerPanelState | null) => void
+  setCustomerSync: (patch: Partial<CustomerSyncState>) => void
+}
+
+// ============================================================================
 // Combined Store Type
 // ============================================================================
 
@@ -2065,7 +2167,8 @@ export type PDMStoreState = ToastsSlice &
   ExtensionsSlice &
   OperationLogSlice &
   AnnotationsSlice &
-  ItemBrowserSlice
+  ItemBrowserSlice &
+  CustomersSlice
 
 // ============================================================================
 // Store Versioning

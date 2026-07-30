@@ -7,6 +7,7 @@ import {
   MODULE_GROUPS,
   isModuleVisible,
   extractFromCombinedList,
+  mergeModuleOrder,
 } from '../../types/modules'
 import { supabase } from '../../lib/supabase'
 
@@ -240,7 +241,9 @@ export const createModulesSlice: StateCreator<
         const moduleConfig: ModuleConfig = {
           enabledModules: { ...appDefaults.enabledModules, ...(defaults.enabled_modules || {}) },
           enabledGroups: { ...appDefaults.enabledGroups, ...(defaults.enabled_groups || {}) },
-          moduleOrder: defaults.module_order || appDefaults.moduleOrder,
+          moduleOrder: defaults.module_order
+            ? mergeModuleOrder(defaults.module_order)
+            : appDefaults.moduleOrder,
           dividers: defaults.dividers || appDefaults.dividers,
           moduleParents: { ...appDefaults.moduleParents, ...(defaults.module_parents || {}) },
           moduleIconColors: {
@@ -334,7 +337,9 @@ export const createModulesSlice: StateCreator<
         const defaults: OrgModuleDefaults = {
           enabledModules: { ...appDefaults.enabledModules, ...(data.enabled_modules || {}) },
           enabledGroups: { ...appDefaults.enabledGroups, ...(data.enabled_groups || {}) },
-          moduleOrder: data.module_order || appDefaults.moduleOrder,
+          moduleOrder: data.module_order
+            ? mergeModuleOrder(data.module_order)
+            : appDefaults.moduleOrder,
           dividers: data.dividers || appDefaults.dividers,
           moduleParents: { ...appDefaults.moduleParents, ...(data.module_parents || {}) },
           moduleIconColors: { ...appDefaults.moduleIconColors, ...(data.module_icon_colors || {}) },
@@ -402,7 +407,9 @@ export const createModulesSlice: StateCreator<
         const defaults: OrgModuleDefaults = {
           enabledModules: { ...appDefaults.enabledModules, ...(data.enabled_modules || {}) },
           enabledGroups: { ...appDefaults.enabledGroups, ...(data.enabled_groups || {}) },
-          moduleOrder: data.module_order || appDefaults.moduleOrder,
+          moduleOrder: data.module_order
+            ? mergeModuleOrder(data.module_order)
+            : appDefaults.moduleOrder,
           dividers: data.dividers || appDefaults.dividers,
           moduleParents: { ...appDefaults.moduleParents, ...(data.module_parents || {}) },
           moduleIconColors: { ...appDefaults.moduleIconColors, ...(data.module_icon_colors || {}) },

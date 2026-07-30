@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, lazy, Suspense } from 'react'
 import { usePDMStore, LocalFile, DetailsPanelTab } from '@/stores/pdmStore'
 import { thumbnailCache } from '@/lib/thumbnailCache'
 import { getFileIconType } from '@/lib/utils'
@@ -10,6 +10,15 @@ import { InspectionTab } from '@/features/integrations/solidworks'
 import { VendorsTab } from '@/features/source/details/VendorsTab'
 import { ItemBomPanel } from '@/features/items/itemBrowser/components/ItemBomPanel'
 import { FileBox, Layers, File, Loader2, FilePen, ExternalLink, ArrowLeft } from 'lucide-react'
+
+// Lazy so the customers feature (and its charting library) stays out of the
+// main bundle. Imported by path rather than through the feature barrel, which
+// would pull the workspace and navigator in alongside it.
+const CustomerDetailPanel = lazy(() =>
+  import('@/features/customers/detail/CustomerDetailPanel').then((m) => ({
+    default: m.CustomerDetailPanel,
+  })),
+)
 
 // Component to load OS icon for files
 function RightPanelIcon({ file, size = 24 }: { file: LocalFile; size?: number }) {
@@ -86,6 +95,8 @@ export function RightPanel() {
     addToast,
     itemPanel,
     setItemPanel,
+    customerPanel,
+    setCustomerPanel,
   } = usePDMStore()
 
   // Handle tab drop from either panel
@@ -243,6 +254,27 @@ export function RightPanel() {
     if (!file) return <File size={24} className="text-plm-fg-muted" />
     // Use OS icons for files
     return <RightPanelIcon file={file} size={24} />
+  }
+
+  // The Customers workspace owns the right panel while it is open, the same
+  // way the Item Browser does: neither has a file selection to show tabs for.
+  if (customerPanel) {
+    return (
+      <div
+        className="bg-plm-panel border-l border-plm-border flex flex-col"
+        style={{ width: rightPanelWidth }}
+      >
+        <Suspense
+          fallback={
+            <div className="flex-1 flex items-center justify-center">
+              <Loader2 size={18} className="animate-spin text-plm-fg-muted" />
+            </div>
+          }
+        >
+          <CustomerDetailPanel panel={customerPanel} onClose={() => setCustomerPanel(null)} />
+        </Suspense>
+      </div>
+    )
   }
 
   // Item Browser detail panel (eBOM / mBOM) takes precedence over file-based tabs.

@@ -874,10 +874,717 @@ COMMENT ON TABLE customer_enrichment_run_items IS
   'Per-account progress within an enrichment run. Lets an interrupted run resume without re-paying for accounts that already completed.';
 
 -- ===========================================
+-- ANALYTICS
+-- ===========================================
+-- Read-only aggregate RPCs backing the Customers analysis workspace.
+--
+-- SECURITY MODEL: every function here is SECURITY INVOKER (the default), so
+-- the RLS policies above do the org isolation. p_org_id is a filter that lets
+-- the (org_id, ...) indexes work, NOT a trust boundary - passing another org's
+-- id returns nothing rather than leaking rows. Do not add SECURITY DEFINER to
+-- anything in this section without replacing that with an explicit membership
+-- check.
+--
+-- All of them are STABLE and never write, so the client is free to fire the
+-- whole dashboard's worth of calls in parallel.
+--
+-- STYLE NOTE: column references in these bodies are always qualified, and
+-- ORDER BY is positional where the sort column shares a name with a RETURNS
+-- TABLE column. Those output names are in scope inside the function, so a bare
+-- `ORDER BY revenue` is ambiguous between the output parameter and the
+-- select-list alias.
+
+-- Odoo sale.order states that do NOT count as realised revenue.
+--
+-- This is a denylist, not an allowlist, and it must stay one: it mirrors
+-- NON_REVENUE_ORDER_STATES in api/src/customers/odooSync.ts, which is what the
+-- sync applies when it recomputes customers.total_spent / order_count /
+-- item_count. An allowlist of ('sale','done') would silently drop revenue for
+-- any Odoo running a custom confirmed state, and the dashboard would then
+-- disagree with the per-customer totals shown next to it.
+CREATE OR REPLACE FUNCTION customer_non_revenue_statuses()
+RETURNS TEXT[] AS $$
+  SELECT ARRAY['cancel', 'draft', 'sent']::TEXT[];
+$$ LANGUAGE sql IMMUTABLE;
+
+-- The revenue predicate itself, kept in one place so all eight RPCs below
+-- cannot drift apart. NULL/empty status counts as revenue, matching the
+-- sync's `order.status?.toLowerCase() ?? ''` fallback.
+CREATE OR REPLACE FUNCTION customer_order_is_revenue(p_status TEXT)
+RETURNS BOOLEAN AS $$
+  SELECT COALESCE(LOWER(p_status), '') <> ALL (customer_non_revenue_statuses());
+$$ LANGUAGE sql IMMUTABLE;
+
+-- Shared lifecycle bucketing. The KPI strip, the sidebar segment counts and
+-- the table badges all resolve segments through this one function, so they can
+-- never disagree about what "at risk" means.
+--
+-- Order of the branches matters: a customer who bought once 400 days ago is
+-- churned, not new, so recency is tested before the first-order window.
+CREATE OR REPLACE FUNCTION customer_lifecycle_segment(
+  p_order_count INTEGER,
+  p_first_order TIMESTAMPTZ,
+  p_last_order TIMESTAMPTZ,
+  p_as_of TIMESTAMPTZ
+) RETURNS TEXT AS $$
+  SELECT CASE
+    WHEN COALESCE(p_order_count, 0) = 0 OR p_last_order IS NULL THEN 'prospect'
+    WHEN p_last_order <  p_as_of - INTERVAL '365 days' THEN 'churned'
+    WHEN p_last_order <  p_as_of - INTERVAL '180 days' THEN 'at_risk'
+    WHEN p_first_order >= p_as_of - INTERVAL '90 days'  THEN 'new'
+    ELSE 'active'
+  END;
+$$ LANGUAGE sql IMMUTABLE;
+
+-- Every analytics scan filters (org_id, order_date window, status).
+-- idx_customer_orders_order_date covers the first two; adding status keeps the
+-- revenue predicate off the heap for the date-ranged aggregates.
+CREATE INDEX IF NOT EXISTS idx_customer_orders_analytics
+  ON customer_orders(org_id, order_date DESC, status);
+
+-- -------------------------------------------
+-- Headline KPIs, with the preceding window for deltas
+-- -------------------------------------------
+-- The comparison window is the same span immediately before p_from, so a
+-- "last 90 days" view compares against the 90 days before that.
+
+DROP FUNCTION IF EXISTS customer_analytics_summary(UUID, TIMESTAMPTZ, TIMESTAMPTZ);
+CREATE FUNCTION customer_analytics_summary(
+  p_org_id UUID,
+  p_from TIMESTAMPTZ,
+  p_to TIMESTAMPTZ
+) RETURNS TABLE (
+  revenue NUMERIC,
+  orders BIGINT,
+  buyers BIGINT,
+  units NUMERIC,
+  aov NUMERIC,
+  discount NUMERIC,
+  new_customers BIGINT,
+  prev_revenue NUMERIC,
+  prev_orders BIGINT,
+  prev_buyers BIGINT,
+  prev_units NUMERIC,
+  prev_aov NUMERIC,
+  prev_discount NUMERIC,
+  prev_new_customers BIGINT,
+  total_customers BIGINT,
+  active_customers BIGINT,
+  at_risk_customers BIGINT,
+  churned_customers BIGINT,
+  gone_customers BIGINT,
+  unclassified_accounts BIGINT
+) AS $$
+  WITH win AS (
+    SELECT
+      COALESCE(SUM(co.total), 0)::NUMERIC        AS revenue,
+      COUNT(*)::BIGINT                            AS orders,
+      COUNT(DISTINCT co.customer_id)::BIGINT      AS buyers,
+      COALESCE(SUM(co.items_count), 0)::NUMERIC   AS units,
+      COALESCE(SUM(co.discount), 0)::NUMERIC      AS discount
+    FROM customer_orders co
+    WHERE co.org_id = p_org_id
+      AND co.order_date >= p_from
+      AND co.order_date <  p_to
+      AND customer_order_is_revenue(co.status)
+  ),
+  prev AS (
+    SELECT
+      COALESCE(SUM(co.total), 0)::NUMERIC        AS revenue,
+      COUNT(*)::BIGINT                            AS orders,
+      COUNT(DISTINCT co.customer_id)::BIGINT      AS buyers,
+      COALESCE(SUM(co.items_count), 0)::NUMERIC   AS units,
+      COALESCE(SUM(co.discount), 0)::NUMERIC      AS discount
+    FROM customer_orders co
+    WHERE co.org_id = p_org_id
+      AND co.order_date >= p_from - (p_to - p_from)
+      AND co.order_date <  p_from
+      AND customer_order_is_revenue(co.status)
+  ),
+  acq AS (
+    SELECT
+      COUNT(*) FILTER (
+        WHERE c.first_order_date >= p_from AND c.first_order_date < p_to
+      )::BIGINT AS new_customers,
+      COUNT(*) FILTER (
+        WHERE c.first_order_date >= p_from - (p_to - p_from) AND c.first_order_date < p_from
+      )::BIGINT AS prev_new_customers
+    FROM customers c
+    WHERE c.org_id = p_org_id
+      AND c.first_order_date IS NOT NULL
+  ),
+  life AS (
+    SELECT
+      COUNT(*)::BIGINT AS total_customers,
+      COUNT(*) FILTER (WHERE seg.segment IN ('active', 'new'))::BIGINT AS active_customers,
+      COUNT(*) FILTER (WHERE seg.segment = 'at_risk')::BIGINT          AS at_risk_customers,
+      COUNT(*) FILTER (WHERE seg.segment = 'churned')::BIGINT          AS churned_customers,
+      COUNT(*) FILTER (WHERE seg.is_active IS FALSE)::BIGINT           AS gone_customers
+    FROM (
+      SELECT
+        c.is_active,
+        customer_lifecycle_segment(
+          COALESCE(c.order_count, 0), c.first_order_date, c.last_order_date, p_to
+        ) AS segment
+      FROM customers c
+      WHERE c.org_id = p_org_id
+    ) seg
+  ),
+  unclassified AS (
+    SELECT COUNT(*)::BIGINT AS unclassified_accounts
+    FROM customer_accounts a
+    WHERE a.org_id = p_org_id
+      AND NOT EXISTS (
+        SELECT 1 FROM customer_enrichments e
+        WHERE e.account_id = a.id AND e.is_current
+      )
+  )
+  SELECT
+    w.revenue,
+    w.orders,
+    w.buyers,
+    w.units,
+    (w.revenue / NULLIF(w.orders, 0))::NUMERIC,
+    w.discount,
+    a.new_customers,
+    p.revenue,
+    p.orders,
+    p.buyers,
+    p.units,
+    (p.revenue / NULLIF(p.orders, 0))::NUMERIC,
+    p.discount,
+    a.prev_new_customers,
+    l.total_customers,
+    l.active_customers,
+    l.at_risk_customers,
+    l.churned_customers,
+    l.gone_customers,
+    u.unclassified_accounts
+  FROM win w
+  CROSS JOIN prev p
+  CROSS JOIN acq a
+  CROSS JOIN life l
+  CROSS JOIN unclassified u;
+$$ LANGUAGE sql STABLE;
+
+-- -------------------------------------------
+-- Revenue / orders over time
+-- -------------------------------------------
+-- Gaps are filled from a generate_series spine so a month with no orders draws
+-- as zero instead of the line hopping over it.
+
+DROP FUNCTION IF EXISTS customer_revenue_timeseries(UUID, TIMESTAMPTZ, TIMESTAMPTZ, TEXT);
+CREATE FUNCTION customer_revenue_timeseries(
+  p_org_id UUID,
+  p_from TIMESTAMPTZ,
+  p_to TIMESTAMPTZ,
+  p_bucket TEXT DEFAULT 'month'
+) RETURNS TABLE (
+  bucket_start TIMESTAMPTZ,
+  revenue NUMERIC,
+  orders BIGINT,
+  buyers BIGINT,
+  new_customers BIGINT,
+  units NUMERIC
+) AS $$
+DECLARE
+  v_step INTERVAL;
+BEGIN
+  IF p_bucket NOT IN ('day', 'week', 'month', 'quarter') THEN
+    RAISE EXCEPTION 'customer_revenue_timeseries: unsupported bucket %, expected day|week|month|quarter', p_bucket;
+  END IF;
+
+  v_step := CASE p_bucket
+    WHEN 'day'     THEN INTERVAL '1 day'
+    WHEN 'week'    THEN INTERVAL '1 week'
+    WHEN 'month'   THEN INTERVAL '1 month'
+    ELSE                INTERVAL '3 months'
+  END;
+
+  RETURN QUERY
+  WITH spine AS (
+    SELECT generate_series(
+      date_trunc(p_bucket, p_from),
+      date_trunc(p_bucket, p_to),
+      v_step
+    ) AS bucket_start
+  ),
+  sold AS (
+    SELECT
+      date_trunc(p_bucket, co.order_date)         AS bucket_start,
+      COALESCE(SUM(co.total), 0)::NUMERIC         AS revenue,
+      COUNT(*)::BIGINT                             AS orders,
+      COUNT(DISTINCT co.customer_id)::BIGINT       AS buyers,
+      COALESCE(SUM(co.items_count), 0)::NUMERIC    AS units
+    FROM customer_orders co
+    WHERE co.org_id = p_org_id
+      AND co.order_date >= p_from
+      AND co.order_date <  p_to
+      AND customer_order_is_revenue(co.status)
+    GROUP BY 1
+  ),
+  acquired AS (
+    SELECT
+      date_trunc(p_bucket, c.first_order_date) AS bucket_start,
+      COUNT(*)::BIGINT                          AS new_customers
+    FROM customers c
+    WHERE c.org_id = p_org_id
+      AND c.first_order_date >= p_from
+      AND c.first_order_date <  p_to
+    GROUP BY 1
+  )
+  SELECT
+    s.bucket_start,
+    COALESCE(d.revenue, 0)::NUMERIC,
+    COALESCE(d.orders, 0)::BIGINT,
+    COALESCE(d.buyers, 0)::BIGINT,
+    COALESCE(a.new_customers, 0)::BIGINT,
+    COALESCE(d.units, 0)::NUMERIC
+  FROM spine s
+  LEFT JOIN sold     d ON d.bucket_start = s.bucket_start
+  LEFT JOIN acquired a ON a.bucket_start = s.bucket_start
+  ORDER BY s.bucket_start;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+-- -------------------------------------------
+-- Revenue concentration (Pareto)
+-- -------------------------------------------
+-- Rolls up to the enrichment account so a company and its individual contacts
+-- count once. Customers with no account fall back to their own row.
+--
+-- The cumulative share is computed across ALL accounts and only then limited,
+-- so "top 20" still reports a truthful share of total revenue rather than a
+-- share of the truncated set.
+
+DROP FUNCTION IF EXISTS customer_top_accounts(UUID, TIMESTAMPTZ, TIMESTAMPTZ, INTEGER);
+CREATE FUNCTION customer_top_accounts(
+  p_org_id UUID,
+  p_from TIMESTAMPTZ,
+  p_to TIMESTAMPTZ,
+  p_limit INTEGER DEFAULT 20
+) RETURNS TABLE (
+  group_key TEXT,
+  account_id UUID,
+  label TEXT,
+  revenue NUMERIC,
+  orders BIGINT,
+  buyers BIGINT,
+  share NUMERIC,
+  cumulative_share NUMERIC,
+  rank_index INTEGER
+) AS $$
+  WITH scoped AS (
+    SELECT
+      CASE WHEN c.account_id IS NOT NULL
+           THEN 'a:' || c.account_id::TEXT
+           ELSE 'c:' || c.id::TEXT
+      END AS group_key,
+      c.account_id,
+      -- Derived from the account when there is one, so every customer in an
+      -- account produces an identical label and the GROUP BY cannot split it.
+      CASE WHEN c.account_id IS NOT NULL
+           THEN COALESCE(a.display_name, a.account_key)
+           ELSE COALESCE(NULLIF(c.company, ''), c.name)
+      END AS label,
+      co.total,
+      co.customer_id
+    FROM customer_orders co
+    JOIN customers c ON c.id = co.customer_id
+    LEFT JOIN customer_accounts a ON a.id = c.account_id
+    WHERE co.org_id = p_org_id
+      AND co.order_date >= p_from
+      AND co.order_date <  p_to
+      AND customer_order_is_revenue(co.status)
+  ),
+  grouped AS (
+    SELECT
+      s.group_key,
+      s.account_id,
+      s.label,
+      COALESCE(SUM(s.total), 0)::NUMERIC      AS revenue,
+      COUNT(*)::BIGINT                         AS orders,
+      COUNT(DISTINCT s.customer_id)::BIGINT    AS buyers
+    FROM scoped s
+    GROUP BY s.group_key, s.account_id, s.label
+  ),
+  ranked AS (
+    SELECT
+      g.*,
+      ROW_NUMBER() OVER (ORDER BY g.revenue DESC, g.group_key) AS rank_index,
+      SUM(g.revenue) OVER (
+        ORDER BY g.revenue DESC, g.group_key
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+      ) AS running_revenue
+    FROM grouped g
+  ),
+  overall AS (
+    SELECT NULLIF(SUM(g.revenue), 0) AS revenue FROM grouped g
+  )
+  SELECT
+    r.group_key,
+    r.account_id,
+    r.label,
+    r.revenue,
+    r.orders,
+    r.buyers,
+    (r.revenue / o.revenue)::NUMERIC,
+    (r.running_revenue / o.revenue)::NUMERIC,
+    r.rank_index::INTEGER
+  FROM ranked r
+  CROSS JOIN overall o
+  ORDER BY r.rank_index
+  LIMIT GREATEST(COALESCE(p_limit, 20), 1);
+$$ LANGUAGE sql STABLE;
+
+-- -------------------------------------------
+-- Revenue by enrichment category
+-- -------------------------------------------
+-- Customers whose account has no current enrichment come back with NULL
+-- category rather than being dropped, so the donut can show how much revenue
+-- is still unclassified instead of quietly understating the total.
+
+DROP FUNCTION IF EXISTS customer_category_breakdown(UUID, TIMESTAMPTZ, TIMESTAMPTZ);
+CREATE FUNCTION customer_category_breakdown(
+  p_org_id UUID,
+  p_from TIMESTAMPTZ,
+  p_to TIMESTAMPTZ
+) RETURNS TABLE (
+  category TEXT,
+  subcategory TEXT,
+  category_label TEXT,
+  subcategory_label TEXT,
+  revenue NUMERIC,
+  orders BIGINT,
+  buyers BIGINT
+) AS $$
+  SELECT
+    e.category,
+    e.subcategory,
+    COALESCE(parent.display_name, e.category)  AS category_label,
+    COALESCE(leaf.display_name, e.subcategory) AS subcategory_label,
+    COALESCE(SUM(co.total), 0)::NUMERIC        AS revenue,
+    COUNT(*)::BIGINT                            AS orders,
+    COUNT(DISTINCT co.customer_id)::BIGINT      AS buyers
+  FROM customer_orders co
+  JOIN customers c ON c.id = co.customer_id
+  LEFT JOIN customer_enrichments e
+    ON e.account_id = c.account_id AND e.is_current
+  LEFT JOIN customer_categories parent
+    ON parent.org_id = p_org_id
+   AND parent.category = e.category
+   AND parent.subcategory IS NULL
+  LEFT JOIN customer_categories leaf
+    ON leaf.org_id = p_org_id
+   AND leaf.category = e.category
+   AND leaf.subcategory = e.subcategory
+  WHERE co.org_id = p_org_id
+    AND co.order_date >= p_from
+    AND co.order_date <  p_to
+    AND customer_order_is_revenue(co.status)
+  GROUP BY e.category, e.subcategory, parent.display_name, leaf.display_name
+  ORDER BY 5 DESC;
+$$ LANGUAGE sql STABLE;
+
+-- -------------------------------------------
+-- Revenue by country
+-- -------------------------------------------
+-- Uses the customer's own country rather than the shipping address: shipping
+-- rows are only present for orders that carried a distinct partner_shipping_id,
+-- so joining them would drop revenue for everyone who ships to their billing
+-- address.
+
+DROP FUNCTION IF EXISTS customer_geo_breakdown(UUID, TIMESTAMPTZ, TIMESTAMPTZ);
+CREATE FUNCTION customer_geo_breakdown(
+  p_org_id UUID,
+  p_from TIMESTAMPTZ,
+  p_to TIMESTAMPTZ
+) RETURNS TABLE (
+  country TEXT,
+  revenue NUMERIC,
+  orders BIGINT,
+  buyers BIGINT
+) AS $$
+  SELECT
+    NULLIF(TRIM(c.country), '')            AS country,
+    COALESCE(SUM(co.total), 0)::NUMERIC    AS revenue,
+    COUNT(*)::BIGINT                        AS orders,
+    COUNT(DISTINCT co.customer_id)::BIGINT  AS buyers
+  FROM customer_orders co
+  JOIN customers c ON c.id = co.customer_id
+  WHERE co.org_id = p_org_id
+    AND co.order_date >= p_from
+    AND co.order_date <  p_to
+    AND customer_order_is_revenue(co.status)
+  GROUP BY 1
+  ORDER BY 2 DESC;
+$$ LANGUAGE sql STABLE;
+
+-- -------------------------------------------
+-- Cohort retention
+-- -------------------------------------------
+-- Cohort = the month of the customer's first order. month_index 0 is the
+-- acquisition month itself, so the first column is always 100%.
+
+DROP FUNCTION IF EXISTS customer_cohort_retention(UUID, INTEGER);
+CREATE FUNCTION customer_cohort_retention(
+  p_org_id UUID,
+  p_months INTEGER DEFAULT 12
+) RETURNS TABLE (
+  cohort_month TIMESTAMPTZ,
+  cohort_size BIGINT,
+  month_index INTEGER,
+  buyers BIGINT,
+  revenue NUMERIC,
+  retention NUMERIC
+) AS $$
+  WITH cohorts AS (
+    SELECT
+      c.id,
+      date_trunc('month', c.first_order_date) AS cohort_month
+    FROM customers c
+    WHERE c.org_id = p_org_id
+      AND c.first_order_date IS NOT NULL
+      AND date_trunc('month', c.first_order_date)
+          >= date_trunc('month', NOW()) - make_interval(months => GREATEST(COALESCE(p_months, 12), 1) - 1)
+  ),
+  sizes AS (
+    SELECT ch.cohort_month, COUNT(*)::BIGINT AS cohort_size
+    FROM cohorts ch
+    GROUP BY ch.cohort_month
+  ),
+  activity AS (
+    SELECT
+      ch.cohort_month,
+      (
+        EXTRACT(YEAR  FROM AGE(date_trunc('month', co.order_date), ch.cohort_month)) * 12
+      + EXTRACT(MONTH FROM AGE(date_trunc('month', co.order_date), ch.cohort_month))
+      )::INTEGER                              AS month_index,
+      COUNT(DISTINCT co.customer_id)::BIGINT  AS buyers,
+      COALESCE(SUM(co.total), 0)::NUMERIC     AS revenue
+    FROM cohorts ch
+    JOIN customer_orders co ON co.customer_id = ch.id
+    WHERE co.org_id = p_org_id
+      AND customer_order_is_revenue(co.status)
+      AND co.order_date IS NOT NULL
+    GROUP BY 1, 2
+  )
+  SELECT
+    a.cohort_month,
+    s.cohort_size,
+    a.month_index,
+    a.buyers,
+    a.revenue,
+    (a.buyers::NUMERIC / NULLIF(s.cohort_size, 0))::NUMERIC
+  FROM activity a
+  JOIN sizes s ON s.cohort_month = a.cohort_month
+  WHERE a.month_index >= 0
+  ORDER BY a.cohort_month, a.month_index;
+$$ LANGUAGE sql STABLE;
+
+-- -------------------------------------------
+-- Top products
+-- -------------------------------------------
+-- product_erp_id is a bare Odoo product.product id with no PLM join, so lines
+-- are keyed on it when present and fall back to the product name otherwise.
+
+DROP FUNCTION IF EXISTS customer_top_products(UUID, TIMESTAMPTZ, TIMESTAMPTZ, INTEGER);
+CREATE FUNCTION customer_top_products(
+  p_org_id UUID,
+  p_from TIMESTAMPTZ,
+  p_to TIMESTAMPTZ,
+  p_limit INTEGER DEFAULT 20
+) RETURNS TABLE (
+  product_key TEXT,
+  product_erp_id TEXT,
+  product_name TEXT,
+  quantity NUMERIC,
+  revenue NUMERIC,
+  orders BIGINT,
+  buyers BIGINT
+) AS $$
+  SELECT
+    COALESCE(NULLIF(ol.product_erp_id, ''), ol.product_name, '(unnamed)') AS product_key,
+    MAX(ol.product_erp_id)                          AS product_erp_id,
+    MAX(ol.product_name)                            AS product_name,
+    COALESCE(SUM(ol.quantity), 0)::NUMERIC          AS quantity,
+    COALESCE(SUM(ol.price_subtotal), 0)::NUMERIC    AS revenue,
+    COUNT(DISTINCT ol.order_id)::BIGINT             AS orders,
+    COUNT(DISTINCT co.customer_id)::BIGINT          AS buyers
+  FROM customer_order_lines ol
+  JOIN customer_orders co ON co.id = ol.order_id
+  WHERE ol.org_id = p_org_id
+    AND co.order_date >= p_from
+    AND co.order_date <  p_to
+    AND customer_order_is_revenue(co.status)
+  GROUP BY 1
+  ORDER BY 5 DESC
+  LIMIT GREATEST(COALESCE(p_limit, 20), 1);
+$$ LANGUAGE sql STABLE;
+
+-- -------------------------------------------
+-- Per-customer RFM
+-- -------------------------------------------
+-- Backs the workspace table: one row per customer with recency/frequency/
+-- monetary quintiles and the shared lifecycle segment.
+--
+-- Quintiles are computed over buyers only. Including never-ordered customers
+-- would push real buyers up a tile and make the bottom quintile meaningless.
+-- Prospects still come back (with NULL scores) so the table can list everyone.
+
+DROP FUNCTION IF EXISTS customer_rfm(UUID, TIMESTAMPTZ, INTEGER);
+CREATE FUNCTION customer_rfm(
+  p_org_id UUID,
+  p_as_of TIMESTAMPTZ DEFAULT NOW(),
+  p_limit INTEGER DEFAULT 5000
+) RETURNS TABLE (
+  customer_id UUID,
+  name TEXT,
+  email TEXT,
+  city TEXT,
+  country TEXT,
+  account_id UUID,
+  account_name TEXT,
+  is_active BOOLEAN,
+  order_count INTEGER,
+  total_spent NUMERIC,
+  first_order_date TIMESTAMPTZ,
+  last_order_date TIMESTAMPTZ,
+  recency_days INTEGER,
+  r_score INTEGER,
+  f_score INTEGER,
+  m_score INTEGER,
+  segment TEXT,
+  category TEXT,
+  subcategory TEXT,
+  category_label TEXT
+) AS $$
+  WITH base AS (
+    SELECT
+      c.id,
+      c.name,
+      c.email,
+      c.city,
+      c.country,
+      c.account_id,
+      a.display_name AS account_name,
+      c.is_active,
+      COALESCE(c.order_count, 0)     AS order_count,
+      COALESCE(c.total_spent, 0)::NUMERIC AS total_spent,
+      c.first_order_date,
+      c.last_order_date,
+      CASE
+        WHEN c.last_order_date IS NULL THEN NULL
+        ELSE EXTRACT(DAY FROM (p_as_of - c.last_order_date))::INTEGER
+      END AS recency_days,
+      e.category,
+      e.subcategory,
+      COALESCE(leaf.display_name, parent.display_name, e.subcategory, e.category) AS category_label
+    FROM customers c
+    LEFT JOIN customer_accounts a ON a.id = c.account_id
+    LEFT JOIN customer_enrichments e
+      ON e.account_id = c.account_id AND e.is_current
+    LEFT JOIN customer_categories leaf
+      ON leaf.org_id = c.org_id
+     AND leaf.category = e.category
+     AND leaf.subcategory = e.subcategory
+    LEFT JOIN customer_categories parent
+      ON parent.org_id = c.org_id
+     AND parent.category = e.category
+     AND parent.subcategory IS NULL
+    WHERE c.org_id = p_org_id
+  ),
+  buyers AS (
+    SELECT
+      b.id,
+      -- recency DESC so the stalest customer lands in tile 1 and score 5 means
+      -- "bought most recently", matching how f/m read. NTILE already returns
+      -- integer, so these need no cast.
+      NTILE(5) OVER (ORDER BY b.recency_days DESC) AS r_score,
+      NTILE(5) OVER (ORDER BY b.order_count  ASC)  AS f_score,
+      NTILE(5) OVER (ORDER BY b.total_spent  ASC)  AS m_score
+    FROM base b
+    WHERE b.order_count > 0
+      AND b.recency_days IS NOT NULL
+  )
+  SELECT
+    b.id,
+    b.name,
+    b.email,
+    b.city,
+    b.country,
+    b.account_id,
+    b.account_name,
+    b.is_active,
+    b.order_count,
+    b.total_spent,
+    b.first_order_date,
+    b.last_order_date,
+    b.recency_days,
+    q.r_score,
+    q.f_score,
+    q.m_score,
+    customer_lifecycle_segment(b.order_count, b.first_order_date, b.last_order_date, p_as_of),
+    b.category,
+    b.subcategory,
+    b.category_label
+  FROM base b
+  LEFT JOIN buyers q ON q.id = b.id
+  ORDER BY b.total_spent DESC, b.name
+  LIMIT GREATEST(COALESCE(p_limit, 5000), 1);
+$$ LANGUAGE sql STABLE;
+
+-- -------------------------------------------
+-- Segment counts for the sidebar
+-- -------------------------------------------
+-- Deliberately separate from customer_rfm: the sidebar needs counts over every
+-- customer, and must stay correct even when the table's row cap truncates.
+
+DROP FUNCTION IF EXISTS customer_segment_counts(UUID, TIMESTAMPTZ);
+CREATE FUNCTION customer_segment_counts(
+  p_org_id UUID,
+  p_as_of TIMESTAMPTZ DEFAULT NOW()
+) RETURNS TABLE (
+  segment TEXT,
+  buyers BIGINT,
+  revenue NUMERIC
+) AS $$
+  SELECT
+    customer_lifecycle_segment(
+      COALESCE(c.order_count, 0), c.first_order_date, c.last_order_date, p_as_of
+    ),
+    COUNT(*)::BIGINT,
+    COALESCE(SUM(c.total_spent), 0)::NUMERIC
+  FROM customers c
+  WHERE c.org_id = p_org_id
+  GROUP BY 1
+  ORDER BY 1;
+$$ LANGUAGE sql STABLE;
+
+GRANT EXECUTE ON FUNCTION customer_non_revenue_statuses() TO authenticated;
+GRANT EXECUTE ON FUNCTION customer_order_is_revenue(TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION customer_lifecycle_segment(INTEGER, TIMESTAMPTZ, TIMESTAMPTZ, TIMESTAMPTZ) TO authenticated;
+GRANT EXECUTE ON FUNCTION customer_analytics_summary(UUID, TIMESTAMPTZ, TIMESTAMPTZ) TO authenticated;
+GRANT EXECUTE ON FUNCTION customer_revenue_timeseries(UUID, TIMESTAMPTZ, TIMESTAMPTZ, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION customer_top_accounts(UUID, TIMESTAMPTZ, TIMESTAMPTZ, INTEGER) TO authenticated;
+GRANT EXECUTE ON FUNCTION customer_category_breakdown(UUID, TIMESTAMPTZ, TIMESTAMPTZ) TO authenticated;
+GRANT EXECUTE ON FUNCTION customer_geo_breakdown(UUID, TIMESTAMPTZ, TIMESTAMPTZ) TO authenticated;
+GRANT EXECUTE ON FUNCTION customer_cohort_retention(UUID, INTEGER) TO authenticated;
+GRANT EXECUTE ON FUNCTION customer_top_products(UUID, TIMESTAMPTZ, TIMESTAMPTZ, INTEGER) TO authenticated;
+GRANT EXECUTE ON FUNCTION customer_rfm(UUID, TIMESTAMPTZ, INTEGER) TO authenticated;
+GRANT EXECUTE ON FUNCTION customer_segment_counts(UUID, TIMESTAMPTZ) TO authenticated;
+
+COMMENT ON FUNCTION customer_non_revenue_statuses() IS
+  'Odoo sale.order states excluded from revenue. Mirrors NON_REVENUE_ORDER_STATES in api/src/customers/odooSync.ts - the two must be changed together or the dashboard will disagree with customers.total_spent.';
+
+COMMENT ON FUNCTION customer_lifecycle_segment(INTEGER, TIMESTAMPTZ, TIMESTAMPTZ, TIMESTAMPTZ) IS
+  'Single definition of prospect/new/active/at_risk/churned, shared by the KPI strip, the sidebar segment counts and the table badges.';
+
+-- ===========================================
 -- SCHEMA VERSION
 -- ===========================================
 
-SELECT update_schema_version(74, 'Add customers module: Odoo customer sync and AI enrichment');
+SELECT update_schema_version(78, 'Cancellable Odoo customer sync: live progress, heartbeat and cancel columns on integration_sync_log');
 
 -- ===========================================
 -- END OF CUSTOMERS MODULE
