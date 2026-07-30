@@ -26,6 +26,7 @@ import { log } from '@/lib/logger'
 import { dropCommittedPendingMetadata } from '@/lib/pendingMetadata'
 import { logExplorer } from '@/lib/userActionLogger'
 import { thumbnailCache } from '@/lib/thumbnailCache'
+import { bumpFileMutationEpoch } from '@/lib/fileMutationEpoch'
 import { applyFileUpdates } from '../fileUpdates'
 
 // ============================================================================
@@ -470,6 +471,7 @@ export const createFilesSlice: StateCreator<
 
   removeFilesFromStore: (paths) => {
     if (paths.length === 0) return
+    bumpFileMutationEpoch()
     // Use lowercase paths for case-insensitive matching on Windows
     const pathSet = new Set(paths.map((p) => p.toLowerCase()))
     const beforeCount = get().files.length
@@ -539,6 +541,7 @@ export const createFilesSlice: StateCreator<
 
   addFilesToStore: (newFiles) => {
     const beforeCount = get().files.length
+    bumpFileMutationEpoch()
     set((state) => {
       // Build set of existing paths (case-insensitive for Windows compatibility)
       const existingPaths = new Set(state.files.map((f) => f.path.toLowerCase()))
@@ -845,6 +848,8 @@ export const createFilesSlice: StateCreator<
 
   renameFileInStore: (oldPath, newPath, newNameOrRelPath, isMove = false) => {
     const { files, selectedFiles } = get()
+
+    bumpFileMutationEpoch()
 
     // Log rename operation start for debugging
     window.electronAPI?.log('info', '[Store] renameFileInStore START', {

@@ -104,6 +104,7 @@ export function useFilePaneOperations({
     updateProgressToast,
     removeToast,
     setStatusMessage,
+    setConflictDialog,
   })
 
   // Delete handler - state managed externally, just expose setters

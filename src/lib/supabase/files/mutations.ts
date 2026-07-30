@@ -740,12 +740,18 @@ export async function updateFilePath(
   // Extract filename from path
   const newFileName = newPath.split('/').pop() || newPath.split('\\').pop() || newPath
 
+  // Without updated_by the row keeps the previous writer's id, so the realtime
+  // subscription reports the change as another user's and notifies the actor
+  // about their own edit.
+  const { user } = await getCurrentUser()
+
   const { data, error } = await client
     .from('files')
     .update({
       file_path: newPath,
       file_name: newFileName,
       updated_at: new Date().toISOString(),
+      ...(user ? { updated_by: user.id } : {}),
     })
     .eq('id', fileId)
     .select()
@@ -792,6 +798,10 @@ async function updateFolderPathLegacy(
   const CONCURRENCY = 10
   let updated = 0
 
+  // Matches the rename_folder_files RPC, which sets updated_by so realtime can
+  // tell the acting user's own changes apart from other users' changes.
+  const { user } = await getCurrentUser()
+
   const updateOne = async (file: { id: string; file_path: string; file_name: string }) => {
     const newFilePath = file.file_path.replace(oldPathPattern, newFolderPath)
     const { error } = await client
@@ -799,6 +809,7 @@ async function updateFolderPathLegacy(
       .update({
         file_path: newFilePath,
         updated_at: new Date().toISOString(),
+        ...(user ? { updated_by: user.id } : {}),
       })
       .eq('id', file.id)
 
@@ -842,7 +853,7 @@ export async function updateFolderPath(
   })
 
   if (error) {
-    if (error.code === RPC_NOT_FOUND_CODE || error.message?.includes('function') ) {
+    if (error.code === RPC_NOT_FOUND_CODE || error.message?.includes('function')) {
       return updateFolderPathLegacy(oldFolderPath, newFolderPath, vaultId)
     }
     return { success: false, updated: 0, total: 0, errors: [error.message], error: error.message }

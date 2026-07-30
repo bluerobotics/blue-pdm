@@ -45,25 +45,37 @@ export function useDuplicatePartAndDrawing() {
   const { files, vaultPath, addToast } = usePDMStore()
 
   /**
-   * Find the drawing that belongs to a part.
-   *
-   * Prefers a sibling file with a matching base name, which is the convention the rest of the
-   * app uses, and falls back to `file_references` for drawings that live in another folder.
+   * Find a drawing sitting next to the part with a matching base name, which is the convention
+   * the rest of the app uses. Synchronous so callers can label menu items without waiting.
    */
-  const findCompanionDrawing = useCallback(
-    async (part: LocalFile): Promise<LocalFile | null> => {
+  const findSiblingDrawing = useCallback(
+    (part: LocalFile): LocalFile | null => {
       const baseName = getBaseName(part.name).toLowerCase()
       const partDirectory = getDirectory(part.path).toLowerCase()
 
-      const sibling = files.find(
-        (f) =>
-          !f.isDirectory &&
-          f.extension?.toLowerCase() === DRAWING_EXTENSION &&
-          getBaseName(f.name).toLowerCase() === baseName &&
-          getDirectory(f.path).toLowerCase() === partDirectory,
+      return (
+        files.find(
+          (f) =>
+            !f.isDirectory &&
+            f.extension?.toLowerCase() === DRAWING_EXTENSION &&
+            getBaseName(f.name).toLowerCase() === baseName &&
+            getDirectory(f.path).toLowerCase() === partDirectory,
+        ) ?? null
       )
+    },
+    [files],
+  )
+
+  /**
+   * Find the drawing that belongs to a part, checking siblings first and then falling back to
+   * `file_references` for drawings that live in another folder.
+   */
+  const findCompanionDrawing = useCallback(
+    async (part: LocalFile): Promise<LocalFile | null> => {
+      const sibling = findSiblingDrawing(part)
       if (sibling) return sibling
 
+      const baseName = getBaseName(part.name).toLowerCase()
       const fileId = part.pdmData?.id
       if (!fileId) return null
 
@@ -80,7 +92,7 @@ export function useDuplicatePartAndDrawing() {
 
       return files.find((f) => f.pdmData?.id === match.file_id) ?? null
     },
-    [files],
+    [files, findSiblingDrawing],
   )
 
   /**
@@ -186,5 +198,5 @@ export function useDuplicatePartAndDrawing() {
     [addToast, vaultPath],
   )
 
-  return { findCompanionDrawing, findNameConflict, duplicate }
+  return { findSiblingDrawing, findCompanionDrawing, findNameConflict, duplicate }
 }

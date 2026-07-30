@@ -28,11 +28,14 @@ import { logExplorer } from '@/lib/userActionLogger'
 import type { LightweightFile } from '@/lib/supabase/files/queries'
 import {
   computeLocalScanFingerprint,
+  consumeSupersededLoad,
   getLastMergedState,
   isLoadFilesInFlight,
+  markLoadSuperseded,
   runExclusiveLoad,
   setLastMergedState,
 } from './loadFilesCoordination'
+import { getFileMutationEpoch } from '@/lib/fileMutationEpoch'
 
 /**
  * Hook to load files from working directory and merge with PDM data
@@ -139,6 +142,10 @@ export function useLoadFiles() {
         // Start both operations at once, tracking each separately
         const localScanStart = performance.now()
         let localScanEnd = 0
+
+        // Snapshot taken before the scan reads the disk, so any file operation that
+        // lands while this pass runs makes the merge stale. See fileMutationEpoch.
+        const epochAtScanStart = getFileMutationEpoch()
 
         // A delta scan is only safe when it can build on a prior full scan; the
         // main process falls back to a full walk on its own if it cannot.
@@ -1470,6 +1477,25 @@ export function useLoadFiles() {
           }
         }
 
+        // A file operation landed after the scan read the disk, so the local half of
+        // this merge describes the vault before the operation while the server half
+        // describes it after. Committing would revert the operation in the UI and
+        // strand its files, so drop the merge and rerun over a fresh full scan.
+        if (getFileMutationEpoch() !== epochAtScanStart) {
+          window.electronAPI?.log(
+            'info',
+            '[LoadFiles] Discarding merge - file ops landed mid-scan',
+            {
+              epochAtScanStart,
+              epochNow: getFileMutationEpoch(),
+              silent,
+            },
+          )
+          recordMetric('VaultLoad', 'Discarded merge superseded by file ops', { silent })
+          markLoadSuperseded(loadingForVaultId)
+          return
+        }
+
         setFiles(localFiles)
         setFilesLoaded(true) // Mark that initial load is complete
 
@@ -1987,8 +2013,8 @@ export function useLoadFiles() {
       silent: boolean = false,
       forceHashComputation: boolean = false,
       changedRelativePaths?: string[],
-    ) =>
-      runExclusiveLoad(
+    ) => {
+      await runExclusiveLoad(
         currentVaultId,
         {
           silent,
@@ -1996,7 +2022,21 @@ export function useLoadFiles() {
           hasChangedPaths: (changedRelativePaths?.length ?? 0) > 0,
         },
         () => runLoadFiles(silent, forceHashComputation, changedRelativePaths),
-      ),
+      )
+
+      // The pass refused to commit because a file operation raced it. Rerun now that
+      // the operation has landed, over a full scan: the delta scan's cached entries
+      // still hold the pre-operation paths. Only one retry, so a burst of operations
+      // cannot spin here.
+      if (!consumeSupersededLoad(currentVaultId)) return
+
+      await runExclusiveLoad(
+        currentVaultId,
+        { silent, forceHashComputation, hasChangedPaths: false },
+        () => runLoadFiles(silent, forceHashComputation),
+      )
+      consumeSupersededLoad(currentVaultId)
+    },
     [runLoadFiles, currentVaultId],
   )
 

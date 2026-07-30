@@ -84,6 +84,23 @@ export async function runExclusiveLoad(
 }
 
 /**
+ * Vaults whose in-flight pass refused to commit because a file operation landed
+ * mid-scan. Set by the pass, drained by the caller once the pass has finished and
+ * re-entry is safe.
+ */
+const supersededLoads = new Set<string>()
+
+export function markLoadSuperseded(vaultId: string | undefined): void {
+  if (vaultId) supersededLoads.add(vaultId)
+}
+
+/** Returns whether the vault needs another pass, clearing the flag. */
+export function consumeSupersededLoad(vaultId: string | undefined): boolean {
+  if (!vaultId) return false
+  return supersededLoads.delete(vaultId)
+}
+
+/**
  * State of the last merge that actually committed, per vault. Lets a silent refresh
  * recognise that neither disk, server, nor store moved and skip the merge entirely.
  */

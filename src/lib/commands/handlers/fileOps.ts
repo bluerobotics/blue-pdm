@@ -29,6 +29,7 @@ import {
   updateFolderServerPath,
   deleteFolderOnServer,
 } from '../../supabase'
+import { moveFileOnServer } from '../../supabase/files/move'
 import { getExtension } from '../../utils/path'
 import { log } from '@/lib/logger'
 import { usePDMStore } from '@/stores/pdmStore'
@@ -695,7 +696,22 @@ export const moveCommand: Command<MoveParams> = {
 
           // Update database path directly
           if (file.pdmData?.id) {
-            await updateFilePath(file.pdmData.id, newRelPath)
+            const cloudMoveResult = ctx.user?.id
+              ? await moveFileOnServer(file.pdmData.id, ctx.user.id, newRelPath, effectiveName)
+              : await updateFilePath(file.pdmData.id, newRelPath)
+
+            if (!cloudMoveResult.success) {
+              log.error('[Move]', 'Server move failed for cloud-only file', {
+                fileName: file.name,
+                newPath: newRelPath,
+                error: cloudMoveResult.error,
+              })
+              failedItems++
+              errors.push(`${file.name}: ${cloudMoveResult.error || 'Failed to move on server'}`)
+              progress.update()
+              continue
+            }
+
             log.info('[Move]', 'Updated cloud-only file path in database', {
               oldPath: file.relativePath,
               newPath: newRelPath,
@@ -864,7 +880,35 @@ export const moveCommand: Command<MoveParams> = {
               })
             }
           } else {
-            await updateFilePath(file.pdmData.id, newRelPath)
+            const serverMoveResult = ctx.user?.id
+              ? await moveFileOnServer(file.pdmData.id, ctx.user.id, newRelPath, effectiveName)
+              : await updateFilePath(file.pdmData.id, newRelPath)
+
+            if (!serverMoveResult.success) {
+              // The file is already moved on disk, so put it back rather than
+              // leaving the vault and the server disagreeing about where it lives.
+              log.error('[Move]', 'Server move failed, rolling back local move', {
+                fileName: file.name,
+                sourcePath: file.path,
+                destPath: newPath,
+                error: serverMoveResult.error,
+              })
+
+              const rollback = (await window.electronAPI?.renameItem(newPath, file.path)) as
+                | { success: boolean; error?: string }
+                | undefined
+              if (!rollback?.success) {
+                log.error('[Move]', 'Failed to roll back local move', {
+                  fileName: file.name,
+                  error: rollback?.error,
+                })
+              }
+
+              totalFilesMoved -= filesMoved
+              failedItems++
+              errors.push(`${file.name}: ${serverMoveResult.error || 'Failed to move on server'}`)
+              continue
+            }
           }
         }
 

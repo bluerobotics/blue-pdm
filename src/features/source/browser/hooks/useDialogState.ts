@@ -31,6 +31,8 @@ export interface ConflictDialogState {
   targetFolder: string
   folderName?: string
   onResolve: (resolution: 'overwrite' | 'rename' | 'skip', applyToAll: boolean) => void
+  /** Callers that await the resolution need to be told when the user backs out. */
+  onCancel?: () => void
 }
 
 export interface FolderConflictDialogState {

@@ -30,6 +30,8 @@ import { logDragDrop } from '@/lib/userActionLogger'
 import { log } from '@/lib/logger'
 import { buildFullPath } from '@/lib/utils/path'
 import { executeCommand } from '@/lib/commands'
+import type { ConflictDialogState } from './useDialogState'
+import type { FileConflict } from '../types'
 
 /**
  * Interface for collected entries from DataTransfer
@@ -172,6 +174,32 @@ function readAllDirectoryEntries(reader: FileSystemDirectoryReader): Promise<Fil
   })
 }
 
+/**
+ * Append " (1)", " (2)", ... until the path is free. Mirrors the naming that
+ * Add Files uses for its "Keep Both" resolution.
+ */
+async function getUniqueDestPath(destPath: string): Promise<string> {
+  const api = window.electronAPI
+  if (!api) return destPath
+
+  const normalized = destPath.replace(/\\/g, '/')
+  const lastSlash = normalized.lastIndexOf('/')
+  const dir = normalized.slice(0, lastSlash)
+  const fileName = normalized.slice(lastSlash + 1)
+  const dotIndex = fileName.lastIndexOf('.')
+  const stem = dotIndex > 0 ? fileName.slice(0, dotIndex) : fileName
+  const ext = dotIndex > 0 ? fileName.slice(dotIndex) : ''
+
+  let counter = 1
+  let candidate = destPath
+  while (await api.fileExists(candidate)) {
+    candidate = buildFullPath(dir, `${stem} (${counter})${ext}`)
+    counter++
+  }
+
+  return candidate
+}
+
 export interface SelectionBox {
   startX: number
   startY: number
@@ -213,6 +241,9 @@ export interface UseDragStateOptions {
   updateProgressToast: (id: string, current: number, percent: number) => void
   removeToast: (id: string) => void
   setStatusMessage: (msg: string) => void
+  // Opens the shared file conflict dialog when an external drop would replace
+  // existing vault files
+  setConflictDialog: (state: ConflictDialogState | null) => void
   // Callback when locked files are found during folder move
   // Returns true if user wants to proceed with partial move, false to cancel
   onLockedFilesFound?: (result: LockedFilesCheckResult) => Promise<boolean>
@@ -282,6 +313,7 @@ export function useDragState(options: UseDragStateOptions): UseDragStateReturn {
   const {
     files,
     selectedFiles,
+    userId,
     vaultPath,
     currentFolder,
     onRefresh,
@@ -290,6 +322,7 @@ export function useDragState(options: UseDragStateOptions): UseDragStateReturn {
     updateProgressToast,
     removeToast,
     setStatusMessage,
+    setConflictDialog,
     onLockedFilesFound,
     onFolderConflict,
   } = options
@@ -318,6 +351,235 @@ export function useDragState(options: UseDragStateOptions): UseDragStateReturn {
   const canMoveFiles = useCallback((_filesToCheck: LocalFile[]): boolean => {
     return true
   }, [])
+
+  // Ask the user how to handle destinations that already exist, using the same
+  // dialog as Add Files. Resolves to null when the user backs out.
+  const askDropConflictResolution = useCallback(
+    (
+      conflicts: FileConflict[],
+      nonConflicts: ConflictDialogState['nonConflicts'],
+      targetFolder: string,
+    ) =>
+      new Promise<'overwrite' | 'rename' | 'skip' | null>((resolve) => {
+        setConflictDialog({
+          conflicts,
+          nonConflicts,
+          targetFolder,
+          onResolve: (resolution) => {
+            setConflictDialog(null)
+            resolve(resolution)
+          },
+          onCancel: () => resolve(null),
+        })
+      }),
+    [setConflictDialog],
+  )
+
+  /**
+   * Copy externally dropped entries into a vault folder.
+   *
+   * Shared by the container drop and the drop-onto-folder handlers, which differ
+   * only in destination. A plain copy is not safe here: the vault keeps files
+   * read-only until checked out, so copying over one fails with a raw EPERM, and
+   * copying over a controlled file the user has not checked out loses work with no
+   * warning.
+   */
+  const copyDroppedEntries = useCallback(
+    async (entries: CollectedEntry[], destFolder: string, destLabel: string) => {
+      const api = window.electronAPI
+      if (!api || !vaultPath) return
+
+      const normalize = (p: string) => p.replace(/\\/g, '/').toLowerCase()
+      const toDestPath = (relativePath: string) =>
+        buildFullPath(vaultPath, destFolder ? `${destFolder}/${relativePath}` : relativePath)
+
+      // Dropping items back onto the folder they already live in resolves to a copy
+      // onto itself, which the OS rejects. There is nothing to do.
+      const planned = entries
+        .map((entry) => ({ entry, destPath: toDestPath(entry.relativePath) }))
+        .filter(({ entry, destPath }) => normalize(entry.path) !== normalize(destPath))
+
+      if (planned.length === 0) {
+        addToast('info', `Already in ${destLabel}`)
+        return
+      }
+
+      const filesByPath = new Map(files.map((f) => [normalize(f.path), f]))
+
+      // Replacing a synced file means overwriting a controlled revision, so require
+      // the user to hold the checkout first. Without this the copy either fails with
+      // an unexplained EPERM or silently replaces someone else's work.
+      const notCheckedOut = planned.filter(({ entry, destPath }) => {
+        if (entry.isDirectory) return false
+        const existing = filesByPath.get(normalize(destPath))
+        return Boolean(existing?.pdmData?.id) && existing?.pdmData?.checked_out_by !== userId
+      })
+
+      if (notCheckedOut.length > 0) {
+        const names = notCheckedOut
+          .slice(0, 3)
+          .map(({ entry }) => entry.relativePath)
+          .join(', ')
+        const more = notCheckedOut.length > 3 ? ` and ${notCheckedOut.length - 3} more` : ''
+        log.warn('[Drop]', 'Refused to replace files that are not checked out', {
+          count: notCheckedOut.length,
+          paths: notCheckedOut.map(({ entry }) => entry.relativePath).slice(0, 10),
+        })
+        addToast(
+          'error',
+          `Check out ${names}${more} before replacing ${notCheckedOut.length > 1 ? 'them' : 'it'}`,
+        )
+        return
+      }
+
+      // A dropped folder merges into an existing one, so only leaf files conflict.
+      const conflicts: FileConflict[] = []
+      const nonConflicts: ConflictDialogState['nonConflicts'] = []
+
+      for (const { entry, destPath } of planned) {
+        const isConflict = !entry.isDirectory && (await api.fileExists(destPath))
+        if (isConflict) {
+          conflicts.push({
+            sourcePath: entry.path,
+            destPath,
+            fileName: entry.relativePath.split('/').pop() || entry.relativePath,
+            relativePath: entry.relativePath,
+          })
+        } else {
+          nonConflicts.push({ sourcePath: entry.path, destPath, relativePath: entry.relativePath })
+        }
+      }
+
+      let resolution: 'overwrite' | 'rename' | 'skip' = 'overwrite'
+      if (conflicts.length > 0) {
+        const chosen = await askDropConflictResolution(conflicts, nonConflicts, destFolder)
+        if (chosen === null) {
+          addToast('info', 'Drop cancelled')
+          return
+        }
+        if (chosen === 'skip' && nonConflicts.length === 0) {
+          addToast('info', 'All files skipped')
+          return
+        }
+        resolution = chosen
+      }
+
+      const conflictPaths = new Set(conflicts.map((c) => normalize(c.destPath)))
+
+      // Directories the collector walked into: every file under them is already its
+      // own entry, so they only need to exist. Copying them recursively instead would
+      // both duplicate that work and write the nested files before the user's
+      // conflict choice could be applied to them.
+      const walkedDirs = new Set<string>()
+      for (const { entry } of planned) {
+        const parts = entry.relativePath.split('/')
+        for (let i = 1; i < parts.length; i++) {
+          walkedDirs.add(parts.slice(0, i).join('/'))
+        }
+      }
+
+      // Directories first so nested files have somewhere to land.
+      const ordered = [
+        ...planned.filter(({ entry }) => entry.isDirectory),
+        ...planned.filter(({ entry }) => !entry.isDirectory),
+      ]
+
+      const totalItems = ordered.length
+      const toastId = `drop-files-${Date.now()}`
+      addProgressToast(
+        toastId,
+        `Adding ${totalItems} item${totalItems > 1 ? 's' : ''}...`,
+        totalItems,
+      )
+
+      try {
+        let successCount = 0
+        let errorCount = 0
+        let skippedCount = 0
+
+        for (let i = 0; i < ordered.length; i++) {
+          const { entry, destPath } = ordered[i]
+          const isConflict = conflictPaths.has(normalize(destPath))
+
+          if (isConflict && resolution === 'skip') {
+            skippedCount++
+          } else if (entry.isDirectory && walkedDirs.has(entry.relativePath)) {
+            const createResult = await api.createFolder(destPath)
+            if (createResult.success) {
+              successCount++
+            } else {
+              errorCount++
+              log.error('[Drop]', `Failed to create directory ${entry.relativePath}`, {
+                error: createResult.error,
+              })
+            }
+          } else {
+            const finalDestPath =
+              isConflict && resolution === 'rename' ? await getUniqueDestPath(destPath) : destPath
+
+            log.debug('[Drop]', 'Copying dropped entry', {
+              relativePath: entry.relativePath,
+              destPath: finalDestPath,
+              isDirectory: entry.isDirectory,
+            })
+
+            const copyResult = await api.copyFile(entry.path, finalDestPath)
+            if (copyResult.success) {
+              successCount++
+            } else if (entry.isDirectory) {
+              // An empty source folder has nothing to copy, so create it directly.
+              const createResult = await api.createFolder(finalDestPath)
+              if (createResult.success) {
+                successCount++
+              } else {
+                errorCount++
+                log.error('[Drop]', `Failed to create directory ${entry.relativePath}`, {
+                  error: createResult.error,
+                })
+              }
+            } else {
+              errorCount++
+              log.error('[Drop]', `Failed to copy ${entry.relativePath}`, {
+                error: copyResult.error,
+              })
+            }
+          }
+
+          updateProgressToast(toastId, i + 1, Math.round(((i + 1) / totalItems) * 100))
+        }
+
+        removeToast(toastId)
+
+        if (errorCount === 0 && skippedCount === 0) {
+          addToast(
+            'success',
+            `Added ${successCount} item${successCount > 1 ? 's' : ''} to ${destLabel}`,
+          )
+        } else if (errorCount === 0) {
+          addToast('info', `Added ${successCount}, skipped ${skippedCount}`)
+        } else {
+          addToast('warning', `Added ${successCount}, failed ${errorCount}`)
+        }
+
+        setTimeout(() => onRefresh(), 100)
+      } catch (error) {
+        log.error('[Drag]', 'Error adding files', { error: error })
+        removeToast(toastId)
+        addToast('error', 'Failed to add files')
+      }
+    },
+    [
+      vaultPath,
+      files,
+      userId,
+      addToast,
+      addProgressToast,
+      updateProgressToast,
+      removeToast,
+      onRefresh,
+      askDropConflictResolution,
+    ],
+  )
 
   // Handle drag start - HTML5 drag initiates, Electron adds native file data
   const handleDragStart = useCallback(
@@ -535,100 +797,7 @@ export function useDragState(options: UseDragStateOptions): UseDragStateReturn {
           return
         }
 
-        // Separate directories and files - process directories first to create structure
-        const directories = entries.filter((e) => e.isDirectory)
-        const fileEntries = entries.filter((e) => !e.isDirectory)
-
-        const totalItems = entries.length
-        const toastId = `drop-files-${Date.now()}`
-        addProgressToast(
-          toastId,
-          `Adding ${totalItems} item${totalItems > 1 ? 's' : ''} to ${targetFolder.name}...`,
-          totalItems,
-        )
-
-        try {
-          let successCount = 0
-          let errorCount = 0
-          let processed = 0
-
-          // First create all directories (including empty ones)
-          for (const dir of directories) {
-            const destPath = buildFullPath(
-              vaultPath,
-              targetFolder.relativePath + '/' + dir.relativePath,
-            )
-
-            log.debug('[Drop]', 'Creating directory in folder', {
-              relativePath: dir.relativePath,
-              destPath,
-            })
-
-            // First try to copy the directory (handles non-empty directories)
-            const copyResult = await window.electronAPI.copyFile(dir.path, destPath)
-            if (copyResult.success) {
-              successCount++
-            } else {
-              // If copy failed, try creating the folder directly (for empty folders)
-              const createResult = await window.electronAPI.createFolder(destPath)
-              if (createResult.success) {
-                successCount++
-              } else {
-                errorCount++
-                log.error('[Drop]', `Failed to create directory ${dir.relativePath}`, {
-                  error: createResult.error,
-                })
-              }
-            }
-
-            processed++
-            const percent = Math.round((processed / totalItems) * 100)
-            updateProgressToast(toastId, processed, percent)
-          }
-
-          // Then copy all files
-          for (const file of fileEntries) {
-            const destPath = buildFullPath(
-              vaultPath,
-              targetFolder.relativePath + '/' + file.relativePath,
-            )
-
-            log.debug('[Drop]', 'Copying file to folder', {
-              relativePath: file.relativePath,
-              destPath,
-            })
-
-            const result = await window.electronAPI.copyFile(file.path, destPath)
-            if (result.success) {
-              successCount++
-            } else {
-              errorCount++
-              log.error('[Drop]', `Failed to copy ${file.relativePath}`, { error: result.error })
-            }
-
-            processed++
-            const percent = Math.round((processed / totalItems) * 100)
-            updateProgressToast(toastId, processed, percent)
-          }
-
-          removeToast(toastId)
-
-          if (errorCount === 0) {
-            addToast(
-              'success',
-              `Added ${successCount} item${successCount > 1 ? 's' : ''} to ${targetFolder.name}`,
-            )
-          } else {
-            addToast('warning', `Added ${successCount}, failed ${errorCount}`)
-          }
-
-          // Refresh the file list
-          setTimeout(() => onRefresh(), 100)
-        } catch (error) {
-          log.error('[Drag]', 'Error adding files', { error: error })
-          removeToast(toastId)
-          addToast('error', 'Failed to add files')
-        }
+        await copyDroppedEntries(entries, targetFolder.relativePath, targetFolder.name)
         return
       }
 
@@ -852,6 +1021,7 @@ export function useDragState(options: UseDragStateOptions): UseDragStateReturn {
       removeToast,
       addToast,
       setStatusMessage,
+      copyDroppedEntries,
       onLockedFilesFound,
       onFolderConflict,
     ],
@@ -1003,90 +1173,9 @@ export function useDragState(options: UseDragStateOptions): UseDragStateReturn {
 
       // Determine destination folder
       const destFolder = currentFolder || ''
+      const destLabel = destFolder ? destFolder.split('/').pop() || destFolder : 'vault root'
 
-      // Separate directories and files - process directories first to create structure
-      const directories = entries.filter((e) => e.isDirectory)
-      const fileEntries = entries.filter((e) => !e.isDirectory)
-
-      const totalItems = entries.length
-      const toastId = `drop-files-${Date.now()}`
-      addProgressToast(
-        toastId,
-        `Adding ${totalItems} item${totalItems > 1 ? 's' : ''}...`,
-        totalItems,
-      )
-
-      try {
-        let successCount = 0
-        let errorCount = 0
-        let processed = 0
-
-        // First create all directories (including empty ones)
-        for (const dir of directories) {
-          const destPath = destFolder
-            ? buildFullPath(vaultPath, destFolder + '/' + dir.relativePath)
-            : buildFullPath(vaultPath, dir.relativePath)
-
-          log.debug('[Drop]', 'Creating directory', { relativePath: dir.relativePath, destPath })
-
-          // First try to copy the directory (handles non-empty directories)
-          const copyResult = await window.electronAPI.copyFile(dir.path, destPath)
-          if (copyResult.success) {
-            successCount++
-          } else {
-            // If copy failed, try creating the folder directly (for empty folders)
-            const createResult = await window.electronAPI.createFolder(destPath)
-            if (createResult.success) {
-              successCount++
-            } else {
-              errorCount++
-              log.error('[Drop]', `Failed to create directory ${dir.relativePath}`, {
-                error: createResult.error,
-              })
-            }
-          }
-
-          processed++
-          const percent = Math.round((processed / totalItems) * 100)
-          updateProgressToast(toastId, processed, percent)
-        }
-
-        // Then copy all files
-        for (const file of fileEntries) {
-          const destPath = destFolder
-            ? buildFullPath(vaultPath, destFolder + '/' + file.relativePath)
-            : buildFullPath(vaultPath, file.relativePath)
-
-          log.debug('[Drop]', 'Copying file', { relativePath: file.relativePath, destPath })
-
-          const result = await window.electronAPI.copyFile(file.path, destPath)
-          if (result.success) {
-            successCount++
-          } else {
-            errorCount++
-            log.error('[Drop]', `Failed to copy ${file.relativePath}`, { error: result.error })
-          }
-
-          processed++
-          const percent = Math.round((processed / totalItems) * 100)
-          updateProgressToast(toastId, processed, percent)
-        }
-
-        removeToast(toastId)
-
-        if (errorCount === 0) {
-          addToast('success', `Added ${successCount} item${successCount > 1 ? 's' : ''}`)
-        } else {
-          addToast('warning', `Added ${successCount}, failed ${errorCount}`)
-        }
-
-        // Refresh the file list
-        setTimeout(() => onRefresh(), 100)
-      } catch (error) {
-        log.error('[Drag]', 'Error adding files', { error: error })
-        removeToast(toastId)
-        addToast('error', 'Failed to add files')
-      }
+      await copyDroppedEntries(entries, destFolder, destLabel)
     },
     [
       vaultPath,
@@ -1098,6 +1187,7 @@ export function useDragState(options: UseDragStateOptions): UseDragStateReturn {
       addToast,
       setStatusMessage,
       onRefresh,
+      copyDroppedEntries,
       onLockedFilesFound,
     ],
   )

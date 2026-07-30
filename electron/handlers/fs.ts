@@ -364,6 +364,39 @@ function countFilesInDir(dirPath: string): number {
   return count
 }
 
+/**
+ * Copy a file into the vault without inheriting the source's read-only attribute.
+ *
+ * On Windows fs.copyFileSync is CopyFileW, which fails with EPERM when the
+ * destination already exists and is read-only, and which copies the source's
+ * read-only attribute onto the destination. BluePLM keeps vault files read-only
+ * unless they are checked out, so a plain copy both fails against any existing
+ * vault file and can silently re-lock a file the user just checked out. Every
+ * other write path (download, get-latest, discard) manages the flag explicitly;
+ * this keeps copies consistent with them.
+ */
+function copyFileWritable(srcPath: string, destPath: string): void {
+  try {
+    const destStats = fs.statSync(destPath)
+    if (!destStats.isDirectory() && (destStats.mode & 0o200) === 0) {
+      fs.chmodSync(destPath, destStats.mode | 0o200)
+    }
+  } catch {
+    // Destination does not exist yet, which is the common case.
+  }
+
+  fs.copyFileSync(srcPath, destPath)
+
+  try {
+    const copiedStats = fs.statSync(destPath)
+    if ((copiedStats.mode & 0o200) === 0) {
+      fs.chmodSync(destPath, copiedStats.mode | 0o200)
+    }
+  } catch (error) {
+    log(`Failed to clear read-only on copied file ${destPath}: ${String(error)}`)
+  }
+}
+
 // Helper to recursively copy a directory
 // Returns the number of files (not directories) copied
 function copyDirSync(src: string, dest: string, topLevelDest?: string): number {
@@ -383,13 +416,15 @@ function copyDirSync(src: string, dest: string, topLevelDest?: string): number {
 
     if (entry.isDirectory()) {
       const srcPathResolved = path.resolve(srcPath).toLowerCase()
-      if (srcPathResolved === topDestResolved ||
-          topDestResolved.startsWith(srcPathResolved + path.sep)) {
+      if (
+        srcPathResolved === topDestResolved ||
+        topDestResolved.startsWith(srcPathResolved + path.sep)
+      ) {
         continue
       }
       fileCount += copyDirSync(srcPath, destPath, effectiveDest)
     } else {
-      fs.copyFileSync(srcPath, destPath)
+      copyFileWritable(srcPath, destPath)
       fileCount++
     }
   }
@@ -2716,6 +2751,13 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
 
   ipcMain.handle('fs:copy-file', async (_, sourcePath: string, destPath: string) => {
     try {
+      // Dropping an item onto the folder it already lives in resolves to a copy onto
+      // itself, which CopyFileW rejects with EPERM. Treat it as the no-op it is.
+      if (path.resolve(sourcePath).toLowerCase() === path.resolve(destPath).toLowerCase()) {
+        log(`Skipped copy onto itself: ${sourcePath}`)
+        return { success: true, fileCount: 0, skipped: true }
+      }
+
       const stats = fs.statSync(sourcePath)
       let fileCount = 0
 
@@ -2728,7 +2770,7 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
           fs.mkdirSync(destDir, { recursive: true })
         }
 
-        fs.copyFileSync(sourcePath, destPath)
+        copyFileWritable(sourcePath, destPath)
         fileCount = 1
         log('Copied file: ' + sourcePath + ' -> ' + destPath)
       }
@@ -2748,10 +2790,7 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
       if (isDirectory) {
         const srcResolved = path.resolve(sourcePath).toLowerCase()
         const destResolved = path.resolve(destPath).toLowerCase()
-        if (
-          destResolved === srcResolved ||
-          destResolved.startsWith(srcResolved + path.sep)
-        ) {
+        if (destResolved === srcResolved || destResolved.startsWith(srcResolved + path.sep)) {
           log(`Error moving: cannot move directory into itself: ${sourcePath} -> ${destPath}`)
           return { success: false, error: 'Cannot move a folder into itself or a subfolder' }
         }
@@ -2779,7 +2818,7 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
         log(`Moved (copy+delete) directory: ${sourcePath} -> ${destPath} (${copiedCount} files)`)
         return { success: true, fileCount: copiedCount }
       } else {
-        fs.copyFileSync(sourcePath, destPath)
+        copyFileWritable(sourcePath, destPath)
         fs.unlinkSync(sourcePath)
         log('Moved (copy+delete) file: ' + sourcePath + ' -> ' + destPath)
         return { success: true, fileCount: 1 }

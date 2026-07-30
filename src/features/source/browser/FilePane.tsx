@@ -459,6 +459,7 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
     updateProgressToast,
     removeToast,
     setStatusMessage,
+    setConflictDialog,
     onLockedFilesFound: handleLockedFilesFound,
     onFolderConflict: handleFolderConflict,
   })
@@ -1955,7 +1956,10 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
               conflicts={conflictDialog.conflicts}
               nonConflictsCount={conflictDialog.nonConflicts.length}
               onResolve={conflictDialog.onResolve}
-              onCancel={() => setConflictDialog(null)}
+              onCancel={() => {
+                conflictDialog.onCancel?.()
+                setConflictDialog(null)
+              }}
             />
           )}
 
