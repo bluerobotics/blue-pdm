@@ -641,6 +641,7 @@ export function deriveAccount(customer: CustomerInput): Account {
         accountKey: `company:${normalized}`,
         kind: 'company',
         displayName: companyName,
+        source: 'company-name',
       }
     }
   }
@@ -655,6 +656,7 @@ export function deriveAccount(customer: CustomerInput): Account {
       accountKey: `company:${domain}`,
       kind: 'company',
       displayName: domain,
+      source: 'email-domain',
     }
   }
 
@@ -665,6 +667,7 @@ export function deriveAccount(customer: CustomerInput): Account {
       accountKey: `individual:${address}`,
       kind: 'individual',
       displayName: contactName ?? address,
+      source: 'individual',
     }
   }
 
@@ -673,6 +676,7 @@ export function deriveAccount(customer: CustomerInput): Account {
     accountKey: `individual:id:${id}`,
     kind: 'individual',
     displayName: contactName ?? `Customer ${id}`,
+    source: 'individual',
   }
 }
 

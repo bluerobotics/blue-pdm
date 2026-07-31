@@ -58,4 +58,13 @@ export interface Account {
   kind: AccountKind
   /** Human-readable label for the account. Never sent to the model for individuals. */
   displayName: string
+  /**
+   * Which rule produced the key and label.
+   *
+   * Several customers land on one account, and they do not all name it equally
+   * well - a company's own record gives its real name, an email domain gives
+   * `acme.com`, and an individual gives a person's name. The caller uses this
+   * to pick the best label rather than whichever row it happened to see first.
+   */
+  source: 'company-name' | 'email-domain' | 'individual'
 }

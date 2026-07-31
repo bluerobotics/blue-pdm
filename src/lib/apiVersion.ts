@@ -12,6 +12,7 @@
  * - Version 2.0.0: Major API refactor with improved architecture
  * - Version 2.1.0: Customer sync reports progress and can be stopped (v3.23.0)
  * - Version 2.2.0: Customer sync pulls only what changed in Odoo since the last run
+ * - Version 2.3.0: Customer sync credits orders to the company, not the contact
  *
  * When making API changes:
  * 1. Increment version in api/package.json
@@ -23,7 +24,7 @@ import { usePDMStore } from '../stores/pdmStore'
 
 // The API version this app version expects
 // Uses semver: MAJOR.MINOR.PATCH
-export const EXPECTED_API_VERSION = '2.2.0'
+export const EXPECTED_API_VERSION = '2.3.0'
 
 // Minimum API version that will still work (for soft warnings vs hard errors)
 // Breaking changes should bump the major version and update this
@@ -37,6 +38,8 @@ export const API_VERSION_DESCRIPTIONS: Record<string, string> = {
   '2.0.0': 'Major API refactor with improved architecture',
   '2.1.0': 'Customer sync reports live progress and can be stopped',
   '2.2.0': 'Customer sync pulls only what changed in Odoo since the last successful run',
+  '2.3.0':
+    'Customer sync credits an order to the company behind the contact who placed it, and no longer drops orders whose contact Odoo does not flag as a customer',
 }
 
 export interface ApiVersionCheckResult {

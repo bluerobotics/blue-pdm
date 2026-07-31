@@ -40,6 +40,16 @@
  *   - A customer deleted from Odoo, which by definition writes nothing. Step 9
  *     sweeps with an id-only `search`, which moves ints rather than records and
  *     so stays cheap enough to run every time.
+ *
+ * ---------------------------------------------------------------------------
+ * ORDERS BELONG TO THE COMPANY
+ * ---------------------------------------------------------------------------
+ * An order is credited to the company - the `commercial_partner_id` of the
+ * partner named in `partner_id` - not to the contact itself. That field lives
+ * on res.partner and not on sale.order, so step 4a assembles the contact ->
+ * company map from partner records, reading whichever contacts and companies
+ * the customer pull did not already return. See resolveOrderOwner(). The
+ * contact is kept on customer_orders.contact_id.
  */
 
 import { FastifyPluginAsync } from 'fastify'
@@ -64,11 +74,13 @@ import {
   accountInputFromRow,
   changedSinceDomain,
   chunk,
+  commercialPartnerMap,
   computeCustomerAggregates,
   customerDomain,
   customerMarker,
   emptyAggregates,
   fillMissingColumns,
+  idsNotYetPulled,
   intersectFields,
   isCustomerPartner,
   latestWriteDate,
@@ -79,9 +91,11 @@ import {
   mappedColumns,
   nextWatermark,
   odooNumber,
+  orderContactIds,
   parseFieldsGet,
   parseIdList,
   planOrderRefresh,
+  resolveOrderOwner,
   resolveStickyAccountId,
   summariseOrderLines,
 } from '../src/customers/odooSync.js'
@@ -91,6 +105,7 @@ import type {
   OdooRecord,
   PartialRow,
 } from '../src/customers/odooSync.js'
+import type { Account } from '../src/customers/types.js'
 
 /** Rows per Supabase write. A full sync can move 20k customers. */
 const WRITE_CHUNK = 500
@@ -106,6 +121,57 @@ const IN_CHUNK = 200
 const MAX_ODOO_RECORDS = 100000
 
 type Row = Record<string, unknown>
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCOUNT LABELS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** One member's suggestion for what its account should be called. */
+interface AccountNameCandidate {
+  displayName: string
+  source: Account['source']
+  /** True when the suggestion comes from the company's own res.partner record. */
+  fromCompanyRecord: boolean
+}
+
+/**
+ * How authoritative each rule's label is.
+ *
+ * A company name is the thing a human would write down. An email domain is a
+ * serviceable stand-in. A person's name only names the account when the account
+ * really is that person, which is why it must never overwrite the other two.
+ */
+const NAME_SOURCE_RANK: Record<Account['source'], number> = {
+  'company-name': 2,
+  'email-domain': 1,
+  individual: 0,
+}
+
+function nameCandidateFor(account: Account, row: PartialRow): AccountNameCandidate {
+  return {
+    displayName: account.displayName,
+    source: account.source,
+    fromCompanyRecord: row.is_company === true,
+  }
+}
+
+/**
+ * Whether one candidate label beats another.
+ *
+ * Every tier is decided, down to comparing the strings themselves, so that a
+ * run cannot pick a different winner from the same members and leave two syncs
+ * renaming an account back and forth.
+ */
+function outranks(candidate: AccountNameCandidate, incumbent: AccountNameCandidate): boolean {
+  const bySource = NAME_SOURCE_RANK[candidate.source] - NAME_SOURCE_RANK[incumbent.source]
+  if (bySource !== 0) return bySource > 0
+
+  if (candidate.fromCompanyRecord !== incumbent.fromCompanyRecord) {
+    return candidate.fromCompanyRecord
+  }
+
+  return candidate.displayName < incumbent.displayName
+}
 
 interface OdooConfig {
   url: string
@@ -355,6 +421,8 @@ const SYNC_PHASES = [
   'Reading orders from Odoo',
   'Finding orders with changed lines',
   'Reading customers from Odoo',
+  'Reading order contacts from Odoo',
+  'Reading order companies from Odoo',
   'Reading shipping addresses',
   'Reading order lines',
   'Saving customers and accounts',
@@ -1053,15 +1121,78 @@ const customerRoutes: FastifyPluginAsync = async (fastify) => {
         )
         odooPartners = await searchReadAll(cfg, 'res.partner', domain, partnerPlan.selected, run)
       } else {
-        const partnerIds = [
-          ...new Set(
-            odooOrders
-              .map((order) => many2oneId(order.partner_id))
-              .filter((id): id is number => id !== null),
-          ),
-        ]
+        const partnerIds = orderContactIds(odooOrders)
         await run.setPhase('Reading customers from Odoo', partnerIds.length)
         odooPartners = await readByIds(cfg, 'res.partner', partnerIds, partnerPlan.selected, run)
+      }
+      if (run.cancelled) return cancelledResponse()
+
+      // ── 4a. Work out which company each order belongs to ───────────────────
+      // Only res.partner knows this. Standard Odoo puts `commercial_partner_id`
+      // on the partner and not on sale.order, so the answer has to be assembled
+      // from partner records rather than read off the orders.
+      const partnerRecordByErpId = new Map<string, OdooRecord>()
+      for (const partner of [...odooPartners, ...changedNonCustomers]) {
+        const id = odooNumber(partner.id)
+        if (id !== null) partnerRecordByErpId.set(String(id), partner)
+      }
+
+      // A contact named on an order whose record we do not hold has an unknown
+      // company, and defaulting it to itself is what leaves a company reading
+      // as churned. What lands here is small: partners Odoo does not flag as
+      // customers on a full run, and on an incremental run only the contacts on
+      // the handful of orders in the window.
+      const orderContactErpIds = orderContactIds(odooOrders).map(String)
+      const unknownContactIds = idsNotYetPulled(
+        orderContactErpIds,
+        new Set(partnerRecordByErpId.keys()),
+      )
+
+      let orderContactRecords: OdooRecord[] = []
+      if (unknownContactIds.length > 0) {
+        await run.setPhase('Reading order contacts from Odoo', unknownContactIds.length)
+        orderContactRecords = await readByIds(
+          cfg,
+          'res.partner',
+          unknownContactIds,
+          partnerPlan.selected,
+          run,
+        )
+      }
+      if (run.cancelled) return cancelledResponse()
+
+      const commercialByContactErpId = commercialPartnerMap([
+        ...partnerRecordByErpId.values(),
+        ...orderContactRecords,
+      ])
+
+      // The company an order rolls up to can sit at customer_rank 0 in Odoo when
+      // its contacts place every order, so the customer domain never returns it
+      // and the roll-up would have nothing to point at. Only companies that
+      // actually receive an order are topped up - resolving every contact's
+      // parent would mirror a pile of companies that never bought anything.
+      const orderCompanyErpIds = new Set(
+        orderContactErpIds.map((erpId) => commercialByContactErpId.get(erpId) ?? erpId),
+      )
+      const pulledCustomerErpIds = new Set(
+        odooPartners
+          .map((partner) => odooNumber(partner.id))
+          .filter((id): id is number => id !== null)
+          .map(String),
+      )
+      const commercialTopUpIds = idsNotYetPulled(orderCompanyErpIds, pulledCustomerErpIds)
+
+      // These partners were pulled because an order points at them, not because
+      // Odoo calls them customers, so the sweep in step 9 must not read their
+      // absence from the customer domain as a disappearance.
+      const commercialOnlyErpIds = new Set(commercialTopUpIds.map(String))
+
+      if (commercialTopUpIds.length > 0) {
+        await run.setPhase('Reading order companies from Odoo', commercialTopUpIds.length)
+        odooPartners = [
+          ...odooPartners,
+          ...(await readByIds(cfg, 'res.partner', commercialTopUpIds, partnerPlan.selected, run)),
+        ]
       }
       if (run.cancelled) return cancelledResponse()
 
@@ -1212,10 +1343,12 @@ const customerRoutes: FastifyPluginAsync = async (fastify) => {
         row: PartialRow
         existing: Row | undefined
         accountKey: string | null
+        /** What this partner alone would call its account. */
+        nameCandidate: AccountNameCandidate
       }
 
       const prepared: PreparedCustomer[] = []
-      const accountsToEnsure = new Map<string, { displayName: string; kind: string }>()
+      const accountsToEnsure = new Map<string, AccountNameCandidate & { kind: string }>()
       const seenErpIds = new Set<string>()
 
       for (const partner of odooPartners) {
@@ -1234,23 +1367,24 @@ const customerRoutes: FastifyPluginAsync = async (fastify) => {
           row.name = text(existing?.name) ?? `Odoo partner ${erpId}`
         }
 
+        const account = deriveAccount(accountInputFromRow(erpId, row))
+        const nameCandidate = nameCandidateFor(account, row)
+
         // account_id is STICKY. It is derived only for a customer that has
         // never been grouped; a customer that already has one keeps it, so a
         // company renaming itself in Odoo relinks to the account its
         // (expensive) enrichment already hangs off instead of minting a second.
+        // The *label* is not sticky - see the refresh below.
         let accountKey: string | null = null
         if (!text(existing?.account_id)) {
-          const account = deriveAccount(accountInputFromRow(erpId, row))
           accountKey = account.accountKey
-          if (!accountsToEnsure.has(accountKey)) {
-            accountsToEnsure.set(accountKey, {
-              displayName: account.displayName,
-              kind: account.kind,
-            })
+          const current = accountsToEnsure.get(accountKey)
+          if (!current || outranks(nameCandidate, current)) {
+            accountsToEnsure.set(accountKey, { ...nameCandidate, kind: account.kind })
           }
         }
 
-        prepared.push({ erpId, row, existing, accountKey })
+        prepared.push({ erpId, row, existing, accountKey, nameCandidate })
       }
 
       // ON CONFLICT DO NOTHING: an account that already exists is left exactly
@@ -1291,11 +1425,19 @@ const customerRoutes: FastifyPluginAsync = async (fastify) => {
       // ── 7b. Customers ──────────────────────────────────────────────────────
       const customerInserts: PartialRow[] = []
       const customerUpdates: PartialRow[] = []
+      const bestNameByAccountId = new Map<string, AccountNameCandidate>()
       let reactivated = 0
 
       for (const item of prepared) {
         const derivedAccountId = item.accountKey ? (accountIdByKey.get(item.accountKey) ?? null) : null
         const accountId = resolveStickyAccountId(text(item.existing?.account_id), derivedAccountId)
+
+        if (accountId) {
+          const best = bestNameByAccountId.get(accountId)
+          if (!best || outranks(item.nameCandidate, best)) {
+            bestNameByAccountId.set(accountId, item.nameCandidate)
+          }
+        }
 
         const base: PartialRow = {
           ...item.row,
@@ -1334,6 +1476,57 @@ const customerRoutes: FastifyPluginAsync = async (fastify) => {
           const erpId = text(row.erp_id)
           const id = text(row.id)
           if (erpId && id) customerIdByErpId.set(erpId, id)
+        }
+      }
+      if (run.cancelled) return cancelledResponse()
+
+      // ── 7b-ii. Give each account the best name its members can offer ───────
+      // account_key is sticky, so a partner that Odoo has since renamed - or
+      // converted from a person to a company - stays on the account it was
+      // first grouped under. Its label was written once by whichever member got
+      // there first and never revisited, which is how an account can end up
+      // displaying a contact's name where its company's belongs.
+      //
+      // Only the label is rewritten. account_key is untouched, so nothing the
+      // enrichment hangs off moves.
+      const nameRefreshIds = [...bestNameByAccountId.keys()]
+      let accountsRenamed = 0
+      for (const batch of chunk(nameRefreshIds, IN_CHUNK)) {
+        const rows = await exec(
+          db
+            .from('customer_accounts')
+            .select('id, display_name')
+            .eq('org_id', orgId)
+            .in('id', batch),
+          'customer_accounts display_name select',
+        )
+
+        for (const row of rows) {
+          const id = text(row.id)
+          if (!id) continue
+          const best = bestNameByAccountId.get(id)
+          // Two conditions, both about not making things worse:
+          //
+          //   - Only a real company name may overwrite a stored label. An email
+          //     domain or a person's name is a fallback that was right when it
+          //     was written, and demoting to one would be a regression.
+          //   - Only the company's own res.partner may supply it. An account
+          //     has one of those, so the winner is the same whichever subset of
+          //     members a run happens to pull; letting contacts nominate a name
+          //     would let two runs rename the account back and forth.
+          if (!best || best.source !== 'company-name' || !best.fromCompanyRecord) continue
+          if (text(row.display_name) === best.displayName) continue
+
+          await exec(
+            db
+              .from('customer_accounts')
+              .update({ display_name: best.displayName, updated_by: userId })
+              .eq('org_id', orgId)
+              .eq('id', id)
+              .select('id'),
+            'customer_accounts rename',
+          )
+          accountsRenamed++
         }
       }
       if (run.cancelled) return cancelledResponse()
@@ -1413,15 +1606,26 @@ const customerRoutes: FastifyPluginAsync = async (fastify) => {
         .filter((id): id is number => id !== null)
         .map(String)
 
+      // customer_id comes back alongside erp_id so the customer an order is
+      // moving *away* from can be recomputed too. Rolling an order up to its
+      // company takes money off the contact who used to hold it, and that
+      // contact is not otherwise in the affected set on an incremental run.
       const existingOrderErpIds = new Set<string>()
+      const previousOrderOwners = new Set<string>()
       for (const batch of chunk(orderErpIds, IN_CHUNK)) {
         const rows = await exec(
-          db.from('customer_orders').select('erp_id').eq('org_id', orgId).in('erp_id', batch),
+          db
+            .from('customer_orders')
+            .select('erp_id, customer_id')
+            .eq('org_id', orgId)
+            .in('erp_id', batch),
           'customer_orders select',
         )
         for (const row of rows) {
           const erpId = text(row.erp_id)
           if (erpId) existingOrderErpIds.add(erpId)
+          const owner = text(row.customer_id)
+          if (owner) previousOrderOwners.add(owner)
         }
       }
 
@@ -1430,20 +1634,27 @@ const customerRoutes: FastifyPluginAsync = async (fastify) => {
       let ordersCreated = 0
       let ordersUpdated = 0
       let ordersSkippedUnknownPartner = 0
+      let ordersRolledUpToCompany = 0
 
       for (const order of odooOrders) {
         const orderId = odooNumber(order.id)
         if (orderId === null) continue
         const erpId = String(orderId)
 
-        const partnerErpId = many2oneErpId(order.partner_id)
-        const customerId = partnerErpId ? customerIdByErpId.get(partnerErpId) : undefined
+        // Revenue goes to the commercial partner - the company - rather than
+        // the contact Odoo named on the order. See `resolveOrderOwner`.
+        const { customerId, contactId } = resolveOrderOwner(
+          order,
+          customerIdByErpId,
+          commercialByContactErpId,
+        )
         if (!customerId) {
           // customer_orders.customer_id is NOT NULL; an order whose partner is
           // not a customer we mirror has nowhere to hang.
           ordersSkippedUnknownPartner++
           continue
         }
+        if (contactId) ordersRolledUpToCompany++
 
         const shippingErpId = many2oneErpId(order.partner_shipping_id)
         const mapped = mapRecord(order, orderFieldSet, ORDER_COLUMN_MAP)
@@ -1452,6 +1663,7 @@ const customerRoutes: FastifyPluginAsync = async (fastify) => {
           org_id: orgId,
           erp_id: erpId,
           customer_id: customerId,
+          contact_id: contactId,
           shipping_address_id: shippingErpId ? (addressIdByErpId.get(shippingErpId) ?? null) : null,
         }
 
@@ -1533,6 +1745,7 @@ const customerRoutes: FastifyPluginAsync = async (fastify) => {
       for (const row of orderRows) {
         if (typeof row.customer_id === 'string') affectedCustomerIds.add(row.customer_id)
       }
+      for (const owner of previousOrderOwners) affectedCustomerIds.add(owner)
 
       const preparedByErpId = new Map(prepared.map((item) => [item.erpId, item]))
       const storedNameByErpId = new Map<string, string>()
@@ -1632,10 +1845,53 @@ const customerRoutes: FastifyPluginAsync = async (fastify) => {
           )
         }
 
-        const missing =
+        const candidates =
           truncated || suspiciouslyEmpty
             ? []
-            : [...customerIdByErpId.keys()].filter((erpId) => !liveErpIds.has(erpId))
+            : [...customerIdByErpId.keys()].filter(
+                // A company topped up in step 4a is deliberately outside the
+                // customer domain, so its absence from this list is expected
+                // rather than a disappearance.
+                (erpId) => !liveErpIds.has(erpId) && !commercialOnlyErpIds.has(erpId),
+              )
+
+        // The step 4a exemption only covers companies this run happened to top
+        // up. A company whose contacts place every order sits at customer_rank
+        // 0 permanently, so on the next run - which tops up nothing because no
+        // order changed - the sweep would deactivate the very rows that hold
+        // the org's revenue.
+        //
+        // An order with a contact_id is by definition one that was rolled up
+        // from a contact to a different partner, so a customer owning one is a
+        // parent company, not a customer Odoo has lost. Ordinary customers
+        // order under their own record and leave contact_id null, so this
+        // exempts nobody the sweep is actually meant to catch.
+        const parentCompanyIds = new Set<string>()
+        const candidateIds = candidates
+          .map((erpId) => customerIdByErpId.get(erpId))
+          .filter((id): id is string => id !== undefined)
+
+        for (const batch of chunk(candidateIds, IN_CHUNK)) {
+          const rows = await exec(
+            db
+              .from('customer_orders')
+              .select('customer_id')
+              .eq('org_id', orgId)
+              .in('customer_id', batch)
+              .not('contact_id', 'is', null),
+            'customer_orders parent company probe',
+          )
+          for (const row of rows) {
+            const id = text(row.customer_id)
+            if (id) parentCompanyIds.add(id)
+          }
+        }
+
+        const missing = candidates.filter((erpId) => {
+          const id = customerIdByErpId.get(erpId)
+          return !id || !parentCompanyIds.has(id)
+        })
+
         for (const batch of chunk(missing, IN_CHUNK)) {
           // Soft-flag only: the row, its account, its orders and any enrichment
           // paid for against it all survive. `is('odoo_missing_since', null)`
@@ -1705,6 +1961,7 @@ const customerRoutes: FastifyPluginAsync = async (fastify) => {
         customer_accounts: {
           created: insertedAccounts.length,
           linked: accountIdByKey.size,
+          renamed: accountsRenamed,
         },
         customer_addresses: {
           created: addressesCreated,
@@ -1714,6 +1971,7 @@ const customerRoutes: FastifyPluginAsync = async (fastify) => {
           created: ordersCreated,
           updated: ordersUpdated,
           skipped_unknown_partner: ordersSkippedUnknownPartner,
+          rolled_up_to_company: ordersRolledUpToCompany,
         },
         customer_order_lines: {
           replaced: lineCount,

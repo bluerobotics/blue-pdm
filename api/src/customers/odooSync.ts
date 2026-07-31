@@ -264,14 +264,17 @@ export const ORDER_COLUMN_MAP: readonly ColumnMapping[] = [
 /**
  * Fields requested from res.partner for a customer row.
  *
- * `customer_rank` is requested because it is also the customer filter;
- * `write_date` because it is the incremental sync's watermark; `id` is always
- * returned by Odoo but is listed so the intersection reports honestly.
+ * Three are requested without becoming columns: `customer_rank` because it is
+ * also the customer filter, `write_date` because it is the incremental sync's
+ * watermark, and `commercial_partner_id` because it is what an order is
+ * credited to. `id` is always returned by Odoo but is listed so the
+ * intersection reports honestly.
  */
 export const PARTNER_FIELDS: readonly string[] = [
   'id',
   ...PARTNER_COLUMN_MAP.map((m) => m.field),
   'customer_rank',
+  'commercial_partner_id',
   'write_date',
 ]
 
@@ -285,6 +288,11 @@ export const ADDRESS_FIELDS: readonly string[] = ['id', ...ADDRESS_COLUMN_MAP.ma
  * than becoming columns of their own. `currency_id` is requested because the
  * sync contract asks for it, but customer_orders has no currency column, so it
  * is read and then dropped.
+ *
+ * There is deliberately no `commercial_partner_id` here: standard Odoo does not
+ * define one on sale.order, only on res.partner. Asking for it means
+ * intersectFields quietly drops it and every order silently falls back to the
+ * contact. See {@link commercialPartnerMap}.
  */
 export const ORDER_FIELDS: readonly string[] = [
   'id',
@@ -408,6 +416,134 @@ export function resolveStickyAccountId(
 ): string | null {
   if (existingAccountId) return existingAccountId
   return derived ?? null
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ORDER ATTRIBUTION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Which customer rows an order hangs off. */
+export interface OrderOwner {
+  /** The customer whose spend, order count and recency the order feeds. */
+  customerId: string | null
+  /** The contact who placed it, when that is a different customer row. */
+  contactId: string | null
+}
+
+/**
+ * Which company each contact belongs to, keyed and valued by erp_id.
+ *
+ * `res.partner.commercial_partner_id` is a stored, indexed field maintained by
+ * Odoo: a partner that is a company, or has no parent, is its own commercial
+ * partner; anyone else inherits their parent's. It is the same field Odoo's own
+ * sales reporting groups by.
+ *
+ * Note this is read from res.partner and not from sale.order, which has no such
+ * field in standard Odoo - a distinction worth keeping in mind, because asking
+ * sale.order for it fails silently rather than loudly.
+ *
+ * Partners that are their own commercial partner are left out: the map is
+ * consulted with a fallback to the contact, so storing the identity mapping
+ * would only make it bigger.
+ */
+export function commercialPartnerMap(
+  partners: readonly OdooRecord[],
+): Map<string, string> {
+  const byContact = new Map<string, string>()
+
+  for (const partner of partners) {
+    const erpId = odooNumber(partner.id)
+    if (erpId === null) continue
+
+    const commercial = many2oneErpId(partner.commercial_partner_id)
+    if (commercial === null || commercial === String(erpId)) continue
+
+    byContact.set(String(erpId), commercial)
+  }
+
+  return byContact
+}
+
+/**
+ * Decide which customer an order's revenue belongs to.
+ *
+ * `sale.order.partner_id` is the ordering *contact*, which for a company
+ * customer is a child res.partner - one of its employees. Attributing revenue
+ * there splits a company's history across whoever happened to be named on each
+ * order, and leaves the company row itself looking like it stopped buying on
+ * the day the last order was booked directly against it. A long-standing
+ * customer then ages past the 365-day threshold and reads as churned while its
+ * contacts show orders from this morning.
+ *
+ * So the contact is resolved to its company first, via
+ * {@link commercialPartnerMap}, and the money goes there.
+ *
+ * The contact remains the fallback at every step, so an Odoo that does not
+ * expose the field, a contact whose company was never pulled, and a company
+ * that is not mirrored as a customer all behave exactly as before rather than
+ * dropping the order.
+ */
+export function resolveOrderOwner(
+  order: OdooRecord,
+  customerIdByErpId: ReadonlyMap<string, string>,
+  commercialByContactErpId: ReadonlyMap<string, string>,
+): OrderOwner {
+  const contactErpId = many2oneErpId(order.partner_id)
+  if (contactErpId === null) return { customerId: null, contactId: null }
+
+  const commercialErpId = commercialByContactErpId.get(contactErpId) ?? contactErpId
+
+  const contactId = customerIdByErpId.get(contactErpId) ?? null
+  const commercialId = customerIdByErpId.get(commercialErpId) ?? null
+
+  const customerId = commercialId ?? contactId
+
+  return {
+    customerId,
+    // Recording the contact only when it differs keeps the column meaningful:
+    // it answers "who placed this on the company's behalf", and is null for an
+    // order the customer placed itself.
+    contactId: contactId === customerId ? null : contactId,
+  }
+}
+
+/** The distinct partners an order set names, which is who Odoo billed. */
+export function orderContactIds(orders: readonly OdooRecord[]): number[] {
+  const ids = new Set<number>()
+
+  for (const order of orders) {
+    const contact = many2oneId(order.partner_id)
+    if (contact !== null) ids.add(contact)
+  }
+
+  return [...ids]
+}
+
+/**
+ * Ids in `wanted` that the partner pull did not bring back.
+ *
+ * Used twice in step 4a: first for the order contacts whose company is unknown
+ * because the contact itself was not pulled, then for the companies those
+ * contacts name. A company whose contacts place all the orders can sit at
+ * `customer_rank = 0` in Odoo and so never match the customer domain, even
+ * though it is the partner every one of those orders is attributed to.
+ */
+export function idsNotYetPulled(
+  wanted: Iterable<number | string>,
+  pulledErpIds: ReadonlySet<string>,
+): number[] {
+  const missing = new Set<number>()
+
+  for (const id of wanted) {
+    const numeric = odooNumber(id)
+    // Odoo ids start at 1, so anything at or below zero is a parse artefact -
+    // odooNumber('') is 0 - and reading it would be a wasted round trip.
+    if (numeric === null || numeric <= 0) continue
+    if (pulledErpIds.has(String(numeric))) continue
+    missing.add(numeric)
+  }
+
+  return [...missing]
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

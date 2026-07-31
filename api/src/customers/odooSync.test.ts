@@ -3,17 +3,20 @@ import { deriveAccount } from './grouping.js'
 import {
   ADDRESS_COLUMN_MAP,
   ORDER_COLUMN_MAP,
+  ORDER_FIELDS,
   PARTNER_COLUMN_MAP,
   PARTNER_FIELDS,
   WATERMARK_OVERLAP_MS,
   accountInputFromRow,
   changedSinceDomain,
   chunk,
+  commercialPartnerMap,
   computeCustomerAggregates,
   customerDomain,
   customerMarker,
   emptyAggregates,
   fillMissingColumns,
+  idsNotYetPulled,
   intersectFields,
   isCustomerPartner,
   latestWriteDate,
@@ -28,9 +31,11 @@ import {
   odooDateTime,
   odooNumber,
   odooText,
+  orderContactIds,
   parseFieldsGet,
   parseIdList,
   planOrderRefresh,
+  resolveOrderOwner,
   resolveStickyAccountId,
   summariseOrderLines,
   toOdooDateTime,
@@ -447,6 +452,165 @@ describe('accountInputFromRow', () => {
 
     // Same account as the company above, so the pair is researched once.
     expect(account.accountKey).toBe('company:acme subsea')
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ORDER ATTRIBUTION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('the field lists behind order attribution', () => {
+  it('asks res.partner for commercial_partner_id, which is where it lives', () => {
+    expect(PARTNER_FIELDS).toContain('commercial_partner_id')
+  })
+
+  it('does not ask sale.order for commercial_partner_id, which has no such field', () => {
+    // Asking for it does not fail the sync, it fails the attribution:
+    // intersectFields drops the unknown field and every order quietly falls
+    // back to its contact, which is the bug this whole section exists to stop.
+    expect(ORDER_FIELDS).not.toContain('commercial_partner_id')
+  })
+})
+
+describe('commercialPartnerMap', () => {
+  it('maps a contact to the company Odoo files it under', () => {
+    const map = commercialPartnerMap([
+      { id: 12, commercial_partner_id: [11, 'Acme Subsea Ltd'] },
+      { id: 13, commercial_partner_id: [11, 'Acme Subsea Ltd'] },
+    ])
+
+    expect(map.get('12')).toBe('11')
+    expect(map.get('13')).toBe('11')
+  })
+
+  it('leaves out a partner that is its own commercial partner', () => {
+    // A company, or an individual with no parent. The map is read with a
+    // fallback to the contact, so an identity entry would be dead weight.
+    const map = commercialPartnerMap([
+      { id: 11, commercial_partner_id: [11, 'Acme Subsea Ltd'] },
+      { id: 30, commercial_partner_id: [30, 'Walk-in'] },
+    ])
+
+    expect(map.size).toBe(0)
+  })
+
+  it('leaves out a partner from an Odoo that does not expose the field', () => {
+    expect(commercialPartnerMap([{ id: 12, name: 'Jo Diver' }]).size).toBe(0)
+  })
+})
+
+describe('resolveOrderOwner', () => {
+  // 11 is the company, 12 is one of its employees, 30 is a walk-in with no
+  // parent. All three are mirrored.
+  const mirrored = new Map([
+    ['11', 'uuid-acme'],
+    ['12', 'uuid-jo'],
+    ['30', 'uuid-solo'],
+  ])
+  const companies = new Map([
+    ['12', '11'],
+    ['98', '99'],
+  ])
+
+  it('credits the company, not the contact who placed the order', () => {
+    const order: OdooRecord = { id: 900, partner_id: [12, 'Jo Diver'] }
+
+    expect(resolveOrderOwner(order, mirrored, companies)).toEqual({
+      customerId: 'uuid-acme',
+      contactId: 'uuid-jo',
+    })
+  })
+
+  it('records no contact when the customer ordered under its own record', () => {
+    const order: OdooRecord = { id: 901, partner_id: [30, 'Walk-in'] }
+
+    expect(resolveOrderOwner(order, mirrored, companies)).toEqual({
+      customerId: 'uuid-solo',
+      contactId: null,
+    })
+  })
+
+  it('falls back to the contact when the company is not mirrored', () => {
+    // A company at customer_rank 0 that step 4a failed to top up, or an order
+    // whose parent lives outside the customer set entirely.
+    const order: OdooRecord = { id: 902, partner_id: [12, 'Jo Diver'] }
+
+    expect(resolveOrderOwner(order, mirrored, new Map([['12', '99']]))).toEqual({
+      customerId: 'uuid-jo',
+      contactId: null,
+    })
+  })
+
+  it('falls back to the contact when the contact has no known company', () => {
+    // An Odoo without the field, or a contact whose record step 4a could not
+    // read. Behaves exactly as the sync did before orders rolled up.
+    const order: OdooRecord = { id: 903, partner_id: [12, 'Jo Diver'] }
+
+    expect(resolveOrderOwner(order, mirrored, new Map())).toEqual({
+      customerId: 'uuid-jo',
+      contactId: null,
+    })
+  })
+
+  it('resolves nothing when neither the contact nor its company is mirrored', () => {
+    const order: OdooRecord = { id: 904, partner_id: [98, 'A Vendor'] }
+
+    expect(resolveOrderOwner(order, mirrored, companies)).toEqual({
+      customerId: null,
+      contactId: null,
+    })
+  })
+
+  it('credits the company even when the contact itself is not mirrored', () => {
+    // The common shape: Odoo flags the company as the customer and leaves its
+    // employees at customer_rank 0, so only the company has a customers row.
+    const order: OdooRecord = { id: 905, partner_id: [14, 'Unmirrored Employee'] }
+
+    expect(resolveOrderOwner(order, mirrored, new Map([['14', '11']]))).toEqual({
+      customerId: 'uuid-acme',
+      contactId: null,
+    })
+  })
+
+  it('treats an unset partner_id as no partner rather than as id 0', () => {
+    const order: OdooRecord = { id: 906, partner_id: false }
+
+    expect(resolveOrderOwner(order, mirrored, companies)).toEqual({
+      customerId: null,
+      contactId: null,
+    })
+  })
+})
+
+describe('orderContactIds', () => {
+  it('collects the partners the orders name, deduplicated', () => {
+    const ids = orderContactIds([
+      { id: 1, partner_id: [12, 'Jo Diver'] },
+      { id: 2, partner_id: [13, 'Sam Pilot'] },
+      { id: 3, partner_id: [12, 'Jo Diver'] },
+    ])
+
+    expect(ids.sort((a, b) => a - b)).toEqual([12, 13])
+  })
+
+  it('skips orders with no partner at all', () => {
+    expect(orderContactIds([{ id: 1, partner_id: false }])).toEqual([])
+  })
+})
+
+describe('idsNotYetPulled', () => {
+  it('names only what the pull did not bring back', () => {
+    // Acme (11) came back with the customer pull; Beta (21) sits at
+    // customer_rank 0 and has to be read by id.
+    expect(idsNotYetPulled(['11', '21'], new Set(['11', '12', '22']))).toEqual([21])
+  })
+
+  it('reports each id once however many times it is asked for', () => {
+    expect(idsNotYetPulled(['11', '11', 11], new Set())).toEqual([11])
+  })
+
+  it('ignores anything that is not a usable Odoo id', () => {
+    expect(idsNotYetPulled(['', 'not-an-id', 0, -1], new Set())).toEqual([])
   })
 })
 

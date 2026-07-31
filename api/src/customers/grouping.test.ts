@@ -229,6 +229,7 @@ describe('deriveAccount', () => {
       accountKey: 'company:acme subsea',
       kind: 'company',
       displayName: 'Acme Subsea Ltd',
+      source: 'company-name',
     })
   })
 
@@ -259,6 +260,7 @@ describe('deriveAccount', () => {
       accountKey: 'individual:hanna@gmail.com',
       kind: 'individual',
       displayName: 'Hanna Iversen',
+      source: 'individual',
     })
   })
 
@@ -269,6 +271,7 @@ describe('deriveAccount', () => {
       accountKey: 'company:oceaneering.com',
       kind: 'company',
       displayName: 'oceaneering.com',
+      source: 'email-domain',
     })
   })
 
@@ -277,6 +280,7 @@ describe('deriveAccount', () => {
       accountKey: 'individual:id:42',
       kind: 'individual',
       displayName: 'Walk-in customer',
+      source: 'individual',
     })
 
     expect(deriveAccount({ id: 43, email: 'not-an-email' }).accountKey).toBe('individual:id:43')
