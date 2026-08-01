@@ -11,10 +11,14 @@ import {
   X,
 } from 'lucide-react'
 
+import { usePDMStore } from '@/stores/pdmStore'
 import type { CustomerPanelState } from '@/stores/types'
 
 import { EnrichmentReport } from './EnrichmentReport'
+import { ChannelSelect } from '../components/ChannelSelect'
 import { useCustomerDetail } from '../hooks/useCustomerDetail'
+import { useSetAccountChannel } from '../hooks/useSetAccountChannel'
+import { channelMeta } from '../lib/channels'
 import {
   formatAmount,
   formatCount,
@@ -22,7 +26,8 @@ import {
   formatRelativeDays,
   MONEY_NOTE,
 } from '../lib/format'
-import { segmentMeta } from '../lib/segments'
+import { rangeOption } from '../lib/ranges'
+import { daysSince, deriveSegment, segmentMeta } from '../lib/segments'
 
 interface CustomerDetailPanelProps {
   panel: CustomerPanelState
@@ -41,18 +46,18 @@ const TABS: { id: DetailTab; label: string }[] = [
 export function CustomerDetailPanel({ panel, onClose }: CustomerDetailPanelProps) {
   const [tab, setTab] = useState<DetailTab>('profile')
   const detail = useCustomerDetail(panel.customerId)
+  const { canEdit, pendingId, setChannel } = useSetAccountChannel()
+  const scopeLabel = usePDMStore((s) => rangeOption(s.customerFilters.range).scopeLabel)
 
   const customer = detail.customer
 
-  const recencyDays = customer?.last_order_date
-    ? Math.floor(
-        (Date.now() - new Date(customer.last_order_date).getTime()) / (1000 * 60 * 60 * 24),
-      )
-    : null
+  const recencyDays = daysSince(customer?.last_order_date)
 
+  // From the lifetime columns, not the window's: a customer who bought for
+  // years and nothing this quarter is churned, not a prospect.
   const segment = customer
     ? segmentMeta(
-        deriveSegment(customer.order_count, customer.first_order_date, recencyDays),
+        deriveSegment(customer.order_count, customer.first_order_date, customer.last_order_date),
       )
     : null
 
@@ -92,6 +97,19 @@ export function CustomerDetailPanel({ panel, onClose }: CustomerDetailPanelProps
                 Gone from Odoo
               </span>
             )}
+            {/* Sits with the segment badge rather than under Profile because
+                it is the one field here a person sets rather than reads, and
+                it applies to the whole account, not this contact. */}
+            {customer && (
+              <ChannelSelect
+                channel={channelMeta(detail.accountChannel).id}
+                accountId={customer.account_id}
+                label={detail.accountName ?? customer.name}
+                canEdit={canEdit}
+                pending={pendingId === customer.account_id}
+                onChange={setChannel}
+              />
+            )}
             {detail.accountName && detail.accountName !== customer?.name && (
               <span className="text-[10px] text-plm-fg-muted truncate">{detail.accountName}</span>
             )}
@@ -110,12 +128,20 @@ export function CustomerDetailPanel({ panel, onClose }: CustomerDetailPanelProps
       {customer && (
         <div className="grid grid-cols-3 border-b border-plm-border divide-x divide-plm-border">
           <Stat
-            label="Lifetime spend"
-            value={formatAmount(customer.total_spent)}
-            hint={MONEY_NOTE}
+            label="Spend"
+            value={formatAmount(detail.window.spend)}
+            hint={`Confirmed orders ${scopeLabel}. ${MONEY_NOTE}`}
           />
-          <Stat label="Orders" value={formatCount(customer.order_count)} />
-          <Stat label="Last order" value={formatRelativeDays(recencyDays)} />
+          <Stat
+            label="Orders"
+            value={formatCount(detail.window.orders)}
+            hint={`Confirmed orders ${scopeLabel}.`}
+          />
+          <Stat
+            label="Last order"
+            value={formatRelativeDays(recencyDays)}
+            hint="When they last bought anything, whatever the selected range is."
+          />
         </div>
       )}
 
@@ -151,7 +177,12 @@ export function CustomerDetailPanel({ panel, onClose }: CustomerDetailPanelProps
         ) : !customer ? (
           <p className="text-xs text-plm-fg-muted text-center py-8">Customer not found</p>
         ) : tab === 'profile' ? (
-          <ProfileTab customer={customer} products={detail.products} />
+          <ProfileTab
+            customer={customer}
+            products={detail.products}
+            units={detail.window.units}
+            scopeLabel={scopeLabel}
+          />
         ) : tab === 'orders' ? (
           <OrdersTab orders={detail.orders} />
         ) : (
@@ -179,9 +210,13 @@ function Stat({ label, value, hint }: { label: string; value: string; hint?: str
 function ProfileTab({
   customer,
   products,
+  units,
+  scopeLabel,
 }: {
   customer: NonNullable<ReturnType<typeof useCustomerDetail>['customer']>
   products: ReturnType<typeof useCustomerDetail>['products']
+  units: number
+  scopeLabel: string
 }) {
   const address = [
     customer.street,
@@ -224,12 +259,12 @@ function ProfileTab({
       <Field label="VAT" value={customer.vat} />
       <Field label="Odoo partner" value={customer.erp_id ? `#${customer.erp_id}` : null} />
       <Field label="First order" value={formatDate(customer.first_order_date)} />
-      <Field label="Units bought" value={formatCount(customer.item_count)} />
+      <Field label="Units bought" value={formatCount(units)} />
 
       {products.length > 0 && (
         <div>
           <h4 className="text-[10px] uppercase tracking-wide text-plm-fg-muted mb-1.5">
-            Top products
+            Top products {scopeLabel}
           </h4>
           <div className="space-y-1">
             {products.slice(0, 8).map((product) => (
@@ -257,7 +292,11 @@ function ProfileTab({
 
 function OrdersTab({ orders }: { orders: ReturnType<typeof useCustomerDetail>['orders'] }) {
   if (orders.length === 0) {
-    return <p className="text-xs text-plm-fg-muted text-center py-8">No orders on record</p>
+    return (
+      <p className="text-xs text-plm-fg-muted text-center py-8">
+        No orders in the selected date range
+      </p>
+    )
   }
 
   return (
@@ -274,9 +313,10 @@ function OrdersTab({ orders }: { orders: ReturnType<typeof useCustomerDetail>['o
               <div className="text-[11px] text-plm-fg truncate">
                 {order.erp_id ? `SO #${order.erp_id}` : 'Order'}
               </div>
-              <div className="text-[10px] text-plm-fg-muted">
+              <div className="text-[10px] text-plm-fg-muted truncate">
                 {formatDate(order.order_date)}
                 {order.status && ` · ${order.status}`}
+                {order.contact_name && ` · ${order.contact_name}`}
               </div>
             </div>
 
@@ -336,24 +376,3 @@ function Field({ label, value }: { label: string; value: string | null | undefin
   )
 }
 
-/**
- * Mirrors customer_lifecycle_segment() in 60-customers.sql.
- *
- * Duplicated here because the panel loads a plain customers row rather than
- * going back through the RFM aggregate for a single record. The thresholds
- * must stay in step with the SQL; the branch order matters for the same reason.
- */
-function deriveSegment(
-  orderCount: number | null,
-  firstOrder: string | null,
-  recencyDays: number | null,
-): string {
-  if (!orderCount || recencyDays == null) return 'prospect'
-  if (recencyDays > 365) return 'churned'
-  if (recencyDays > 180) return 'at_risk'
-  if (firstOrder) {
-    const daysSinceFirst = (Date.now() - new Date(firstOrder).getTime()) / (1000 * 60 * 60 * 24)
-    if (daysSinceFirst <= 90) return 'new'
-  }
-  return 'active'
-}

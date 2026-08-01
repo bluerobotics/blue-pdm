@@ -2,7 +2,9 @@
  * WaypointContextMenu - Context menu for managing transition waypoints/control points
  */
 import { memo } from 'react'
-import type { WaypointContextMenu as WaypointContextMenuType, WorkflowTransition } from '../types'
+import type { WorkflowTransition } from '@/types/workflow'
+
+import type { WaypointContextMenu as WaypointContextMenuType } from '../types'
 
 interface WaypointContextMenuProps {
   menu: WaypointContextMenuType

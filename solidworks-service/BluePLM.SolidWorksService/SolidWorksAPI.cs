@@ -26,6 +26,14 @@ namespace BluePLM.SolidWorksService
         private readonly ComStabilityLayer? _comStability;
 
         /// <summary>
+        /// PID of the SLDWORKS.exe this service launched, or 0 when we own none.
+        /// Reported to the host so its orphan watchdog does not kill an instance we
+        /// started: a headless launch keeps the __wglDummyWindowFodder window title,
+        /// which is exactly the watchdog's zombie criterion.
+        /// </summary>
+        private int _launchedProcessId;
+
+        /// <summary>
         /// The stability layer, reachable from the static COM helpers below.
         /// The service creates exactly one SolidWorksAPI, so this is effectively the same
         /// instance as <see cref="_comStability"/>.
@@ -458,8 +466,21 @@ namespace BluePLM.SolidWorksService
             if (swType == null)
                 throw new Exception("SolidWorks is not installed on this machine");
 
+            // Snapshot first so the new PID can be identified by difference if the
+            // COM object refuses to report it.
+            var pidsBeforeLaunch = GetSolidWorksProcessIds();
+
+            // CreateInstance can block for tens of seconds, during which SLDWORKS.exe
+            // already exists but its PID is not known here yet. Tell the host to hold
+            // off its orphan cleanup until the PID is claimed below.
+            Console.Error.WriteLine("[SW-API] LAUNCHING_SW");
+
             _swApp = (ISldWorks)Activator.CreateInstance(swType)!;
             _weStartedSW = true;
+
+            // Claim the PID before the long startup wait below: the host's watchdog
+            // scans every 5s and would otherwise kill this instance mid-startup.
+            ClaimLaunchedProcess(ResolveLaunchedProcessId(_swApp, pidsBeforeLaunch));
 
             // Run hidden
             _swApp.Visible = false;
@@ -483,6 +504,68 @@ namespace BluePLM.SolidWorksService
             return _swApp;
         }
 
+        /// <summary>
+        /// PIDs of every SLDWORKS.exe currently running.
+        /// </summary>
+        private static int[] GetSolidWorksProcessIds()
+        {
+            try
+            {
+                return Process.GetProcessesByName("SLDWORKS").Select(p => p.Id).ToArray();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[SW-API] GetSolidWorksProcessIds failed: {ex.Message}");
+                return Array.Empty<int>();
+            }
+        }
+
+        /// <summary>
+        /// PID of the instance we just launched. Asks SolidWorks directly, and falls
+        /// back to whichever SLDWORKS.exe appeared since <paramref name="pidsBeforeLaunch"/>
+        /// was taken.
+        /// </summary>
+        private static int ResolveLaunchedProcessId(ISldWorks app, int[] pidsBeforeLaunch)
+        {
+            try
+            {
+                var pid = app.GetProcessID();
+                if (pid > 0) return pid;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[SW-API] GetProcessID failed, falling back to process diff: {ex.Message}");
+            }
+
+            var newPids = GetSolidWorksProcessIds().Except(pidsBeforeLaunch).ToArray();
+            if (newPids.Length == 1) return newPids[0];
+
+            Console.Error.WriteLine($"[SW-API] Could not identify launched PID ({newPids.Length} new SLDWORKS.exe process(es))");
+            return 0;
+        }
+
+        /// <summary>
+        /// Tell the host we own this SolidWorks process so its orphan watchdog spares it.
+        /// </summary>
+        private void ClaimLaunchedProcess(int pid)
+        {
+            if (pid <= 0) return;
+
+            _launchedProcessId = pid;
+            Console.Error.WriteLine($"[SW-API] LAUNCHED_PID={pid}");
+        }
+
+        /// <summary>
+        /// Give up ownership of the launched process, so the host may clean it up again.
+        /// </summary>
+        private void ReleaseLaunchedProcess()
+        {
+            if (_launchedProcessId <= 0) return;
+
+            Console.Error.WriteLine($"[SW-API] RELEASED_PID={_launchedProcessId}");
+            _launchedProcessId = 0;
+        }
+
         private void CloseSolidWorksIfWeStartedIt()
         {
             if (!_keepRunning && _weStartedSW && _swApp != null)
@@ -492,6 +575,7 @@ namespace BluePLM.SolidWorksService
                     _swApp.ExitApp();
                     _swApp = null;
                     _weStartedSW = false;
+                    ReleaseLaunchedProcess();
                 }
                 catch { }
             }
@@ -575,6 +659,43 @@ namespace BluePLM.SolidWorksService
         }
 
         /// <summary>
+        /// The SolidWorks handle this instance already holds, or null when it holds none or
+        /// the handle is dead. Validating costs one cheap COM call; a fresh ROT lookup does not.
+        /// </summary>
+        private ISldWorks? GetCachedLiveSwAppOrNull()
+        {
+            if (_swApp == null) return null;
+
+            try
+            {
+                var _ = _swApp.RevisionNumber();
+                return _swApp;
+            }
+            catch
+            {
+                Console.Error.WriteLine("[SW-API] GetCachedLiveSwAppOrNull: Cached reference is dead, clearing");
+                _swApp = null;
+                return null;
+            }
+        }
+
+        private static bool IsFileAmongOpenDocuments(ISldWorks swApp, string filePath)
+        {
+            var docs = (object[])swApp.GetDocuments();
+            if (docs == null || docs.Length == 0)
+                return false;
+
+            foreach (ModelDoc2 doc in docs)
+            {
+                var openPath = doc.GetPathName();
+                if (string.Equals(openPath, filePath, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
         /// Check if a file is currently open in a running SolidWorks instance.
         /// Used to decide whether to use DM API (if file not open) or SW API (if file is open).
         /// This avoids the DM API conflict where accessing a file open in SW causes SW to close it.
@@ -583,6 +704,17 @@ namespace BluePLM.SolidWorksService
         {
             try
             {
+                // A handle we already hold answers this exactly and costs nothing. It also
+                // keeps working when the ROT lookup below fails with MK_E_UNAVAILABLE, which
+                // happens for a whole session when SolidWorks and this service run at
+                // different integrity levels. Without this, every call takes the fail-safe
+                // "assume open" branch and loses the fast Document Manager path.
+                var cachedApp = GetCachedLiveSwAppOrNull();
+                if (cachedApp != null)
+                {
+                    return IsFileAmongOpenDocuments(cachedApp, filePath);
+                }
+
                 // A probe moments ago already established SW is running with COM
                 // unreachable; re-running it would cost seconds for the same answer.
                 if (IsComKnownUnavailable())
@@ -618,20 +750,8 @@ namespace BluePLM.SolidWorksService
                 }
 
                 MarkComAvailable();
-                ISldWorks swApp = (ISldWorks)swObj;
 
-                var docs = (object[])swApp.GetDocuments();
-                if (docs == null || docs.Length == 0)
-                    return false;
-
-                foreach (ModelDoc2 doc in docs)
-                {
-                    var openPath = doc.GetPathName();
-                    if (string.Equals(openPath, filePath, StringComparison.OrdinalIgnoreCase))
-                        return true;
-                }
-
-                return false;
+                return IsFileAmongOpenDocuments((ISldWorks)swObj, filePath);
             }
             catch (Exception ex)
             {
@@ -1985,11 +2105,12 @@ namespace BluePLM.SolidWorksService
                 
                 // Build output filename using pattern if provided
                 string finalOutputPath;
+                ResolvedExportMetadata? resolvedMetadata = null;
                 if (!string.IsNullOrEmpty(filenamePattern))
                 {
                     // Drawings don't have configurations, pass empty string for config name
                     // isDrawingExport=true ensures revision comes only from drawing file, not PDM (which would be from parent part)
-                    var fileName = FormatExportFilename(filenamePattern!, baseName, "", props, ".pdf", pdmMetadata, isDrawingExport: true);
+                    var fileName = FormatExportFilename(filenamePattern!, baseName, "", props, ".pdf", out resolvedMetadata, pdmMetadata, isDrawingExport: true);
                     finalOutputPath = Path.Combine(outputDir, fileName);
                 }
                 else if (!string.IsNullOrEmpty(outputPath) && outputPath!.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))
@@ -2035,7 +2156,8 @@ namespace BluePLM.SolidWorksService
                     {
                         inputFile = filePath,
                         outputFile = finalOutputPath,
-                        fileSize = new FileInfo(finalOutputPath).Length
+                        fileSize = new FileInfo(finalOutputPath).Length,
+                        resolvedMetadata
                     }
                 };
             }
@@ -2146,7 +2268,7 @@ namespace BluePLM.SolidWorksService
                         string configOutputPath;
                         if (!string.IsNullOrEmpty(filenamePattern))
                         {
-                            var fileName = FormatExportFilename(filenamePattern!, baseName, configName, props, ".step", pdmMetadata);
+                            var fileName = FormatExportFilename(filenamePattern!, baseName, configName, props, ".step", out _, pdmMetadata);
                             configOutputPath = Path.Combine(outputDir, fileName);
                         }
                         else
@@ -2426,7 +2548,7 @@ namespace BluePLM.SolidWorksService
                         string configOutputPath;
                         if (!string.IsNullOrEmpty(filenamePattern))
                         {
-                            var fileName = FormatExportFilename(filenamePattern!, baseName, configName, props, ".stl", pdmMetadata);
+                            var fileName = FormatExportFilename(filenamePattern!, baseName, configName, props, ".stl", out _, pdmMetadata);
                             configOutputPath = Path.Combine(outputDir, fileName);
                         }
                         else
@@ -3346,7 +3468,8 @@ namespace BluePLM.SolidWorksService
         /// {datetime} - Current date and time (YYYY-MM-DD_HH-MM-SS)
         /// </summary>
         /// <param name="isDrawingExport">If true, revision is authoritative from the drawing file only - PDM revision fallback is skipped (it would come from the parent part)</param>
-        private string FormatExportFilename(string pattern, string baseName, string configName, Dictionary<string, string> props, string extension, PdmMetadata? pdmMetadata = null, bool isDrawingExport = false)
+        /// <param name="resolved">The values actually substituted into the pattern. Callers report these back so bluePLM can tag the exported file with what was used rather than what it requested.</param>
+        private string FormatExportFilename(string pattern, string baseName, string configName, Dictionary<string, string> props, string extension, out ResolvedExportMetadata resolved, PdmMetadata? pdmMetadata = null, bool isDrawingExport = false)
         {
             var now = DateTime.Now;
             
@@ -3401,6 +3524,14 @@ namespace BluePLM.SolidWorksService
             }
             
             Console.Error.WriteLine($"[Export] Final resolved: partNumber='{partNumber}', tabNumber='{tabNumber}', revision='{revision}', description='{description}'");
+
+            resolved = new ResolvedExportMetadata
+            {
+                PartNumber = partNumber,
+                TabNumber = tabNumber,
+                Revision = revision,
+                Description = description
+            };
             
             // Replace placeholders (case-insensitive)
             var result = pattern;
@@ -4689,6 +4820,7 @@ namespace BluePLM.SolidWorksService
                 try { _swApp.ExitApp(); } catch { }
             }
 
+            ReleaseLaunchedProcess();
             _swApp = null;
             GC.Collect();
         }

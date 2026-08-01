@@ -11,7 +11,6 @@ import {
   FileCode,
   FileText,
   Cpu,
-  Loader2,
 } from 'lucide-react'
 import { getFileIconType } from '@/lib/utils'
 
@@ -23,8 +22,6 @@ export interface FileCardIconProps {
   }
   iconSize: number
   thumbnail: string | null
-  thumbnailError: boolean
-  loadingThumbnail: boolean
   folderIconColor: string
   onThumbnailError: () => void
 }
@@ -36,8 +33,6 @@ export function FileCardIcon({
   file,
   iconSize,
   thumbnail,
-  thumbnailError,
-  loadingThumbnail,
   folderIconColor,
   onThumbnailError,
 }: FileCardIconProps) {
@@ -49,22 +44,20 @@ export function FileCardIcon({
     return <FolderOpen size={iconSizeScaled} className={folderIconColor || 'text-plm-accent'} />
   }
 
-  // Thumbnail from SolidWorks file
-  if (thumbnail && !thumbnailError) {
+  // Thumbnail from SolidWorks file. The browser fetches it, so there is no
+  // loading state to render: the type icon below shows until the image decodes.
+  if (thumbnail) {
     return (
       <img
         src={thumbnail}
         alt={file.name}
         className="w-full h-full object-contain"
         style={{ maxWidth: iconSize, maxHeight: iconSize }}
+        loading="lazy"
+        decoding="async"
         onError={onThumbnailError}
       />
     )
-  }
-
-  // Loading spinner while fetching thumbnail
-  if (loadingThumbnail) {
-    return <Loader2 size={iconSize * 0.4} className="text-plm-fg-muted animate-spin" />
   }
 
   // File type icons

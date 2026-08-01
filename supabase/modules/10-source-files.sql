@@ -131,62 +131,35 @@ END $$;
 -- DO/function block) and IF NOT EXISTS makes it idempotent.
 ALTER TYPE review_status ADD VALUE IF NOT EXISTS 'kicked_back';
 
--- Advanced workflow enums
+-- Box edge an anchored transition endpoint is attached to
 DO $$ BEGIN
-  CREATE TYPE state_permission_type AS ENUM (
-    'read_file', 'write_file', 'delete_file', 'add_file',
-    'rename_file', 'change_state', 'edit_metadata'
-  );
+  CREATE TYPE transition_edge AS ENUM ('left', 'right', 'top', 'bottom');
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
-DO $$ BEGIN
-  CREATE TYPE condition_type AS ENUM (
-    'file_path', 'file_extension', 'variable', 'revision',
-    'category', 'checkout_status', 'user_role', 'workflow_role',
-    'file_owner', 'custom_sql'
-  );
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
+-- Migration (v86): drop the advanced-workflow tables that were never wired up.
+-- They carried RLS with no policies (deny-all) and no application code ever read
+-- or wrote them. Transition guards, actions, notifications, timers and tasks are
+-- not part of the engine; approvals go through workflow_gates + pending_reviews.
+DROP TABLE IF EXISTS pending_transition_approvals CASCADE;
+DROP TABLE IF EXISTS workflow_approval_reviewers CASCADE;
+DROP TABLE IF EXISTS workflow_transition_approvals CASCADE;
+DROP TABLE IF EXISTS workflow_transition_notifications CASCADE;
+DROP TABLE IF EXISTS workflow_transition_actions CASCADE;
+DROP TABLE IF EXISTS workflow_transition_conditions CASCADE;
+DROP TABLE IF EXISTS workflow_auto_transitions CASCADE;
+DROP TABLE IF EXISTS workflow_state_permissions CASCADE;
+DROP TABLE IF EXISTS workflow_tasks CASCADE;
+DROP TABLE IF EXISTS revision_schemes CASCADE;
 
-DO $$ BEGIN
-  CREATE TYPE action_type AS ENUM (
-    'increment_revision', 'set_variable', 'clear_variable',
-    'send_notification', 'execute_task', 'set_file_permission',
-    'copy_file', 'run_script'
-  );
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
-
-DO $$ BEGIN
-  CREATE TYPE revision_scheme_type AS ENUM (
-    'numeric', 'alpha_upper', 'alpha_lower', 'alphanumeric', 'custom'
-  );
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
-
-DO $$ BEGIN
-  CREATE TYPE auto_trigger_type AS ENUM (
-    'timer', 'condition_met', 'all_approvals', 'schedule'
-  );
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
-
-DO $$ BEGIN
-  CREATE TYPE workflow_task_type AS ENUM (
-    'convert_pdf', 'convert_step', 'convert_iges', 'convert_edrawings',
-    'convert_dxf', 'custom_export', 'run_script', 'webhook'
-  );
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
-
-DO $$ BEGIN
-  CREATE TYPE notification_recipient_type AS ENUM (
-    'user', 'role', 'workflow_role', 'file_owner', 'file_creator',
-    'checkout_user', 'previous_state_user', 'all_org'
-  );
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
+-- Enums that only those tables used
+DROP TYPE IF EXISTS state_permission_type CASCADE;
+DROP TYPE IF EXISTS condition_type CASCADE;
+DROP TYPE IF EXISTS action_type CASCADE;
+DROP TYPE IF EXISTS revision_scheme_type CASCADE;
+DROP TYPE IF EXISTS auto_trigger_type CASCADE;
+DROP TYPE IF EXISTS workflow_task_type CASCADE;
+DROP TYPE IF EXISTS notification_recipient_type CASCADE;
 
 -- Revision scheme enum (used by organizations.revision_scheme column)
 DO $$ BEGIN
@@ -343,6 +316,8 @@ CREATE TABLE IF NOT EXISTS workflow_states (
   icon TEXT DEFAULT 'circle',
   position_x INTEGER DEFAULT 0,
   position_y INTEGER DEFAULT 0,
+  width INTEGER NOT NULL DEFAULT 120,
+  height INTEGER NOT NULL DEFAULT 60,
   is_editable BOOLEAN DEFAULT true,
   requires_checkout BOOLEAN DEFAULT true,
   auto_increment_revision BOOLEAN DEFAULT false,
@@ -355,6 +330,10 @@ CREATE TABLE IF NOT EXISTS workflow_states (
 
 -- Migration: Add triggers_review column for existing tables
 DO $$ BEGIN ALTER TABLE workflow_states ADD COLUMN triggers_review BOOLEAN DEFAULT FALSE; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+
+-- Migration (v86): node size is part of the saved diagram, not per-session UI state
+ALTER TABLE workflow_states ADD COLUMN IF NOT EXISTS width INTEGER NOT NULL DEFAULT 120;
+ALTER TABLE workflow_states ADD COLUMN IF NOT EXISTS height INTEGER NOT NULL DEFAULT 60;
 
 CREATE INDEX IF NOT EXISTS idx_workflow_states_workflow_id ON workflow_states(workflow_id);
 
@@ -639,10 +618,30 @@ CREATE TABLE IF NOT EXISTS workflow_transitions (
   line_thickness INTEGER DEFAULT 2,
   allowed_workflow_roles UUID[] DEFAULT '{}',
   auto_conditions JSONB,
+
+  -- Diagram routing. NULL anchors mean "wherever the centre-to-centre ray crosses
+  -- the border"; a set edge + fraction pins the endpoint to a spot the user chose.
+  start_edge transition_edge,
+  start_fraction DECIMAL(4,3),
+  end_edge transition_edge,
+  end_fraction DECIMAL(4,3),
+  waypoints JSONB NOT NULL DEFAULT '[]'::jsonb,
+  label_offset JSONB,
+  label_pinned JSONB,
+
   created_at TIMESTAMPTZ DEFAULT NOW(),
   
   UNIQUE(from_state_id, to_state_id)
 );
+
+-- Migration (v86): routing is part of the saved diagram, not per-session UI state
+ALTER TABLE workflow_transitions ADD COLUMN IF NOT EXISTS start_edge transition_edge;
+ALTER TABLE workflow_transitions ADD COLUMN IF NOT EXISTS start_fraction DECIMAL(4,3);
+ALTER TABLE workflow_transitions ADD COLUMN IF NOT EXISTS end_edge transition_edge;
+ALTER TABLE workflow_transitions ADD COLUMN IF NOT EXISTS end_fraction DECIMAL(4,3);
+ALTER TABLE workflow_transitions ADD COLUMN IF NOT EXISTS waypoints JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE workflow_transitions ADD COLUMN IF NOT EXISTS label_offset JSONB;
+ALTER TABLE workflow_transitions ADD COLUMN IF NOT EXISTS label_pinned JSONB;
 
 CREATE INDEX IF NOT EXISTS idx_workflow_transitions_workflow_id ON workflow_transitions(workflow_id);
 CREATE INDEX IF NOT EXISTS idx_workflow_transitions_from_state ON workflow_transitions(from_state_id);
@@ -820,216 +819,6 @@ CREATE TABLE IF NOT EXISTS workflow_review_history (
 CREATE INDEX IF NOT EXISTS idx_workflow_review_history_org_id ON workflow_review_history(org_id);
 CREATE INDEX IF NOT EXISTS idx_workflow_review_history_file_id ON workflow_review_history(file_id);
 CREATE INDEX IF NOT EXISTS idx_workflow_review_history_created_at ON workflow_review_history(created_at DESC);
-
--- ===========================================
--- ADVANCED WORKFLOW: REVISION SCHEMES
--- ===========================================
-
-CREATE TABLE IF NOT EXISTS revision_schemes (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  description TEXT,
-  scheme_type revision_scheme_type NOT NULL DEFAULT 'numeric',
-  start_value INTEGER DEFAULT 1,
-  increment_by INTEGER DEFAULT 1,
-  major_minor_separator TEXT DEFAULT '.',
-  minor_scheme_type revision_scheme_type DEFAULT 'numeric',
-  custom_pattern TEXT,
-  prefix TEXT DEFAULT '',
-  suffix TEXT DEFAULT '',
-  zero_padding INTEGER DEFAULT 0,
-  is_default BOOLEAN DEFAULT false,
-  is_active BOOLEAN DEFAULT true,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  created_by UUID REFERENCES users(id),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_revision_schemes_org_id ON revision_schemes(org_id);
-CREATE INDEX IF NOT EXISTS idx_revision_schemes_is_default ON revision_schemes(is_default);
-
--- ===========================================
--- ADVANCED WORKFLOW: STATE PERMISSIONS
--- ===========================================
-
-CREATE TABLE IF NOT EXISTS workflow_state_permissions (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  state_id UUID NOT NULL REFERENCES workflow_states(id) ON DELETE CASCADE,
-  permission_for TEXT NOT NULL,
-  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
-  role user_role,
-  workflow_role_id UUID REFERENCES workflow_roles(id) ON DELETE CASCADE,
-  can_read BOOLEAN DEFAULT true,
-  can_write BOOLEAN DEFAULT false,
-  can_delete BOOLEAN DEFAULT false,
-  can_add BOOLEAN DEFAULT false,
-  can_rename BOOLEAN DEFAULT false,
-  can_change_state BOOLEAN DEFAULT false,
-  can_edit_metadata BOOLEAN DEFAULT false,
-  comment_required_on_change BOOLEAN DEFAULT false,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  
-  UNIQUE(state_id, permission_for, user_id, role, workflow_role_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_workflow_state_permissions_state_id ON workflow_state_permissions(state_id);
-CREATE INDEX IF NOT EXISTS idx_workflow_state_permissions_user_id ON workflow_state_permissions(user_id);
-CREATE INDEX IF NOT EXISTS idx_workflow_state_permissions_role ON workflow_state_permissions(role);
-CREATE INDEX IF NOT EXISTS idx_workflow_state_permissions_workflow_role_id ON workflow_state_permissions(workflow_role_id);
-
--- ===========================================
--- ADVANCED WORKFLOW: TRANSITION CONDITIONS
--- ===========================================
-
-CREATE TABLE IF NOT EXISTS workflow_transition_conditions (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  transition_id UUID NOT NULL REFERENCES workflow_transitions(id) ON DELETE CASCADE,
-  condition_type condition_type NOT NULL,
-  operator TEXT NOT NULL DEFAULT 'equals',
-  value TEXT,
-  value_list TEXT[],
-  custom_sql TEXT,
-  is_required BOOLEAN DEFAULT true,
-  sort_order INTEGER DEFAULT 0,
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_workflow_transition_conditions_transition_id ON workflow_transition_conditions(transition_id);
-
--- ===========================================
--- ADVANCED WORKFLOW: TRANSITION ACTIONS
--- ===========================================
-
-CREATE TABLE IF NOT EXISTS workflow_transition_actions (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  transition_id UUID NOT NULL REFERENCES workflow_transitions(id) ON DELETE CASCADE,
-  action_type action_type NOT NULL,
-  execute_on TEXT DEFAULT 'success',
-  config JSONB DEFAULT '{}'::jsonb,
-  sort_order INTEGER DEFAULT 0,
-  is_active BOOLEAN DEFAULT true,
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_workflow_transition_actions_transition_id ON workflow_transition_actions(transition_id);
-
--- ===========================================
--- ADVANCED WORKFLOW: TRANSITION NOTIFICATIONS
--- ===========================================
-
-CREATE TABLE IF NOT EXISTS workflow_transition_notifications (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  transition_id UUID NOT NULL REFERENCES workflow_transitions(id) ON DELETE CASCADE,
-  recipient_type notification_recipient_type NOT NULL,
-  recipient_user_id UUID REFERENCES users(id) ON DELETE CASCADE,
-  recipient_role user_role,
-  recipient_workflow_role_id UUID REFERENCES workflow_roles(id) ON DELETE CASCADE,
-  subject_template TEXT NOT NULL,
-  body_template TEXT NOT NULL,
-  send_email BOOLEAN DEFAULT true,
-  send_in_app BOOLEAN DEFAULT true,
-  is_active BOOLEAN DEFAULT true,
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_workflow_transition_notifications_transition_id ON workflow_transition_notifications(transition_id);
-
--- ===========================================
--- ADVANCED WORKFLOW: TRANSITION APPROVALS
--- ===========================================
-
-CREATE TABLE IF NOT EXISTS workflow_transition_approvals (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  transition_id UUID NOT NULL REFERENCES workflow_transitions(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  description TEXT,
-  required_approvals INTEGER DEFAULT 1,
-  approval_mode approval_mode DEFAULT 'any',
-  allow_self_approval BOOLEAN DEFAULT false,
-  require_comment BOOLEAN DEFAULT false,
-  timeout_hours INTEGER,
-  escalation_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
-  sort_order INTEGER DEFAULT 0,
-  is_active BOOLEAN DEFAULT true,
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_workflow_transition_approvals_transition_id ON workflow_transition_approvals(transition_id);
-
--- ===========================================
--- ADVANCED WORKFLOW: APPROVAL REVIEWERS
--- ===========================================
-
-CREATE TABLE IF NOT EXISTS workflow_approval_reviewers (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  approval_id UUID NOT NULL REFERENCES workflow_transition_approvals(id) ON DELETE CASCADE,
-  reviewer_type notification_recipient_type NOT NULL,
-  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
-  role user_role,
-  workflow_role_id UUID REFERENCES workflow_roles(id) ON DELETE CASCADE,
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_workflow_approval_reviewers_approval_id ON workflow_approval_reviewers(approval_id);
-
--- ===========================================
--- ADVANCED WORKFLOW: AUTO TRANSITIONS
--- ===========================================
-
-CREATE TABLE IF NOT EXISTS workflow_auto_transitions (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  transition_id UUID NOT NULL REFERENCES workflow_transitions(id) ON DELETE CASCADE,
-  trigger_type auto_trigger_type NOT NULL,
-  timer_hours INTEGER,
-  schedule_cron TEXT,
-  schedule_timezone TEXT DEFAULT 'UTC',
-  condition_expression JSONB,
-  is_active BOOLEAN DEFAULT true,
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_workflow_auto_transitions_transition_id ON workflow_auto_transitions(transition_id);
-
--- ===========================================
--- ADVANCED WORKFLOW: TASKS
--- ===========================================
-
-CREATE TABLE IF NOT EXISTS workflow_tasks (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  description TEXT,
-  task_type workflow_task_type NOT NULL,
-  config JSONB DEFAULT '{}'::jsonb,
-  is_active BOOLEAN DEFAULT true,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  created_by UUID REFERENCES users(id),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_workflow_tasks_org_id ON workflow_tasks(org_id);
-
--- ===========================================
--- PENDING TRANSITION APPROVALS
--- ===========================================
-
-CREATE TABLE IF NOT EXISTS pending_transition_approvals (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-  file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-  transition_id UUID NOT NULL REFERENCES workflow_transitions(id) ON DELETE CASCADE,
-  approval_id UUID NOT NULL REFERENCES workflow_transition_approvals(id) ON DELETE CASCADE,
-  requested_by UUID NOT NULL REFERENCES users(id),
-  requested_at TIMESTAMPTZ DEFAULT NOW(),
-  status review_status DEFAULT 'pending',
-  expires_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_pending_transition_approvals_org_id ON pending_transition_approvals(org_id);
-CREATE INDEX IF NOT EXISTS idx_pending_transition_approvals_file_id ON pending_transition_approvals(file_id);
-CREATE INDEX IF NOT EXISTS idx_pending_transition_approvals_status ON pending_transition_approvals(status);
 
 -- ===========================================
 -- WORKFLOW HISTORY
@@ -1335,16 +1124,6 @@ ALTER TABLE user_workflow_roles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE file_workflow_assignments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pending_reviews ENABLE ROW LEVEL SECURITY;
 ALTER TABLE workflow_review_history ENABLE ROW LEVEL SECURITY;
-ALTER TABLE revision_schemes ENABLE ROW LEVEL SECURITY;
-ALTER TABLE workflow_state_permissions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE workflow_transition_conditions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE workflow_transition_actions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE workflow_transition_notifications ENABLE ROW LEVEL SECURITY;
-ALTER TABLE workflow_transition_approvals ENABLE ROW LEVEL SECURITY;
-ALTER TABLE workflow_approval_reviewers ENABLE ROW LEVEL SECURITY;
-ALTER TABLE workflow_auto_transitions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE workflow_tasks ENABLE ROW LEVEL SECURITY;
-ALTER TABLE pending_transition_approvals ENABLE ROW LEVEL SECURITY;
 ALTER TABLE workflow_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE file_state_entries ENABLE ROW LEVEL SECURITY;
 ALTER TABLE file_watchers ENABLE ROW LEVEL SECURITY;
@@ -1608,6 +1387,36 @@ DROP POLICY IF EXISTS "System can insert workflow review history" ON workflow_re
 CREATE POLICY "System can insert workflow review history"
   ON workflow_review_history FOR INSERT
   WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+-- Workflow History
+-- Append-only audit trail: anyone in the org can read it, the engine writes it,
+-- and nobody can rewrite or erase it (no UPDATE or DELETE policy).
+DROP POLICY IF EXISTS "Users can view workflow history in their org" ON workflow_history;
+CREATE POLICY "Users can view workflow history in their org"
+  ON workflow_history FOR SELECT
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+DROP POLICY IF EXISTS "Users can insert workflow history in their org" ON workflow_history;
+CREATE POLICY "Users can insert workflow history in their org"
+  ON workflow_history FOR INSERT
+  WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+
+-- File State Entries
+-- Scoped through the file, which carries the org id.
+DROP POLICY IF EXISTS "Users can view file state entries" ON file_state_entries;
+CREATE POLICY "Users can view file state entries"
+  ON file_state_entries FOR SELECT
+  USING (file_id IN (SELECT id FROM files WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid())));
+
+DROP POLICY IF EXISTS "Users can insert file state entries" ON file_state_entries;
+CREATE POLICY "Users can insert file state entries"
+  ON file_state_entries FOR INSERT
+  WITH CHECK (file_id IN (SELECT id FROM files WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid())));
+
+DROP POLICY IF EXISTS "Users can close file state entries" ON file_state_entries;
+CREATE POLICY "Users can close file state entries"
+  ON file_state_entries FOR UPDATE
+  USING (file_id IN (SELECT id FROM files WHERE org_id IN (SELECT org_id FROM users WHERE id = auth.uid())));
 
 -- File Watchers
 DROP POLICY IF EXISTS "Users can view file watchers in org" ON file_watchers;
@@ -1886,12 +1695,163 @@ BEGIN
   SELECT 
     wt.id, wt.name, ws.id, ws.name, ws.color,
     EXISTS(SELECT 1 FROM workflow_gates wg WHERE wg.transition_id = wt.id),
-    true
+    user_can_run_transition(p_user_id, wt.id)
   FROM workflow_transitions wt
   JOIN workflow_states ws ON wt.to_state_id = ws.id
   WHERE wt.from_state_id = v_current_state_id;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Replace a workflow's whole graph from an exported payload.
+--
+-- Importing used to be three unrelated round trips from the client: delete the
+-- transitions, delete the states, then re-create them one by one. Any failure
+-- part-way left the workflow empty. Doing it inside one function makes it a
+-- single transaction, so either the new graph lands complete or the old one is
+-- still there untouched.
+DROP FUNCTION IF EXISTS import_workflow_graph(UUID, JSONB) CASCADE;
+CREATE OR REPLACE FUNCTION import_workflow_graph(p_workflow_id UUID, p_payload JSONB)
+RETURNS JSONB AS $$
+DECLARE
+  v_org_id UUID;
+  v_state JSONB;
+  v_transition JSONB;
+  v_gate JSONB;
+  v_key_map JSONB := '{}'::jsonb;
+  v_state_id UUID;
+  v_transition_id UUID;
+  v_from_id UUID;
+  v_to_id UUID;
+  v_state_count INTEGER := 0;
+  v_transition_count INTEGER := 0;
+  v_gate_count INTEGER := 0;
+BEGIN
+  SELECT org_id INTO v_org_id FROM workflow_templates WHERE id = p_workflow_id;
+
+  IF v_org_id IS NULL THEN
+    RAISE EXCEPTION 'Workflow not found';
+  END IF;
+
+  IF v_org_id <> (SELECT org_id FROM users WHERE id = auth.uid()) OR NOT is_org_admin() THEN
+    RAISE EXCEPTION 'Only organization admins can import a workflow';
+  END IF;
+
+  IF jsonb_typeof(p_payload->'states') <> 'array' THEN
+    RAISE EXCEPTION 'Payload is missing a states array';
+  END IF;
+
+  DELETE FROM workflow_transitions WHERE workflow_id = p_workflow_id;
+  DELETE FROM workflow_states WHERE workflow_id = p_workflow_id;
+
+  FOR v_state IN SELECT * FROM jsonb_array_elements(p_payload->'states') LOOP
+    INSERT INTO workflow_states (
+      workflow_id, state_type, shape, name, label, description,
+      color, fill_opacity, border_color, border_opacity, border_thickness, corner_radius,
+      icon, position_x, position_y, width, height,
+      is_editable, requires_checkout, auto_increment_revision,
+      required_workflow_roles, triggers_review, sort_order
+    ) VALUES (
+      p_workflow_id,
+      COALESCE((v_state->>'state_type')::state_type, 'state'),
+      COALESCE((v_state->>'shape')::state_shape, 'rectangle'),
+      v_state->>'name',
+      v_state->>'label',
+      v_state->>'description',
+      COALESCE(v_state->>'color', '#6B7280'),
+      COALESCE((v_state->>'fill_opacity')::decimal, 1.0),
+      v_state->>'border_color',
+      COALESCE((v_state->>'border_opacity')::decimal, 1.0),
+      COALESCE((v_state->>'border_thickness')::integer, 2),
+      COALESCE((v_state->>'corner_radius')::integer, 8),
+      COALESCE(v_state->>'icon', 'circle'),
+      COALESCE((v_state->>'position_x')::integer, 0),
+      COALESCE((v_state->>'position_y')::integer, 0),
+      COALESCE((v_state->>'width')::integer, 120),
+      COALESCE((v_state->>'height')::integer, 60),
+      COALESCE((v_state->>'is_editable')::boolean, true),
+      COALESCE((v_state->>'requires_checkout')::boolean, true),
+      COALESCE((v_state->>'auto_increment_revision')::boolean, false),
+      '{}',
+      COALESCE((v_state->>'triggers_review')::boolean, false),
+      COALESCE((v_state->>'sort_order')::integer, v_state_count)
+    ) RETURNING id INTO v_state_id;
+
+    v_key_map := v_key_map || jsonb_build_object(v_state->>'key', v_state_id::text);
+    v_state_count := v_state_count + 1;
+  END LOOP;
+
+  IF jsonb_typeof(p_payload->'transitions') = 'array' THEN
+    FOR v_transition IN SELECT * FROM jsonb_array_elements(p_payload->'transitions') LOOP
+      v_from_id := (v_key_map->>(v_transition->>'from'))::uuid;
+      v_to_id := (v_key_map->>(v_transition->>'to'))::uuid;
+
+      IF v_from_id IS NULL OR v_to_id IS NULL THEN
+        RAISE EXCEPTION 'Transition references a state that is not in the payload';
+      END IF;
+
+      INSERT INTO workflow_transitions (
+        workflow_id, from_state_id, to_state_id, name, description,
+        line_style, line_color, line_path_type, line_arrow_head, line_thickness,
+        auto_conditions,
+        start_edge, start_fraction, end_edge, end_fraction, waypoints, label_offset, label_pinned
+      ) VALUES (
+        p_workflow_id, v_from_id, v_to_id,
+        v_transition->>'name',
+        v_transition->>'description',
+        COALESCE((v_transition->>'line_style')::transition_line_style, 'solid'),
+        v_transition->>'line_color',
+        COALESCE((v_transition->>'line_path_type')::transition_path_type, 'spline'),
+        COALESCE((v_transition->>'line_arrow_head')::transition_arrow_head, 'end'),
+        COALESCE((v_transition->>'line_thickness')::integer, 2),
+        v_transition->'auto_conditions',
+        (v_transition->>'start_edge')::transition_edge,
+        (v_transition->>'start_fraction')::decimal,
+        (v_transition->>'end_edge')::transition_edge,
+        (v_transition->>'end_fraction')::decimal,
+        COALESCE(v_transition->'waypoints', '[]'::jsonb),
+        v_transition->'label_offset',
+        v_transition->'label_pinned'
+      ) RETURNING id INTO v_transition_id;
+
+      v_transition_count := v_transition_count + 1;
+
+      IF jsonb_typeof(v_transition->'gates') = 'array' THEN
+        FOR v_gate IN SELECT * FROM jsonb_array_elements(v_transition->'gates') LOOP
+          INSERT INTO workflow_gates (
+            transition_id, name, description, gate_type, required_approvals,
+            approval_mode, checklist_items, conditions, is_blocking, can_be_skipped_by, sort_order
+          ) VALUES (
+            v_transition_id,
+            v_gate->>'name',
+            v_gate->>'description',
+            COALESCE((v_gate->>'gate_type')::gate_type, 'approval'),
+            COALESCE((v_gate->>'required_approvals')::integer, 1),
+            COALESCE((v_gate->>'approval_mode')::approval_mode, 'any'),
+            COALESCE(v_gate->'checklist_items', '[]'::jsonb),
+            v_gate->'conditions',
+            COALESCE((v_gate->>'is_blocking')::boolean, true),
+            COALESCE(
+              ARRAY(SELECT jsonb_array_elements_text(v_gate->'can_be_skipped_by'))::user_role[],
+              '{}'::user_role[]
+            ),
+            COALESCE((v_gate->>'sort_order')::integer, v_gate_count)
+          );
+
+          v_gate_count := v_gate_count + 1;
+        END LOOP;
+      END IF;
+    END LOOP;
+  END IF;
+
+  RETURN jsonb_build_object(
+    'state_count', v_state_count,
+    'transition_count', v_transition_count,
+    'gate_count', v_gate_count
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION import_workflow_graph(UUID, JSONB) TO authenticated;
 
 -- Generate share token
 DROP FUNCTION IF EXISTS generate_share_token() CASCADE;
@@ -3262,6 +3222,580 @@ END;
 $$;
 
 GRANT EXECUTE ON FUNCTION rename_folder_files(TEXT, TEXT, UUID, UUID) TO authenticated;
+
+-- ===========================================
+-- WORKFLOW ENGINE
+-- ===========================================
+-- Running a transition touches five tables and has to be all-or-nothing, so it
+-- lives here rather than in the client. Every guard the UI shows (current state,
+-- role membership, checkout) is re-checked here, because the UI is only a hint.
+
+-- Next revision in the org's scheme. Mirrors getNextRevision() in src/types/pdm.ts.
+DROP FUNCTION IF EXISTS next_revision_value(TEXT, revision_scheme) CASCADE;
+CREATE OR REPLACE FUNCTION next_revision_value(p_current TEXT, p_scheme revision_scheme)
+RETURNS TEXT AS $$
+DECLARE
+  v_chars TEXT[];
+  v_index INTEGER;
+BEGIN
+  IF p_scheme = 'numeric' THEN
+    RETURN lpad((COALESCE(NULLIF(regexp_replace(COALESCE(p_current, ''), '\D', '', 'g'), ''), '0')::integer + 1)::text, 2, '0');
+  END IF;
+
+  IF p_current IS NULL OR p_current = '' OR p_current = '-' THEN
+    RETURN 'A';
+  END IF;
+
+  v_chars := string_to_array(upper(p_current), NULL);
+  v_index := array_length(v_chars, 1);
+
+  WHILE v_index >= 1 LOOP
+    IF v_chars[v_index] = 'Z' THEN
+      v_chars[v_index] := 'A';
+      v_index := v_index - 1;
+    ELSE
+      v_chars[v_index] := chr(ascii(v_chars[v_index]) + 1);
+      RETURN array_to_string(v_chars, '');
+    END IF;
+  END LOOP;
+
+  RETURN 'A' || array_to_string(v_chars, '');
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+-- Legacy files.state value for a workflow state name, or NULL when the name
+-- doesn't correspond to one of the five legacy values. NULL means "leave the
+-- legacy column alone" rather than "clear it".
+DROP FUNCTION IF EXISTS legacy_file_state(TEXT) CASCADE;
+CREATE OR REPLACE FUNCTION legacy_file_state(p_state_name TEXT)
+RETURNS TEXT AS $$
+DECLARE
+  v_name TEXT;
+BEGIN
+  v_name := lower(regexp_replace(trim(COALESCE(p_state_name, '')), '\s+', '_', 'g'));
+
+  RETURN CASE v_name
+    WHEN 'not_tracked' THEN 'not_tracked'
+    WHEN 'wip' THEN 'wip'
+    WHEN 'work_in_progress' THEN 'wip'
+    WHEN 'draft' THEN 'wip'
+    WHEN 'in_review' THEN 'in_review'
+    WHEN 'review' THEN 'in_review'
+    WHEN 'released' THEN 'released'
+    WHEN 'obsolete' THEN 'obsolete'
+    WHEN 'archived' THEN 'obsolete'
+    ELSE NULL
+  END;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+-- True when the user may run this transition: no roles configured means anyone,
+-- otherwise they need one of them. Org admins always may.
+DROP FUNCTION IF EXISTS user_can_run_transition(UUID, UUID) CASCADE;
+CREATE OR REPLACE FUNCTION user_can_run_transition(p_user_id UUID, p_transition_id UUID)
+RETURNS BOOLEAN AS $$
+DECLARE
+  v_roles UUID[];
+BEGIN
+  SELECT allowed_workflow_roles INTO v_roles
+  FROM workflow_transitions WHERE id = p_transition_id;
+
+  IF v_roles IS NULL OR array_length(v_roles, 1) IS NULL THEN
+    RETURN TRUE;
+  END IF;
+
+  IF is_org_admin(p_user_id) THEN
+    RETURN TRUE;
+  END IF;
+
+  RETURN EXISTS (
+    SELECT 1 FROM user_workflow_roles uwr
+    WHERE uwr.user_id = p_user_id AND uwr.workflow_role_id = ANY(v_roles)
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION user_can_run_transition(UUID, UUID) TO authenticated;
+
+-- Moves a file into the transition's target state and records the move. Assumes
+-- its caller has already validated the transition; both entry points below do.
+-- Not granted to clients: it is the shared tail of those two.
+DROP FUNCTION IF EXISTS apply_workflow_transition(UUID, UUID, UUID, TEXT, JSONB) CASCADE;
+CREATE OR REPLACE FUNCTION apply_workflow_transition(
+  p_file_id UUID,
+  p_transition_id UUID,
+  p_user_id UUID,
+  p_comment TEXT,
+  p_approvals JSONB
+)
+RETURNS JSONB AS $$
+DECLARE
+  v_file files%ROWTYPE;
+  v_transition workflow_transitions%ROWTYPE;
+  v_from_state workflow_states%ROWTYPE;
+  v_to_state workflow_states%ROWTYPE;
+  v_workflow_name TEXT;
+  v_user_email TEXT;
+  v_scheme revision_scheme;
+  v_new_revision TEXT;
+  v_legacy_state TEXT;
+BEGIN
+  SELECT * INTO v_file FROM files WHERE id = p_file_id;
+  SELECT * INTO v_transition FROM workflow_transitions WHERE id = p_transition_id;
+  SELECT * INTO v_to_state FROM workflow_states WHERE id = v_transition.to_state_id;
+  SELECT * INTO v_from_state FROM workflow_states WHERE id = v_transition.from_state_id;
+  SELECT name INTO v_workflow_name FROM workflow_templates WHERE id = v_transition.workflow_id;
+  SELECT email INTO v_user_email FROM users WHERE id = p_user_id;
+
+  v_new_revision := v_file.revision;
+  IF COALESCE(v_to_state.auto_increment_revision, false) THEN
+    SELECT COALESCE(revision_scheme, 'letter') INTO v_scheme
+    FROM organizations WHERE id = v_file.org_id;
+    v_new_revision := next_revision_value(v_file.revision, COALESCE(v_scheme, 'letter'));
+  END IF;
+
+  v_legacy_state := legacy_file_state(v_to_state.name);
+
+  UPDATE file_workflow_assignments
+  SET current_state_id = v_to_state.id
+  WHERE file_id = p_file_id;
+
+  UPDATE files
+  SET workflow_state_id = v_to_state.id,
+      state = COALESCE(v_legacy_state, state),
+      revision = v_new_revision,
+      state_changed_at = NOW(),
+      state_changed_by = p_user_id,
+      updated_at = NOW(),
+      updated_by = p_user_id
+  WHERE id = p_file_id;
+
+  UPDATE file_state_entries
+  SET exited_at = NOW(), exited_by = p_user_id,
+      duration_seconds = GREATEST(0, EXTRACT(EPOCH FROM (NOW() - entered_at))::integer)
+  WHERE file_id = p_file_id AND exited_at IS NULL;
+
+  INSERT INTO file_state_entries (file_id, state_id, entered_by)
+  VALUES (p_file_id, v_to_state.id, p_user_id);
+
+  INSERT INTO workflow_history (
+    org_id, file_id, file_path, file_name,
+    workflow_id, workflow_name,
+    from_state_id, from_state_name, to_state_id, to_state_name,
+    transition_id, transition_name,
+    performed_by, performed_by_email, comment,
+    revision_before, revision_after, approvals_data
+  ) VALUES (
+    v_file.org_id, p_file_id, v_file.file_path, v_file.file_name,
+    v_transition.workflow_id, COALESCE(v_workflow_name, ''),
+    v_from_state.id, COALESCE(v_from_state.name, ''), v_to_state.id, COALESCE(v_to_state.name, ''),
+    p_transition_id, v_transition.name,
+    p_user_id, COALESCE(v_user_email, ''), p_comment,
+    v_file.revision, v_new_revision, p_approvals
+  );
+
+  RETURN jsonb_build_object(
+    'success', true,
+    'requires_review', false,
+    'new_state_id', v_to_state.id,
+    'new_state_name', v_to_state.name,
+    'new_revision', v_new_revision
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+REVOKE EXECUTE ON FUNCTION apply_workflow_transition(UUID, UUID, UUID, TEXT, JSONB) FROM PUBLIC;
+
+-- Run a transition on a file. Returns requires_review instead of advancing when
+-- the transition has blocking gates, having raised the reviews they need.
+DROP FUNCTION IF EXISTS execute_workflow_transition(UUID, UUID, UUID, TEXT) CASCADE;
+DROP FUNCTION IF EXISTS execute_workflow_transition(UUID, UUID, TEXT) CASCADE;
+CREATE OR REPLACE FUNCTION execute_workflow_transition(
+  p_file_id UUID,
+  p_transition_id UUID,
+  p_comment TEXT DEFAULT NULL
+)
+RETURNS JSONB AS $$
+DECLARE
+  v_user_id UUID;
+  v_file files%ROWTYPE;
+  v_transition workflow_transitions%ROWTYPE;
+  v_current_state_id UUID;
+  v_to_state workflow_states%ROWTYPE;
+  v_gate workflow_gates%ROWTYPE;
+  v_blocking_count INTEGER := 0;
+BEGIN
+  v_user_id := auth.uid();
+  IF v_user_id IS NULL THEN
+    RETURN jsonb_build_object('success', false, 'error_code', 'NOT_AUTHENTICATED',
+      'error_message', 'You must be signed in to run a transition');
+  END IF;
+
+  SELECT * INTO v_file FROM files WHERE id = p_file_id AND deleted_at IS NULL;
+  IF v_file.id IS NULL THEN
+    RETURN jsonb_build_object('success', false, 'error_code', 'FILE_NOT_FOUND',
+      'error_message', 'File not found');
+  END IF;
+
+  IF v_file.org_id <> (SELECT org_id FROM users WHERE id = v_user_id) THEN
+    RETURN jsonb_build_object('success', false, 'error_code', 'FORBIDDEN',
+      'error_message', 'File belongs to another organization');
+  END IF;
+
+  SELECT * INTO v_transition FROM workflow_transitions WHERE id = p_transition_id;
+  IF v_transition.id IS NULL THEN
+    RETURN jsonb_build_object('success', false, 'error_code', 'TRANSITION_NOT_FOUND',
+      'error_message', 'Transition not found');
+  END IF;
+
+  SELECT current_state_id INTO v_current_state_id
+  FROM file_workflow_assignments WHERE file_id = p_file_id;
+
+  IF v_current_state_id IS NULL THEN
+    RETURN jsonb_build_object('success', false, 'error_code', 'NO_WORKFLOW',
+      'error_message', 'This file is not assigned to a workflow');
+  END IF;
+
+  -- The client only offers transitions out of the current state, but it may be
+  -- looking at a stale list, and another user may have moved the file already.
+  IF v_transition.from_state_id <> v_current_state_id THEN
+    RETURN jsonb_build_object('success', false, 'error_code', 'WRONG_STATE',
+      'error_message', 'The file is no longer in this transition''s starting state');
+  END IF;
+
+  IF NOT user_can_run_transition(v_user_id, p_transition_id) THEN
+    RETURN jsonb_build_object('success', false, 'error_code', 'ROLE_REQUIRED',
+      'error_message', 'You do not hold a workflow role that allows this transition');
+  END IF;
+
+  SELECT * INTO v_to_state FROM workflow_states WHERE id = v_transition.to_state_id;
+
+  IF COALESCE(v_to_state.requires_checkout, false) AND v_file.checked_out_by IS DISTINCT FROM v_user_id THEN
+    RETURN jsonb_build_object('success', false, 'error_code', 'CHECKOUT_REQUIRED',
+      'error_message', 'Check the file out before moving it to this state');
+  END IF;
+
+  IF NOT COALESCE(v_to_state.requires_checkout, false) AND v_file.checked_out_by IS NOT NULL THEN
+    RETURN jsonb_build_object('success', false, 'error_code', 'CHECKED_OUT',
+      'error_message', 'Check the file in before moving it to this state');
+  END IF;
+
+  -- Re-running a gated transition must not pile up duplicate reviews.
+  IF EXISTS (
+    SELECT 1 FROM pending_reviews pr
+    WHERE pr.file_id = p_file_id AND pr.transition_id = p_transition_id AND pr.status = 'pending'
+  ) THEN
+    RETURN jsonb_build_object('success', false, 'requires_review', true,
+      'error_code', 'REVIEW_PENDING',
+      'error_message', 'This transition is already waiting on a review');
+  END IF;
+
+  FOR v_gate IN
+    SELECT * FROM workflow_gates
+    WHERE transition_id = p_transition_id AND COALESCE(is_blocking, true)
+    ORDER BY sort_order
+  LOOP
+    INSERT INTO pending_reviews (org_id, file_id, transition_id, gate_id, requested_by, status)
+    VALUES (v_file.org_id, p_file_id, p_transition_id, v_gate.id, v_user_id, 'pending');
+    v_blocking_count := v_blocking_count + 1;
+  END LOOP;
+
+  IF v_blocking_count > 0 THEN
+    RETURN jsonb_build_object('success', true, 'requires_review', true,
+      'new_state_id', NULL, 'new_state_name', NULL);
+  END IF;
+
+  RETURN apply_workflow_transition(p_file_id, p_transition_id, v_user_id, p_comment, NULL);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION execute_workflow_transition(UUID, UUID, TEXT) TO authenticated;
+
+-- Run the single transition out of the file's current state that lands on a
+-- legacy state name ('released', 'obsolete', ...). This is what the REST
+-- endpoints use so they go through the same guards as the desktop app.
+DROP FUNCTION IF EXISTS execute_transition_to_legacy_state(UUID, TEXT, TEXT) CASCADE;
+CREATE OR REPLACE FUNCTION execute_transition_to_legacy_state(
+  p_file_id UUID,
+  p_target_state TEXT,
+  p_comment TEXT DEFAULT NULL
+)
+RETURNS JSONB AS $$
+DECLARE
+  v_current_state_id UUID;
+  v_matches UUID[];
+BEGIN
+  SELECT current_state_id INTO v_current_state_id
+  FROM file_workflow_assignments WHERE file_id = p_file_id;
+
+  IF v_current_state_id IS NULL THEN
+    RETURN jsonb_build_object('success', false, 'error_code', 'NO_WORKFLOW',
+      'error_message', 'This file is not assigned to a workflow');
+  END IF;
+
+  SELECT array_agg(wt.id) INTO v_matches
+  FROM workflow_transitions wt
+  JOIN workflow_states ws ON ws.id = wt.to_state_id
+  WHERE wt.from_state_id = v_current_state_id
+    AND legacy_file_state(ws.name) = p_target_state;
+
+  IF v_matches IS NULL OR array_length(v_matches, 1) = 0 THEN
+    RETURN jsonb_build_object('success', false, 'error_code', 'NO_TRANSITION',
+      'error_message', format('The workflow has no transition from the current state to %s', p_target_state));
+  END IF;
+
+  IF array_length(v_matches, 1) > 1 THEN
+    RETURN jsonb_build_object('success', false, 'error_code', 'AMBIGUOUS_TRANSITION',
+      'error_message', format('The workflow has more than one transition to %s; pick one explicitly', p_target_state));
+  END IF;
+
+  RETURN execute_workflow_transition(p_file_id, v_matches[1], p_comment);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION execute_transition_to_legacy_state(UUID, TEXT, TEXT) TO authenticated;
+
+-- Record one reviewer's decision on a gate and, when that clears the last
+-- blocking gate, perform the advance the reviews were holding up.
+DROP FUNCTION IF EXISTS complete_gate_review(UUID, review_status, TEXT, JSONB) CASCADE;
+CREATE OR REPLACE FUNCTION complete_gate_review(
+  p_pending_review_id UUID,
+  p_decision review_status,
+  p_comment TEXT DEFAULT NULL,
+  p_checklist_responses JSONB DEFAULT '{}'::jsonb
+)
+RETURNS JSONB AS $$
+DECLARE
+  v_user_id UUID;
+  v_review pending_reviews%ROWTYPE;
+  v_gate workflow_gates%ROWTYPE;
+  v_file files%ROWTYPE;
+  v_transition workflow_transitions%ROWTYPE;
+  v_workflow_name TEXT;
+  v_from_state_name TEXT;
+  v_to_state_name TEXT;
+  v_requested_by_email TEXT;
+  v_reviewer_email TEXT;
+  v_approvals INTEGER;
+  v_rejections INTEGER;
+  v_reviewers INTEGER;
+  v_needed INTEGER;
+  v_requested_by UUID;
+  v_still_open INTEGER;
+BEGIN
+  v_user_id := auth.uid();
+  IF v_user_id IS NULL THEN
+    RETURN jsonb_build_object('success', false, 'error_code', 'NOT_AUTHENTICATED',
+      'error_message', 'You must be signed in to review');
+  END IF;
+
+  IF p_decision NOT IN ('approved', 'rejected', 'kicked_back') THEN
+    RETURN jsonb_build_object('success', false, 'error_code', 'BAD_DECISION',
+      'error_message', 'A review decision must be approved, rejected or kicked_back');
+  END IF;
+
+  SELECT * INTO v_review FROM pending_reviews WHERE id = p_pending_review_id FOR UPDATE;
+  IF v_review.id IS NULL THEN
+    RETURN jsonb_build_object('success', false, 'error_code', 'REVIEW_NOT_FOUND',
+      'error_message', 'Review not found');
+  END IF;
+
+  IF v_review.status <> 'pending' THEN
+    RETURN jsonb_build_object('success', false, 'error_code', 'ALREADY_DECIDED',
+      'error_message', 'This review has already been decided');
+  END IF;
+
+  IF v_review.org_id <> (SELECT org_id FROM users WHERE id = v_user_id) THEN
+    RETURN jsonb_build_object('success', false, 'error_code', 'FORBIDDEN',
+      'error_message', 'Review belongs to another organization');
+  END IF;
+
+  IF v_review.assigned_to IS NOT NULL
+     AND v_review.assigned_to <> v_user_id
+     AND NOT is_org_admin(v_user_id) THEN
+    RETURN jsonb_build_object('success', false, 'error_code', 'NOT_ASSIGNED',
+      'error_message', 'This review is assigned to someone else');
+  END IF;
+
+  SELECT * INTO v_gate FROM workflow_gates WHERE id = v_review.gate_id;
+  SELECT * INTO v_file FROM files WHERE id = v_review.file_id;
+  SELECT * INTO v_transition FROM workflow_transitions WHERE id = v_review.transition_id;
+  SELECT name INTO v_workflow_name FROM workflow_templates WHERE id = v_transition.workflow_id;
+  SELECT name INTO v_from_state_name FROM workflow_states WHERE id = v_transition.from_state_id;
+  SELECT name INTO v_to_state_name FROM workflow_states WHERE id = v_transition.to_state_id;
+  SELECT email INTO v_requested_by_email FROM users WHERE id = v_review.requested_by;
+  SELECT email INTO v_reviewer_email FROM users WHERE id = v_user_id;
+
+  UPDATE pending_reviews
+  SET status = p_decision,
+      reviewed_by = v_user_id,
+      reviewed_at = NOW(),
+      review_comment = p_comment,
+      checklist_responses = COALESCE(p_checklist_responses, '{}'::jsonb)
+  WHERE id = p_pending_review_id;
+
+  INSERT INTO workflow_review_history (
+    org_id, file_id, file_path, file_name,
+    workflow_id, workflow_name, transition_id,
+    from_state_name, to_state_name, gate_id, gate_name,
+    requested_by, requested_by_email, requested_at,
+    reviewed_by, reviewed_by_email, reviewed_at,
+    decision, comment, checklist_responses
+  ) VALUES (
+    v_review.org_id, v_review.file_id, COALESCE(v_file.file_path, ''), COALESCE(v_file.file_name, ''),
+    v_transition.workflow_id, COALESCE(v_workflow_name, ''), v_review.transition_id,
+    COALESCE(v_from_state_name, ''), COALESCE(v_to_state_name, ''), v_review.gate_id, COALESCE(v_gate.name, ''),
+    v_review.requested_by, COALESCE(v_requested_by_email, ''), v_review.requested_at,
+    v_user_id, COALESCE(v_reviewer_email, ''), NOW(),
+    p_decision::text, p_comment, COALESCE(p_checklist_responses, '{}'::jsonb)
+  );
+
+  -- A rejection ends the attempt: cancel the sibling reviews so the requester
+  -- can resubmit rather than being stuck behind reviews nobody can action.
+  IF p_decision IN ('rejected', 'kicked_back') THEN
+    UPDATE pending_reviews
+    SET status = 'cancelled'
+    WHERE file_id = v_review.file_id
+      AND transition_id = v_review.transition_id
+      AND status = 'pending';
+
+    RETURN jsonb_build_object('success', true, 'requires_review', false,
+      'rejected', true);
+  END IF;
+
+  -- Has this gate collected the approvals its mode calls for?
+  SELECT count(*) FILTER (WHERE status = 'approved'),
+         count(*) FILTER (WHERE status IN ('rejected', 'kicked_back')),
+         count(*)
+    INTO v_approvals, v_rejections, v_reviewers
+  FROM pending_reviews
+  WHERE file_id = v_review.file_id
+    AND transition_id = v_review.transition_id
+    AND gate_id = v_review.gate_id;
+
+  v_needed := CASE COALESCE(v_gate.approval_mode, 'any')
+    WHEN 'all' THEN v_reviewers
+    WHEN 'majority' THEN (v_reviewers / 2) + 1
+    ELSE GREATEST(1, COALESCE(v_gate.required_approvals, 1))
+  END;
+
+  IF v_approvals < v_needed THEN
+    RETURN jsonb_build_object('success', true, 'requires_review', true,
+      'approvals', v_approvals, 'approvals_needed', v_needed);
+  END IF;
+
+  -- This gate is satisfied; the transition still waits on any other gate.
+  SELECT count(*) INTO v_still_open
+  FROM pending_reviews
+  WHERE file_id = v_review.file_id
+    AND transition_id = v_review.transition_id
+    AND status = 'pending';
+
+  IF v_still_open > 0 THEN
+    RETURN jsonb_build_object('success', true, 'requires_review', true,
+      'approvals', v_approvals, 'approvals_needed', v_needed);
+  END IF;
+
+  SELECT requested_by INTO v_requested_by
+  FROM pending_reviews
+  WHERE file_id = v_review.file_id AND transition_id = v_review.transition_id
+  ORDER BY requested_at LIMIT 1;
+
+  RETURN apply_workflow_transition(
+    v_review.file_id,
+    v_review.transition_id,
+    COALESCE(v_requested_by, v_user_id),
+    p_comment,
+    jsonb_build_object('approved_by', v_user_id, 'approvals', v_approvals)
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION complete_gate_review(UUID, review_status, TEXT, JSONB) TO authenticated;
+
+-- Reviews waiting on the calling user: either assigned to them, or unassigned
+-- and matching a reviewer rule on the gate.
+DROP FUNCTION IF EXISTS get_my_pending_reviews() CASCADE;
+CREATE OR REPLACE FUNCTION get_my_pending_reviews()
+RETURNS TABLE (
+  review_id UUID,
+  file_id UUID,
+  file_name TEXT,
+  file_path TEXT,
+  gate_id UUID,
+  gate_name TEXT,
+  gate_type gate_type,
+  transition_id UUID,
+  transition_name TEXT,
+  from_state_name TEXT,
+  to_state_name TEXT,
+  requested_by UUID,
+  requested_by_email TEXT,
+  requested_at TIMESTAMPTZ,
+  checklist_items JSONB
+) AS $$
+DECLARE
+  v_user_id UUID;
+  v_org_id UUID;
+  v_role user_role;
+BEGIN
+  v_user_id := auth.uid();
+  IF v_user_id IS NULL THEN RETURN; END IF;
+
+  SELECT u.org_id, u.role INTO v_org_id, v_role FROM users u WHERE u.id = v_user_id;
+
+  RETURN QUERY
+  SELECT
+    pr.id,
+    f.id,
+    f.file_name,
+    f.file_path,
+    wg.id,
+    wg.name,
+    wg.gate_type,
+    wt.id,
+    wt.name,
+    fs.name,
+    ts.name,
+    pr.requested_by,
+    ru.email,
+    pr.requested_at,
+    wg.checklist_items
+  FROM pending_reviews pr
+  JOIN files f ON f.id = pr.file_id
+  JOIN workflow_gates wg ON wg.id = pr.gate_id
+  JOIN workflow_transitions wt ON wt.id = pr.transition_id
+  LEFT JOIN workflow_states fs ON fs.id = wt.from_state_id
+  LEFT JOIN workflow_states ts ON ts.id = wt.to_state_id
+  LEFT JOIN users ru ON ru.id = pr.requested_by
+  WHERE pr.status = 'pending'
+    AND pr.org_id = v_org_id
+    AND (
+      pr.assigned_to = v_user_id
+      OR (
+        pr.assigned_to IS NULL
+        AND (
+          NOT EXISTS (SELECT 1 FROM workflow_gate_reviewers gr WHERE gr.gate_id = wg.id)
+          OR EXISTS (
+            SELECT 1 FROM workflow_gate_reviewers gr
+            WHERE gr.gate_id = wg.id
+              AND (
+                (gr.reviewer_type = 'user' AND gr.user_id = v_user_id)
+                OR (gr.reviewer_type = 'role' AND gr.role = v_role)
+                OR (gr.reviewer_type = 'workflow_role' AND EXISTS (
+                      SELECT 1 FROM user_workflow_roles uwr
+                      WHERE uwr.user_id = v_user_id
+                        AND uwr.workflow_role_id = gr.workflow_role_id))
+              )
+          )
+        )
+      )
+    )
+  ORDER BY pr.requested_at;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION get_my_pending_reviews() TO authenticated;
 
 -- ===========================================
 -- MIGRATIONS FOR EXISTING DATABASES

@@ -23,6 +23,7 @@ import type {
   IntegrationState,
   BackupStatusValue,
 } from '../types'
+import type { SolidWorksServiceStatus } from '@/types/solidworks'
 import { supabase, isSupabaseConfigured } from '@/lib/supabase'
 import { log } from '@/lib/logger'
 
@@ -32,6 +33,8 @@ const defaultIntegrationState: IntegrationState = {
   lastChecked: null,
   error: undefined,
 }
+
+const initialSolidworksServiceStatus: SolidWorksServiceStatus = { running: false }
 
 const initialIntegrations: Record<IntegrationId, IntegrationState> = {
   supabase: { ...defaultIntegrationState },
@@ -56,6 +59,9 @@ export const createIntegrationsSlice: StateCreator<
   integrationsLastFullCheck: null,
   solidworksAutoStartInProgress: false,
   isBatchSWOperationRunning: false,
+  solidworksServiceStatus: { ...initialSolidworksServiceStatus },
+  solidworksStatusChecking: false,
+  solidworksStatusLastChecked: null,
 
   // Actions
   setIntegrationStatus: (id: IntegrationId, status: IntegrationStatusValue, error?: string) => {
@@ -112,6 +118,9 @@ export const createIntegrationsSlice: StateCreator<
       integrationsLastFullCheck: null,
       solidworksAutoStartInProgress: false,
       isBatchSWOperationRunning: false,
+      solidworksServiceStatus: { ...initialSolidworksServiceStatus },
+      solidworksStatusChecking: false,
+      solidworksStatusLastChecked: null,
     })
   },
 
@@ -121,6 +130,24 @@ export const createIntegrationsSlice: StateCreator<
 
   setIsBatchSWOperationRunning: (running: boolean) => {
     set({ isBatchSWOperationRunning: running })
+  },
+
+  setSolidworksServiceStatus: (status: SolidWorksServiceStatus) => {
+    // Keep the previous object identity when nothing changed so the 15s poll
+    // doesn't re-render every consumer of the status snapshot.
+    const prev = get().solidworksServiceStatus
+    const keys = new Set([...Object.keys(prev), ...Object.keys(status)]) as Set<
+      keyof SolidWorksServiceStatus
+    >
+    const unchanged = [...keys].every((key) => prev[key] === status[key])
+    set({
+      solidworksServiceStatus: unchanged ? prev : status,
+      solidworksStatusLastChecked: Date.now(),
+    })
+  },
+
+  setSolidworksStatusChecking: (checking: boolean) => {
+    set({ solidworksStatusChecking: checking })
   },
 
   checkIntegration: async (id: IntegrationId, silent = false) => {

@@ -3,9 +3,14 @@
  *
  * Uses the supabase client with runtime type assertions to work around
  * TypeScript inference issues with the database types.
+ *
+ * Rows are returned as the domain `WorkflowState`, which narrows the nullable
+ * enum columns the database defaults always populate. Doing the assertion here
+ * once keeps it out of every call site.
  */
 import { supabase } from '@/lib/supabase'
 import type { Database } from '@/types/database'
+import type { WorkflowState } from '@/types/workflow'
 
 type WorkflowStateRow = Database['public']['Tables']['workflow_states']['Row']
 
@@ -21,14 +26,14 @@ export const stateService = {
   /**
    * Get all states for a workflow
    */
-  async getByWorkflow(workflowId: string): Promise<StateServiceResult<WorkflowStateRow[]>> {
+  async getByWorkflow(workflowId: string): Promise<StateServiceResult<WorkflowState[]>> {
     const { data, error } = await workflowStates()
       .select('*')
       .eq('workflow_id', workflowId)
       .order('sort_order')
 
     return {
-      data: data as WorkflowStateRow[] | null,
+      data: data as WorkflowState[] | null,
       error: error ? new Error(error.message) : null,
     }
   },
@@ -36,11 +41,11 @@ export const stateService = {
   /**
    * Get a single state by ID
    */
-  async getById(stateId: string): Promise<StateServiceResult<WorkflowStateRow>> {
+  async getById(stateId: string): Promise<StateServiceResult<WorkflowState>> {
     const { data, error } = await workflowStates().select('*').eq('id', stateId).single()
 
     return {
-      data: data as WorkflowStateRow | null,
+      data: data as WorkflowState | null,
       error: error ? new Error(error.message) : null,
     }
   },
@@ -50,14 +55,14 @@ export const stateService = {
    */
   async create(
     state: Partial<WorkflowStateRow> & { workflow_id: string; name: string },
-  ): Promise<StateServiceResult<WorkflowStateRow>> {
+  ): Promise<StateServiceResult<WorkflowState>> {
     const { data, error } = await workflowStates()
       .insert(state as never)
       .select()
       .single()
 
     return {
-      data: data as WorkflowStateRow | null,
+      data: data as WorkflowState | null,
       error: error ? new Error(error.message) : null,
     }
   },
@@ -68,7 +73,7 @@ export const stateService = {
   async update(
     stateId: string,
     updates: Partial<WorkflowStateRow>,
-  ): Promise<StateServiceResult<WorkflowStateRow>> {
+  ): Promise<StateServiceResult<WorkflowState>> {
     const { data, error } = await workflowStates()
       .update(updates as never)
       .eq('id', stateId)
@@ -76,7 +81,7 @@ export const stateService = {
       .single()
 
     return {
-      data: data as WorkflowStateRow | null,
+      data: data as WorkflowState | null,
       error: error ? new Error(error.message) : null,
     }
   },

@@ -1,9 +1,13 @@
 // Clipboard operations for workflow states and transitions
 import { useCallback } from 'react'
+
 import { log } from '@/lib/logger'
 import type { WorkflowTemplate, WorkflowState, WorkflowTransition } from '@/types/workflow'
+
+import { PASTE_OFFSET } from '../constants'
 import type { ClipboardData, HistoryEntry } from '../types'
-import { stateService, transitionService } from '../services'
+import { stateService, transitionService, unwrapRequired } from '../services'
+import type { DeleteOptions } from './useWorkflowCRUD'
 
 interface UseClipboardOperationsOptions {
   // Core data
@@ -25,14 +29,11 @@ interface UseClipboardOperationsOptions {
   setTransitions: React.Dispatch<React.SetStateAction<WorkflowTransition[]>>
   setSelectedStateId: (id: string | null) => void
   setSelectedTransitionId: (id: string | null) => void
-  setFloatingToolbar: (
-    toolbar: {
-      canvasX: number
-      canvasY: number
-      type: 'state' | 'transition'
-      targetId: string
-    } | null,
-  ) => void
+
+  // Deletion is delegated to the CRUD hook so cut and delete share one path
+  // (permission check, layout cleanup, undo entry, selection reset).
+  deleteState: (stateId: string, options?: DeleteOptions) => Promise<boolean>
+  deleteTransition: (transitionId: string, options?: DeleteOptions) => Promise<boolean>
 
   // Notifications
   addToast: (type: 'success' | 'error' | 'info' | 'warning', message: string) => void
@@ -55,7 +56,8 @@ export function useClipboardOperations(options: UseClipboardOperationsOptions) {
     setTransitions,
     setSelectedStateId,
     setSelectedTransitionId,
-    setFloatingToolbar,
+    deleteState,
+    deleteTransition,
     addToast,
     pushToUndo,
   } = options
@@ -87,45 +89,21 @@ export function useClipboardOperations(options: UseClipboardOperationsOptions) {
 
     if (selectedStateId) {
       const state = states.find((s) => s.id === selectedStateId)
-      if (state) {
-        // Check for transitions first
-        const hasTransitions = transitions.some(
-          (t) => t.from_state_id === selectedStateId || t.to_state_id === selectedStateId,
-        )
-        if (hasTransitions) {
-          addToast('error', 'Remove all transitions first')
-          return
-        }
+      if (!state) return
+
+      // Only take the clipboard copy once the row is actually gone, so a failed
+      // delete doesn't leave the user thinking they hold a cut item.
+      if (await deleteState(selectedStateId, { silent: true })) {
         setClipboard({ type: 'state', data: state })
-        // Delete the state
-        try {
-          await stateService.delete(selectedStateId)
-          setStates((prev) => prev.filter((s) => s.id !== selectedStateId))
-          pushToUndo({ type: 'state_delete', data: { state } })
-          setSelectedStateId(null)
-          setFloatingToolbar(null)
-          addToast('success', 'State cut')
-        } catch (error) {
-          log.error('[Workflow]', 'Cut failed', { error: error })
-          addToast('error', 'Cut failed')
-        }
+        addToast('success', 'State cut')
       }
     } else if (selectedTransitionId) {
       const transition = transitions.find((t) => t.id === selectedTransitionId)
-      if (transition) {
+      if (!transition) return
+
+      if (await deleteTransition(selectedTransitionId, { silent: true })) {
         setClipboard({ type: 'transition', data: transition })
-        // Delete the transition
-        try {
-          await transitionService.delete(selectedTransitionId)
-          setTransitions((prev) => prev.filter((t) => t.id !== selectedTransitionId))
-          pushToUndo({ type: 'transition_delete', data: { transition } })
-          setSelectedTransitionId(null)
-          setFloatingToolbar(null)
-          addToast('success', 'Transition cut')
-        } catch (error) {
-          log.error('[Workflow]', 'Cut failed', { error: error })
-          addToast('error', 'Cut failed')
-        }
+        addToast('success', 'Transition cut')
       }
     }
   }, [
@@ -134,14 +112,10 @@ export function useClipboardOperations(options: UseClipboardOperationsOptions) {
     selectedTransitionId,
     states,
     transitions,
+    deleteState,
+    deleteTransition,
     setClipboard,
-    setStates,
-    setTransitions,
-    setSelectedStateId,
-    setSelectedTransitionId,
-    setFloatingToolbar,
     addToast,
-    pushToUndo,
   ])
 
   /**
@@ -152,29 +126,25 @@ export function useClipboardOperations(options: UseClipboardOperationsOptions) {
 
     try {
       if (clipboard.type === 'state') {
-        // Create a new state with offset position
-        // Destructure to omit id, created_at
-        const { id: _id, created_at: _created_at, ...stateData } = clipboard.data
-        const newState = {
-          ...stateData,
-          workflow_id: selectedWorkflow.id,
-          position_x: clipboard.data.position_x + 50,
-          position_y: clipboard.data.position_y + 50,
-          name: `${clipboard.data.name} (copy)`,
-        }
+        // Omit the identity columns; everything else, including size and styling,
+        // is carried over so a pasted node looks like the one that was copied.
+        const { id: _id, created_at: _createdAt, ...stateData } = clipboard.data
+        const createdState = await unwrapRequired(
+          stateService.create({
+            ...stateData,
+            workflow_id: selectedWorkflow.id,
+            position_x: clipboard.data.position_x + PASTE_OFFSET,
+            position_y: clipboard.data.position_y + PASTE_OFFSET,
+            name: `${clipboard.data.name} (copy)`,
+          }),
+          'Paste state',
+        )
 
-        const { data, error } = await stateService.create(newState)
-
-        if (error || !data) throw error
-
-        // Cast through unknown since DB row type may differ from interface
-        const createdState = data as unknown as WorkflowState
         setStates((prev) => [...prev, createdState])
-        pushToUndo({ type: 'state_add', data: { state: createdState } })
+        pushToUndo({ type: 'state_add', state: createdState })
         setSelectedStateId(createdState.id)
         addToast('success', 'State pasted')
       } else if (clipboard.type === 'transition') {
-        // Can only paste transition if both states exist
         const fromExists = states.some((s) => s.id === clipboard.data.from_state_id)
         const toExists = states.some((s) => s.id === clipboard.data.to_state_id)
 
@@ -183,7 +153,6 @@ export function useClipboardOperations(options: UseClipboardOperationsOptions) {
           return
         }
 
-        // Check if transition already exists
         const exists = transitions.some(
           (t) =>
             t.from_state_id === clipboard.data.from_state_id &&
@@ -194,27 +163,23 @@ export function useClipboardOperations(options: UseClipboardOperationsOptions) {
           return
         }
 
-        // Destructure to omit id, created_at
-        const { id: _tid, created_at: _tcreated_at, ...transitionData } = clipboard.data
-        const newTransition = {
-          ...transitionData,
-          workflow_id: selectedWorkflow.id,
-          name: `${clipboard.data.name} (copy)`,
-        }
+        const { id: _tid, created_at: _tCreatedAt, ...transitionData } = clipboard.data
+        const createdTransition = await unwrapRequired(
+          transitionService.create({
+            ...transitionData,
+            workflow_id: selectedWorkflow.id,
+            name: `${clipboard.data.name} (copy)`,
+          }),
+          'Paste transition',
+        )
 
-        const { data, error } = await transitionService.create(newTransition)
-
-        if (error || !data) throw error
-
-        // Cast through unknown since DB row type may differ from interface
-        const createdTransition = data as unknown as WorkflowTransition
         setTransitions((prev) => [...prev, createdTransition])
-        pushToUndo({ type: 'transition_add', data: { transition: createdTransition } })
+        pushToUndo({ type: 'transition_add', transition: createdTransition })
         setSelectedTransitionId(createdTransition.id)
         addToast('success', 'Transition pasted')
       }
     } catch (error) {
-      log.error('[Workflow]', 'Paste failed', { error: error })
+      log.error('[Workflow]', 'Paste failed', { error })
       addToast('error', 'Paste failed')
     }
   }, [
@@ -238,59 +203,11 @@ export function useClipboardOperations(options: UseClipboardOperationsOptions) {
     if (!isAdmin) return
 
     if (selectedStateId) {
-      const state = states.find((s) => s.id === selectedStateId)
-      if (!state) return
-
-      // Check for transitions first
-      const hasTransitions = transitions.some(
-        (t) => t.from_state_id === selectedStateId || t.to_state_id === selectedStateId,
-      )
-      if (hasTransitions) {
-        addToast('error', 'Remove all transitions first')
-        return
-      }
-
-      try {
-        await stateService.delete(selectedStateId)
-        setStates((prev) => prev.filter((s) => s.id !== selectedStateId))
-        pushToUndo({ type: 'state_delete', data: { state } })
-        setSelectedStateId(null)
-        setFloatingToolbar(null)
-        addToast('success', 'State deleted')
-      } catch (error) {
-        log.error('[Workflow]', 'Delete failed', { error: error })
-        addToast('error', 'Delete failed')
-      }
+      await deleteState(selectedStateId)
     } else if (selectedTransitionId) {
-      const transition = transitions.find((t) => t.id === selectedTransitionId)
-      if (!transition) return
-
-      try {
-        await transitionService.delete(selectedTransitionId)
-        setTransitions((prev) => prev.filter((t) => t.id !== selectedTransitionId))
-        pushToUndo({ type: 'transition_delete', data: { transition } })
-        setSelectedTransitionId(null)
-        setFloatingToolbar(null)
-        addToast('success', 'Transition deleted')
-      } catch (error) {
-        log.error('[Workflow]', 'Delete failed', { error: error })
-        addToast('error', 'Delete failed')
-      }
+      await deleteTransition(selectedTransitionId)
     }
-  }, [
-    isAdmin,
-    selectedStateId,
-    selectedTransitionId,
-    states,
-    transitions,
-    setStates,
-    setTransitions,
-    setSelectedStateId,
-    setSelectedTransitionId,
-    setFloatingToolbar,
-    addToast,
-    pushToUndo,
-  ])
+  }, [isAdmin, selectedStateId, selectedTransitionId, deleteState, deleteTransition])
 
   return {
     handleCopy,

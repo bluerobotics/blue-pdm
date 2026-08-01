@@ -15,11 +15,13 @@
  * <WorkflowsView />
  * ```
  */
-import { useEffect, useRef } from 'react'
+import { useRef } from 'react'
 import { GitBranch } from 'lucide-react'
 import { usePDMStore } from '@/stores/pdmStore'
+import { log } from '@/lib/logger'
+import { t } from '@/lib/i18n'
 
-import { useRafThrottle, useStableCallback } from './utils'
+import { useStableCallback } from './utils'
 
 // Slim canvas context
 import { WorkflowCanvasProvider, useWorkflowCanvasContext } from './context/WorkflowCanvasContext'
@@ -34,6 +36,8 @@ import {
   useFloatingToolbarActions,
   useCanvasHandlers,
   useCanvasEvents,
+  useConnectionGesture,
+  useGlobalPointerGestures,
   useWorkflowDialogs,
 } from './hooks'
 
@@ -42,9 +46,15 @@ import { WorkflowCanvas } from './canvas'
 import { WorkflowsList } from './WorkflowsList'
 import { WorkflowToolbar } from './WorkflowToolbar'
 import { WorkflowDialogs, WorkflowContextMenus } from './components'
+import { ImportWorkflowDialog } from './dialogs/ImportWorkflowDialog'
 
 // Types
-import type { WorkflowTemplate, WorkflowState, WorkflowTransition } from './types'
+import type {
+  WorkflowTemplate,
+  WorkflowState,
+  WorkflowTransition,
+  WorkflowGate,
+} from '@/types/workflow'
 
 // ============================================
 // MAIN COMPONENT - Wraps content with Provider
@@ -53,9 +63,25 @@ import type { WorkflowTemplate, WorkflowState, WorkflowTransition } from './type
 export function WorkflowsView() {
   // Workflow data hook - manages Supabase data fetching
   const workflowData = useWorkflowData({})
+  const { addToast } = usePDMStore()
+
+  const reportLayoutError = useStableCallback((message: string) => {
+    log.error('[Workflow]', 'Failed to save canvas layout', { message })
+    addToast('error', t('workflows.layoutSaveFailed'))
+  })
 
   return (
-    <WorkflowCanvasProvider workflowId={workflowData.selectedWorkflow?.id}>
+    // Keying on the workflow id remounts the canvas, so no selection, drag or
+    // routing state can leak across a workflow switch.
+    <WorkflowCanvasProvider
+      key={workflowData.selectedWorkflow?.id ?? 'none'}
+      workflowId={workflowData.selectedWorkflow?.id}
+      states={workflowData.states}
+      transitions={workflowData.transitions}
+      setStates={workflowData.setStates}
+      setTransitions={workflowData.setTransitions}
+      onLayoutError={reportLayoutError}
+    >
       <WorkflowsViewContent
         // Data props (from useWorkflowData)
         workflows={workflowData.workflows}
@@ -74,6 +100,7 @@ export function WorkflowsView() {
         createWorkflow={workflowData.createWorkflow}
         updateWorkflow={workflowData.updateWorkflow}
         deleteWorkflow={workflowData.deleteWorkflow}
+        reloadWorkflow={workflowData.reloadCurrentWorkflow}
       />
     </WorkflowCanvasProvider>
   )
@@ -89,18 +116,19 @@ interface WorkflowsViewContentProps {
   selectedWorkflow: WorkflowTemplate | null
   states: WorkflowState[]
   transitions: WorkflowTransition[]
-  gates: Record<string, import('./types').WorkflowGate[]>
+  gates: Record<string, WorkflowGate[]>
   isLoading: boolean
   isAdmin: boolean
   setStates: React.Dispatch<React.SetStateAction<WorkflowState[]>>
   setTransitions: React.Dispatch<React.SetStateAction<WorkflowTransition[]>>
-  setGates: React.Dispatch<React.SetStateAction<Record<string, import('./types').WorkflowGate[]>>>
+  setGates: React.Dispatch<React.SetStateAction<Record<string, WorkflowGate[]>>>
   setSelectedWorkflow: React.Dispatch<React.SetStateAction<WorkflowTemplate | null>>
   // Actions
   selectWorkflow: (workflow: WorkflowTemplate) => void
   createWorkflow: (name: string, description: string) => Promise<boolean>
   updateWorkflow: (id: string, updates: { name: string; description: string }) => Promise<boolean>
   deleteWorkflow: (id: string) => Promise<boolean>
+  reloadWorkflow: () => Promise<void>
 }
 
 function WorkflowsViewContent({
@@ -119,6 +147,7 @@ function WorkflowsViewContent({
   createWorkflow,
   updateWorkflow,
   deleteWorkflow,
+  reloadWorkflow,
 }: WorkflowsViewContentProps) {
   // Canvas context (slim - only canvas interaction state)
   const canvas = useWorkflowCanvasContext()
@@ -168,12 +197,10 @@ function WorkflowsViewContent({
     setFloatingToolbar: dialogs.setFloatingToolbar,
     setIsCreatingTransition: canvas.setIsCreatingTransition,
     setTransitionStartId: canvas.setTransitionStartId,
+    setTransitionStartAnchor: canvas.setTransitionStartAnchor,
     setIsDraggingToCreateTransition: canvas.setIsDraggingToCreateTransition,
     setHoveredStateId: canvas.setHoveredStateId,
     transitionStartId: canvas.transitionStartId,
-    justCompletedTransitionRef: canvas.justCompletedTransitionRef,
-    transitionCompletedAtRef: canvas.transitionCompletedAtRef,
-    setWaypoints: canvas.setWaypoints,
     addToast,
     pushToUndo,
   })
@@ -181,21 +208,51 @@ function WorkflowsViewContent({
     addState,
     deleteState,
     updateStatePosition,
-    startTransition,
     completeTransition,
     deleteTransition,
-    cancelConnectMode,
     addTransitionGate,
   } = crudOperations
+
+  // Drawing a transition and re-anchoring one, resolved from geometry alone
+  const {
+    startConnection,
+    startEndpointDrag,
+    updateConnectionPointer,
+    finishConnectionPointer,
+    isConnectionActive,
+  } = useConnectionGesture({
+    isAdmin,
+    states,
+    transitions,
+    stateDimensions: canvas.stateDimensions,
+    viewportRef: canvas.viewportRef,
+    connectionPreview: canvas.connectionPreview,
+    isCreatingTransition: canvas.isCreatingTransition,
+    transitionStartId: canvas.transitionStartId,
+    transitionStartAnchor: canvas.transitionStartAnchor,
+    setIsCreatingTransition: canvas.setIsCreatingTransition,
+    setTransitionStartId: canvas.setTransitionStartId,
+    setTransitionStartAnchor: canvas.setTransitionStartAnchor,
+    setIsDraggingToCreateTransition: canvas.setIsDraggingToCreateTransition,
+    cancelTransitionCreation: canvas.cancelTransitionCreation,
+    draggingTransitionEndpoint: canvas.draggingTransitionEndpoint,
+    setDraggingTransitionEndpoint: canvas.setDraggingTransitionEndpoint,
+    setTransitions,
+    updateEdgePosition: canvas.updateEdgePosition,
+    setHoveredStateId: canvas.setHoveredStateId,
+    setFloatingToolbar: dialogs.setFloatingToolbar,
+    completeTransition,
+    addToast,
+  })
 
   // Import/export
   const ioOperations = useWorkflowIO({
     selectedWorkflow,
     states,
     transitions,
+    gates,
     isAdmin,
-    setStates,
-    setTransitions,
+    reloadWorkflow,
     setSelectedStateId: canvas.selectState,
     setSelectedTransitionId: canvas.selectTransition,
     addToast,
@@ -223,7 +280,8 @@ function WorkflowsViewContent({
     setTransitions,
     setSelectedStateId: canvas.selectState,
     setSelectedTransitionId: canvas.selectTransition,
-    setFloatingToolbar: dialogs.setFloatingToolbar,
+    deleteState,
+    deleteTransition,
     addToast,
     pushToUndo,
   })
@@ -261,15 +319,14 @@ function WorkflowsViewContent({
     mousePosRef: canvas.mousePosRef,
     hasDraggedRef: canvas.hasDraggedRef,
     dragStartPosRef: canvas.dragStartPosRef,
+    dragOriginRef: canvas.dragOriginRef,
     waypointHasDraggedRef: canvas.waypointHasDraggedRef,
     pan: canvas.pan,
     zoom: canvas.zoom,
     canvasMode: canvas.canvasMode,
-    isCreatingTransition: canvas.isCreatingTransition,
     draggingStateId: canvas.draggingStateId,
     dragOffset: canvas.dragOffset,
     currentResizing: canvas.resizingState,
-    draggingTransitionEndpoint: canvas.draggingTransitionEndpoint,
     waypoints: canvas.waypoints,
     draggingCurveControl: canvas.draggingCurveControl,
     draggingWaypointIndex: canvas.draggingWaypointIndex,
@@ -278,22 +335,17 @@ function WorkflowsViewContent({
     draggingLabel: canvas.draggingLabel,
     tempLabelPos: canvas.tempLabelPos,
     states,
-    transitions,
-    hoveredStateId: canvas.hoveredStateId,
-    isDraggingToCreateTransition: canvas.isDraggingToCreateTransition,
     setPan: canvas.setPan,
-    setMousePos: canvas.setMousePos,
     setDraggingStateId: canvas.setDraggingStateId,
     setFloatingToolbar: dialogs.setFloatingToolbar,
     setAlignmentGuides: canvas.setAlignmentGuides,
     setStates,
-    setTransitions,
-    setHoveredStateId: canvas.setHoveredStateId,
     setTempCurvePos: canvas.setTempCurvePos,
     setTempLabelPos: canvas.setTempLabelPos,
     setWaypoints: canvas.setWaypoints,
     setPinnedLabelPositions: canvas.setPinnedLabelPositions,
-    setDraggingTransitionEndpoint: canvas.setDraggingTransitionEndpoint,
+    updateConnectionPointer,
+    finishConnectionPointer,
     checkDragThreshold: canvas.checkDragThreshold,
     markHasDragged: canvas.markHasDragged,
     applySnapping: applySnappingWithStates,
@@ -304,12 +356,10 @@ function WorkflowsViewContent({
     updateStatePosition,
     stopDragging: canvas.stopDragging,
     stopResizing: canvas.stopResizing,
-    updateEdgePosition: canvas.updateEdgePosition,
     stopWaypointDrag: canvas.stopWaypointDrag,
     stopLabelDrag: canvas.stopLabelDrag,
-    cancelTransitionCreation: canvas.cancelTransitionCreation,
     clearSelection: canvas.clearSelection,
-    addToast,
+    pushToUndo,
   })
 
   // Canvas event handlers (click, context menu, keyboard shortcuts)
@@ -362,8 +412,8 @@ function WorkflowsViewContent({
   const stableStartDrag = useStableCallback(handleStateStartDrag)
   const stableStartResize = useStableCallback(handleStateStartResize)
   const stableShowStateToolbar = useStableCallback(handleStateShowToolbar)
-  const stableCompleteTransition = useStableCallback(completeTransition)
-  const stableStartTransition = useStableCallback(startTransition)
+  const stableStartConnection = useStableCallback(startConnection)
+  const stableStartEndpointDrag = useStableCallback(startEndpointDrag)
   const stableEditState = useStableCallback(dialogs.openEditState)
   const stableShowTransitionToolbar = useStableCallback(handleTransitionShowToolbar)
   const stableAddWaypoint = useStableCallback(handleAddWaypointToTransition)
@@ -382,49 +432,17 @@ function WorkflowsViewContent({
     },
   )
 
-  // ============================================
-  // GLOBAL POINTER HANDLING (smooth, drop-free drags)
-  // ============================================
-  // Route pointer move/up through window listeners while a gesture is active so
-  // dragging never stops when the cursor leaves the canvas or moves quickly.
-  // Moves are coalesced to one update per animation frame via rAF.
-  const interacting = !!(
-    canvas.draggingStateId ||
-    canvas.resizingState ||
-    canvas.draggingTransitionEndpoint ||
-    canvas.draggingCurveControl ||
-    canvas.draggingLabel ||
-    canvas.isCreatingTransition
-  )
-  const interactingRef = useRef(interacting)
-  interactingRef.current = interacting
-
-  const moveHandlerRef = useRef(handleCanvasMouseMove)
-  moveHandlerRef.current = handleCanvasMouseMove
-  const upHandlerRef = useRef(handleCanvasMouseUp)
-  upHandlerRef.current = handleCanvasMouseUp
-
-  const [throttledPointerMove, cancelPointerMove] = useRafThrottle((e: PointerEvent) => {
-    moveHandlerRef.current(e)
+  useGlobalPointerGestures({
+    isInteracting: !!(
+      canvas.draggingStateId ||
+      canvas.resizingState ||
+      canvas.draggingCurveControl ||
+      canvas.draggingLabel ||
+      isConnectionActive
+    ),
+    onPointerMove: handleCanvasMouseMove,
+    onPointerUp: handleCanvasMouseUp,
   })
-
-  useEffect(() => {
-    const onMove = (e: PointerEvent) => {
-      if (interactingRef.current) throttledPointerMove(e)
-    }
-    const onUp = (e: PointerEvent) => {
-      cancelPointerMove()
-      if (interactingRef.current) void upHandlerRef.current(e)
-    }
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', onUp)
-    window.addEventListener('pointercancel', onUp)
-    return () => {
-      window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('pointerup', onUp)
-      window.removeEventListener('pointercancel', onUp)
-    }
-  }, [throttledPointerMove, cancelPointerMove])
 
   // ============================================
   // RENDER
@@ -467,7 +485,7 @@ function WorkflowsViewContent({
                 setShowCreateWorkflow={dialogs.setShowCreateWorkflow}
                 setShowEditWorkflow={dialogs.setShowEditWorkflow}
                 setCanvasMode={canvas.setCanvasMode}
-                cancelConnectMode={cancelConnectMode}
+                cancelConnectMode={canvas.cancelTransitionCreation}
                 setZoom={canvas.setZoom}
                 setPan={canvas.setPan}
                 setSnapSettings={canvas.setSnapSettings}
@@ -489,7 +507,6 @@ function WorkflowsViewContent({
                 canvasMode={canvas.canvasMode}
                 zoom={canvas.zoom}
                 pan={canvas.pan}
-                mousePos={canvas.mousePos}
                 canvasRef={canvas.canvasRef}
                 groupRef={canvas.groupRef}
                 viewportRef={canvas.viewportRef}
@@ -499,10 +516,8 @@ function WorkflowsViewContent({
                 currentResizing={canvas.resizingState}
                 isCreatingTransition={canvas.isCreatingTransition}
                 transitionStartId={canvas.transitionStartId}
-                isDraggingToCreateTransition={canvas.isDraggingToCreateTransition}
                 draggingTransitionEndpoint={canvas.draggingTransitionEndpoint}
-                justCompletedTransitionRef={canvas.justCompletedTransitionRef}
-                transitionCompletedAtRef={canvas.transitionCompletedAtRef}
+                connectionPreview={canvas.connectionPreview}
                 hasDraggedRef={canvas.hasDraggedRef}
                 stateDimensions={canvas.stateDimensions}
                 getDimensions={canvas.getDimensions}
@@ -528,19 +543,16 @@ function WorkflowsViewContent({
                 onSelectTransition={canvas.selectTransition}
                 onStartDrag={stableStartDrag}
                 onStartResize={stableStartResize}
-                onCompleteTransition={stableCompleteTransition}
-                onStartTransition={stableStartTransition}
+                onStartConnection={stableStartConnection}
+                onStartEndpointDrag={stableStartEndpointDrag}
                 onEditState={stableEditState}
                 onHoverState={canvas.setHoveredStateId}
                 onShowStateToolbar={stableShowStateToolbar}
                 onShowTransitionToolbar={stableShowTransitionToolbar}
                 onShowTransitionContextMenu={stableShowTransitionContextMenu}
                 onAddWaypointToTransition={stableAddWaypoint}
-                setIsDraggingToCreateTransition={canvas.setIsDraggingToCreateTransition}
-                setHoveredStateId={canvas.setHoveredStateId}
                 setHoveredTransitionId={canvas.setHoveredTransitionId}
                 setFloatingToolbar={dialogs.setFloatingToolbar}
-                setDraggingTransitionEndpoint={canvas.setDraggingTransitionEndpoint}
                 setDraggingCurveControl={canvas.setDraggingCurveControl}
                 setDraggingWaypointIndex={canvas.setDraggingWaypointIndex}
                 setDraggingWaypointAxis={canvas.setDraggingWaypointAxis}
@@ -561,7 +573,7 @@ function WorkflowsViewContent({
             <div className="flex-1 flex items-center justify-center">
               <div className="text-center text-plm-fg-muted">
                 <GitBranch size={48} className="mx-auto mb-3 opacity-50" />
-                <p className="text-sm">Select a workflow to edit</p>
+                <p className="text-sm">{t('workflows.emptyCanvas')}</p>
               </div>
             </div>
           )}
@@ -628,35 +640,14 @@ function WorkflowsViewContent({
         addToast={addToast}
       />
 
-      {/* Import Workflow Confirmation Dialog */}
       {pendingImport && selectedWorkflow && (
-        <div
-          className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center"
-          onClick={cancelImport}
-        >
-          <div
-            className="bg-plm-bg-light border border-plm-border rounded-xl p-6 max-w-md w-full mx-4"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 className="text-lg font-medium text-plm-fg mb-4">Import Workflow</h3>
-            <p className="text-base text-plm-fg-muted mb-4">
-              Import workflow from <strong>{pendingImport.file.name}</strong>?
-              <br />
-              <br />
-              This will replace all existing states and transitions in{' '}
-              <strong>{selectedWorkflow.name}</strong> with {pendingImport.stateCount} states and{' '}
-              {pendingImport.transitionCount} transitions.
-            </p>
-            <div className="flex gap-2 justify-end">
-              <button onClick={cancelImport} className="btn btn-ghost" disabled={isImporting}>
-                Cancel
-              </button>
-              <button onClick={confirmImport} disabled={isImporting} className="btn btn-primary">
-                {isImporting ? 'Importing...' : 'Import'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <ImportWorkflowDialog
+          pending={pendingImport}
+          workflowName={selectedWorkflow.name}
+          isImporting={isImporting}
+          onConfirm={confirmImport}
+          onCancel={cancelImport}
+        />
       )}
     </div>
   )

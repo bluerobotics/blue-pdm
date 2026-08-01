@@ -396,6 +396,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   cancelPreviews: (keepFolderPath?: string) =>
     ipcRenderer.invoke('sw:cancel-previews', keepFolderPath),
 
+  // Generate cache entries for a folder's uncached CAD files in the background
+  prewarmThumbnails: (folderPath: string) =>
+    ipcRenderer.invoke('thumbnails:prewarm-folder', folderPath),
+
   // Release SolidWorks Document Manager handles (used before folder moves to prevent EPERM)
   releaseHandles: () => ipcRenderer.invoke('sw:release-handles'),
 
@@ -1270,6 +1274,11 @@ declare global {
         folderPath: string,
       ) => Promise<{ cancelledCount: number; activeCount: number; activePaths: string[] }>
 
+      // Generate cache entries for a folder's uncached CAD files in the background
+      prewarmThumbnails: (
+        folderPath: string,
+      ) => Promise<{ generated: number; skipped: number }>
+
       // Release SolidWorks Document Manager handles (used before folder moves to prevent EPERM)
       releaseHandles: () => Promise<{
         success: boolean
@@ -1563,6 +1572,14 @@ declare global {
             outputFile: string
             exportedFiles?: string[]
             fileSize: number
+            /** What the service actually substituted into the filename pattern. File properties
+             * take priority over pdmMetadata, so this can differ from what was requested. */
+            resolvedMetadata?: {
+              partNumber?: string
+              tabNumber?: string
+              revision?: string
+              description?: string
+            }
           }
           error?: string
         }>

@@ -172,10 +172,8 @@ export const FileCard = memo(
             file={file}
             iconSize={iconSize}
             thumbnail={thumbnail.thumbnail}
-            thumbnailError={thumbnail.thumbnailError}
-            loadingThumbnail={thumbnail.loadingThumbnail}
             folderIconColor={status.folderIconColor}
-            onThumbnailError={() => thumbnail.setThumbnailError(true)}
+            onThumbnailError={thumbnail.onThumbnailError}
           />
         </div>
 

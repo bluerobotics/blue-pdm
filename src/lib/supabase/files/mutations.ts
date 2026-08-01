@@ -663,6 +663,54 @@ export async function syncFile(
 // File Metadata Updates
 // ============================================
 
+type LegacyStateChange =
+  | { success: boolean; file?: any; error?: string | null; requiresReview?: boolean }
+  | 'unmanaged'
+
+/**
+ * Move a file to the workflow state that maps to a legacy state name.
+ *
+ * Returns `'unmanaged'` when the file is not on a workflow, which is the one
+ * case where the caller may still write `files.state` itself.
+ */
+async function executeLegacyStateChange(
+  fileId: string,
+  targetState: 'not_tracked' | 'wip' | 'in_review' | 'released' | 'obsolete',
+): Promise<LegacyStateChange> {
+  const client = getSupabaseClient()
+
+  const { data, error } = await client.rpc('execute_transition_to_legacy_state', {
+    p_file_id: fileId,
+    p_target_state: targetState,
+  })
+
+  if (error) {
+    return { success: false, error: error.message }
+  }
+
+  const result = (data ?? {}) as {
+    success?: boolean
+    requires_review?: boolean
+    error_code?: string
+    error_message?: string
+  }
+
+  if (result.error_code === 'NO_WORKFLOW') {
+    return 'unmanaged'
+  }
+
+  if (result.requires_review) {
+    return { success: result.success ?? false, requiresReview: true, error: result.error_message }
+  }
+
+  if (!result.success) {
+    return { success: false, error: result.error_message ?? 'Failed to change state' }
+  }
+
+  const { data: file } = await client.from('files').select('*').eq('id', fileId).single()
+  return { success: true, file, error: null }
+}
+
 export async function updateFileMetadata(
   fileId: string,
   userId: string,
@@ -670,7 +718,7 @@ export async function updateFileMetadata(
     state?: 'not_tracked' | 'wip' | 'in_review' | 'released' | 'obsolete'
     workflow_state_id?: string
   },
-): Promise<{ success: boolean; file?: any; error?: string | null }> {
+): Promise<{ success: boolean; file?: any; error?: string | null; requiresReview?: boolean }> {
   const client = getSupabaseClient()
 
   // Get current file to validate and log changes
@@ -682,6 +730,33 @@ export async function updateFileMetadata(
 
   if (fetchError) {
     return { success: false, error: fetchError.message }
+  }
+
+  // A legacy state name is a projection of the workflow graph, so let the engine
+  // walk it: it enforces the role, checkout and gate rules and writes history.
+  if (updates.state && updates.state !== file.state) {
+    const engineResult = await executeLegacyStateChange(fileId, updates.state)
+    if (engineResult !== 'unmanaged') return engineResult
+
+    // The file was never assigned to a workflow, so there is no graph to walk.
+    const { data, error } = await client
+      .from('files')
+      .update({
+        state: updates.state,
+        state_changed_at: new Date().toISOString(),
+        state_changed_by: userId,
+        updated_at: new Date().toISOString(),
+        updated_by: userId,
+      })
+      .eq('id', fileId)
+      .select()
+      .single()
+
+    if (error) {
+      return { success: false, error: error.message }
+    }
+
+    return { success: true, file: data, error: null }
   }
 
   // Check if workflow state actually changed

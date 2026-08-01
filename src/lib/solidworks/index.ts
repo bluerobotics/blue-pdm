@@ -4,6 +4,7 @@
  * Provides shared functionality for SolidWorks-related features:
  * - Path matching and normalization
  * - Reference validation types
+ * - Coalesced reference lookups
  *
  * @example
  * import { matchSwPathToDb, normalizePath, type PathMatchResult } from '@/lib/solidworks'
@@ -19,6 +20,8 @@ export type {
   BomNodePathStatus,
 } from './types'
 
+export type { SwReferencesResult } from './referencesCache'
+
 // Path matching utilities
 export {
   normalizePath,
@@ -26,3 +29,6 @@ export {
   matchSwPathToDb,
   getPathStatusFromMatch,
 } from './pathMatching'
+
+// Reference lookups
+export { getSwReferencesCached, clearSwReferencesCache } from './referencesCache'

@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback, lazy, Suspense } from 'react'
+import { useState, useEffect, useCallback, useMemo, lazy, Suspense } from 'react'
 import { usePDMStore, LocalFile, DetailsPanelTab } from '@/stores/pdmStore'
-import { thumbnailCache } from '@/lib/thumbnailCache'
+import { buildThumbnailUrl } from '@/lib/thumbnailUrl'
+import { useRetryableImage } from '@/hooks/useRetryableImage'
 import { getFileIconType } from '@/lib/utils'
 import { formatFileSize } from '@/lib/utils'
 import { DraggableTab, TabDropZone, PanelLocation } from '@/components/shared/DraggableTab'
@@ -22,42 +23,18 @@ const CustomerDetailPanel = lazy(() =>
 
 // Component to load OS icon for files
 function RightPanelIcon({ file, size = 24 }: { file: LocalFile; size?: number }) {
-  const [icon, setIcon] = useState<string | null>(null)
+  const iconUrl = useMemo(() => buildThumbnailUrl(file, 'grid'), [file])
+  const { src, onError } = useRetryableImage(iconUrl)
 
-  useEffect(() => {
-    if (file.isDirectory || !file.path) {
-      setIcon(null)
-      return
-    }
-
-    let cancelled = false
-
-    const loadIcon = async () => {
-      try {
-        // Use global thumbnail cache to avoid repeated IPC calls
-        const data = await thumbnailCache.get(file.path)
-        if (!cancelled && data) {
-          setIcon(data)
-        }
-      } catch {
-        // Silently fail
-      }
-    }
-
-    loadIcon()
-    return () => {
-      cancelled = true
-    }
-  }, [file.path, file.isDirectory])
-
-  if (icon) {
+  if (src) {
     return (
       <img
-        src={icon}
+        src={src}
         alt=""
         className="flex-shrink-0 rounded"
         style={{ width: size, height: size }}
-        onError={() => setIcon(null)}
+        decoding="async"
+        onError={onError}
       />
     )
   }
@@ -137,9 +114,6 @@ export function RightPanel() {
     path: string | null
   }>({ checked: false, installed: false, path: null })
 
-  // CAD preview state
-  const [cadPreview, setCadPreview] = useState<string | null>(null)
-  const [cadPreviewLoading, setCadPreviewLoading] = useState(false)
 
   // Check if eDrawings is installed
   useEffect(() => {
@@ -179,52 +153,13 @@ export function RightPanel() {
     loadPdf()
   }, [file?.path, file?.extension, rightPanelTab])
 
-  // Load CAD preview when file changes
-  // Priority: 1) OLE preview extraction, 2) DM API preview, 3) OS thumbnail
-  useEffect(() => {
-    const loadPreview = async () => {
-      const ext = file?.extension?.toLowerCase() || ''
-      const isSolidWorks = ['.sldprt', '.sldasm', '.slddrw'].includes(ext)
+  // CAD preview URL, resolved by the main process against the thumbnail cache.
+  const cadPreviewUrl = useMemo(() => {
+    if (rightPanelTab !== 'preview' || !file) return null
+    return buildThumbnailUrl(file, 'preview')
+  }, [file, rightPanelTab])
 
-      if (!isSolidWorks || rightPanelTab !== 'preview' || !file?.path) {
-        setCadPreview(null)
-        return
-      }
-
-      setCadPreviewLoading(true)
-      try {
-        // First, try direct OLE preview extraction (most reliable, high quality)
-        const oleResult = await window.electronAPI?.extractSolidWorksPreview?.(file.path)
-        if (oleResult?.success && oleResult.data) {
-          setCadPreview(oleResult.data)
-          setCadPreviewLoading(false)
-          return
-        }
-
-        // Second, try SolidWorks Document Manager API
-        const previewResult = await window.electronAPI?.solidworks?.getPreview(file.path)
-        if (previewResult?.success && previewResult.data?.imageData) {
-          const mimeType = previewResult.data.mimeType || 'image/png'
-          setCadPreview(`data:${mimeType};base64,${previewResult.data.imageData}`)
-          setCadPreviewLoading(false)
-          return
-        }
-
-        // Fall back to OS thumbnail (uses cache)
-        const thumbData = await thumbnailCache.get(file.path)
-        if (thumbData) {
-          setCadPreview(thumbData)
-        } else {
-          setCadPreview(null)
-        }
-      } catch {
-        setCadPreview(null)
-      } finally {
-        setCadPreviewLoading(false)
-      }
-    }
-    loadPreview()
-  }, [file?.path, file?.extension, rightPanelTab])
+  const { src: cadPreview, onError: onCadPreviewError } = useRetryableImage(cadPreviewUrl)
 
   const ext = file?.extension?.toLowerCase() || ''
   const isSolidWorksFile = ['.sldprt', '.sldasm', '.slddrw'].includes(ext)
@@ -412,17 +347,15 @@ export function RightPanel() {
                     // Use the preview panel for SolidWorks files
                     <SWDatacardPanel file={file} />
                   ) : isCADFile ? (
-                    cadPreviewLoading ? (
-                      <div className="flex-1 flex items-center justify-center">
-                        <Loader2 className="animate-spin text-plm-accent" size={32} />
-                      </div>
-                    ) : cadPreview ? (
+                    cadPreview ? (
                       <div className="flex-1 flex flex-col">
                         <div className="flex-1 flex items-center justify-center bg-gradient-to-b from-gray-800 to-gray-900 rounded overflow-auto">
                           <img
                             src={cadPreview}
                             alt={file.name}
                             className="max-w-full max-h-full object-contain"
+                            decoding="async"
+                            onError={onCadPreviewError}
                           />
                         </div>
                         <button

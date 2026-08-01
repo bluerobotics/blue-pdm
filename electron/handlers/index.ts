@@ -81,6 +81,14 @@ import {
   unregisterArchiveHandlers,
   type ArchiveHandlerDependencies,
 } from './archive'
+import {
+  initThumbnailStore,
+  registerThumbnailProtocol,
+  unregisterThumbnailProtocol,
+  registerThumbnailIpcHandlers,
+  unregisterThumbnailIpcHandlers,
+} from './thumbnails'
+import { extractCadImage } from './solidworks'
 
 // Logging utilities for main.ts
 export { writeLog, initializeLogging } from './logging'
@@ -112,6 +120,9 @@ export { cleanupUpdater } from './updater'
 
 // File system cleanup for main.ts (stops file watcher)
 export { cleanupFs } from './fs'
+
+// Thumbnail cache: scheme registration runs before app ready, disposal at quit
+export { registerThumbnailScheme, disposeThumbnailStore } from './thumbnails'
 
 // Re-export getters
 export { getWorkingDirectory } from './fs'
@@ -231,6 +242,23 @@ export function registerAllHandlers(mainWindow: BrowserWindow, deps: AllHandlerD
   registerDeepLinkHandlers(mainWindow, deepLinkHandlerDeps)
   registerArchiveHandlers(mainWindow, archiveHandlerDeps)
 
+  // Thumbnails are served over a custom scheme rather than IPC, so they are set
+  // up here alongside the handlers but do not register any ipcMain channels.
+  // Initialization reads the on-disk index and must not block handler setup.
+  void initThumbnailStore({
+    log,
+    logError,
+    logWarn,
+    extract: extractCadImage,
+  })
+
+  registerThumbnailProtocol({
+    logWarn,
+    getVaultRoot: getWorkingDirectory,
+  })
+
+  registerThumbnailIpcHandlers({ log })
+
   log('All IPC handlers registered')
 }
 
@@ -247,4 +275,6 @@ export function unregisterAllHandlers(): void {
   unregisterExtensionHostHandlers()
   unregisterDeepLinkHandlers()
   unregisterArchiveHandlers()
+  unregisterThumbnailProtocol()
+  unregisterThumbnailIpcHandlers()
 }

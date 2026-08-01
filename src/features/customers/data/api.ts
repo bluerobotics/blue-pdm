@@ -13,14 +13,17 @@
 import { log } from '@/lib/logger'
 import { supabase } from '@/lib/supabase'
 
+import type { ChannelId } from '../lib/channels'
 import type { Query } from './cache'
 import type {
   AnalyticsSummary,
   CategoryBreakdownRow,
+  ChannelCount,
   CohortCell,
   CustomerDetailPayload,
   CustomerRfmRow,
   GeoBreakdownRow,
+  PartnerCoverageRow,
   SegmentCount,
   TimeseriesPoint,
   TopAccount,
@@ -168,12 +171,23 @@ export const customerQueries = {
     }
   },
 
-  cohorts(orgId: string, months = 12): Query<CohortCell[]> {
+  /**
+   * Retention grid as of the window's end.
+   *
+   * `months` is how many cohorts to draw rather than a second window - see the
+   * RPC's comment: retention only says something across several cohorts, so a
+   * 30-day range still looks back far enough to have rows to compare.
+   */
+  cohorts(orgId: string, window: DateWindow, months = 12): Query<CohortCell[]> {
     return {
-      key: `cohorts|${orgId}|${months}`,
+      key: `cohorts|${orgId}|${window.to}|${months}`,
       run: () =>
         timedRows<CohortCell>('customer_cohort_retention', () =>
-          supabase.rpc('customer_cohort_retention', { p_org_id: orgId, p_months: months }),
+          supabase.rpc('customer_cohort_retention', {
+            p_org_id: orgId,
+            p_as_of: window.to,
+            p_months: months,
+          }),
         ),
     }
   },
@@ -193,24 +207,73 @@ export const customerQueries = {
     }
   },
 
-  rfm(orgId: string, limit = 5000): Query<CustomerRfmRow[]> {
+  /**
+   * The roster behind every table in the workspace.
+   *
+   * Spend and order counts are the window's; the lifecycle dates and segment
+   * are lifetime, as of the window's end. See the RPC for why.
+   */
+  rfm(orgId: string, window: DateWindow, limit = 5000): Query<CustomerRfmRow[]> {
     return {
-      key: `rfm|${orgId}|${limit}`,
+      key: `rfm|${orgId}|${window.from}|${window.to}|${limit}`,
       run: () =>
         timedRows<CustomerRfmRow>('customer_rfm', () =>
-          supabase.rpc('customer_rfm', { p_org_id: orgId, p_limit: limit }),
+          supabase.rpc('customer_rfm', {
+            p_org_id: orgId,
+            p_from: window.from,
+            p_to: window.to,
+            p_limit: limit,
+          }),
+        ),
+    }
+  },
+
+  /**
+   * Accounts and revenue per sales channel.
+   *
+   * Revenue and orders are the window's; the account and contact counts are
+   * not, because they answer how many partners you have rather than how much
+   * they bought in the period.
+   */
+  channelCounts(orgId: string, window: DateWindow): Query<ChannelCount[]> {
+    return {
+      key: `channelCounts|${orgId}|${window.from}|${window.to}`,
+      run: () =>
+        timedRows<ChannelCount>('customer_channel_counts', () =>
+          supabase.rpc('customer_channel_counts', {
+            p_org_id: orgId,
+            p_from: window.from,
+            p_to: window.to,
+          }),
+        ),
+    }
+  },
+
+  /** Every named distributor and integrator, matched to an account or not. */
+  partnerCoverage(orgId: string, window: DateWindow): Query<PartnerCoverageRow[]> {
+    return {
+      key: `partnerCoverage|${orgId}|${window.from}|${window.to}`,
+      run: () =>
+        timedRows<PartnerCoverageRow>('customer_partner_coverage', () =>
+          supabase.rpc('customer_partner_coverage', {
+            p_org_id: orgId,
+            p_from: window.from,
+            p_to: window.to,
+          }),
         ),
     }
   },
 
   /** Everything the right-hand panel shows, as one JSONB document. */
-  detail(customerId: string, orderLimit = 100): Query<CustomerDetailPayload> {
+  detail(customerId: string, window: DateWindow, orderLimit = 100): Query<CustomerDetailPayload> {
     return {
-      key: `detail|${customerId}|${orderLimit}`,
+      key: `detail|${customerId}|${window.from}|${window.to}|${orderLimit}`,
       run: async () => {
         const payload = await timed('customer_detail', () =>
           supabase.rpc('customer_detail', {
             p_customer_id: customerId,
+            p_from: window.from,
+            p_to: window.to,
             p_order_limit: orderLimit,
           }),
         )
@@ -221,4 +284,40 @@ export const customerQueries = {
       },
     }
   },
+}
+
+/**
+ * Move an account to a different sales channel.
+ *
+ * A plain table update rather than an RPC: it is one column on one row, and the
+ * existing "Managers can update customer accounts" policy already gates it on
+ * module:customers edit. A trigger stamps who changed it and when, which is
+ * what stops the distributor seed from later overwriting the answer - so the
+ * client deliberately sends nothing but the channel itself.
+ *
+ * The caller is responsible for invalidating the cached roster afterwards;
+ * every read of this value goes through queries keyed above.
+ */
+export async function setAccountChannel(accountId: string, channel: ChannelId): Promise<void> {
+  const startedAt = performance.now()
+
+  const { error } = await supabase
+    .from('customer_accounts')
+    .update({ channel })
+    .eq('id', accountId)
+
+  if (error) {
+    log.error('[Customers]', 'Failed to set account channel', {
+      accountId,
+      channel,
+      error: error.message,
+    })
+    throw new Error(error.message)
+  }
+
+  log.info('[Customers]', 'Account channel changed', {
+    accountId,
+    channel,
+    ms: Math.round(performance.now() - startedAt),
+  })
 }

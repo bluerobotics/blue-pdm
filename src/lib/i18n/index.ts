@@ -34,21 +34,27 @@ const translations: Record<Language, Record<string, string>> = {
   sindarin: flattenTranslations(en),
 }
 
+/** Values substituted into a string's `{{placeholders}}`. */
+export type TranslationParams = Record<string, string | number>
+
+function interpolate(text: string, params?: TranslationParams): string {
+  if (!params) return text
+  return text.replace(/\{\{(\w+)\}\}/g, (match, name: string) =>
+    name in params ? String(params[name]) : match,
+  )
+}
+
 /**
  * Translation hook - returns a function to translate keys
  * Usage: const { t } = useTranslation()
  *        t('preferences.language') // Returns "Language" or "Langue" etc.
+ *        t('workflows.transition.moved', { state: 'Released' })
  */
 export function useTranslation() {
   const language = usePDMStore((state) => state.language)
 
-  const t = (key: string, fallback?: string): string => {
-    const dict = translations[language] || translations['en']
-    const enDict = translations['en']
-
-    // Try current language first, then fallback to English, then to provided fallback or key
-    return dict[key] || enDict[key] || fallback || key
-  }
+  const t = (key: string, fallbackOrParams?: string | TranslationParams): string =>
+    getTranslation(language, key, fallbackOrParams)
 
   return { t, language }
 }
@@ -57,17 +63,26 @@ export function useTranslation() {
  * Standalone translation function — reads the active language from the store.
  * Safe to call anywhere (components, callbacks, utility functions).
  */
-export function t(key: string, fallback?: string): string {
+export function t(key: string, fallbackOrParams?: string | TranslationParams): string {
   const language = usePDMStore.getState().language
-  return getTranslation(language, key, fallback)
+  return getTranslation(language, key, fallbackOrParams)
 }
 
 /**
  * Get translation outside of React components
  * Usage: const text = getTranslation('en', 'preferences.language')
+ *
+ * The third argument is either a fallback string for a missing key, or the
+ * values to substitute into the string's `{{placeholders}}`.
  */
-export function getTranslation(language: Language, key: string, fallback?: string): string {
+export function getTranslation(
+  language: Language,
+  key: string,
+  fallbackOrParams?: string | TranslationParams,
+): string {
   const dict = translations[language] || translations['en']
   const enDict = translations['en']
-  return dict[key] || enDict[key] || fallback || key
+  const isFallback = typeof fallbackOrParams === 'string'
+  const text = dict[key] || enDict[key] || (isFallback ? fallbackOrParams : key)
+  return isFallback ? text : interpolate(text, fallbackOrParams)
 }

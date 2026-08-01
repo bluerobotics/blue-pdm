@@ -1,51 +1,11 @@
-// Types specific to the workflow editor canvas
-import type {
-  WorkflowTemplate,
-  WorkflowState,
-  WorkflowTransition,
-  WorkflowGate,
-  TransitionLineStyle,
-  TransitionPathType,
-  TransitionArrowHead,
-  TransitionLineThickness,
-  CanvasMode,
-} from '@/types/workflow'
-
-// Re-export commonly used types for convenience
-export type {
-  WorkflowTemplate,
-  WorkflowState,
-  WorkflowTransition,
-  WorkflowGate,
-  TransitionLineStyle,
-  TransitionPathType,
-  TransitionArrowHead,
-  TransitionLineThickness,
-  CanvasMode,
-}
-
-// Editor state types
-export interface EditorState {
-  canvasMode: CanvasMode
-  zoom: number
-  pan: { x: number; y: number }
-  selectedStateId: string | null
-  selectedTransitionId: string | null
-  isDragging: boolean
-  dragStart: { x: number; y: number }
-}
-
-export interface DraggingState {
-  draggingStateId: string | null
-  dragOffset: { x: number; y: number }
-}
-
-export interface TransitionCreationState {
-  isCreatingTransition: boolean
-  transitionStartId: string | null
-  isDraggingToCreateTransition: boolean
-  hoveredStateId: string | null
-}
+/**
+ * Types for the workflow editor's canvas interactions.
+ *
+ * Domain types (`WorkflowState`, `WorkflowTransition`, ...) live in
+ * `@/types/workflow` and are imported from there directly; this module owns only
+ * the ephemeral editor state that never reaches the database.
+ */
+import type { WorkflowState, WorkflowTemplate, WorkflowTransition } from '@/types/workflow'
 
 export interface TransitionEndpointDrag {
   transitionId: string
@@ -76,11 +36,6 @@ export interface EdgePosition {
 // Keys are formatted as `${transitionId}-start` or `${transitionId}-end`
 export type EdgePositions = Record<string, EdgePosition>
 
-// Type aliases for commonly used context menu types
-export type ContextMenuData = ContextMenuState
-export type WaypointContextMenuData = WaypointContextMenu
-export type FloatingToolbarData = FloatingToolbarState
-
 export interface SnapSettings {
   gridSize: number
   snapToGrid: boolean
@@ -100,16 +55,21 @@ export interface SnappingResult {
   horizontalGuide: number | null
 }
 
-// History/undo types
-export interface HistoryEntry {
-  type: 'state_add' | 'state_delete' | 'state_move' | 'transition_add' | 'transition_delete'
-  data: any
-}
+/**
+ * A history entry always describes the action the user performed, never its
+ * inverse. Undo reverts it and redo re-applies it, so the same entry can move
+ * between the two stacks unchanged and an undo/redo cycle is symmetric.
+ */
+export type HistoryEntry =
+  | { type: 'state_add'; state: WorkflowState }
+  | { type: 'state_delete'; state: WorkflowState }
+  | { type: 'state_move'; stateId: string; from: Point; to: Point }
+  | { type: 'transition_add'; transition: WorkflowTransition }
+  | { type: 'transition_delete'; transition: WorkflowTransition }
 
-export interface ClipboardData {
-  type: 'state' | 'transition'
-  data: any
-}
+export type ClipboardData =
+  | { type: 'state'; data: WorkflowState }
+  | { type: 'transition'; data: WorkflowTransition }
 
 // Context menu types
 export interface ContextMenuState {
@@ -146,14 +106,14 @@ export interface Point {
 
 export interface PointWithEdge extends Point {
   edge: 'left' | 'right' | 'top' | 'bottom'
-}
-
-export interface ElbowHandle {
-  x: number
-  y: number
-  isVertical: boolean
-  segmentIndex: number
-  waypointIndex: number
+  /**
+   * Unit vector pointing out of the node at this point. Present when the anchor
+   * was resolved against the node's real outline, where the surface direction
+   * is not necessarily the axis the `edge` names - the side of a diamond faces
+   * diagonally, and every point on an ellipse faces somewhere different.
+   * Consumers fall back to the axis implied by `edge` when it is absent.
+   */
+  normal?: Point
 }
 
 // Workflow role type (simplified for UI)
@@ -162,133 +122,6 @@ export interface WorkflowRoleBasic {
   name: string
   color: string
   icon: string
-}
-
-// Props interfaces for components
-export interface StateNodeProps {
-  state: WorkflowState
-  isSelected: boolean
-  isTransitionStart: boolean
-  isDragging: boolean
-  isResizing: boolean
-  isSnapTarget: boolean
-  isHovered: boolean
-  isAdmin: boolean
-  canvasMode: CanvasMode
-  isCreatingTransition: boolean
-  transitionStartId: string | null
-  dimensions: StateDimensions
-  onSelect: () => void
-  onStartDrag: (e: React.MouseEvent) => void
-  onStartResize: (handle: ResizingState['handle'], e: React.MouseEvent) => void
-  onCompleteTransition: () => void
-  onStartTransition: () => void
-  onEdit: () => void
-  onHoverChange: (isHovered: boolean) => void
-}
-
-export interface TransitionLineProps {
-  transition: WorkflowTransition
-  fromState: WorkflowState
-  toState: WorkflowState
-  isSelected: boolean
-  isHovered: boolean
-  isAdmin: boolean
-  gates: WorkflowGate[]
-  fromDimensions: StateDimensions
-  toDimensions: StateDimensions
-  waypoints: Point[]
-  labelOffset: Point | null
-  pinnedLabelPosition: Point | null
-  edgePositions: {
-    start: EdgePosition | null
-    end: EdgePosition | null
-  }
-  draggingEndpoint: TransitionEndpointDrag | null
-  draggingWaypointIndex: number | null
-  tempCurvePos: Point | null
-  tempLabelPos: Point | null
-  hoveredStateId: string | null
-  mousePos: Point
-  onSelect: () => void
-  onHoverChange: (isHovered: boolean) => void
-  onEdit: () => void
-  onStartEndpointDrag: (endpoint: 'start' | 'end') => void
-  onStartWaypointDrag: (waypointIndex: number, axis?: 'x' | 'y' | null) => void
-  onStartLabelDrag: () => void
-  onAddWaypoint: (clickX: number, clickY: number) => void
-  onWaypointContextMenu: (e: React.MouseEvent, waypointIndex: number | null) => void
-}
-
-export interface WorkflowCanvasProps {
-  states: WorkflowState[]
-  transitions: WorkflowTransition[]
-  gates: Record<string, WorkflowGate[]>
-  editorState: EditorState
-  isAdmin: boolean
-  // ... many more props
-}
-
-export interface WorkflowToolbarProps {
-  canvasMode: CanvasMode
-  zoom: number
-  isAdmin: boolean
-  undoStack: HistoryEntry[]
-  redoStack: HistoryEntry[]
-  snapSettings: SnapSettings
-  onModeChange: (mode: CanvasMode) => void
-  onZoomIn: () => void
-  onZoomOut: () => void
-  onZoomReset: () => void
-  onUndo: () => void
-  onRedo: () => void
-  onAddState: () => void
-  onExport: () => void
-  onImport: () => void
-  onSnapSettingsChange: (settings: Partial<SnapSettings>) => void
-}
-
-export interface FloatingToolbarProps {
-  x: number
-  y: number
-  type: 'state' | 'transition'
-  isAdmin: boolean
-  targetState?: WorkflowState
-  targetTransition?: WorkflowTransition
-  onColorChange: (color: string) => void
-  onLineStyleChange?: (style: TransitionLineStyle) => void
-  onPathTypeChange?: (pathType: TransitionPathType) => void
-  onArrowHeadChange?: (arrowHead: TransitionArrowHead) => void
-  onThicknessChange?: (thickness: TransitionLineThickness) => void
-  onFillOpacityChange?: (opacity: number) => void
-  onBorderColorChange?: (color: string | null) => void
-  onBorderOpacityChange?: (opacity: number) => void
-  onBorderThicknessChange?: (thickness: number) => void
-  onCornerRadiusChange?: (radius: number) => void
-  onShapeChange?: (shape: 'rectangle' | 'diamond' | 'hexagon' | 'ellipse') => void
-  onEdit: () => void
-  onDuplicate?: () => void
-  onDelete: () => void
-  onAddGate?: () => void
-  onClose: () => void
-}
-
-export interface WorkflowContextMenuProps {
-  x: number
-  y: number
-  type: 'state' | 'transition' | 'canvas'
-  isAdmin: boolean
-  targetState?: WorkflowState
-  targetTransition?: WorkflowTransition
-  gates: WorkflowGate[]
-  allStates: WorkflowState[]
-  hasWaypoints: boolean
-  onEdit: () => void
-  onDelete: () => void
-  onAddGate: () => void
-  onResetWaypoints: () => void
-  onAddState: () => void
-  onClose: () => void
 }
 
 // Dialog props

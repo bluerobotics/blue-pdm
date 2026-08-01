@@ -4,12 +4,13 @@
  * Consolidates dialog state that was previously inline in WorkflowsViewContent.
  */
 import { useState, useCallback } from 'react'
+import type { WorkflowState, WorkflowTransition } from '@/types/workflow'
+
 import type {
-  WorkflowState,
-  WorkflowTransition,
   FloatingToolbarState,
   ContextMenuState,
   WaypointContextMenu,
+  ClipboardData,
 } from '../types'
 
 export interface UseWorkflowDialogsReturn {
@@ -32,7 +33,7 @@ export interface UseWorkflowDialogsReturn {
   showSnapSettings: boolean
 
   // Clipboard
-  clipboard: { type: 'state' | 'transition'; data: unknown } | null
+  clipboard: ClipboardData | null
 
   // Setters
   setShowCreateWorkflow: (v: boolean) => void
@@ -45,7 +46,7 @@ export interface UseWorkflowDialogsReturn {
   setWaypointContextMenu: (m: WaypointContextMenu | null) => void
   setFloatingToolbar: (t: FloatingToolbarState | null) => void
   setShowSnapSettings: (v: boolean) => void
-  setClipboard: (c: { type: 'state' | 'transition'; data: unknown } | null) => void
+  setClipboard: (c: ClipboardData | null) => void
 
   // Helper functions
   openEditState: (state: WorkflowState) => void
@@ -78,10 +79,7 @@ export function useWorkflowDialogs(): UseWorkflowDialogsReturn {
   const [showSnapSettings, setShowSnapSettings] = useState(false)
 
   // Clipboard
-  const [clipboard, setClipboard] = useState<{
-    type: 'state' | 'transition'
-    data: unknown
-  } | null>(null)
+  const [clipboard, setClipboard] = useState<ClipboardData | null>(null)
 
   // Helper functions
   const openEditState = useCallback((state: WorkflowState) => {

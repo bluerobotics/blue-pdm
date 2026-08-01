@@ -2,7 +2,7 @@
  * ArrowMarkers - SVG marker definitions for transition arrows
  */
 import { memo } from 'react'
-import type { WorkflowTransition } from '../types'
+import type { WorkflowTransition } from '@/types/workflow'
 import { lightenColor } from '../utils'
 
 interface ArrowMarkersProps {

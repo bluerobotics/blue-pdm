@@ -234,3 +234,18 @@ export const getPerpendicularDirection = (edge: 'left' | 'right' | 'top' | 'bott
       return { x: 0, y: 1 }
   }
 }
+
+/**
+ * The direction a line should leave an anchor in.
+ *
+ * Anchors resolved against a node's real outline carry the surface normal,
+ * which is the only direction that looks right on a shape whose sides are not
+ * axis-aligned: the side of a diamond faces diagonally and every point on an
+ * ellipse faces somewhere different. Anchors without one fall back to the axis
+ * their edge names.
+ */
+export const getExitDirection = (anchor: PointWithEdge): Point | null => {
+  const { normal } = anchor
+  if (normal && (normal.x !== 0 || normal.y !== 0)) return normal
+  return anchor.edge ? getPerpendicularDirection(anchor.edge) : null
+}

@@ -11,6 +11,7 @@ import { getCountLabel } from '@/lib/utils'
 import type { RefreshableActionProps, SelectionCounts, SelectionState } from './types'
 import { ContextSubmenu } from '../components'
 import { useSolidWorksStatus } from '@/hooks/useSolidWorksStatus'
+import { isSolidWorksUsable } from '@/types/solidworks'
 import { ChangeStateSubmenu } from './ChangeStateSubmenu'
 
 interface CheckoutActionsProps extends RefreshableActionProps {
@@ -20,7 +21,6 @@ interface CheckoutActionsProps extends RefreshableActionProps {
   handleCheckoutFolder: (folder: LocalFile) => void
   handleCheckinFolder: (folder: LocalFile) => void
   handleBulkStateChange: (files: LocalFile[], newState: string) => void
-  handleOpenReviewModal: (file: LocalFile) => void
   showStateSubmenu: boolean
   setShowStateSubmenu: (show: boolean) => void
   stateSubmenuTimeoutRef: React.MutableRefObject<NodeJS.Timeout | null>
@@ -40,7 +40,6 @@ export function CheckoutActions({
   handleCheckoutFolder,
   handleCheckinFolder,
   handleBulkStateChange,
-  handleOpenReviewModal,
   showStateSubmenu,
   setShowStateSubmenu,
   stateSubmenuTimeoutRef,
@@ -48,7 +47,7 @@ export function CheckoutActions({
 }: CheckoutActionsProps) {
   const { user, getEffectiveRole, hasPermission, addToast, solidworksIntegrationEnabled } =
     usePDMStore()
-  const { status } = useSolidWorksStatus()
+  const { status, hasChecked: swStatusChecked } = useSolidWorksStatus()
   const [isSyncing, setIsSyncing] = useState(false)
 
   // Check if any files are currently saving metadata
@@ -292,7 +291,6 @@ export function CheckoutActions({
           targetFile={syncedFilesInSelection[0]}
           onClose={onClose}
           onRefresh={onRefresh}
-          handleOpenReviewModal={handleOpenReviewModal}
           showStateSubmenu={showStateSubmenu}
           setShowStateSubmenu={setShowStateSubmenu}
           stateSubmenuTimeoutRef={stateSubmenuTimeoutRef}
@@ -384,7 +382,8 @@ export function CheckoutActions({
         onRefresh={onRefresh}
         user={user}
         solidworksIntegrationEnabled={solidworksIntegrationEnabled}
-        swServiceRunning={status.running && (status.dmApiAvailable ?? false)}
+        swServiceRunning={isSolidWorksUsable(status)}
+        swStatusChecked={swStatusChecked}
         isSyncing={isSyncing}
         setIsSyncing={setIsSyncing}
       />
@@ -406,6 +405,7 @@ function SyncMetadataItem({
   user,
   solidworksIntegrationEnabled,
   swServiceRunning,
+  swStatusChecked,
   isSyncing,
   setIsSyncing,
 }: {
@@ -417,6 +417,7 @@ function SyncMetadataItem({
   user: { id: string } | null
   solidworksIntegrationEnabled: boolean
   swServiceRunning: boolean
+  swStatusChecked: boolean
   isSyncing: boolean
   setIsSyncing: (v: boolean) => void
 }) {
@@ -476,7 +477,7 @@ function SyncMetadataItem({
   // Determine tooltip based on state
   let tooltip = 'Sync metadata between BluePLM and SolidWorks file'
   if (!swServiceRunning) {
-    tooltip = 'SolidWorks service not running'
+    tooltip = swStatusChecked ? 'SolidWorks service not running' : 'Checking SolidWorks service...'
   }
 
   return (

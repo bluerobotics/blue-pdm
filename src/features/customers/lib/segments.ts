@@ -1,10 +1,14 @@
 /**
- * Lifecycle segment presentation.
+ * Lifecycle segments: how they are labelled, and the one client-side mirror of
+ * how they are decided.
  *
- * The segments themselves are decided in SQL by customer_lifecycle_segment()
- * so the KPI strip, the sidebar counts and the table badges cannot drift. This
- * module only carries how each one is labelled and coloured; changing a
- * threshold means changing the SQL function, not this file.
+ * customer_lifecycle_segment() in 60-customers.sql is the source of truth, and
+ * anything reading the RFM aggregate takes the segment straight from it. Two
+ * places cannot: the detail panel loads a plain customers row, and the account
+ * roll-up combines several rows into one whose segment no query has computed.
+ * Both go through {@link deriveSegment} here rather than keeping a copy each.
+ *
+ * Changing a threshold means changing the SQL function AND deriveSegment.
  */
 
 import type { ChartTheme } from './chartTheme'
@@ -68,4 +72,39 @@ export function segmentMeta(id: string | null | undefined): SegmentMeta {
 
 export function isSegmentId(value: string): value is SegmentId {
   return (SEGMENT_IDS as readonly string[]).includes(value)
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/** Whole days between a timestamp and now, or null if there is no timestamp. */
+export function daysSince(iso: string | null | undefined, asOf: number = Date.now()): number | null {
+  if (!iso) return null
+  const time = new Date(iso).getTime()
+  return Number.isNaN(time) ? null : Math.floor((asOf - time) / DAY_MS)
+}
+
+/**
+ * Mirror of customer_lifecycle_segment() in 60-customers.sql.
+ *
+ * The branch order is part of the rule, not an implementation detail: a
+ * one-time buyer from two years ago is churned, not new, so recency is tested
+ * before the first-order window.
+ */
+export function deriveSegment(
+  orderCount: number | null | undefined,
+  firstOrder: string | null,
+  lastOrder: string | null,
+  asOf: number = Date.now(),
+): SegmentId {
+  if (!orderCount) return 'prospect'
+
+  const recencyDays = daysSince(lastOrder, asOf)
+  if (recencyDays == null) return 'prospect'
+  if (recencyDays > 365) return 'churned'
+  if (recencyDays > 180) return 'at_risk'
+
+  const firstOrderDays = daysSince(firstOrder, asOf)
+  if (firstOrderDays != null && firstOrderDays <= 90) return 'new'
+
+  return 'active'
 }

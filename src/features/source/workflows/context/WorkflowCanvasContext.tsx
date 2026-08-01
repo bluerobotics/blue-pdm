@@ -1,23 +1,30 @@
 /**
- * WorkflowCanvasContext - Slim canvas interaction state
+ * WorkflowCanvasContext - canvas interaction state
  *
- * This context provides ONLY canvas-specific ephemeral state:
- * - Viewport (zoom, pan, canvasRef)
- * - Selection and hover states (selectedStateId, hoveredStateId, etc.)
- * - Drag and resize operations (draggingStateId, resizingState, etc.)
- * - Transition creation (isCreatingTransition, transitionStartId, etc.)
- * - Waypoints and labels (waypoints, labelOffsets, pinnedLabelPositions)
- * - Snap settings (snapSettings, alignmentGuides)
+ * Two kinds of state live here, and the distinction matters:
  *
- * Dialog visibility, editing entities, and context menus are
- * managed via local useState in WorkflowsViewContent.
+ * 1. Ephemeral interaction state, held in React state: viewport, selection and
+ *    hover, in-flight drags and resizes, transition creation, snap settings. None
+ *    of it survives a reload, and none of it should.
+ * 2. Diagram layout - node size, transition anchors, waypoints and label
+ *    placement. This is *derived* from the loaded rows rather than stored here,
+ *    and every setter writes back to both the row and the database. Keeping it
+ *    derived means the canvas and the database cannot disagree, which is what
+ *    used to happen when layout was React-state-only and vanished on refresh.
  *
- * Core data (workflows, states, transitions) comes from props
- * via the useWorkflowData hook.
+ * Dialog visibility, editing entities, and context menus are managed via local
+ * useState in WorkflowsViewContent.
  *
  * @example
  * ```tsx
- * <WorkflowCanvasProvider workflowId={workflow.id}>
+ * <WorkflowCanvasProvider
+ *   key={workflow.id}
+ *   workflowId={workflow.id}
+ *   states={states}
+ *   transitions={transitions}
+ *   setStates={setStates}
+ *   setTransitions={setTransitions}
+ * >
  *   <WorkflowCanvas states={states} transitions={transitions} />
  * </WorkflowCanvasProvider>
  * ```
@@ -29,23 +36,32 @@ import {
   useRef,
   useMemo,
   useCallback,
-  useEffect,
   type ReactNode,
   type RefObject,
 } from 'react'
-import { MIN_ZOOM, MAX_ZOOM } from '../constants'
+
+import type { CanvasMode, WorkflowState, WorkflowTransition } from '@/types/workflow'
+
+import { DRAG_THRESHOLD } from '../constants'
 import type {
-  CanvasMode,
   SnapSettings,
   AlignmentGuides,
   Point,
   EdgePosition,
+  EdgePositions,
   StateDimensions,
   ResizingState,
   TransitionEndpointDrag,
   SnappingResult,
-  WorkflowState,
 } from '../types'
+
+import {
+  createConnectionPreviewStore,
+  type ConnectionPreviewStore,
+} from './connectionPreviewStore'
+import { useCanvasViewport } from './useCanvasViewport'
+import { useCanvasLayout } from './useCanvasLayout'
+import { useCanvasSnapping } from './useCanvasSnapping'
 
 // ==============================================
 // Context Value Interface (~60 items vs 200+ in old context)
@@ -56,7 +72,6 @@ export interface WorkflowCanvasContextValue {
   canvasMode: CanvasMode
   zoom: number
   pan: Point
-  mousePos: Point
   canvasRef: RefObject<HTMLDivElement | null>
   /** Ref to the transformable SVG group, used for imperative pan/zoom during gestures */
   groupRef: RefObject<SVGGElement | null>
@@ -68,7 +83,6 @@ export interface WorkflowCanvasContextValue {
   setCanvasMode: (mode: CanvasMode) => void
   setZoom: (zoom: number) => void
   setPan: (pan: Point) => void
-  setMousePos: (pos: Point) => void
   handleWheel: (e: React.WheelEvent) => void
   centerOnContent: (states: WorkflowState[]) => void
   screenToCanvas: (screenX: number, screenY: number) => Point
@@ -93,6 +107,8 @@ export interface WorkflowCanvasContextValue {
   dragOffset: Point
   hasDraggedRef: RefObject<boolean>
   dragStartPosRef: RefObject<Point | null>
+  /** Canvas position of the dragged node when the gesture began, for undo. */
+  dragOriginRef: RefObject<Point | null>
 
   setDraggingStateId: (id: string | null) => void
   setDragOffset: (offset: Point) => void
@@ -102,6 +118,7 @@ export interface WorkflowCanvasContextValue {
     offsetY: number,
     clientX: number,
     clientY: number,
+    origin: Point,
   ) => void
   stopDragging: () => void
   checkDragThreshold: (clientX: number, clientY: number) => boolean
@@ -127,13 +144,16 @@ export interface WorkflowCanvasContextValue {
   // ---- Transition Creation ----
   isCreatingTransition: boolean
   transitionStartId: string | null
+  /** Where on the origin node the line is pinned, or null while it is free to slide. */
+  transitionStartAnchor: EdgePosition | null
   isDraggingToCreateTransition: boolean
   draggingTransitionEndpoint: TransitionEndpointDrag | null
-  justCompletedTransitionRef: RefObject<boolean>
-  transitionCompletedAtRef: RefObject<number>
+  /** Per-frame state of the line being dragged, kept out of React. */
+  connectionPreview: ConnectionPreviewStore
 
   setIsCreatingTransition: (creating: boolean) => void
   setTransitionStartId: (id: string | null) => void
+  setTransitionStartAnchor: (anchor: EdgePosition | null) => void
   setIsDraggingToCreateTransition: (dragging: boolean) => void
   setDraggingTransitionEndpoint: (endpoint: TransitionEndpointDrag | null) => void
   cancelTransitionCreation: () => void
@@ -167,12 +187,12 @@ export interface WorkflowCanvasContextValue {
   stopLabelDrag: () => void
 
   // ---- Edge Positions ----
-  edgePositions: Record<string, EdgePosition>
-  setEdgePositions: React.Dispatch<React.SetStateAction<Record<string, EdgePosition>>>
+  edgePositions: EdgePositions
+  setEdgePositions: React.Dispatch<React.SetStateAction<EdgePositions>>
   updateEdgePosition: (
     transitionId: string,
     endpoint: 'start' | 'end',
-    position: EdgePosition,
+    position: EdgePosition | null,
   ) => void
 
   // ---- Snap Settings ----
@@ -197,23 +217,13 @@ const WorkflowCanvasContext = createContext<WorkflowCanvasContextValue | null>(n
 
 export interface WorkflowCanvasProviderProps {
   children: ReactNode
-  /** Workflow ID for localStorage persistence */
+  /** Mount the provider with this as its React key so a workflow switch resets the canvas. */
   workflowId?: string
-}
-
-// ==============================================
-// Constants
-// ==============================================
-
-const DEFAULT_STATE_WIDTH = 120
-const DEFAULT_STATE_HEIGHT = 50
-const DRAG_THRESHOLD = 5
-
-// Stable default dimensions object so memoized nodes that have no custom size
-// receive a referentially-stable `dimensions` prop across renders.
-const DEFAULT_DIMENSIONS: StateDimensions = {
-  width: DEFAULT_STATE_WIDTH,
-  height: DEFAULT_STATE_HEIGHT,
+  states: WorkflowState[]
+  transitions: WorkflowTransition[]
+  setStates: React.Dispatch<React.SetStateAction<WorkflowState[]>>
+  setTransitions: React.Dispatch<React.SetStateAction<WorkflowTransition[]>>
+  onLayoutError: (message: string) => void
 }
 
 // ==============================================
@@ -222,73 +232,54 @@ const DEFAULT_DIMENSIONS: StateDimensions = {
 
 export function WorkflowCanvasProvider({
   children,
-  workflowId: _workflowId,
+  states,
+  transitions,
+  setStates,
+  setTransitions,
+  onLayoutError,
 }: WorkflowCanvasProviderProps) {
-  // ---- Canvas State ----
-  const [canvasMode, setCanvasMode] = useState<CanvasMode>('select')
-  const [zoom, setZoom] = useState(1)
-  const [pan, setPan] = useState<Point>({ x: 0, y: 0 })
-  const [mousePos, setMousePos] = useState<Point>({ x: 0, y: 0 })
-  const canvasRef = useRef<HTMLDivElement>(null)
-  const groupRef = useRef<SVGGElement>(null)
+  // ---- Canvas viewport, diagram layout and snapping ----
+  const {
+    canvasMode,
+    zoom,
+    pan,
+    canvasRef,
+    groupRef,
+    viewportRef,
+    mousePosRef,
+    setCanvasMode,
+    setZoom,
+    setPan,
+    handleWheel,
+    centerOnContent,
+    screenToCanvas,
+    canvasToScreen,
+  } = useCanvasViewport()
 
-  // Keep always-current viewport + pointer values so memoized children can do
-  // coordinate math via refs without re-rendering on every pan/zoom/move.
-  const viewportRef = useRef<{ pan: Point; zoom: number }>({ pan, zoom })
-  viewportRef.current = { pan, zoom }
-  const mousePosRef = useRef<Point>(mousePos)
+  const {
+    stateDimensions,
+    edgePositions,
+    waypoints,
+    labelOffsets,
+    pinnedLabelPositions,
+    getDimensions,
+    updateDimensions,
+    setWaypoints,
+    addWaypoint,
+    setLabelOffsets,
+    setPinnedLabelPositions,
+    setEdgePositions,
+    updateEdgePosition,
+  } = useCanvasLayout({ states, transitions, setStates, setTransitions, onLayoutError })
 
-  // ---- Spacebar-to-pan (hold space to temporarily pan, like Figma) ----
-  // Keep a ref to the latest mode so the keydown listener can restore it on release
-  const canvasModeRef = useRef(canvasMode)
-  canvasModeRef.current = canvasMode
-  const isSpacePanningRef = useRef(false)
-  const preSpacePanModeRef = useRef<CanvasMode>('select')
-
-  useEffect(() => {
-    const isEditableTarget = (target: EventTarget | null) => {
-      const el = target as HTMLElement | null
-      if (!el) return false
-      const tag = el.tagName
-      return (
-        tag === 'INPUT' ||
-        tag === 'TEXTAREA' ||
-        tag === 'SELECT' ||
-        tag === 'BUTTON' ||
-        el.isContentEditable
-      )
-    }
-
-    const startSpacePan = (e: KeyboardEvent) => {
-      if (e.code !== 'Space' || e.repeat) return
-      if (isEditableTarget(document.activeElement)) return
-      e.preventDefault()
-      if (isSpacePanningRef.current) return
-      isSpacePanningRef.current = true
-      preSpacePanModeRef.current = canvasModeRef.current
-      setCanvasMode('pan')
-    }
-
-    const endSpacePan = () => {
-      if (!isSpacePanningRef.current) return
-      isSpacePanningRef.current = false
-      setCanvasMode(preSpacePanModeRef.current)
-    }
-
-    const handleKeyUp = (e: KeyboardEvent) => {
-      if (e.code !== 'Space') return
-      endSpacePan()
-    }
-
-    window.addEventListener('keydown', startSpacePan)
-    window.addEventListener('keyup', handleKeyUp)
-    window.addEventListener('blur', endSpacePan)
-    return () => {
-      window.removeEventListener('keydown', startSpacePan)
-      window.removeEventListener('keyup', handleKeyUp)
-      window.removeEventListener('blur', endSpacePan)
-    }
-  }, [])
+  const {
+    snapSettings,
+    alignmentGuides,
+    setSnapSettings,
+    setAlignmentGuides,
+    clearAlignmentGuides,
+    applySnapping,
+  } = useCanvasSnapping()
 
   // ---- Selection State ----
   const [selectedStateId, setSelectedStateId] = useState<string | null>(null)
@@ -320,13 +311,22 @@ export function WorkflowCanvasProvider({
   const [dragOffset, setDragOffset] = useState<Point>({ x: 0, y: 0 })
   const hasDraggedRef = useRef(false)
   const dragStartPosRef = useRef<Point | null>(null)
+  const dragOriginRef = useRef<Point | null>(null)
 
   const startDragging = useCallback(
-    (stateId: string, offsetX: number, offsetY: number, clientX: number, clientY: number) => {
+    (
+      stateId: string,
+      offsetX: number,
+      offsetY: number,
+      clientX: number,
+      clientY: number,
+      origin: Point,
+    ) => {
       setDraggingStateId(stateId)
       setDragOffset({ x: offsetX, y: offsetY })
       hasDraggedRef.current = false
       dragStartPosRef.current = { x: clientX, y: clientY }
+      dragOriginRef.current = origin
     },
     [],
   )
@@ -335,6 +335,7 @@ export function WorkflowCanvasProvider({
     setDraggingStateId(null)
     hasDraggedRef.current = false
     dragStartPosRef.current = null
+    dragOriginRef.current = null
   }, [])
 
   const checkDragThreshold = useCallback((clientX: number, clientY: number) => {
@@ -350,7 +351,6 @@ export function WorkflowCanvasProvider({
 
   // ---- Resizing State ----
   const [resizingState, setResizingState] = useState<ResizingState | null>(null)
-  const [stateDimensions, setStateDimensions] = useState<Record<string, StateDimensions>>({})
 
   const startResizing = useCallback(
     (
@@ -377,53 +377,31 @@ export function WorkflowCanvasProvider({
     setResizingState(null)
   }, [])
 
-  const getDimensions = useCallback(
-    (stateId: string): StateDimensions => {
-      return stateDimensions[stateId] || DEFAULT_DIMENSIONS
-    },
-    [stateDimensions],
-  )
-
-  const updateDimensions = useCallback((stateId: string, dims: StateDimensions) => {
-    setStateDimensions((prev) => ({ ...prev, [stateId]: dims }))
-  }, [])
-
   // ---- Transition Creation ----
   const [isCreatingTransition, setIsCreatingTransition] = useState(false)
   const [transitionStartId, setTransitionStartId] = useState<string | null>(null)
+  const [transitionStartAnchor, setTransitionStartAnchor] = useState<EdgePosition | null>(null)
   const [isDraggingToCreateTransition, setIsDraggingToCreateTransition] = useState(false)
   const [draggingTransitionEndpoint, setDraggingTransitionEndpoint] =
     useState<TransitionEndpointDrag | null>(null)
-  const justCompletedTransitionRef = useRef(false)
-  const transitionCompletedAtRef = useRef(0)
+  const connectionPreview = useRef(createConnectionPreviewStore()).current
 
   const cancelTransitionCreation = useCallback(() => {
     setIsCreatingTransition(false)
     setTransitionStartId(null)
+    setTransitionStartAnchor(null)
     setIsDraggingToCreateTransition(false)
+    setDraggingTransitionEndpoint(null)
     setHoveredStateId(null)
-  }, [])
+    connectionPreview.set(null)
+  }, [connectionPreview])
 
   // ---- Waypoint State ----
-  const [waypoints, setWaypoints] = useState<Record<string, Point[]>>({})
   const [draggingCurveControl, setDraggingCurveControl] = useState<string | null>(null)
   const [draggingWaypointIndex, setDraggingWaypointIndex] = useState<number | null>(null)
   const [draggingWaypointAxis, setDraggingWaypointAxis] = useState<'x' | 'y' | null>(null)
   const [tempCurvePos, setTempCurvePos] = useState<Point | null>(null)
   const waypointHasDraggedRef = useRef(false)
-
-  const addWaypoint = useCallback((transitionId: string, point: Point, insertIndex?: number) => {
-    setWaypoints((prev) => {
-      const current = prev[transitionId] || []
-      const newWaypoints = [...current]
-      if (insertIndex !== undefined) {
-        newWaypoints.splice(insertIndex, 0, point)
-      } else {
-        newWaypoints.push(point)
-      }
-      return { ...prev, [transitionId]: newWaypoints }
-    })
-  }, [])
 
   const stopWaypointDrag = useCallback(() => {
     setDraggingCurveControl(null)
@@ -434,8 +412,6 @@ export function WorkflowCanvasProvider({
   }, [])
 
   // ---- Label State ----
-  const [labelOffsets, setLabelOffsets] = useState<Record<string, Point>>({})
-  const [pinnedLabelPositions, setPinnedLabelPositions] = useState<Record<string, Point>>({})
   const [draggingLabel, setDraggingLabel] = useState<string | null>(null)
   const [tempLabelPos, setTempLabelPos] = useState<Point | null>(null)
 
@@ -444,160 +420,6 @@ export function WorkflowCanvasProvider({
     setTempLabelPos(null)
   }, [])
 
-  // ---- Edge Positions ----
-  const [edgePositions, setEdgePositions] = useState<Record<string, EdgePosition>>({})
-
-  const updateEdgePosition = useCallback(
-    (transitionId: string, endpoint: 'start' | 'end', position: EdgePosition) => {
-      const key = `${transitionId}-${endpoint}`
-      setEdgePositions((prev) => ({
-        ...prev,
-        [key]: position,
-      }))
-    },
-    [],
-  )
-
-  // ---- Snap Settings ----
-  const [snapSettings, setSnapSettings] = useState<SnapSettings>({
-    gridSize: 20,
-    snapToGrid: false,
-    snapToAlignment: true,
-    alignmentThreshold: 8,
-  })
-  const [alignmentGuides, setAlignmentGuides] = useState<AlignmentGuides>({
-    vertical: null,
-    horizontal: null,
-  })
-
-  const clearAlignmentGuides = useCallback(() => {
-    setAlignmentGuides({ vertical: null, horizontal: null })
-  }, [])
-
-  // Snapping function - now takes states as parameter instead of from context
-  const applySnapping = useCallback(
-    (
-      currentStateId: string,
-      rawX: number,
-      rawY: number,
-      states: WorkflowState[],
-    ): SnappingResult => {
-      let x = rawX
-      let y = rawY
-      let verticalGuide: number | null = null
-      let horizontalGuide: number | null = null
-
-      if (snapSettings.snapToGrid) {
-        const gridSize = snapSettings.gridSize
-        x = Math.round(x / gridSize) * gridSize
-        y = Math.round(y / gridSize) * gridSize
-      }
-
-      if (snapSettings.snapToAlignment) {
-        const threshold = snapSettings.alignmentThreshold
-
-        for (const state of states) {
-          if (state.id === currentStateId) continue
-
-          if (Math.abs(state.position_x - x) <= threshold) {
-            x = state.position_x
-            verticalGuide = state.position_x
-          }
-
-          if (Math.abs(state.position_y - y) <= threshold) {
-            y = state.position_y
-            horizontalGuide = state.position_y
-          }
-        }
-      }
-
-      return { x, y, verticalGuide, horizontalGuide }
-    },
-    [snapSettings],
-  )
-
-  // ---- Canvas Interaction Functions ----
-  const handleWheel = useCallback(
-    (e: React.WheelEvent) => {
-      e.preventDefault()
-
-      const rect = canvasRef.current?.getBoundingClientRect()
-      if (!rect) return
-
-      const mouseX = e.clientX - rect.left
-      const mouseY = e.clientY - rect.top
-
-      // Miro-style: ctrl/cmd + wheel (and trackpad pinch, which reports ctrlKey)
-      // zooms toward the cursor; a plain wheel / two-finger drag pans the canvas.
-      if (e.ctrlKey || e.metaKey) {
-        // Exponential factor keeps zoom velocity smooth and symmetric.
-        const zoomFactor = Math.exp(-e.deltaY * 0.01)
-        const newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom * zoomFactor))
-
-        const canvasX = (mouseX - pan.x) / zoom
-        const canvasY = (mouseY - pan.y) / zoom
-
-        setZoom(newZoom)
-        setPan({ x: mouseX - canvasX * newZoom, y: mouseY - canvasY * newZoom })
-      } else {
-        // Pan with wheel / trackpad. Shift+wheel scrolls horizontally on mice.
-        const dx = e.shiftKey && e.deltaX === 0 ? e.deltaY : e.deltaX
-        const dy = e.shiftKey && e.deltaX === 0 ? 0 : e.deltaY
-        setPan({ x: pan.x - dx, y: pan.y - dy })
-      }
-    },
-    [zoom, pan],
-  )
-
-  const centerOnContent = useCallback(
-    (contentStates: WorkflowState[]) => {
-      if (contentStates.length === 0) return
-
-      const minX = Math.min(...contentStates.map((s) => s.position_x))
-      const maxX = Math.max(...contentStates.map((s) => s.position_x))
-      const minY = Math.min(...contentStates.map((s) => s.position_y))
-      const maxY = Math.max(...contentStates.map((s) => s.position_y))
-
-      const contentCenterX = (minX + maxX) / 2
-      const contentCenterY = (minY + maxY) / 2
-
-      const canvasWidth = canvasRef.current?.clientWidth || 800
-      const canvasHeight = canvasRef.current?.clientHeight || 600
-
-      const panX = canvasWidth / 2 - contentCenterX * zoom
-      const panY = canvasHeight / 2 - contentCenterY * zoom
-
-      setPan({ x: panX, y: panY })
-    },
-    [zoom],
-  )
-
-  const screenToCanvas = useCallback(
-    (screenX: number, screenY: number): Point => {
-      const rect = canvasRef.current?.getBoundingClientRect()
-      if (!rect) return { x: screenX, y: screenY }
-
-      return {
-        x: (screenX - rect.left - pan.x) / zoom,
-        y: (screenY - rect.top - pan.y) / zoom,
-      }
-    },
-    [pan, zoom],
-  )
-
-  const canvasToScreen = useCallback(
-    (canvasX: number, canvasY: number): Point => {
-      const rect = canvasRef.current?.getBoundingClientRect()
-      if (!rect) return { x: canvasX, y: canvasY }
-
-      return {
-        x: rect.left + pan.x + canvasX * zoom,
-        y: rect.top + pan.y + canvasY * zoom,
-      }
-    },
-    [pan, zoom],
-  )
-
   // ---- Build context value ----
   const value = useMemo<WorkflowCanvasContextValue>(
     () => ({
@@ -605,7 +427,6 @@ export function WorkflowCanvasProvider({
       canvasMode,
       zoom,
       pan,
-      mousePos,
       canvasRef,
       groupRef,
       viewportRef,
@@ -613,7 +434,6 @@ export function WorkflowCanvasProvider({
       setCanvasMode,
       setZoom,
       setPan,
-      setMousePos,
       handleWheel,
       centerOnContent,
       screenToCanvas,
@@ -637,6 +457,7 @@ export function WorkflowCanvasProvider({
       dragOffset,
       hasDraggedRef,
       dragStartPosRef,
+      dragOriginRef,
       setDraggingStateId,
       setDragOffset,
       startDragging,
@@ -656,12 +477,13 @@ export function WorkflowCanvasProvider({
       // Transition Creation
       isCreatingTransition,
       transitionStartId,
+      transitionStartAnchor,
       isDraggingToCreateTransition,
       draggingTransitionEndpoint,
-      justCompletedTransitionRef,
-      transitionCompletedAtRef,
+      connectionPreview,
       setIsCreatingTransition,
       setTransitionStartId,
+      setTransitionStartAnchor,
       setIsDraggingToCreateTransition,
       setDraggingTransitionEndpoint,
       cancelTransitionCreation,
@@ -707,10 +529,16 @@ export function WorkflowCanvasProvider({
     }),
     [
       // Canvas
+      canvasRef,
+      groupRef,
+      viewportRef,
+      mousePosRef,
+      setCanvasMode,
+      setZoom,
+      setPan,
       canvasMode,
       zoom,
       pan,
-      mousePos,
       handleWheel,
       centerOnContent,
       screenToCanvas,
@@ -741,8 +569,10 @@ export function WorkflowCanvasProvider({
       // Transition Creation
       isCreatingTransition,
       transitionStartId,
+      transitionStartAnchor,
       isDraggingToCreateTransition,
       draggingTransitionEndpoint,
+      connectionPreview,
       cancelTransitionCreation,
       // Waypoints
       waypoints,
@@ -750,6 +580,7 @@ export function WorkflowCanvasProvider({
       draggingWaypointIndex,
       draggingWaypointAxis,
       tempCurvePos,
+      setWaypoints,
       addWaypoint,
       stopWaypointDrag,
       // Labels
@@ -757,13 +588,18 @@ export function WorkflowCanvasProvider({
       pinnedLabelPositions,
       draggingLabel,
       tempLabelPos,
+      setLabelOffsets,
+      setPinnedLabelPositions,
       stopLabelDrag,
       // Edge Positions
       edgePositions,
+      setEdgePositions,
       updateEdgePosition,
       // Snap Settings
       snapSettings,
       alignmentGuides,
+      setSnapSettings,
+      setAlignmentGuides,
       clearAlignmentGuides,
       applySnapping,
     ],

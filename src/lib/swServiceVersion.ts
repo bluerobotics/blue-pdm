@@ -34,6 +34,12 @@
  * - Version 1.10.0: Register IMessageFilter on a dedicated STA pump thread (Main stays MTA) and
  *                   route ROT lookups through it; cache the COM-availability probe with a short
  *                   TTL so browsing a folder no longer repeats multi-second failing probes
+ * - Version 1.11.0: Report the PID of any SolidWorks instance the service launches
+ *                   (LAUNCHING_SW / LAUNCHED_PID / RELEASED_PID on stderr) so the app's orphan
+ *                   watchdog stops killing the hidden instance an export is using
+ * - Version 1.12.0: IsFileOpenInSolidWorks answers from the cached SolidWorks handle before
+ *                   attempting a ROT lookup, so an integrity-level mismatch no longer forces
+ *                   every read onto the slow SW API instead of Document Manager
  *
  * When making service changes:
  * 1. Increment SERVICE_VERSION in Program.cs
@@ -43,7 +49,7 @@
 
 // The SolidWorks service version this app version expects
 // Uses semver: MAJOR.MINOR.PATCH
-export const EXPECTED_SW_SERVICE_VERSION = '1.10.0'
+export const EXPECTED_SW_SERVICE_VERSION = '1.12.0'
 
 // Minimum service version that will still work (for soft warnings vs hard errors)
 // Breaking changes should bump the major version and update this
@@ -74,6 +80,10 @@ export const SW_SERVICE_VERSION_DESCRIPTIONS: Record<string, string> = {
     'Merge DM-first file-level-only property writes (1.2.4) into the warmup/inspection service so file-level edits skip the SolidWorks cold start',
   '1.10.0':
     'COM busy handling now works: the message filter runs on a dedicated STA thread, and repeated open-file checks reuse a cached probe instead of stalling for seconds per file while browsing',
+  '1.11.0':
+    'Exports no longer fail at random: the service tells the app which SolidWorks process it launched, so the background cleanup stops killing the hidden instance an export is using',
+  '1.12.0':
+    'Reading metadata and references is seconds faster when SolidWorks is open: the service reuses its existing SolidWorks connection to check whether a file is open, instead of falling back to the slow path whenever that check fails',
 }
 
 export interface SwServiceVersionCheckResult {

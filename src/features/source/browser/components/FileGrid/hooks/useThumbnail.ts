@@ -1,72 +1,49 @@
-import { useState, useEffect } from 'react'
-import { thumbnailCache } from '@/lib/thumbnailCache'
-import { SW_THUMBNAIL_EXTENSIONS } from '../../../constants'
+import { useMemo } from 'react'
+
+import { useRetryableImage } from '@/hooks/useRetryableImage'
+import {
+  MIN_THUMBNAIL_ICON_SIZE,
+  buildThumbnailUrl,
+  type ThumbnailSource,
+} from '@/lib/thumbnailUrl'
 
 export interface UseThumbnailParams {
-  file: {
-    path?: string
-    extension: string
-    isDirectory: boolean
-  }
+  file: ThumbnailSource
   iconSize: number
   isProcessing: boolean
+  /** Change token to use in place of the file's mtime and size, when known. */
+  version?: string
 }
 
 export interface ThumbnailState {
   thumbnail: string | null
-  thumbnailError: boolean
-  loadingThumbnail: boolean
-  setThumbnailError: (error: boolean) => void
+  onThumbnailError: () => void
 }
 
 /**
- * Hook to load SolidWorks thumbnails for supported file types
+ * Resolve the thumbnail URL for a SolidWorks file.
+ *
+ * The browser performs the fetch, so this is a pure derivation with no request
+ * of its own: a card that scrolls back into view renders the same URL and
+ * Chromium serves it from cache.
  */
-export function useThumbnail({ file, iconSize, isProcessing }: UseThumbnailParams): ThumbnailState {
-  const [thumbnail, setThumbnail] = useState<string | null>(null)
-  const [thumbnailError, setThumbnailError] = useState(false)
-  const [loadingThumbnail, setLoadingThumbnail] = useState(false)
+export function useThumbnail({
+  file,
+  iconSize,
+  isProcessing,
+  version,
+}: UseThumbnailParams): ThumbnailState {
+  const { path, extension, isDirectory, size, modifiedTime } = file
 
-  useEffect(() => {
-    if (isProcessing) {
-      setThumbnail(null)
-      setLoadingThumbnail(false)
-      return
-    }
+  const url = useMemo(() => {
+    // A file mid-operation may be partially written, so leave it to the icon.
+    if (isProcessing || iconSize < MIN_THUMBNAIL_ICON_SIZE) return null
+    return buildThumbnailUrl({ path, extension, isDirectory, size, modifiedTime }, 'grid', {
+      version,
+    })
+  }, [path, extension, isDirectory, size, modifiedTime, iconSize, isProcessing, version])
 
-    const loadThumbnail = async () => {
-      const ext = file.extension.toLowerCase()
+  const { src, onError } = useRetryableImage(url)
 
-      if (
-        !file.isDirectory &&
-        SW_THUMBNAIL_EXTENSIONS.includes(ext) &&
-        file.path &&
-        iconSize >= 64
-      ) {
-        setLoadingThumbnail(true)
-        setThumbnailError(false)
-        try {
-          // Use global thumbnail cache to avoid repeated IPC calls
-          const data = await thumbnailCache.get(file.path)
-          setThumbnail(data)
-        } catch {
-          setThumbnail(null)
-        } finally {
-          setLoadingThumbnail(false)
-        }
-      } else {
-        setThumbnail(null)
-        setThumbnailError(false)
-      }
-    }
-
-    loadThumbnail()
-  }, [file.path, file.extension, file.isDirectory, iconSize, isProcessing])
-
-  return {
-    thumbnail,
-    thumbnailError,
-    loadingThumbnail,
-    setThumbnailError,
-  }
+  return { thumbnail: src, onThumbnailError: onError }
 }

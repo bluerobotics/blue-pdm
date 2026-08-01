@@ -508,6 +508,14 @@ declare global {
       // Drop queued previews outside keepFolderPath (when navigating between folders)
       cancelPreviews: (keepFolderPath?: string) => Promise<{ cancelledCount: number }>
 
+      // Generate cache entries for a folder's uncached CAD files in the background.
+      // Files already in the thumbnail cache are skipped, so this is a one-time
+      // cost per file version rather than per session.
+      prewarmThumbnails: (folderPath: string) => Promise<{
+        generated: number
+        skipped: number
+      }>
+
       // Release SolidWorks Document Manager handles (before folder moves, to prevent EPERM)
       releaseHandles: () => Promise<{ success: boolean; error?: string }>
 
@@ -569,9 +577,17 @@ declare global {
           success: boolean
           data?: {
             running: boolean
+            /** Process is alive but couldn't answer a ping - a command is in flight */
+            busy?: boolean
             installed?: boolean
+            swInstalled?: boolean
             version?: string
             documentManagerAvailable?: boolean
+            documentManagerError?: string | null
+            fastModeEnabled?: boolean
+            queueDepth?: number
+            referenceRecoveryNeeded?: boolean
+            message?: string
           }
           error?: string
         }>
@@ -781,6 +797,14 @@ declare global {
             outputFile: string
             exportedFiles?: string[]
             fileSize: number
+            /** What the service actually substituted into the filename pattern. File properties
+             * take priority over pdmMetadata, so this can differ from what was requested. */
+            resolvedMetadata?: {
+              partNumber?: string
+              tabNumber?: string
+              revision?: string
+              description?: string
+            }
           }
           error?: string
         }>

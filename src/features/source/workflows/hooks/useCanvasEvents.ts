@@ -12,14 +12,18 @@
  * - setupKeyboardShortcuts - Effect for Escape, Delete, Ctrl+C/V/X/Z
  */
 import { useCallback, useEffect, type RefObject } from 'react'
-import type {
-  WorkflowState,
-  WorkflowTransition,
-  Point,
-  ResizingState,
-  ContextMenuState,
-} from '../types'
+import type { WorkflowState, WorkflowTransition } from '@/types/workflow'
+
+import type { Point, ResizingState, ContextMenuState } from '../types'
 import { findInsertionIndex } from '../utils'
+
+const TYPING_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT'])
+
+/** True when the event target is somewhere the user could be entering text. */
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  return TYPING_TAGS.has(target.tagName) || target.isContentEditable
+}
 
 interface UseCanvasEventsParams {
   // Refs
@@ -60,6 +64,7 @@ interface UseCanvasEventsParams {
     offsetY: number,
     clientX: number,
     clientY: number,
+    origin: Point,
   ) => void
 
   // Callbacks - resizing
@@ -139,32 +144,23 @@ export function useCanvasEvents(params: UseCanvasEventsParams): UseCanvasEventsR
     handleDeleteSelected,
   } = params
 
-  // Handle canvas click (for deselection and creating transitions)
+  /**
+   * Clicking empty canvas in select mode clears the current selection. An
+   * in-flight connection is deliberately not cancelled here: the click that
+   * ends a drag on another node bubbles to this handler too, and the pointer-up
+   * path already decides whether the gesture committed, stayed armed for
+   * click-to-connect, or was abandoned.
+   */
   const handleCanvasClick = useCallback(
     (_e: React.MouseEvent) => {
-      // Don't handle if we were dragging
-      if (hasDraggedRef.current) return
+      if (hasDraggedRef.current || isCreatingTransition) return
 
-      // If in connect mode, cancel
-      if (isCreatingTransition) {
-        cancelTransitionCreation()
-        return
-      }
-
-      // Clicking empty canvas in select mode clears the current selection.
       if (canvasMode === 'select') {
         clearSelection()
         setFloatingToolbar(null)
       }
     },
-    [
-      hasDraggedRef,
-      isCreatingTransition,
-      cancelTransitionCreation,
-      canvasMode,
-      clearSelection,
-      setFloatingToolbar,
-    ],
+    [hasDraggedRef, isCreatingTransition, canvasMode, clearSelection, setFloatingToolbar],
   )
 
   // Handle canvas context menu
@@ -207,7 +203,10 @@ export function useCanvasEvents(params: UseCanvasEventsParams): UseCanvasEventsR
       const offsetX = canvasX - state.position_x
       const offsetY = canvasY - state.position_y
 
-      startDragging(stateId, offsetX, offsetY, e.clientX, e.clientY)
+      startDragging(stateId, offsetX, offsetY, e.clientX, e.clientY, {
+        x: state.position_x,
+        y: state.position_y,
+      })
     },
     [isAdmin, canvasRef, pan, zoom, states, startDragging],
   )
@@ -291,6 +290,11 @@ export function useCanvasEvents(params: UseCanvasEventsParams): UseCanvasEventsR
   // Keyboard shortcuts effect
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // These are window-level listeners, so a shortcut must never fire while the
+      // user is typing. Copy, cut, paste and undo in particular have native
+      // behaviour inside a field that preventDefault would otherwise swallow.
+      if (isTypingTarget(e.target) || isTypingTarget(document.activeElement)) return
+
       // Escape - cancel operations
       if (e.key === 'Escape') {
         if (isCreatingTransition) {
@@ -308,13 +312,6 @@ export function useCanvasEvents(params: UseCanvasEventsParams): UseCanvasEventsR
 
       // Delete/Backspace - delete selected item
       if ((e.key === 'Delete' || e.key === 'Backspace') && isAdmin) {
-        // Don't delete if focused on an input
-        if (
-          document.activeElement?.tagName === 'INPUT' ||
-          document.activeElement?.tagName === 'TEXTAREA'
-        )
-          return
-
         handleDeleteSelected()
         return
       }

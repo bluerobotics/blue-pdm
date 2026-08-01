@@ -1,3 +1,14 @@
+/**
+ * CSV of the currently filtered customers.
+ *
+ * Orders and spend are the selected range's, which is why the headers say so
+ * and the range is in the filename - two exports of the same org taken at
+ * different widths are different numbers, and a file called `customers.csv`
+ * gives a reader no way to tell which one they have.
+ */
+
+import type { CustomerRangeId } from '@/stores/types'
+
 import type { CustomerRfmRow } from '../data/types'
 import { segmentMeta } from './segments'
 
@@ -9,8 +20,9 @@ const COLUMNS: { header: string; value: (row: CustomerRfmRow) => string | number
   { header: 'Country', value: (row) => row.country },
   { header: 'Segment', value: (row) => segmentMeta(row.segment).label },
   { header: 'Category', value: (row) => row.category_label },
-  { header: 'Orders', value: (row) => row.order_count },
-  { header: 'Total spent', value: (row) => row.total_spent },
+  { header: 'Orders in range', value: (row) => row.order_count },
+  { header: 'Spend in range', value: (row) => row.total_spent },
+  { header: 'Lifetime orders', value: (row) => row.lifetime_orders },
   { header: 'First order', value: (row) => row.first_order_date },
   { header: 'Last order', value: (row) => row.last_order_date },
   { header: 'Days since last order', value: (row) => row.recency_days },
@@ -30,7 +42,7 @@ function escapeCell(value: string | number | null): string {
 }
 
 /** Downloads the currently filtered customers as CSV. */
-export function exportCustomersCsv(rows: CustomerRfmRow[]): void {
+export function exportCustomersCsv(rows: CustomerRfmRow[], range: CustomerRangeId): void {
   if (rows.length === 0) return
 
   const lines = [
@@ -47,7 +59,7 @@ export function exportCustomersCsv(rows: CustomerRfmRow[]): void {
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url
-  link.download = `customers-${new Date().toISOString().slice(0, 10)}.csv`
+  link.download = `customers-${range}-${new Date().toISOString().slice(0, 10)}.csv`
   link.click()
   URL.revokeObjectURL(url)
 }

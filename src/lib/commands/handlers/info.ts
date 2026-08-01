@@ -293,10 +293,12 @@ export async function handleSetState(
 
   try {
     const result = await updateFileMetadata(matches[0].pdmData.id, user.id, {
-      state: newState as any, // TODO: type this
+      state: newState as 'wip' | 'in_review' | 'released' | 'obsolete',
     })
 
-    if (result.success) {
+    if (result.requiresReview) {
+      addOutput('info', 'Review requested; the file moves once the gates are approved')
+    } else if (result.success) {
       addOutput('success', `State changed to: ${newState}`)
       // Note: Removed onRefresh?.(true) - incremental store updates are sufficient
     } else {

@@ -1,13 +1,34 @@
 // Transition handles component - renders draggable handles for transition endpoints, waypoints, and labels
-import type { WorkflowState, WorkflowTransition } from '@/types/workflow'
-import { getClosestPointOnBox, getPointFromEdgePosition, getPointOnSpline } from '../utils'
-import type { EdgePosition, TransitionEndpointDrag, WaypointContextMenu } from '../types'
+import type { TransitionPathType, WorkflowState, WorkflowTransition } from '@/types/workflow'
+import { computeTransitionGeometry } from '../utils'
+import {
+  HANDLE_HIT_RADIUS_PX,
+  HANDLE_VISUAL_RADIUS_PX,
+  WAYPOINT_HOVER_RING_PX,
+} from '../constants'
+import type { ConnectionPointer } from '../hooks/useConnectionGesture'
+import type {
+  EdgePosition,
+  PointWithEdge,
+  StateDimensions,
+  TransitionEndpointDrag,
+  WaypointContextMenu,
+  FloatingToolbarState,
+} from '../types'
 
 interface TransitionHandlesProps {
   transitions: WorkflowTransition[]
   states: WorkflowState[]
   isAdmin: boolean
   selectedTransitionId: string | null
+  /** Handles are sized in screen pixels, so they stay grabbable at any zoom. */
+  zoom: number
+
+  // Dimensions - must match what the line uses or the handles drift off the box
+  stateDimensions: Record<string, StateDimensions>
+
+  // Perpendicular shift per transition, keyed by transition id
+  parallelOffsets: Record<string, number>
 
   // Edge positions
   edgePositions: Record<string, EdgePosition>
@@ -33,9 +54,19 @@ interface TransitionHandlesProps {
   // Refs
   waypointHasDraggedRef: React.MutableRefObject<boolean>
 
+  /** Hand an endpoint over to the shared connection gesture. */
+  onStartEndpointDrag: (
+    drag: TransitionEndpointDrag & {
+      origin: PointWithEdge
+      oppositeStateId: string
+      pathType: TransitionPathType
+    },
+    pointer: ConnectionPointer,
+  ) => void
+  toPointer: (e: React.MouseEvent) => ConnectionPointer
+
   // Setters
-  setFloatingToolbar: (toolbar: any) => void
-  setDraggingTransitionEndpoint: (endpoint: TransitionEndpointDrag | null) => void
+  setFloatingToolbar: (toolbar: FloatingToolbarState | null) => void
   setDraggingCurveControl: (id: string | null) => void
   setDraggingWaypointIndex: (index: number | null) => void
   setDraggingWaypointAxis: (axis: 'x' | 'y' | null) => void
@@ -63,6 +94,9 @@ export function TransitionHandles({
   states,
   isAdmin,
   selectedTransitionId,
+  zoom,
+  stateDimensions,
+  parallelOffsets,
   edgePositions,
   waypoints,
   labelOffsets,
@@ -75,8 +109,9 @@ export function TransitionHandles({
   tempLabelPos,
   hoveredWaypoint,
   waypointHasDraggedRef,
+  onStartEndpointDrag,
+  toPointer,
   setFloatingToolbar,
-  setDraggingTransitionEndpoint,
   setDraggingCurveControl,
   setDraggingWaypointIndex,
   setDraggingWaypointAxis,
@@ -94,6 +129,11 @@ export function TransitionHandles({
 }: TransitionHandlesProps) {
   if (!isAdmin) return null
 
+  const scale = zoom > 0 ? zoom : 1
+  const hitRadius = HANDLE_HIT_RADIUS_PX / scale
+  const handleRadius = HANDLE_VISUAL_RADIUS_PX / scale
+  const waypointRingRadius = WAYPOINT_HOVER_RING_PX / scale
+
   return (
     <>
       {transitions.map((transition) => {
@@ -107,67 +147,31 @@ export function TransitionHandles({
         // Only show handles when selected and not currently dragging this transition
         if (!isSelected || isDraggingThis) return null
 
-        // Check for stored edge positions
-        const storedStartPos = edgePositions[`${transition.id}-start`]
-        const storedEndPos = edgePositions[`${transition.id}-end`]
-
-        // Calculate handle positions (use stored or default)
-        const defaultStartPoint = getClosestPointOnBox(
-          fromState.position_x,
-          fromState.position_y,
-          toState.position_x,
-          toState.position_y,
-        )
-        const defaultEndPoint = getClosestPointOnBox(
-          toState.position_x,
-          toState.position_y,
-          fromState.position_x,
-          fromState.position_y,
-        )
-
-        const startPoint = storedStartPos
-          ? {
-              ...getPointFromEdgePosition(
-                fromState.position_x,
-                fromState.position_y,
-                storedStartPos,
-              ),
-              edge: storedStartPos.edge,
-            }
-          : defaultStartPoint
-        const endPoint = storedEndPos
-          ? {
-              ...getPointFromEdgePosition(toState.position_x, toState.position_y, storedEndPos),
-              edge: storedEndPos.edge,
-            }
-          : defaultEndPoint
-
-        // Get path type and waypoints for this transition
         const pathType = transition.line_path_type || 'spline'
         const transitionWaypoints = waypoints[transition.id] || []
-        const lineMidX = (startPoint.x + endPoint.x) / 2
-        const lineMidY = (startPoint.y + endPoint.y) / 2
+        const isDraggingThisLabel = draggingLabel === transition.id
 
-        // Calculate curve midpoint for label positioning
-        const curveMid =
-          pathType === 'spline'
-            ? getPointOnSpline(
-                { x: startPoint.x, y: startPoint.y, edge: startPoint.edge },
-                transitionWaypoints,
-                { x: endPoint.x, y: endPoint.y, edge: endPoint.edge },
-                0.5,
-              )
-            : { x: lineMidX, y: lineMidY }
+        // Derived from the exact same inputs as the rendered line, so the handles
+        // always sit on the line rather than near it.
+        const geometry = computeTransitionGeometry({
+          transitionId: transition.id,
+          fromState,
+          toState,
+          stateDimensions,
+          pathType,
+          edgePositions,
+          waypoints: transitionWaypoints,
+          parallelOffset: parallelOffsets[transition.id] ?? 0,
+          labelOffset: labelOffsets[transition.id] ?? null,
+          pinnedLabelPosition: pinnedLabelPositions[transition.id] ?? null,
+          tempLabelPos: isDraggingThisLabel ? tempLabelPos : null,
+        })
+
+        const { start: startPoint, end: endPoint, curveMid } = geometry
         const curveMidX = curveMid.x
         const curveMidY = curveMid.y
-
-        // Label position
-        const storedLabelOffset = labelOffsets[transition.id]
-        const labelX = storedLabelOffset ? lineMidX + storedLabelOffset.x : curveMidX
-        const labelY = storedLabelOffset ? lineMidY + storedLabelOffset.y : curveMidY - 20
-        const isDraggingThisLabel = draggingLabel === transition.id
-        const actualLabelX = isDraggingThisLabel && tempLabelPos ? tempLabelPos.x : labelX
-        const actualLabelY = isDraggingThisLabel && tempLabelPos ? tempLabelPos.y : labelY
+        const actualLabelX = geometry.labelPos.x
+        const actualLabelY = geometry.labelPos.y
 
         return (
           <g key={`handles-${transition.id}`}>
@@ -179,20 +183,26 @@ export function TransitionHandles({
               onMouseDown={(e) => {
                 e.stopPropagation()
                 e.preventDefault()
-                setFloatingToolbar(null)
-                setDraggingTransitionEndpoint({
-                  transitionId: transition.id,
-                  endpoint: 'start',
-                  originalStateId: transition.from_state_id,
-                })
+                onStartEndpointDrag(
+                  {
+                    transitionId: transition.id,
+                    endpoint: 'start',
+                    originalStateId: transition.from_state_id,
+                    origin: endPoint,
+                    oppositeStateId: transition.to_state_id,
+                    pathType,
+                  },
+                  toPointer(e),
+                )
               }}
             >
-              <circle r="12" fill="transparent" />
+              <circle r={hitRadius} fill="transparent" />
               <circle
-                r="5"
+                r={handleRadius}
                 fill="#60a5fa"
                 stroke="#fff"
                 strokeWidth="1.5"
+                vectorEffect="non-scaling-stroke"
                 style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.3))' }}
               />
               <title>Drag to reconnect start</title>
@@ -270,15 +280,23 @@ export function TransitionHandles({
                     })
                   }}
                 >
-                  <circle r="12" fill="transparent" />
+                  <circle r={hitRadius} fill="transparent" />
                   {isHovered && !isDraggingThisWaypoint && (
-                    <circle r="9" fill="none" stroke="#60a5fa" strokeWidth="2" opacity="0.4" />
+                    <circle
+                      r={waypointRingRadius}
+                      fill="none"
+                      stroke="#60a5fa"
+                      strokeWidth="2"
+                      opacity="0.4"
+                      vectorEffect="non-scaling-stroke"
+                    />
                   )}
                   <circle
-                    r="5"
+                    r={handleRadius}
                     fill={isDraggingThisWaypoint ? '#60a5fa' : isHovered ? '#f0f0f0' : '#ffffff'}
                     stroke="#60a5fa"
                     strokeWidth={isHovered || isDraggingThisWaypoint ? 2.5 : 2}
+                    vectorEffect="non-scaling-stroke"
                     style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.3))' }}
                   />
                   <title>Drag to adjust • Double-click or right-click to remove</title>
@@ -293,11 +311,12 @@ export function TransitionHandles({
                   className="pointer-events-none"
                 >
                   <circle
-                    r="5"
+                    r={handleRadius}
                     fill="rgba(255, 255, 255, 0.3)"
                     stroke={`${transition.line_color || '#6b7280'}80`}
                     strokeWidth="2"
                     strokeDasharray="2,2"
+                    vectorEffect="non-scaling-stroke"
                   />
                   <title>Double-click or right-click to add control point</title>
                 </g>
@@ -438,20 +457,26 @@ export function TransitionHandles({
               onMouseDown={(e) => {
                 e.stopPropagation()
                 e.preventDefault()
-                setFloatingToolbar(null)
-                setDraggingTransitionEndpoint({
-                  transitionId: transition.id,
-                  endpoint: 'end',
-                  originalStateId: transition.to_state_id,
-                })
+                onStartEndpointDrag(
+                  {
+                    transitionId: transition.id,
+                    endpoint: 'end',
+                    originalStateId: transition.to_state_id,
+                    origin: startPoint,
+                    oppositeStateId: transition.from_state_id,
+                    pathType,
+                  },
+                  toPointer(e),
+                )
               }}
             >
-              <circle r="12" fill="transparent" />
+              <circle r={hitRadius} fill="transparent" />
               <circle
-                r="5"
+                r={handleRadius}
                 fill="#22c55e"
                 stroke="#fff"
                 strokeWidth="1.5"
+                vectorEffect="non-scaling-stroke"
                 style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.3))' }}
               />
               <title>Drag to reconnect end</title>

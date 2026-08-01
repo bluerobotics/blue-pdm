@@ -6,7 +6,7 @@ import { usePDMStore } from '@/stores/pdmStore'
 import { customerQueries } from '../data/api'
 import { load, peek, setGeneration } from '../data/cache'
 import type { CategoryBreakdownRow, GeoBreakdownRow, SegmentCount } from '../data/types'
-import { resolveWindow } from '../lib/ranges'
+import { useCustomerWindow } from './useCustomerWindow'
 
 export interface CustomerFacets {
   segmentCounts: SegmentCount[]
@@ -31,10 +31,9 @@ export interface CustomerFacets {
  */
 export function useCustomerFacets(): CustomerFacets {
   const organization = usePDMStore((s) => s.organization)
-  const range = usePDMStore((s) => s.customerFilters.range)
   const dataVersion = usePDMStore((s) => s.customerDataVersion)
 
-  const window = useMemo(() => resolveWindow(range), [range])
+  const window = useCustomerWindow()
   const orgId = organization?.id
 
   const queries = useMemo(

@@ -14,7 +14,10 @@ import {
   computeHash,
   getFileTypeFromExtension,
   triggerWebhooks,
+  changeFileStateViaWorkflow,
+  stateChangeErrorResponse,
 } from '../utils/index.js'
+import type { LegacyFileState } from '../utils/index.js'
 import type { FileRecord } from '../types.js'
 
 const fileRoutes: FastifyPluginAsync = async (fastify) => {
@@ -761,7 +764,7 @@ const fileRoutes: FastifyPluginAsync = async (fastify) => {
       },
       preHandler: fastify.authenticate,
     },
-    async (request) => {
+    async (request, reply) => {
       const { id } = request.params as { id: string }
       const { state } = request.body as { state?: FileRecord['state'] }
 
@@ -772,6 +775,49 @@ const fileRoutes: FastifyPluginAsync = async (fastify) => {
         .eq('id', id)
         .single()
 
+      if (state && currentFile?.state !== state) {
+        const change = await changeFileStateViaWorkflow(
+          request.supabase!,
+          id,
+          state as LegacyFileState,
+        )
+
+        if (change.outcome === 'rejected') {
+          const { status, code } = stateChangeErrorResponse(change.code)
+          return sendError(reply, status, code, change.message)
+        }
+
+        if (change.outcome === 'review_required') {
+          return reply.code(202).send({ success: true, requires_review: true })
+        }
+
+        if (change.outcome === 'advanced') {
+          const { data: advanced } = await request
+            .supabase!.from('files')
+            .select()
+            .eq('id', id)
+            .single()
+
+          await triggerWebhooks(
+            request.user!.org_id!,
+            'file.state_change',
+            {
+              file_id: id,
+              file_path: currentFile?.file_path,
+              file_name: currentFile?.file_name,
+              old_state: currentFile?.state,
+              new_state: state,
+              user_id: request.user!.id,
+              user_email: request.user!.email,
+            },
+            fastify.log,
+          )
+
+          return { success: true, file: advanced }
+        }
+      }
+
+      // No workflow assignment (or nothing to change): write the column directly.
       const updateData: Record<string, unknown> = {
         updated_at: new Date().toISOString(),
         updated_by: request.user!.id,
@@ -836,6 +882,14 @@ const fileRoutes: FastifyPluginAsync = async (fastify) => {
               previous_state: { type: 'string' },
             },
           },
+          // Blocking approval gates opened reviews; the file has not moved yet.
+          202: {
+            type: 'object',
+            properties: {
+              success: { type: 'boolean' },
+              requires_review: { type: 'boolean' },
+            },
+          },
         },
       },
       preHandler: fastify.authenticate,
@@ -862,6 +916,43 @@ const fileRoutes: FastifyPluginAsync = async (fastify) => {
         return sendError(reply, 400, ErrorCode.BAD_REQUEST, 'File is already in released state')
       }
 
+      const change = await changeFileStateViaWorkflow(request.supabase!, id, 'released')
+
+      if (change.outcome === 'rejected') {
+        const { status, code } = stateChangeErrorResponse(change.code)
+        return sendError(reply, status, code, change.message)
+      }
+
+      if (change.outcome === 'review_required') {
+        return reply.code(202).send({ success: true, requires_review: true })
+      }
+
+      if (change.outcome === 'advanced') {
+        const { data: advanced } = await request
+          .supabase!.from('files')
+          .select()
+          .eq('id', id)
+          .single()
+
+        await triggerWebhooks(
+          request.user!.org_id!,
+          'file.state_change',
+          {
+            file_id: id,
+            file_path: currentFile.file_path,
+            file_name: currentFile.file_name,
+            old_state: currentFile.state,
+            new_state: 'released',
+            user_id: request.user!.id,
+            user_email: request.user!.email,
+          },
+          fastify.log,
+        )
+
+        return { success: true, file: advanced, previous_state: currentFile.state }
+      }
+
+      // Not on a workflow: keep the legacy column write so ERP callers still work.
       const { data, error } = await request
         .supabase!.from('files')
         .update({
@@ -930,6 +1021,43 @@ const fileRoutes: FastifyPluginAsync = async (fastify) => {
         return sendError(reply, 409, ErrorCode.CONFLICT, 'Cannot obsolete a checked out file')
       }
 
+      const change = await changeFileStateViaWorkflow(request.supabase!, id, 'obsolete')
+
+      if (change.outcome === 'rejected') {
+        const { status, code } = stateChangeErrorResponse(change.code)
+        return sendError(reply, status, code, change.message)
+      }
+
+      if (change.outcome === 'review_required') {
+        return reply.code(202).send({ success: true, requires_review: true })
+      }
+
+      if (change.outcome === 'advanced') {
+        const { data: advanced } = await request
+          .supabase!.from('files')
+          .select()
+          .eq('id', id)
+          .single()
+
+        await triggerWebhooks(
+          request.user!.org_id!,
+          'file.state_change',
+          {
+            file_id: id,
+            file_path: currentFile.file_path,
+            file_name: currentFile.file_name,
+            old_state: currentFile.state,
+            new_state: 'obsolete',
+            user_id: request.user!.id,
+            user_email: request.user!.email,
+          },
+          fastify.log,
+        )
+
+        return { success: true, file: advanced, previous_state: currentFile.state }
+      }
+
+      // Not on a workflow: keep the legacy column write so ERP callers still work.
       const { data, error } = await request
         .supabase!.from('files')
         .update({

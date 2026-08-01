@@ -1,37 +1,134 @@
 // Undo/Redo history management hook
 import { useState, useCallback } from 'react'
+
 import { log } from '@/lib/logger'
+import { t } from '@/lib/i18n'
+
+import type { WorkflowState, WorkflowTransition } from '@/types/workflow'
+
 import { MAX_HISTORY } from '../constants'
-import type { HistoryEntry, ClipboardData, WorkflowState, WorkflowTransition } from '../types'
-import { stateService, transitionService } from '../services'
+import type { HistoryEntry } from '../types'
+import { stateService, transitionService, layoutService, unwrap } from '../services'
+
+import { pushHistory, reapplyAction, revertAction, type HistoryAction } from './historyActions'
 
 interface UseUndoRedoOptions {
   isAdmin: boolean
   addToast: (type: 'success' | 'error' | 'info', message: string) => void
-  setStates: (updater: (prev: WorkflowState[]) => WorkflowState[]) => void
-  setTransitions: (updater: (prev: WorkflowTransition[]) => WorkflowTransition[]) => void
+  setStates: React.Dispatch<React.SetStateAction<WorkflowState[]>>
+  setTransitions: React.Dispatch<React.SetStateAction<WorkflowTransition[]>>
 }
 
 export function useUndoRedo({ isAdmin, addToast, setStates, setTransitions }: UseUndoRedoOptions) {
   const [undoStack, setUndoStack] = useState<HistoryEntry[]>([])
   const [redoStack, setRedoStack] = useState<HistoryEntry[]>([])
-  const [clipboard, setClipboard] = useState<ClipboardData | null>(null)
 
-  /**
-   * Push to undo stack
-   */
   const pushToUndo = useCallback((entry: HistoryEntry) => {
-    setUndoStack((prev) => {
-      const newStack = [...prev, entry]
-      if (newStack.length > MAX_HISTORY) newStack.shift()
-      return newStack
-    })
-    setRedoStack([]) // Clear redo when new action is performed
+    setUndoStack((prev) => pushHistory(prev, entry, MAX_HISTORY))
+    setRedoStack([]) // A new action invalidates anything that was undone
   }, [])
 
-  /**
-   * Undo last action
-   */
+  const clearHistory = useCallback(() => {
+    setUndoStack([])
+    setRedoStack([])
+  }, [])
+
+  // ============================================
+  // Primitives shared by undo and redo
+  // ============================================
+
+  const recreateState = useCallback(
+    async (state: WorkflowState) => {
+      // Recreating with the original id keeps every later history entry, and any
+      // transition that references this state, pointing at something real.
+      const restored = await unwrap(stateService.create(state))
+      if (!restored) throw new Error('State was not restored')
+      setStates((prev) => [...prev.filter((s) => s.id !== restored.id), restored as WorkflowState])
+    },
+    [setStates],
+  )
+
+  const removeState = useCallback(
+    async (stateId: string) => {
+      layoutService.cancelPending([stateId])
+      await unwrap(stateService.delete(stateId))
+      setStates((prev) => prev.filter((s) => s.id !== stateId))
+    },
+    [setStates],
+  )
+
+  const recreateTransition = useCallback(
+    async (transition: WorkflowTransition) => {
+      const restored = await unwrap(transitionService.create(transition))
+      if (!restored) throw new Error('Transition was not restored')
+      setTransitions((prev) => [
+        ...prev.filter((tr) => tr.id !== restored.id),
+        restored as WorkflowTransition,
+      ])
+    },
+    [setTransitions],
+  )
+
+  const removeTransition = useCallback(
+    async (transitionId: string) => {
+      layoutService.cancelPending([transitionId])
+      await unwrap(transitionService.delete(transitionId))
+      setTransitions((prev) => prev.filter((tr) => tr.id !== transitionId))
+    },
+    [setTransitions],
+  )
+
+  const moveState = useCallback(
+    async (stateId: string, x: number, y: number) => {
+      await unwrap(stateService.updatePosition(stateId, Math.round(x), Math.round(y)))
+      setStates((prev) =>
+        prev.map((s) =>
+          s.id === stateId ? { ...s, position_x: Math.round(x), position_y: Math.round(y) } : s,
+        ),
+      )
+    },
+    [setStates],
+  )
+
+  // ============================================
+  // Undo / redo
+  // ============================================
+
+  /** Run one mapped operation and return the message to show for it. */
+  const perform = useCallback(
+    async (action: HistoryAction) => {
+      switch (action.kind) {
+        case 'recreate-state':
+          await recreateState(action.state)
+          break
+        case 'remove-state':
+          await removeState(action.stateId)
+          break
+        case 'recreate-transition':
+          await recreateTransition(action.transition)
+          break
+        case 'remove-transition':
+          await removeTransition(action.transitionId)
+          break
+        case 'move-state':
+          await moveState(action.stateId, action.x, action.y)
+          break
+      }
+      return t(action.message)
+    },
+    [removeState, recreateState, moveState, removeTransition, recreateTransition],
+  )
+
+  const revert = useCallback(
+    (entry: HistoryEntry) => perform(revertAction(entry)),
+    [perform],
+  )
+
+  const reapply = useCallback(
+    (entry: HistoryEntry) => perform(reapplyAction(entry)),
+    [perform],
+  )
+
   const handleUndo = useCallback(async () => {
     if (undoStack.length === 0 || !isAdmin) return
 
@@ -39,92 +136,17 @@ export function useUndoRedo({ isAdmin, addToast, setStates, setTransitions }: Us
     setUndoStack((prev) => prev.slice(0, -1))
 
     try {
-      switch (entry.type) {
-        case 'state_delete': {
-          // Re-add the deleted state
-          const { data: restoredState, error: stateError } = await stateService.create(
-            entry.data.state,
-          )
-          if (stateError || !restoredState) throw stateError
-          // Cast through unknown since DB row type may differ from interface
-          const restoredStateTyped = restoredState as unknown as WorkflowState
-          setStates((prev) => [...prev, restoredStateTyped])
-          setRedoStack((prev) => [
-            ...prev,
-            { type: 'state_add', data: { state: restoredStateTyped } },
-          ])
-          addToast('success', 'Undo: State restored')
-          break
-        }
-
-        case 'state_add':
-          // Delete the added state
-          await stateService.delete(entry.data.state.id)
-          setStates((prev) => prev.filter((s) => s.id !== entry.data.state.id))
-          setRedoStack((prev) => [...prev, { type: 'state_delete', data: entry.data }])
-          addToast('success', 'Undo: State removed')
-          break
-
-        case 'transition_delete': {
-          // Re-add the deleted transition
-          const { data: restoredTrans, error: transError } = await transitionService.create(
-            entry.data.transition,
-          )
-          if (transError || !restoredTrans) throw transError
-          // Cast through unknown since DB row type may differ from interface
-          const restoredTransTyped = restoredTrans as unknown as WorkflowTransition
-          setTransitions((prev) => [...prev, restoredTransTyped])
-          setRedoStack((prev) => [
-            ...prev,
-            { type: 'transition_add', data: { transition: restoredTransTyped } },
-          ])
-          addToast('success', 'Undo: Transition restored')
-          break
-        }
-
-        case 'transition_add':
-          // Delete the added transition
-          await transitionService.delete(entry.data.transition.id)
-          setTransitions((prev) => prev.filter((t) => t.id !== entry.data.transition.id))
-          setRedoStack((prev) => [...prev, { type: 'transition_delete', data: entry.data }])
-          addToast('success', 'Undo: Transition removed')
-          break
-
-        case 'state_move':
-          // Move state back to original position
-          await stateService.updatePosition(entry.data.stateId, entry.data.oldX, entry.data.oldY)
-          setStates((prev) =>
-            prev.map((s) =>
-              s.id === entry.data.stateId
-                ? { ...s, position_x: entry.data.oldX, position_y: entry.data.oldY }
-                : s,
-            ),
-          )
-          setRedoStack((prev) => [
-            ...prev,
-            {
-              type: 'state_move',
-              data: {
-                stateId: entry.data.stateId,
-                oldX: entry.data.newX,
-                oldY: entry.data.newY,
-                newX: entry.data.oldX,
-                newY: entry.data.oldY,
-              },
-            },
-          ])
-          addToast('success', 'Undo: State moved back')
-          break
-      }
+      addToast('success', await revert(entry))
+      setRedoStack((prev) => [...prev, entry])
     } catch (error) {
-      log.error('[Workflow]', 'Undo failed', { error: error })
-      addToast('error', 'Undo failed')
+      // The write failed, so the entry has not been undone: put it back rather
+      // than leaving the canvas and the database disagreeing.
+      log.error('[Workflow]', 'Undo failed', { error })
+      setUndoStack((prev) => [...prev, entry])
+      addToast('error', t('workflows.history.undoFailed'))
     }
-  }, [undoStack, isAdmin, addToast, setStates, setTransitions])
+  }, [undoStack, isAdmin, addToast, revert])
 
-  /**
-   * Redo last undone action
-   */
   const handleRedo = useCallback(async () => {
     if (redoStack.length === 0 || !isAdmin) return
 
@@ -132,83 +154,20 @@ export function useUndoRedo({ isAdmin, addToast, setStates, setTransitions }: Us
     setRedoStack((prev) => prev.slice(0, -1))
 
     try {
-      switch (entry.type) {
-        case 'state_add': {
-          const { data: readdedState, error: stateError } = await stateService.create(
-            entry.data.state,
-          )
-          if (stateError || !readdedState) throw stateError
-          const readdedStateTyped = readdedState as unknown as WorkflowState
-          setStates((prev) => [...prev, readdedStateTyped])
-          setUndoStack((prev) => [
-            ...prev,
-            { type: 'state_delete', data: { state: readdedStateTyped } },
-          ])
-          break
-        }
-
-        case 'state_delete':
-          await stateService.delete(entry.data.state.id)
-          setStates((prev) => prev.filter((s) => s.id !== entry.data.state.id))
-          setUndoStack((prev) => [...prev, { type: 'state_add', data: entry.data }])
-          break
-
-        case 'transition_add': {
-          const { data: readdedTrans, error: transError } = await transitionService.create(
-            entry.data.transition,
-          )
-          if (transError || !readdedTrans) throw transError
-          const readdedTransTyped = readdedTrans as unknown as WorkflowTransition
-          setTransitions((prev) => [...prev, readdedTransTyped])
-          setUndoStack((prev) => [
-            ...prev,
-            { type: 'transition_delete', data: { transition: readdedTransTyped } },
-          ])
-          break
-        }
-
-        case 'transition_delete':
-          await transitionService.delete(entry.data.transition.id)
-          setTransitions((prev) => prev.filter((t) => t.id !== entry.data.transition.id))
-          setUndoStack((prev) => [...prev, { type: 'transition_add', data: entry.data }])
-          break
-
-        case 'state_move':
-          await stateService.updatePosition(entry.data.stateId, entry.data.newX, entry.data.newY)
-          setStates((prev) =>
-            prev.map((s) =>
-              s.id === entry.data.stateId
-                ? { ...s, position_x: entry.data.newX, position_y: entry.data.newY }
-                : s,
-            ),
-          )
-          setUndoStack((prev) => [
-            ...prev,
-            {
-              type: 'state_move',
-              data: {
-                stateId: entry.data.stateId,
-                oldX: entry.data.newX,
-                oldY: entry.data.newY,
-                newX: entry.data.oldX,
-                newY: entry.data.oldY,
-              },
-            },
-          ])
-          break
-      }
+      addToast('success', await reapply(entry))
+      setUndoStack((prev) => [...prev, entry])
     } catch (error) {
-      log.error('[Workflow]', 'Redo failed', { error: error })
-      addToast('error', 'Redo failed')
+      log.error('[Workflow]', 'Redo failed', { error })
+      setRedoStack((prev) => [...prev, entry])
+      addToast('error', t('workflows.history.redoFailed'))
     }
-  }, [redoStack, isAdmin, addToast, setStates, setTransitions])
+  }, [redoStack, isAdmin, addToast, reapply])
 
   return {
     undoStack,
     redoStack,
-    clipboard,
-    setClipboard,
     pushToUndo,
+    clearHistory,
     handleUndo,
     handleRedo,
     canUndo: undoStack.length > 0,

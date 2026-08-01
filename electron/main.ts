@@ -24,6 +24,8 @@ import {
   handleDeepLink,
   storePendingDeepLink,
   setDeepLinkDependencies,
+  registerThumbnailScheme,
+  disposeThumbnailStore,
 } from './handlers'
 import { createAppMenu } from './menu'
 
@@ -286,6 +288,10 @@ if (process.defaultApp) {
   app.setAsDefaultProtocolClient('blueplm')
 }
 
+// Register the thumbnail scheme's privileges. Electron only accepts these
+// before the 'ready' event, so it has to happen at module scope.
+registerThumbnailScheme()
+
 // Initialize deep link dependencies early for logging
 setDeepLinkDependencies({
   log: (message: string, data?: unknown) => writeLog('info', `[DeepLink] ${message}`, data),
@@ -540,6 +546,14 @@ function initializeApp() {
       // Stop update check timer (ROOT CAUSE of zombie process issue)
       cleanupUpdater()
       log('✓ Updater cleanup complete')
+
+      // Stop the thumbnail cache sweep timer and persist its index
+      try {
+        await disposeThumbnailStore()
+        log('✓ Thumbnail cache cleanup complete')
+      } catch (error) {
+        logError('Failed to cleanup thumbnail cache', { error: String(error) })
+      }
 
       // Stop file watcher
       try {

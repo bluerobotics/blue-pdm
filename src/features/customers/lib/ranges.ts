@@ -3,6 +3,12 @@ import type { CustomerBucket, CustomerRangeId } from '@/stores/types'
 export interface RangeOption {
   id: CustomerRangeId
   label: string
+  /**
+   * The range as a phrase that can follow a figure, e.g. "40,120 over the last
+   * 90 days". Every table in the module reports the window rather than lifetime
+   * totals, so each one has to say which window it means.
+   */
+  scopeLabel: string
   /** Bucket that keeps the trend chart readable at this width. */
   defaultBucket: CustomerBucket
   /** How many cohort months the retention grid should request. */
@@ -10,12 +16,48 @@ export interface RangeOption {
 }
 
 export const RANGE_OPTIONS: RangeOption[] = [
-  { id: '30d', label: '30 days', defaultBucket: 'day', cohortMonths: 6 },
-  { id: '90d', label: '90 days', defaultBucket: 'week', cohortMonths: 6 },
-  { id: 'ytd', label: 'YTD', defaultBucket: 'month', cohortMonths: 12 },
-  { id: '12m', label: '12 months', defaultBucket: 'month', cohortMonths: 12 },
-  { id: '24m', label: '24 months', defaultBucket: 'month', cohortMonths: 24 },
-  { id: 'all', label: 'All time', defaultBucket: 'quarter', cohortMonths: 36 },
+  {
+    id: '30d',
+    label: '30 days',
+    scopeLabel: 'over the last 30 days',
+    defaultBucket: 'day',
+    cohortMonths: 6,
+  },
+  {
+    id: '90d',
+    label: '90 days',
+    scopeLabel: 'over the last 90 days',
+    defaultBucket: 'week',
+    cohortMonths: 6,
+  },
+  {
+    id: 'ytd',
+    label: 'YTD',
+    scopeLabel: 'year to date',
+    defaultBucket: 'month',
+    cohortMonths: 12,
+  },
+  {
+    id: '12m',
+    label: '12 months',
+    scopeLabel: 'over the last 12 months',
+    defaultBucket: 'month',
+    cohortMonths: 12,
+  },
+  {
+    id: '24m',
+    label: '24 months',
+    scopeLabel: 'over the last 24 months',
+    defaultBucket: 'month',
+    cohortMonths: 24,
+  },
+  {
+    id: 'all',
+    label: 'All time',
+    scopeLabel: 'all time',
+    defaultBucket: 'quarter',
+    cohortMonths: 36,
+  },
 ]
 
 export function rangeOption(id: CustomerRangeId): RangeOption {
@@ -27,6 +69,8 @@ export interface ResolvedWindow {
   to: string
   /** Human label for the comparison chip, e.g. "vs previous 12 months". */
   comparisonLabel: string
+  /** The window as a phrase, e.g. "over the last 12 months". */
+  scopeLabel: string
 }
 
 /**
@@ -67,10 +111,13 @@ export function resolveWindow(id: CustomerRangeId, now: Date = new Date()): Reso
       break
   }
 
+  const option = rangeOption(id)
+
   return {
     from: from.toISOString(),
     to: to.toISOString(),
     comparisonLabel:
-      id === 'all' ? 'no comparison period' : `vs previous ${rangeOption(id).label.toLowerCase()}`,
+      id === 'all' ? 'no comparison period' : `vs previous ${option.label.toLowerCase()}`,
+    scopeLabel: option.scopeLabel,
   }
 }

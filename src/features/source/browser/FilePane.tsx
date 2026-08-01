@@ -897,16 +897,17 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
   const currentPath = currentFolder
 
   // Browsing a folder enqueues one preview extraction per file against a
-  // concurrency-3 queue, so leaving before it drains strands tens of requests
+  // single-command queue, so leaving before it drains strands tens of requests
   // ahead of the ones the user is now looking at. Drop everything outside the
-  // folder now on screen. Requests already dispatched to the service cannot be
-  // aborted and will run to their timeout; results for unmounted rows are
-  // discarded by the thumbnail hooks' own unmount guards.
+  // folder now on screen, then fill the cache for the rest of it so the next
+  // scroll paints from disk. Requests already dispatched to the service cannot
+  // be aborted and will run to their timeout.
   useEffect(() => {
     if (!vaultPath) return
 
-    const keepFolderPath = currentPath ? buildFullPath(vaultPath, currentPath) : vaultPath
-    window.electronAPI?.cancelPreviews?.(keepFolderPath)
+    const folderPath = currentPath ? buildFullPath(vaultPath, currentPath) : vaultPath
+    window.electronAPI?.cancelPreviews?.(folderPath)
+    window.electronAPI?.prewarmThumbnails?.(folderPath)
   }, [currentPath, vaultPath])
 
   // File edit handlers (create folder, rename, inline cell editing)
@@ -1179,6 +1180,7 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
 
     let succeeded = 0
     let failed = 0
+    let awaitingReview = 0
 
     setStatusMessage(`Changing state to ${newState}...`)
 
@@ -1189,36 +1191,43 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
             state: newState as 'not_tracked' | 'wip' | 'in_review' | 'released' | 'obsolete',
           })
 
+          // A gated transition opens reviews instead of moving the file.
+          if (result.requiresReview) return 'review' as const
+
           if (result.success && result.file) {
             updateFileInStore(file.path, {
               pdmData: { ...file.pdmData!, ...result.file },
             })
-            return true
+            return 'ok' as const
           }
-          return false
+          return 'failed' as const
         } catch {
-          return false
+          return 'failed' as const
         }
       }),
     )
 
-    for (const success of results) {
-      if (success) succeeded++
+    for (const result of results) {
+      if (result === 'ok') succeeded++
+      else if (result === 'review') awaitingReview++
       else failed++
     }
 
     setStatusMessage('')
 
+    if (awaitingReview > 0) {
+      addToast('info', `${awaitingReview} file(s) are waiting on workflow approval`)
+    }
+
     if (failed > 0) {
       addToast('warning', `Updated state for ${succeeded}/${syncedFiles.length} files`)
-    } else {
+    } else if (succeeded > 0) {
       addToast('success', `Changed ${succeeded} file${succeeded > 1 ? 's' : ''} to ${newState}`)
     }
 
-    // Workflow-triggered review: when transitioning to "in_review" and at least
-    // one file was updated successfully, auto-open the review modal for the first
-    // successfully-transitioned file so the user can assign reviewers.
-    if (newState === 'in_review' && succeeded > 0) {
+    // Ad-hoc peer review: a file that moved into "in_review" without workflow
+    // gates has no reviewers yet, so offer the review modal for the first one.
+    if (newState === 'in_review' && succeeded > 0 && awaitingReview === 0) {
       const firstSuccessfulFile = syncedFiles[0]
       if (firstSuccessfulFile?.pdmData?.id) {
         handleOpenReviewModal(firstSuccessfulFile)

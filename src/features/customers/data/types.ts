@@ -93,6 +93,13 @@ export interface TopProduct {
   buyers: number
 }
 
+/**
+ * One roster row.
+ *
+ * order_count and total_spent cover the selected date range. The dates and the
+ * segment do not: they describe the customer rather than the period, and the
+ * lifecycle badge is derived from them as of the range's end.
+ */
 export interface CustomerRfmRow {
   customer_id: string
   name: string
@@ -102,8 +109,15 @@ export interface CustomerRfmRow {
   account_id: string | null
   account_name: string | null
   is_active: boolean | null
+  /** Confirmed orders inside the range. Zero for a customer who bought nothing. */
   order_count: number
+  /** Revenue inside the range. */
   total_spent: number
+  /**
+   * Orders over all time. Not for display - it is what the account roll-up
+   * needs to tell "quiet this quarter" from "never bought anything".
+   */
+  lifetime_orders: number
   first_order_date: string | null
   last_order_date: string | null
   recency_days: number | null
@@ -114,12 +128,51 @@ export interface CustomerRfmRow {
   category: string | null
   subcategory: string | null
   category_label: string | null
+  /** Always set: the RPC falls back to 'direct' for a customer with no account. */
+  channel: string
 }
 
 export interface SegmentCount {
   segment: string
   buyers: number
   revenue: number
+}
+
+/**
+ * One row per channel, including the ones nobody is in yet.
+ *
+ * The counts are how many partners you have; revenue and orders are what they
+ * bought inside the selected range.
+ */
+export interface ChannelCount {
+  channel: string
+  account_count: number
+  customer_count: number
+  revenue: number
+  orders: number
+}
+
+/**
+ * A named partner and the account it matched, if any.
+ *
+ * account_id null means nothing in the data keys to it - either they have never
+ * ordered, or they are in Odoo under a name that normalises differently.
+ *
+ * partner_channel is where the list puts them; channel is where the account
+ * actually sits, which differs once somebody overrides the list by hand.
+ */
+export interface PartnerCoverageRow {
+  name: string
+  partner_channel: string
+  country: string
+  website: string
+  account_id: string | null
+  account_key: string | null
+  account_name: string | null
+  channel: string | null
+  contacts: number
+  total_spent: number
+  last_order_date: string | null
 }
 
 /**
@@ -164,6 +217,8 @@ export interface CustomerOrderRecord {
   total: number | null
   discount: number | null
   items_count: number | null
+  /** The contact who placed it, when the order is credited to their company. */
+  contact_name: string | null
 }
 
 export interface CustomerProductRecord {
@@ -171,6 +226,19 @@ export interface CustomerProductRecord {
   name: string
   quantity: number
   revenue: number
+}
+
+/**
+ * What this customer bought inside the selected range.
+ *
+ * Computed over every confirmed order in the window, not just the ones the
+ * order limit returned, so the panel header stays truthful for a customer with
+ * hundreds of them.
+ */
+export interface CustomerWindowTotals {
+  spend: number
+  orders: number
+  units: number
 }
 
 export interface EnrichmentSource {
@@ -196,8 +264,13 @@ export interface EnrichmentRecord {
 /** Raw return value of the customer_detail RPC. */
 export interface CustomerDetailPayload {
   customer: CustomerDetailRecord | null
+  window: CustomerWindowTotals
   accountName: string | null
+  /** Falls back to 'direct' in the RPC, so this is never null. */
+  accountChannel: string
+  /** Orders placed inside the range, newest first. */
   orders: CustomerOrderRecord[]
+  /** Rolled up over `orders`, so the two always agree. */
   products: CustomerProductRecord[]
   enrichment: EnrichmentRecord | null
 }

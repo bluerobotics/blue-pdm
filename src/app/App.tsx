@@ -19,6 +19,7 @@ import {
   deleteFolderByPath,
   upsertFileReferences,
 } from '@/lib/supabase'
+import { getSwReferencesCached, clearSwReferencesCache } from '@/lib/solidworks'
 import type { SWReference } from '@/lib/supabase'
 import {
   useTheme,
@@ -139,7 +140,7 @@ async function syncSingleDrawingReferences(
   try {
     log.debug('[DrawingRefSync]', 'Extracting references', { relativePath, fileId })
 
-    const result = await window.electronAPI?.solidworks?.getReferences?.(fullPath)
+    const result = await getSwReferencesCached(fullPath)
 
     if (!result?.success || !result.data?.references) {
       log.debug('[DrawingRefSync]', 'No references returned', {
@@ -789,6 +790,11 @@ export function App() {
         // instead of walking every entry in the vault.
         await loadFiles(true, false, unexpectedChanges)
 
+        // Files on disk just changed, so anything read before this batch is stale. Clearing
+        // here also lets the two consumers below share a single getReferences call per
+        // drawing instead of each paying for its own trip through the SolidWorks queue.
+        clearSwReferencesCache()
+
         // Sync drawing references in background (fire-and-forget).
         // When .slddrw files change, extract their model references via SW service
         // and upsert to file_references DB table so the reverse lookup stays in sync.
@@ -819,13 +825,14 @@ export function App() {
             })
             refreshMetadataForFiles(filesToRefresh, vaultPath, user?.id)
               .then((result) => {
-                if (result.refreshed > 0) {
-                  window.electronAPI?.log(
-                    'info',
-                    '[FileWatcher] Metadata auto-refresh complete',
-                    result,
-                  )
-                }
+                // Logged even when nothing changed: a refresh that reads the files and finds
+                // them already in sync is otherwise indistinguishable from one that silently
+                // failed or never ran.
+                window.electronAPI?.log(
+                  'info',
+                  '[FileWatcher] Metadata auto-refresh complete',
+                  result,
+                )
               })
               .catch((error) => {
                 window.electronAPI?.log('warn', '[FileWatcher] Metadata auto-refresh failed', {

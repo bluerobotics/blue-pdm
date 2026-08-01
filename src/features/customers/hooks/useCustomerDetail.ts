@@ -9,20 +9,29 @@ import type {
   CustomerDetailRecord,
   CustomerOrderRecord,
   CustomerProductRecord,
+  CustomerWindowTotals,
   EnrichmentRecord,
 } from '../data/types'
+import { useCustomerWindow } from './useCustomerWindow'
 
 export type {
   CustomerDetailRecord,
   CustomerOrderRecord,
   CustomerProductRecord,
+  CustomerWindowTotals,
   EnrichmentRecord,
   EnrichmentSource,
 } from '../data/types'
 
 export interface CustomerDetail {
+  /** Carries the lifetime columns; the lifecycle badge is derived from them. */
   customer: CustomerDetailRecord | null
+  /** What they bought inside the selected range. */
+  window: CustomerWindowTotals
   accountName: string | null
+  /** The account's sales channel. 'direct' when the customer has no account. */
+  accountChannel: string
+  /** Orders inside the range, newest first. */
   orders: CustomerOrderRecord[]
   products: CustomerProductRecord[]
   enrichment: EnrichmentRecord | null
@@ -32,9 +41,13 @@ export interface CustomerDetail {
 
 const ORDER_LIMIT = 100
 
+const NO_WINDOW_TOTALS: CustomerWindowTotals = { spend: 0, orders: 0, units: 0 }
+
 const EMPTY: CustomerDetail = {
   customer: null,
+  window: NO_WINDOW_TOTALS,
   accountName: null,
+  accountChannel: 'direct',
   orders: [],
   products: [],
   enrichment: null,
@@ -52,17 +65,19 @@ const EMPTY: CustomerDetail = {
  * needed the customer before it could ask for orders, and the orders before it
  * could ask for lines, so every row cost three sequential round trips.
  *
- * Results are cached per customer, so arrowing back up the list is free.
+ * Results are cached per customer and window, so arrowing back up the list is
+ * free and so is returning to a range you already looked at.
  */
 export function useCustomerDetail(customerId: string | null): CustomerDetail {
   const organization = usePDMStore((s) => s.organization)
   const dataVersion = usePDMStore((s) => s.customerDataVersion)
+  const window = useCustomerWindow()
 
   const orgId = organization?.id
 
   const query = useMemo(
-    () => (customerId && orgId ? customerQueries.detail(customerId, ORDER_LIMIT) : null),
-    [customerId, orgId],
+    () => (customerId && orgId ? customerQueries.detail(customerId, window, ORDER_LIMIT) : null),
+    [customerId, orgId, window],
   )
 
   const [detail, setDetail] = useState<CustomerDetail>(EMPTY)
@@ -96,7 +111,9 @@ export function useCustomerDetail(customerId: string | null): CustomerDetail {
 
         setDetail({
           customer: payload.customer,
+          window: payload.window ?? NO_WINDOW_TOTALS,
           accountName: payload.accountName,
+          accountChannel: payload.accountChannel ?? 'direct',
           orders: payload.orders ?? [],
           products: payload.products ?? [],
           enrichment: payload.enrichment,

@@ -4,7 +4,9 @@ import { BadgeCheck, CheckCircle } from 'lucide-react'
 import { log } from '@/lib/logger'
 import { usePDMStore } from '@/stores/pdmStore'
 import { supabase } from '@/lib/supabase'
-import type { EditTransitionDialogProps, WorkflowRoleBasic, TransitionLineStyle } from '../types'
+import type { TransitionLineStyle } from '@/types/workflow'
+
+import type { EditTransitionDialogProps, WorkflowRoleBasic } from '../types'
 
 export function EditTransitionDialog({ transition, onClose, onSave }: EditTransitionDialogProps) {
   const { organization } = usePDMStore()

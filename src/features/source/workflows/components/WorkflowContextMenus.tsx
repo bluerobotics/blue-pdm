@@ -2,10 +2,9 @@
  * WorkflowContextMenus - Renders context menus for canvas, states, transitions
  */
 import { WorkflowContextMenu, WaypointContextMenu } from '../canvas'
+import type { WorkflowState, WorkflowTransition, WorkflowGate } from '@/types/workflow'
+
 import type {
-  WorkflowState,
-  WorkflowTransition,
-  WorkflowGate,
   ContextMenuState,
   WaypointContextMenu as WaypointContextMenuType,
 } from '../types'

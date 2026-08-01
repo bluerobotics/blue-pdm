@@ -1,11 +1,14 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ArrowDown, ArrowUp, CircleSlash } from 'lucide-react'
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, CircleSlash } from 'lucide-react'
 
 import { usePDMStore } from '@/stores/pdmStore'
 
 import type { CustomerRfmRow } from '../data/types'
+import { channelMeta } from '../lib/channels'
 import { formatAmount, formatCount, formatRelativeDays, MONEY_NOTE } from '../lib/format'
+import { rangeOption } from '../lib/ranges'
+import type { AccountRollup } from '../lib/rollup'
 import { segmentMeta } from '../lib/segments'
 
 const ROW_HEIGHT = 30
@@ -39,10 +42,24 @@ const COLUMNS: Column[] = [
     width: 100,
     align: 'right',
     sortable: true,
-    hint: `Lifetime spend across confirmed orders. ${MONEY_NOTE}`,
+    hint: `Confirmed orders in the selected date range, summed over the account. ${MONEY_NOTE}`,
   },
-  { key: 'order_count', label: 'Orders', width: 70, align: 'right', sortable: true },
-  { key: 'recency_days', label: 'Last order', width: 92, align: 'right', sortable: true },
+  {
+    key: 'order_count',
+    label: 'Orders',
+    width: 70,
+    align: 'right',
+    sortable: true,
+    hint: 'Confirmed orders in the selected date range.',
+  },
+  {
+    key: 'recency_days',
+    label: 'Last order',
+    width: 92,
+    align: 'right',
+    sortable: true,
+    hint: 'When they last bought anything, whatever the selected range is - a customer who has gone quiet is what you would be looking for here.',
+  },
   {
     key: 'rfm',
     label: 'RFM',
@@ -53,10 +70,14 @@ const COLUMNS: Column[] = [
   },
 ]
 
+/** Indent applied to a contact nested under its company. */
+const CHILD_INDENT = 14
+
 interface CustomerTableProps {
-  rows: CustomerRfmRow[]
+  /** One entry per company, contacts carried underneath. */
+  accounts: AccountRollup<CustomerRfmRow>[]
   loading: boolean
-  /** Total loaded before filters, for the "n of m" footer. */
+  /** Accounts loaded before filters, for the "n of m" footer. */
   totalCount: number
   truncated: boolean
 }
@@ -70,24 +91,61 @@ interface CustomerTableProps {
  */
 const FOLLOW_DELAY_MS = 120
 
-export function CustomerTable({ rows, loading, totalCount, truncated }: CustomerTableProps) {
+/**
+ * A line in the rendered list: an account, or one of its contacts when the
+ * account is expanded.
+ */
+interface VisibleRow {
+  key: string
+  account: AccountRollup<CustomerRfmRow>
+  /** The customer this line opens and shows figures for. */
+  row: CustomerRfmRow
+  isChild: boolean
+}
+
+/** The value an account sorts on for a given column. */
+function accountSortValue(
+  account: AccountRollup<CustomerRfmRow>,
+  key: SortKey,
+): string | number | null {
+  switch (key) {
+    case 'name':
+      return account.name
+    case 'total_spent':
+      return account.totalSpent
+    case 'order_count':
+      return account.orderCount
+    case 'recency_days':
+      return account.recencyDays
+    case 'country':
+      return account.country
+    case 'segment':
+      return account.segment
+    case 'category_label':
+      return account.categoryLabel
+  }
+}
+
+export function CustomerTable({ accounts, loading, totalCount, truncated }: CustomerTableProps) {
   // Subscribing to the id rather than the whole panel object keeps the table
   // from re-rendering when only the panel's name changes.
   const openCustomerId = usePDMStore((s) => s.customerPanel?.customerId ?? null)
   const setCustomerPanel = usePDMStore((s) => s.setCustomerPanel)
+  const scopeLabel = usePDMStore((s) => rangeOption(s.customerFilters.range).scopeLabel)
 
   const [sortKey, setSortKey] = useState<SortKey>('total_spent')
   const [ascending, setAscending] = useState(false)
   const [focusIndex, setFocusIndex] = useState(0)
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
 
   const scrollRef = useRef<HTMLDivElement>(null)
 
   const sorted = useMemo(() => {
     const direction = ascending ? 1 : -1
 
-    return [...rows].sort((a, b) => {
-      const left = a[sortKey]
-      const right = b[sortKey]
+    return [...accounts].sort((a, b) => {
+      const left = accountSortValue(a, sortKey)
+      const right = accountSortValue(b, sortKey)
 
       // Nulls always sink, regardless of direction: a customer who has never
       // ordered is not "the most recent" when sorting recency ascending.
@@ -100,19 +158,50 @@ export function CustomerTable({ rows, loading, totalCount, truncated }: Customer
       }
       return String(left).localeCompare(String(right)) * direction
     })
-  }, [rows, sortKey, ascending])
+  }, [accounts, sortKey, ascending])
+
+  // Contacts are always ordered by spend inside their company, whatever the
+  // column sort is doing to the companies themselves.
+  const visibleRows = useMemo(() => {
+    const lines: VisibleRow[] = []
+
+    for (const account of sorted) {
+      lines.push({ key: account.key, account, row: account.lead, isChild: false })
+
+      if (!account.hasMembers || !expanded.has(account.key)) continue
+
+      for (const member of account.members) {
+        lines.push({
+          key: `${account.key}:${member.customer_id}`,
+          account,
+          row: member,
+          isChild: true,
+        })
+      }
+    }
+
+    return lines
+  }, [sorted, expanded])
 
   const virtualizer = useVirtualizer({
-    count: sorted.length,
+    count: visibleRows.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => ROW_HEIGHT,
     overscan: 12,
   })
 
+  const toggleExpanded = useCallback((key: string) => {
+    setExpanded((current) => {
+      const next = new Set(current)
+      if (!next.delete(key)) next.add(key)
+      return next
+    })
+  }, [])
+
   const selectRow = useCallback(
-    (index: number, row: CustomerRfmRow) => {
+    (index: number, line: VisibleRow) => {
       setFocusIndex(index)
-      setCustomerPanel({ customerId: row.customer_id, name: row.name })
+      setCustomerPanel({ customerId: line.row.customer_id, name: line.row.name })
     },
     [setCustomerPanel],
   )
@@ -142,20 +231,20 @@ export function CustomerTable({ rows, loading, totalCount, truncated }: Customer
 
       const target = event.target as HTMLElement | null
       if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return
-      if (sorted.length === 0) return
+      if (visibleRows.length === 0) return
 
       event.preventDefault()
       setFocusIndex((current) => {
         const next = Math.max(
           0,
-          Math.min(sorted.length - 1, current + (event.key === 'ArrowDown' ? 1 : -1)),
+          Math.min(visibleRows.length - 1, current + (event.key === 'ArrowDown' ? 1 : -1)),
         )
         virtualizer.scrollToIndex(next, { align: 'auto' })
 
         if (followTimer.current) clearTimeout(followTimer.current)
         followTimer.current = setTimeout(() => {
-          const row = sorted[next]
-          if (row) setCustomerPanel({ customerId: row.customer_id, name: row.name })
+          const line = visibleRows[next]
+          if (line) setCustomerPanel({ customerId: line.row.customer_id, name: line.row.name })
         }, FOLLOW_DELAY_MS)
 
         return next
@@ -167,7 +256,7 @@ export function CustomerTable({ rows, loading, totalCount, truncated }: Customer
       window.removeEventListener('keydown', handler)
       if (followTimer.current) clearTimeout(followTimer.current)
     }
-  }, [sorted, virtualizer, setCustomerPanel])
+  }, [visibleRows, virtualizer, setCustomerPanel])
 
   if (loading) return <TableSkeleton />
 
@@ -186,6 +275,7 @@ export function CustomerTable({ rows, loading, totalCount, truncated }: Customer
   }
 
   const totalWidth = COLUMNS.reduce((sum, column) => sum + column.width, 0)
+  const contactCount = sorted.reduce((sum, account) => sum + account.members.length, 0)
 
   return (
     <div className="flex-1 flex flex-col min-h-0 border border-plm-border rounded-lg overflow-hidden bg-plm-bg-light">
@@ -213,18 +303,20 @@ export function CustomerTable({ rows, loading, totalCount, truncated }: Customer
 
           <div className="relative" style={{ height: virtualizer.getTotalSize() }}>
             {virtualizer.getVirtualItems().map((virtualRow) => {
-              const row = sorted[virtualRow.index]
+              const line = visibleRows[virtualRow.index]
 
               return (
                 <Row
-                  key={row.customer_id}
-                  row={row}
+                  key={line.key}
+                  line={line}
                   index={virtualRow.index}
                   height={virtualRow.size}
                   offset={virtualRow.start}
-                  isOpen={openCustomerId === row.customer_id}
+                  isExpanded={expanded.has(line.account.key)}
+                  isOpen={openCustomerId === line.row.customer_id}
                   isFocused={focusIndex === virtualRow.index}
                   onSelect={selectRow}
+                  onToggle={toggleExpanded}
                 />
               )
             })}
@@ -236,25 +328,37 @@ export function CustomerTable({ rows, loading, totalCount, truncated }: Customer
         <span>
           {formatCount(sorted.length)}
           {sorted.length !== totalCount && ` of ${formatCount(totalCount)}`} customers
+          {contactCount !== sorted.length && (
+            <span title="A company and the contacts who order on its behalf count as one customer.">
+              {` · ${formatCount(contactCount)} Odoo records`}
+            </span>
+          )}
         </span>
-        {truncated && (
-          <span title="Sidebar segment counts are computed in the database and stay accurate.">
-            Showing the first {formatCount(totalCount)} by spend
+        <span className="flex items-center gap-3">
+          <span title="Segment, category and last order are lifetime; spend and orders follow the range.">
+            Spend and orders {scopeLabel}
           </span>
-        )}
+          {truncated && (
+            <span title="Sidebar segment counts are computed in the database and stay accurate.">
+              Showing the first {formatCount(totalCount)} by spend
+            </span>
+          )}
+        </span>
       </div>
     </div>
   )
 }
 
 interface RowProps {
-  row: CustomerRfmRow
+  line: VisibleRow
   index: number
   height: number
   offset: number
+  isExpanded: boolean
   isOpen: boolean
   isFocused: boolean
-  onSelect: (index: number, row: CustomerRfmRow) => void
+  onSelect: (index: number, line: VisibleRow) => void
+  onToggle: (key: string) => void
 }
 
 /**
@@ -263,29 +367,88 @@ interface RowProps {
  * rows; now only the two whose isOpen or isFocused actually flipped re-render.
  */
 const Row = memo(function Row({
-  row,
+  line,
   index,
   height,
   offset,
+  isExpanded,
   isOpen,
   isFocused,
   onSelect,
+  onToggle,
 }: RowProps) {
-  const meta = segmentMeta(row.segment)
+  const { account, row, isChild } = line
+
+  // A company row reports the whole account; a contact row reports only itself,
+  // which is what makes expanding it worth doing.
+  const segment = isChild ? row.segment : account.segment
+  const spend = isChild ? row.total_spent : account.totalSpent
+  const orders = isChild ? row.order_count : account.orderCount
+  const recency = isChild ? row.recency_days : account.recencyDays
+  const country = isChild ? row.country : account.country
+  const categoryLabel = isChild ? row.category_label : account.categoryLabel
+  const meta = segmentMeta(segment)
+  const channel = channelMeta(account.channel)
+
+  const expandable = !isChild && account.hasMembers
 
   return (
     <div
-      onClick={() => onSelect(index, row)}
+      onClick={() => onSelect(index, line)}
       className={`absolute left-0 right-0 flex items-center border-b border-plm-border/40 cursor-pointer text-xs transition-colors ${
         isOpen ? 'bg-plm-selection/40' : isFocused ? 'bg-plm-highlight' : 'hover:bg-plm-bg-lighter/60'
       }`}
       style={{ height, transform: `translateY(${offset}px)` }}
     >
-      <div className="px-2.5 shrink-0 min-w-0" style={{ width: COLUMNS[0].width }}>
-        <div className="truncate text-plm-fg">{row.name}</div>
-        {row.account_name && row.account_name !== row.name && (
-          <div className="truncate text-[10px] text-plm-fg-muted -mt-0.5">{row.account_name}</div>
+      <div
+        className="flex items-center gap-1 px-2.5 shrink-0 min-w-0"
+        style={{ width: COLUMNS[0].width, paddingLeft: isChild ? CHILD_INDENT + 10 : undefined }}
+      >
+        {expandable ? (
+          <button
+            type="button"
+            aria-label={isExpanded ? 'Hide contacts' : 'Show contacts'}
+            onClick={(event) => {
+              event.stopPropagation()
+              onToggle(account.key)
+            }}
+            className="shrink-0 -ml-1 p-0.5 rounded text-plm-fg-muted hover:text-plm-fg hover:bg-plm-bg-lighter"
+          >
+            {isExpanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+          </button>
+        ) : (
+          !isChild && <span className="shrink-0 w-[15px]" />
         )}
+
+        <div className="min-w-0">
+          <div className={`flex items-center gap-1.5 ${isChild ? 'text-plm-fg-dim' : 'text-plm-fg'}`}>
+            {/* An account that groups several partners is shown by its own
+                name, since no one member's name describes it. A lone partner is
+                shown by its name - the account's label there can be something
+                derived like an email domain, which is a worse thing to read. */}
+            <span className="truncate">{expandable ? account.name : row.name}</span>
+            {/* Only partners are marked. Badging 'Direct' too would put a label
+                on almost every row in the table and say nothing. */}
+            {!isChild && account.channel !== 'direct' && (
+              <span
+                className={`shrink-0 px-1 py-px rounded text-[9px] font-medium ${channel.badgeClass}`}
+                title={channel.description}
+              >
+                {channel.label}
+              </span>
+            )}
+          </div>
+          {!isChild &&
+            (expandable ? (
+              <div className="truncate text-[10px] text-plm-fg-muted -mt-0.5">
+                {formatCount(account.members.length)} contacts
+              </div>
+            ) : (
+              account.name !== row.name && (
+                <div className="truncate text-[10px] text-plm-fg-muted -mt-0.5">{account.name}</div>
+              )
+            ))}
+        </div>
       </div>
 
       <div className="px-2.5 shrink-0" style={{ width: COLUMNS[1].width }}>
@@ -298,32 +461,32 @@ const Row = memo(function Row({
       </div>
 
       <div className="px-2.5 shrink-0 truncate text-plm-fg-dim" style={{ width: COLUMNS[2].width }}>
-        {row.category_label ?? <span className="text-plm-fg-muted">Unclassified</span>}
+        {categoryLabel ?? <span className="text-plm-fg-muted">Unclassified</span>}
       </div>
 
       <div className="px-2.5 shrink-0 truncate text-plm-fg-dim" style={{ width: COLUMNS[3].width }}>
-        {row.country ?? '-'}
+        {country ?? '-'}
       </div>
 
       <div
-        className="px-2.5 shrink-0 text-right tabular-nums text-plm-fg"
+        className={`px-2.5 shrink-0 text-right tabular-nums ${isChild ? 'text-plm-fg-dim' : 'text-plm-fg'}`}
         style={{ width: COLUMNS[4].width }}
       >
-        {formatAmount(row.total_spent)}
+        {formatAmount(spend)}
       </div>
 
       <div
         className="px-2.5 shrink-0 text-right tabular-nums text-plm-fg-dim"
         style={{ width: COLUMNS[5].width }}
       >
-        {formatCount(row.order_count)}
+        {formatCount(orders)}
       </div>
 
       <div
         className="px-2.5 shrink-0 text-right text-plm-fg-dim"
         style={{ width: COLUMNS[6].width }}
       >
-        {formatRelativeDays(row.recency_days)}
+        {formatRelativeDays(recency)}
       </div>
 
       <div

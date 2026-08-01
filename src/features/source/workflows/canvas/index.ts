@@ -5,8 +5,9 @@ export type { StateNodeProps } from './StateNode'
 export { TransitionLine } from './TransitionLine'
 export type { TransitionLineProps } from './TransitionLine'
 
-export { CreatingTransition } from './CreatingTransition'
-export type { CreatingTransitionProps } from './CreatingTransition'
+export { ConnectionPreviewLayer } from './ConnectionPreviewLayer'
+export { ConnectionDropTarget } from './ConnectionDropTarget'
+export { ConnectionPortsLayer } from './ConnectionPortsLayer'
 
 export { TickSlider } from './TickSlider'
 export { WorkflowContextMenu } from './WorkflowContextMenu'

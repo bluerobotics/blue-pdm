@@ -21,6 +21,7 @@ export const DEFAULT_CUSTOMER_FILTERS: CustomerFilters = {
   segments: [],
   categories: [],
   countries: [],
+  channels: [],
   presence: 'all',
 }
 

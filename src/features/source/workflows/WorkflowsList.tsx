@@ -2,7 +2,7 @@
 import { memo } from 'react'
 import { Plus, GitBranch, Loader2 } from 'lucide-react'
 import { WorkflowCard } from './WorkflowCard'
-import type { WorkflowTemplate } from './types'
+import type { WorkflowTemplate } from '@/types/workflow'
 
 interface WorkflowsListProps {
   workflows: WorkflowTemplate[]

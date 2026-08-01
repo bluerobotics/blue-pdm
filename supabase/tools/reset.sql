@@ -182,6 +182,7 @@ DROP TYPE IF EXISTS revision_scheme_type CASCADE;
 DROP TYPE IF EXISTS action_type CASCADE;
 DROP TYPE IF EXISTS condition_type CASCADE;
 DROP TYPE IF EXISTS state_permission_type CASCADE;
+DROP TYPE IF EXISTS transition_edge CASCADE;
 DROP TYPE IF EXISTS transition_arrow_head CASCADE;
 DROP TYPE IF EXISTS transition_path_type CASCADE;
 DROP TYPE IF EXISTS transition_line_style CASCADE;
@@ -313,6 +314,25 @@ DROP FUNCTION IF EXISTS validate_share_link(TEXT) CASCADE;
 DROP FUNCTION IF EXISTS notify_file_watchers() CASCADE;
 DROP FUNCTION IF EXISTS get_user_vault_access(UUID) CASCADE;
 DROP FUNCTION IF EXISTS preview_next_serial_number(UUID) CASCADE;
+
+-- Workflow engine (v86). Dropped by name because their signatures mention enum
+-- types this script may already have removed.
+DO $$
+DECLARE r RECORD;
+BEGIN
+  FOR r IN
+    SELECT p.oid::regprocedure AS func_sig
+    FROM pg_proc p
+    JOIN pg_namespace n ON p.pronamespace = n.oid
+    WHERE n.nspname = 'public' AND p.proname IN (
+      'import_workflow_graph', 'execute_workflow_transition', 'execute_transition_to_legacy_state',
+      'apply_workflow_transition', 'complete_gate_review', 'get_my_pending_reviews',
+      'user_can_run_transition', 'next_revision_value', 'legacy_file_state'
+    )
+  LOOP
+    EXECUTE 'DROP FUNCTION IF EXISTS ' || r.func_sig || ' CASCADE';
+  END LOOP;
+END $$;
 
 -- ===========================================
 -- DROP STORAGE POLICIES

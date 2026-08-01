@@ -520,6 +520,10 @@ export type Database = {
       customer_accounts: {
         Row: {
           account_key: string
+          channel: string
+          channel_set_at: string | null
+          channel_set_by: string | null
+          channel_source: string | null
           created_at: string | null
           created_by: string | null
           display_name: string | null
@@ -532,6 +536,10 @@ export type Database = {
         }
         Insert: {
           account_key: string
+          channel?: string
+          channel_set_at?: string | null
+          channel_set_by?: string | null
+          channel_source?: string | null
           created_at?: string | null
           created_by?: string | null
           display_name?: string | null
@@ -544,6 +552,10 @@ export type Database = {
         }
         Update: {
           account_key?: string
+          channel?: string
+          channel_set_at?: string | null
+          channel_set_by?: string | null
+          channel_source?: string | null
           created_at?: string | null
           created_by?: string | null
           display_name?: string | null
@@ -555,6 +567,13 @@ export type Database = {
           updated_by?: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "customer_accounts_channel_set_by_fkey"
+            columns: ["channel_set_by"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "customer_accounts_created_by_fkey"
             columns: ["created_by"]
@@ -3977,88 +3996,6 @@ export type Database = {
           },
         ]
       }
-      pending_transition_approvals: {
-        Row: {
-          approval_id: string
-          created_at: string | null
-          expires_at: string | null
-          file_id: string
-          id: string
-          org_id: string
-          requested_at: string | null
-          requested_by: string
-          status: Database["public"]["Enums"]["review_status"] | null
-          transition_id: string
-        }
-        Insert: {
-          approval_id: string
-          created_at?: string | null
-          expires_at?: string | null
-          file_id: string
-          id?: string
-          org_id: string
-          requested_at?: string | null
-          requested_by: string
-          status?: Database["public"]["Enums"]["review_status"] | null
-          transition_id: string
-        }
-        Update: {
-          approval_id?: string
-          created_at?: string | null
-          expires_at?: string | null
-          file_id?: string
-          id?: string
-          org_id?: string
-          requested_at?: string | null
-          requested_by?: string
-          status?: Database["public"]["Enums"]["review_status"] | null
-          transition_id?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "pending_transition_approvals_approval_id_fkey"
-            columns: ["approval_id"]
-            isOneToOne: false
-            referencedRelation: "workflow_transition_approvals"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "pending_transition_approvals_file_id_fkey"
-            columns: ["file_id"]
-            isOneToOne: false
-            referencedRelation: "files"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "pending_transition_approvals_file_id_fkey"
-            columns: ["file_id"]
-            isOneToOne: false
-            referencedRelation: "parts_with_pricing"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "pending_transition_approvals_org_id_fkey"
-            columns: ["org_id"]
-            isOneToOne: false
-            referencedRelation: "organizations"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "pending_transition_approvals_requested_by_fkey"
-            columns: ["requested_by"]
-            isOneToOne: false
-            referencedRelation: "users"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "pending_transition_approvals_transition_id_fkey"
-            columns: ["transition_id"]
-            isOneToOne: false
-            referencedRelation: "workflow_transitions"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
       permission_presets: {
         Row: {
           color: string | null
@@ -4614,90 +4551,6 @@ export type Database = {
             columns: ["vault_id"]
             isOneToOne: false
             referencedRelation: "vaults"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      revision_schemes: {
-        Row: {
-          created_at: string | null
-          created_by: string | null
-          custom_pattern: string | null
-          description: string | null
-          id: string
-          increment_by: number | null
-          is_active: boolean | null
-          is_default: boolean | null
-          major_minor_separator: string | null
-          minor_scheme_type:
-            | Database["public"]["Enums"]["revision_scheme_type"]
-            | null
-          name: string
-          org_id: string
-          prefix: string | null
-          scheme_type: Database["public"]["Enums"]["revision_scheme_type"]
-          start_value: number | null
-          suffix: string | null
-          updated_at: string | null
-          zero_padding: number | null
-        }
-        Insert: {
-          created_at?: string | null
-          created_by?: string | null
-          custom_pattern?: string | null
-          description?: string | null
-          id?: string
-          increment_by?: number | null
-          is_active?: boolean | null
-          is_default?: boolean | null
-          major_minor_separator?: string | null
-          minor_scheme_type?:
-            | Database["public"]["Enums"]["revision_scheme_type"]
-            | null
-          name: string
-          org_id: string
-          prefix?: string | null
-          scheme_type?: Database["public"]["Enums"]["revision_scheme_type"]
-          start_value?: number | null
-          suffix?: string | null
-          updated_at?: string | null
-          zero_padding?: number | null
-        }
-        Update: {
-          created_at?: string | null
-          created_by?: string | null
-          custom_pattern?: string | null
-          description?: string | null
-          id?: string
-          increment_by?: number | null
-          is_active?: boolean | null
-          is_default?: boolean | null
-          major_minor_separator?: string | null
-          minor_scheme_type?:
-            | Database["public"]["Enums"]["revision_scheme_type"]
-            | null
-          name?: string
-          org_id?: string
-          prefix?: string | null
-          scheme_type?: Database["public"]["Enums"]["revision_scheme_type"]
-          start_value?: number | null
-          suffix?: string | null
-          updated_at?: string | null
-          zero_padding?: number | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "revision_schemes_created_by_fkey"
-            columns: ["created_by"]
-            isOneToOne: false
-            referencedRelation: "users"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "revision_schemes_org_id_fkey"
-            columns: ["org_id"]
-            isOneToOne: false
-            referencedRelation: "organizations"
             referencedColumns: ["id"]
           },
         ]
@@ -6585,102 +6438,6 @@ export type Database = {
           },
         ]
       }
-      workflow_approval_reviewers: {
-        Row: {
-          approval_id: string
-          created_at: string | null
-          id: string
-          reviewer_type: Database["public"]["Enums"]["notification_recipient_type"]
-          role: Database["public"]["Enums"]["user_role"] | null
-          user_id: string | null
-          workflow_role_id: string | null
-        }
-        Insert: {
-          approval_id: string
-          created_at?: string | null
-          id?: string
-          reviewer_type: Database["public"]["Enums"]["notification_recipient_type"]
-          role?: Database["public"]["Enums"]["user_role"] | null
-          user_id?: string | null
-          workflow_role_id?: string | null
-        }
-        Update: {
-          approval_id?: string
-          created_at?: string | null
-          id?: string
-          reviewer_type?: Database["public"]["Enums"]["notification_recipient_type"]
-          role?: Database["public"]["Enums"]["user_role"] | null
-          user_id?: string | null
-          workflow_role_id?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "workflow_approval_reviewers_approval_id_fkey"
-            columns: ["approval_id"]
-            isOneToOne: false
-            referencedRelation: "workflow_transition_approvals"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "workflow_approval_reviewers_user_id_fkey"
-            columns: ["user_id"]
-            isOneToOne: false
-            referencedRelation: "users"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "workflow_approval_reviewers_workflow_role_id_fkey"
-            columns: ["workflow_role_id"]
-            isOneToOne: false
-            referencedRelation: "workflow_roles"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      workflow_auto_transitions: {
-        Row: {
-          condition_expression: Json | null
-          created_at: string | null
-          id: string
-          is_active: boolean | null
-          schedule_cron: string | null
-          schedule_timezone: string | null
-          timer_hours: number | null
-          transition_id: string
-          trigger_type: Database["public"]["Enums"]["auto_trigger_type"]
-        }
-        Insert: {
-          condition_expression?: Json | null
-          created_at?: string | null
-          id?: string
-          is_active?: boolean | null
-          schedule_cron?: string | null
-          schedule_timezone?: string | null
-          timer_hours?: number | null
-          transition_id: string
-          trigger_type: Database["public"]["Enums"]["auto_trigger_type"]
-        }
-        Update: {
-          condition_expression?: Json | null
-          created_at?: string | null
-          id?: string
-          is_active?: boolean | null
-          schedule_cron?: string | null
-          schedule_timezone?: string | null
-          timer_hours?: number | null
-          transition_id?: string
-          trigger_type?: Database["public"]["Enums"]["auto_trigger_type"]
-        }
-        Relationships: [
-          {
-            foreignKeyName: "workflow_auto_transitions_transition_id_fkey"
-            columns: ["transition_id"]
-            isOneToOne: false
-            referencedRelation: "workflow_transitions"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
       workflow_gate_reviewers: {
         Row: {
           created_at: string | null
@@ -7120,82 +6877,6 @@ export type Database = {
           },
         ]
       }
-      workflow_state_permissions: {
-        Row: {
-          can_add: boolean | null
-          can_change_state: boolean | null
-          can_delete: boolean | null
-          can_edit_metadata: boolean | null
-          can_read: boolean | null
-          can_rename: boolean | null
-          can_write: boolean | null
-          comment_required_on_change: boolean | null
-          created_at: string | null
-          id: string
-          permission_for: string
-          role: Database["public"]["Enums"]["user_role"] | null
-          state_id: string
-          user_id: string | null
-          workflow_role_id: string | null
-        }
-        Insert: {
-          can_add?: boolean | null
-          can_change_state?: boolean | null
-          can_delete?: boolean | null
-          can_edit_metadata?: boolean | null
-          can_read?: boolean | null
-          can_rename?: boolean | null
-          can_write?: boolean | null
-          comment_required_on_change?: boolean | null
-          created_at?: string | null
-          id?: string
-          permission_for: string
-          role?: Database["public"]["Enums"]["user_role"] | null
-          state_id: string
-          user_id?: string | null
-          workflow_role_id?: string | null
-        }
-        Update: {
-          can_add?: boolean | null
-          can_change_state?: boolean | null
-          can_delete?: boolean | null
-          can_edit_metadata?: boolean | null
-          can_read?: boolean | null
-          can_rename?: boolean | null
-          can_write?: boolean | null
-          comment_required_on_change?: boolean | null
-          created_at?: string | null
-          id?: string
-          permission_for?: string
-          role?: Database["public"]["Enums"]["user_role"] | null
-          state_id?: string
-          user_id?: string | null
-          workflow_role_id?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "workflow_state_permissions_state_id_fkey"
-            columns: ["state_id"]
-            isOneToOne: false
-            referencedRelation: "workflow_states"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "workflow_state_permissions_user_id_fkey"
-            columns: ["user_id"]
-            isOneToOne: false
-            referencedRelation: "users"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "workflow_state_permissions_workflow_role_id_fkey"
-            columns: ["workflow_role_id"]
-            isOneToOne: false
-            referencedRelation: "workflow_roles"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
       workflow_states: {
         Row: {
           auto_increment_revision: boolean | null
@@ -7208,6 +6889,7 @@ export type Database = {
           description: string | null
           fill_opacity: number | null
           gate_config: Json | null
+          height: number
           icon: string | null
           id: string
           is_editable: boolean | null
@@ -7221,6 +6903,7 @@ export type Database = {
           sort_order: number | null
           state_type: Database["public"]["Enums"]["state_type"] | null
           triggers_review: boolean | null
+          width: number
           workflow_id: string
         }
         Insert: {
@@ -7234,6 +6917,7 @@ export type Database = {
           description?: string | null
           fill_opacity?: number | null
           gate_config?: Json | null
+          height?: number
           icon?: string | null
           id?: string
           is_editable?: boolean | null
@@ -7247,6 +6931,7 @@ export type Database = {
           sort_order?: number | null
           state_type?: Database["public"]["Enums"]["state_type"] | null
           triggers_review?: boolean | null
+          width?: number
           workflow_id: string
         }
         Update: {
@@ -7260,6 +6945,7 @@ export type Database = {
           description?: string | null
           fill_opacity?: number | null
           gate_config?: Json | null
+          height?: number
           icon?: string | null
           id?: string
           is_editable?: boolean | null
@@ -7273,6 +6959,7 @@ export type Database = {
           sort_order?: number | null
           state_type?: Database["public"]["Enums"]["state_type"] | null
           triggers_review?: boolean | null
+          width?: number
           workflow_id?: string
         }
         Relationships: [
@@ -7281,60 +6968,6 @@ export type Database = {
             columns: ["workflow_id"]
             isOneToOne: false
             referencedRelation: "workflow_templates"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      workflow_tasks: {
-        Row: {
-          config: Json | null
-          created_at: string | null
-          created_by: string | null
-          description: string | null
-          id: string
-          is_active: boolean | null
-          name: string
-          org_id: string
-          task_type: Database["public"]["Enums"]["workflow_task_type"]
-          updated_at: string | null
-        }
-        Insert: {
-          config?: Json | null
-          created_at?: string | null
-          created_by?: string | null
-          description?: string | null
-          id?: string
-          is_active?: boolean | null
-          name: string
-          org_id: string
-          task_type: Database["public"]["Enums"]["workflow_task_type"]
-          updated_at?: string | null
-        }
-        Update: {
-          config?: Json | null
-          created_at?: string | null
-          created_by?: string | null
-          description?: string | null
-          id?: string
-          is_active?: boolean | null
-          name?: string
-          org_id?: string
-          task_type?: Database["public"]["Enums"]["workflow_task_type"]
-          updated_at?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "workflow_tasks_created_by_fkey"
-            columns: ["created_by"]
-            isOneToOne: false
-            referencedRelation: "users"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "workflow_tasks_org_id_fkey"
-            columns: ["org_id"]
-            isOneToOne: false
-            referencedRelation: "organizations"
             referencedColumns: ["id"]
           },
         ]
@@ -7403,232 +7036,18 @@ export type Database = {
           },
         ]
       }
-      workflow_transition_actions: {
-        Row: {
-          action_type: Database["public"]["Enums"]["action_type"]
-          config: Json | null
-          created_at: string | null
-          execute_on: string | null
-          id: string
-          is_active: boolean | null
-          sort_order: number | null
-          transition_id: string
-        }
-        Insert: {
-          action_type: Database["public"]["Enums"]["action_type"]
-          config?: Json | null
-          created_at?: string | null
-          execute_on?: string | null
-          id?: string
-          is_active?: boolean | null
-          sort_order?: number | null
-          transition_id: string
-        }
-        Update: {
-          action_type?: Database["public"]["Enums"]["action_type"]
-          config?: Json | null
-          created_at?: string | null
-          execute_on?: string | null
-          id?: string
-          is_active?: boolean | null
-          sort_order?: number | null
-          transition_id?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "workflow_transition_actions_transition_id_fkey"
-            columns: ["transition_id"]
-            isOneToOne: false
-            referencedRelation: "workflow_transitions"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      workflow_transition_approvals: {
-        Row: {
-          allow_self_approval: boolean | null
-          approval_mode: Database["public"]["Enums"]["approval_mode"] | null
-          created_at: string | null
-          description: string | null
-          escalation_user_id: string | null
-          id: string
-          is_active: boolean | null
-          name: string
-          require_comment: boolean | null
-          required_approvals: number | null
-          sort_order: number | null
-          timeout_hours: number | null
-          transition_id: string
-        }
-        Insert: {
-          allow_self_approval?: boolean | null
-          approval_mode?: Database["public"]["Enums"]["approval_mode"] | null
-          created_at?: string | null
-          description?: string | null
-          escalation_user_id?: string | null
-          id?: string
-          is_active?: boolean | null
-          name: string
-          require_comment?: boolean | null
-          required_approvals?: number | null
-          sort_order?: number | null
-          timeout_hours?: number | null
-          transition_id: string
-        }
-        Update: {
-          allow_self_approval?: boolean | null
-          approval_mode?: Database["public"]["Enums"]["approval_mode"] | null
-          created_at?: string | null
-          description?: string | null
-          escalation_user_id?: string | null
-          id?: string
-          is_active?: boolean | null
-          name?: string
-          require_comment?: boolean | null
-          required_approvals?: number | null
-          sort_order?: number | null
-          timeout_hours?: number | null
-          transition_id?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "workflow_transition_approvals_escalation_user_id_fkey"
-            columns: ["escalation_user_id"]
-            isOneToOne: false
-            referencedRelation: "users"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "workflow_transition_approvals_transition_id_fkey"
-            columns: ["transition_id"]
-            isOneToOne: false
-            referencedRelation: "workflow_transitions"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      workflow_transition_conditions: {
-        Row: {
-          condition_type: Database["public"]["Enums"]["condition_type"]
-          created_at: string | null
-          custom_sql: string | null
-          id: string
-          is_required: boolean | null
-          operator: string
-          sort_order: number | null
-          transition_id: string
-          value: string | null
-          value_list: string[] | null
-        }
-        Insert: {
-          condition_type: Database["public"]["Enums"]["condition_type"]
-          created_at?: string | null
-          custom_sql?: string | null
-          id?: string
-          is_required?: boolean | null
-          operator?: string
-          sort_order?: number | null
-          transition_id: string
-          value?: string | null
-          value_list?: string[] | null
-        }
-        Update: {
-          condition_type?: Database["public"]["Enums"]["condition_type"]
-          created_at?: string | null
-          custom_sql?: string | null
-          id?: string
-          is_required?: boolean | null
-          operator?: string
-          sort_order?: number | null
-          transition_id?: string
-          value?: string | null
-          value_list?: string[] | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "workflow_transition_conditions_transition_id_fkey"
-            columns: ["transition_id"]
-            isOneToOne: false
-            referencedRelation: "workflow_transitions"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      workflow_transition_notifications: {
-        Row: {
-          body_template: string
-          created_at: string | null
-          id: string
-          is_active: boolean | null
-          recipient_role: Database["public"]["Enums"]["user_role"] | null
-          recipient_type: Database["public"]["Enums"]["notification_recipient_type"]
-          recipient_user_id: string | null
-          recipient_workflow_role_id: string | null
-          send_email: boolean | null
-          send_in_app: boolean | null
-          subject_template: string
-          transition_id: string
-        }
-        Insert: {
-          body_template: string
-          created_at?: string | null
-          id?: string
-          is_active?: boolean | null
-          recipient_role?: Database["public"]["Enums"]["user_role"] | null
-          recipient_type: Database["public"]["Enums"]["notification_recipient_type"]
-          recipient_user_id?: string | null
-          recipient_workflow_role_id?: string | null
-          send_email?: boolean | null
-          send_in_app?: boolean | null
-          subject_template: string
-          transition_id: string
-        }
-        Update: {
-          body_template?: string
-          created_at?: string | null
-          id?: string
-          is_active?: boolean | null
-          recipient_role?: Database["public"]["Enums"]["user_role"] | null
-          recipient_type?: Database["public"]["Enums"]["notification_recipient_type"]
-          recipient_user_id?: string | null
-          recipient_workflow_role_id?: string | null
-          send_email?: boolean | null
-          send_in_app?: boolean | null
-          subject_template?: string
-          transition_id?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "workflow_transition_notificatio_recipient_workflow_role_id_fkey"
-            columns: ["recipient_workflow_role_id"]
-            isOneToOne: false
-            referencedRelation: "workflow_roles"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "workflow_transition_notifications_recipient_user_id_fkey"
-            columns: ["recipient_user_id"]
-            isOneToOne: false
-            referencedRelation: "users"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "workflow_transition_notifications_transition_id_fkey"
-            columns: ["transition_id"]
-            isOneToOne: false
-            referencedRelation: "workflow_transitions"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
       workflow_transitions: {
         Row: {
           allowed_workflow_roles: string[] | null
           auto_conditions: Json | null
           created_at: string | null
           description: string | null
+          end_edge: Database["public"]["Enums"]["transition_edge"] | null
+          end_fraction: number | null
           from_state_id: string
           id: string
+          label_offset: Json | null
+          label_pinned: Json | null
           line_arrow_head:
             | Database["public"]["Enums"]["transition_arrow_head"]
             | null
@@ -7641,7 +7060,10 @@ export type Database = {
             | null
           line_thickness: number | null
           name: string | null
+          start_edge: Database["public"]["Enums"]["transition_edge"] | null
+          start_fraction: number | null
           to_state_id: string
+          waypoints: Json
           workflow_id: string
         }
         Insert: {
@@ -7649,8 +7071,12 @@ export type Database = {
           auto_conditions?: Json | null
           created_at?: string | null
           description?: string | null
+          end_edge?: Database["public"]["Enums"]["transition_edge"] | null
+          end_fraction?: number | null
           from_state_id: string
           id?: string
+          label_offset?: Json | null
+          label_pinned?: Json | null
           line_arrow_head?:
             | Database["public"]["Enums"]["transition_arrow_head"]
             | null
@@ -7663,7 +7089,10 @@ export type Database = {
             | null
           line_thickness?: number | null
           name?: string | null
+          start_edge?: Database["public"]["Enums"]["transition_edge"] | null
+          start_fraction?: number | null
           to_state_id: string
+          waypoints?: Json
           workflow_id: string
         }
         Update: {
@@ -7671,8 +7100,12 @@ export type Database = {
           auto_conditions?: Json | null
           created_at?: string | null
           description?: string | null
+          end_edge?: Database["public"]["Enums"]["transition_edge"] | null
+          end_fraction?: number | null
           from_state_id?: string
           id?: string
+          label_offset?: Json | null
+          label_pinned?: Json | null
           line_arrow_head?:
             | Database["public"]["Enums"]["transition_arrow_head"]
             | null
@@ -7685,7 +7118,10 @@ export type Database = {
             | null
           line_thickness?: number | null
           name?: string | null
+          start_edge?: Database["public"]["Enums"]["transition_edge"] | null
+          start_fraction?: number | null
           to_state_id?: string
+          waypoints?: Json
           workflow_id?: string
         }
         Relationships: [
@@ -7888,6 +7324,15 @@ export type Database = {
         Args: { p_created_by: string; p_org_id: string }
         Returns: string
       }
+      complete_gate_review: {
+        Args: {
+          p_checklist_responses?: Json
+          p_comment?: string
+          p_decision: Database["public"]["Enums"]["review_status"]
+          p_pending_review_id: string
+        }
+        Returns: Json
+      }
       create_default_workflow: {
         Args: { p_created_by: string; p_org_id: string }
         Returns: string
@@ -7962,8 +7407,18 @@ export type Database = {
           subcategory_label: string | null
         }[]
       }
+      customer_channel_counts: {
+        Args: { p_from: string; p_org_id: string; p_to: string }
+        Returns: {
+          account_count: number
+          channel: string
+          customer_count: number
+          orders: number
+          revenue: number
+        }[]
+      }
       customer_cohort_retention: {
-        Args: { p_months?: number; p_org_id: string }
+        Args: { p_as_of: string; p_months?: number; p_org_id: string }
         Returns: {
           buyers: number
           cohort_month: string
@@ -7974,7 +7429,12 @@ export type Database = {
         }[]
       }
       customer_detail: {
-        Args: { p_customer_id: string; p_order_limit?: number }
+        Args: {
+          p_customer_id: string
+          p_from: string
+          p_order_limit?: number
+          p_to: string
+        }
         Returns: Json
       }
       customer_geo_breakdown: {
@@ -7984,6 +7444,22 @@ export type Database = {
           country: string | null
           orders: number
           revenue: number
+        }[]
+      }
+      customer_partner_coverage: {
+        Args: { p_from: string; p_org_id: string; p_to: string }
+        Returns: {
+          account_id: string | null
+          account_key: string | null
+          account_name: string | null
+          channel: string | null
+          contacts: number
+          country: string
+          last_order_date: string | null
+          name: string
+          partner_channel: string
+          total_spent: number
+          website: string
         }[]
       }
       customer_revenue_timeseries: {
@@ -7998,12 +7474,13 @@ export type Database = {
         }[]
       }
       customer_rfm: {
-        Args: { p_as_of?: string; p_limit?: number; p_org_id: string }
+        Args: { p_from: string; p_limit?: number; p_org_id: string; p_to: string }
         Returns: {
           account_id: string | null
           account_name: string | null
           category: string | null
           category_label: string | null
+          channel: string
           city: string | null
           country: string | null
           customer_id: string
@@ -8012,6 +7489,7 @@ export type Database = {
           first_order_date: string | null
           is_active: boolean | null
           last_order_date: string | null
+          lifetime_orders: number
           m_score: number | null
           name: string
           order_count: number
@@ -8070,12 +7548,15 @@ export type Database = {
         Returns: undefined
       }
       ensure_user_org_id: { Args: never; Returns: Json }
+      execute_transition_to_legacy_state: {
+        Args: { p_comment?: string; p_file_id: string; p_target_state: string }
+        Returns: Json
+      }
       execute_workflow_transition: {
         Args: {
           p_comment?: string
           p_file_id: string
           p_transition_id: string
-          p_user_id: string
         }
         Returns: Json
       }
@@ -8105,31 +7586,18 @@ export type Database = {
         Returns: Json
       }
       generate_share_token: { Args: never; Returns: string }
-      get_available_transitions:
-        | {
-            Args: { p_file_id: string }
-            Returns: {
-              has_gates: boolean
-              to_state_color: string
-              to_state_id: string
-              to_state_name: string
-              transition_id: string
-              transition_name: string
-              user_can_transition: boolean
-            }[]
-          }
-        | {
-            Args: { p_file_id: string; p_user_id: string }
-            Returns: {
-              has_gates: boolean
-              to_state_color: string
-              to_state_id: string
-              to_state_name: string
-              transition_id: string
-              transition_name: string
-              user_can_transition: boolean
-            }[]
-          }
+      get_available_transitions: {
+        Args: { p_file_id: string; p_user_id: string }
+        Returns: {
+          has_gates: boolean
+          to_state_color: string
+          to_state_id: string
+          to_state_name: string
+          transition_id: string
+          transition_name: string
+          user_can_transition: boolean
+        }[]
+      }
       get_best_price: {
         Args: { p_file_id: string; p_quantity?: number }
         Returns: {
@@ -8240,22 +7708,22 @@ export type Database = {
       get_my_pending_reviews: {
         Args: never
         Returns: {
+          checklist_items: Json
           file_id: string
           file_name: string
           file_path: string
+          from_state_name: string
+          gate_id: string
           gate_name: string
+          gate_type: Database["public"]["Enums"]["gate_type"]
           requested_at: string
-          requested_by_name: string
+          requested_by: string
+          requested_by_email: string
           review_id: string
+          to_state_name: string
+          transition_id: string
+          transition_name: string
         }[]
-      }
-      get_next_revision: {
-        Args: {
-          p_current_revision: string
-          p_increment_type?: string
-          p_scheme_id: string
-        }
-        Returns: string
       }
       get_next_serial_number: { Args: { p_org_id: string }; Returns: string }
       get_odoo_integration: {
@@ -8441,6 +7909,10 @@ export type Database = {
           store_url: string
         }[]
       }
+      import_workflow_graph: {
+        Args: { p_payload: Json; p_workflow_id: string }
+        Returns: Json
+      }
       instantiate_process_template: {
         Args: { p_eco_id: string; p_template_id: string }
         Returns: undefined
@@ -8449,6 +7921,20 @@ export type Database = {
         | { Args: never; Returns: boolean }
         | { Args: { p_user_id: string }; Returns: boolean }
       join_org_by_slug: { Args: { p_org_slug: string }; Returns: Json }
+      known_partner_channel_for_key: {
+        Args: { p_account_key: string }
+        Returns: string
+      }
+      known_partners: {
+        Args: never
+        Returns: {
+          account_keys: string[]
+          channel: string
+          country: string
+          name: string
+          website: string
+        }[]
+      }
       mark_all_notifications_read: {
         Args: { p_user_id: string }
         Returns: number
@@ -8646,6 +8132,10 @@ export type Database = {
         Args: { p_code: string; p_ip_address?: string }
         Returns: Json
       }
+      user_can_run_transition: {
+        Args: { p_transition_id: string; p_user_id: string }
+        Returns: boolean
+      }
       user_has_permission: {
         Args: {
           p_action: Database["public"]["Enums"]["permission_action"]
@@ -8675,15 +8165,6 @@ export type Database = {
       }
     }
     Enums: {
-      action_type:
-        | "increment_revision"
-        | "set_variable"
-        | "clear_variable"
-        | "send_notification"
-        | "execute_task"
-        | "set_file_permission"
-        | "copy_file"
-        | "run_script"
       activity_action:
         | "create"
         | "update"
@@ -8697,28 +8178,12 @@ export type Database = {
         | "rename"
       address_type: "billing" | "shipping"
       approval_mode: "any" | "all" | "majority"
-      auto_trigger_type:
-        | "timer"
-        | "condition_met"
-        | "all_approvals"
-        | "schedule"
       checklist_item_status:
         | "not_started"
         | "in_progress"
         | "complete"
         | "blocked"
         | "na"
-      condition_type:
-        | "file_path"
-        | "file_extension"
-        | "variable"
-        | "revision"
-        | "category"
-        | "checkout_status"
-        | "user_role"
-        | "workflow_role"
-        | "file_owner"
-        | "custom_sql"
       deviation_status:
         | "draft"
         | "pending_approval"
@@ -8731,15 +8196,6 @@ export type Database = {
       file_type: "part" | "assembly" | "drawing" | "pdf" | "step" | "other"
       gate_type: "approval" | "checklist" | "condition"
       metadata_column_type: "text" | "number" | "date" | "boolean" | "select"
-      notification_recipient_type:
-        | "user"
-        | "role"
-        | "workflow_role"
-        | "file_owner"
-        | "file_creator"
-        | "checkout_user"
-        | "previous_state_user"
-        | "all_org"
       permission_action: "view" | "create" | "edit" | "delete" | "admin"
       reference_type: "component" | "derived" | "reference"
       release_file_type:
@@ -8758,12 +8214,6 @@ export type Database = {
         | "kicked_back"
       reviewer_type: "user" | "role" | "group" | "workflow_role"
       revision_scheme: "letter" | "numeric"
-      revision_scheme_type:
-        | "numeric"
-        | "alpha_upper"
-        | "alpha_lower"
-        | "alphanumeric"
-        | "custom"
       rfq_status:
         | "draft"
         | "pending_files"
@@ -8776,17 +8226,10 @@ export type Database = {
         | "cancelled"
         | "completed"
       solidworks_license_type: "standalone" | "network"
-      state_permission_type:
-        | "read_file"
-        | "write_file"
-        | "delete_file"
-        | "add_file"
-        | "rename_file"
-        | "change_state"
-        | "edit_metadata"
       state_shape: "rectangle" | "diamond" | "hexagon" | "ellipse"
       state_type: "state" | "gate"
       supplier_auth_method: "email" | "phone" | "wechat"
+      transition_edge: "left" | "right" | "top" | "bottom"
       transition_arrow_head: "none" | "end" | "start" | "both"
       transition_line_style: "solid" | "dashed" | "dotted"
       transition_path_type: "straight" | "spline" | "elbow"
@@ -8813,15 +8256,6 @@ export type Database = {
         | "supplier.created"
         | "supplier.updated"
       workflow_state_type: "initial" | "intermediate" | "final" | "rejected"
-      workflow_task_type:
-        | "convert_pdf"
-        | "convert_step"
-        | "convert_iges"
-        | "convert_edrawings"
-        | "convert_dxf"
-        | "custom_export"
-        | "run_script"
-        | "webhook"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -8949,16 +8383,6 @@ export type CompositeTypes<
 export const Constants = {
   public: {
     Enums: {
-      action_type: [
-        "increment_revision",
-        "set_variable",
-        "clear_variable",
-        "send_notification",
-        "execute_task",
-        "set_file_permission",
-        "copy_file",
-        "run_script",
-      ],
       activity_action: [
         "create",
         "update",
@@ -8973,30 +8397,12 @@ export const Constants = {
       ],
       address_type: ["billing", "shipping"],
       approval_mode: ["any", "all", "majority"],
-      auto_trigger_type: [
-        "timer",
-        "condition_met",
-        "all_approvals",
-        "schedule",
-      ],
       checklist_item_status: [
         "not_started",
         "in_progress",
         "complete",
         "blocked",
         "na",
-      ],
-      condition_type: [
-        "file_path",
-        "file_extension",
-        "variable",
-        "revision",
-        "category",
-        "checkout_status",
-        "user_role",
-        "workflow_role",
-        "file_owner",
-        "custom_sql",
       ],
       deviation_status: [
         "draft",
@@ -9011,16 +8417,6 @@ export const Constants = {
       file_type: ["part", "assembly", "drawing", "pdf", "step", "other"],
       gate_type: ["approval", "checklist", "condition"],
       metadata_column_type: ["text", "number", "date", "boolean", "select"],
-      notification_recipient_type: [
-        "user",
-        "role",
-        "workflow_role",
-        "file_owner",
-        "file_creator",
-        "checkout_user",
-        "previous_state_user",
-        "all_org",
-      ],
       permission_action: ["view", "create", "edit", "delete", "admin"],
       reference_type: ["component", "derived", "reference"],
       release_file_type: [
@@ -9041,13 +8437,6 @@ export const Constants = {
       ],
       reviewer_type: ["user", "role", "group", "workflow_role"],
       revision_scheme: ["letter", "numeric"],
-      revision_scheme_type: [
-        "numeric",
-        "alpha_upper",
-        "alpha_lower",
-        "alphanumeric",
-        "custom",
-      ],
       rfq_status: [
         "draft",
         "pending_files",
@@ -9061,18 +8450,10 @@ export const Constants = {
         "completed",
       ],
       solidworks_license_type: ["standalone", "network"],
-      state_permission_type: [
-        "read_file",
-        "write_file",
-        "delete_file",
-        "add_file",
-        "rename_file",
-        "change_state",
-        "edit_metadata",
-      ],
       state_shape: ["rectangle", "diamond", "hexagon", "ellipse"],
       state_type: ["state", "gate"],
       supplier_auth_method: ["email", "phone", "wechat"],
+      transition_edge: ["left", "right", "top", "bottom"],
       transition_arrow_head: ["none", "end", "start", "both"],
       transition_line_style: ["solid", "dashed", "dotted"],
       transition_path_type: ["straight", "spline", "elbow"],
@@ -9100,16 +8481,6 @@ export const Constants = {
         "supplier.updated",
       ],
       workflow_state_type: ["initial", "intermediate", "final", "rejected"],
-      workflow_task_type: [
-        "convert_pdf",
-        "convert_step",
-        "convert_iges",
-        "convert_edrawings",
-        "convert_dxf",
-        "custom_export",
-        "run_script",
-        "webhook",
-      ],
     },
   },
 } as const

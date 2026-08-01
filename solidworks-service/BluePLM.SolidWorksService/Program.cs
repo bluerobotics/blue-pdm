@@ -34,7 +34,7 @@ namespace BluePLM.SolidWorksService
         /// Service version - bump this when making changes that affect functionality.
         /// The app checks this version and warns if there's a mismatch.
         /// </summary>
-        private const string SERVICE_VERSION = "1.10.0";
+        private const string SERVICE_VERSION = "1.12.0";
 
         /// <summary>
         /// JSON settings for all stdout responses. EscapeNonAscii forces every non-ASCII character
@@ -1068,6 +1068,29 @@ Commands:
         [JsonProperty("revision")]
         public string? Revision { get; set; }
         
+        [JsonProperty("description")]
+        public string? Description { get; set; }
+    }
+
+    /// <summary>
+    /// The metadata actually substituted into an export filename.
+    ///
+    /// File properties win over the PDM values the frontend supplies, so the two can differ -
+    /// most visibly when a drawing's stored properties have drifted from its parent model.
+    /// Reporting the resolved values back lets bluePLM tag the exported file with what was
+    /// really used and flag the divergence instead of silently disagreeing with itself.
+    /// </summary>
+    public class ResolvedExportMetadata
+    {
+        [JsonProperty("partNumber")]
+        public string? PartNumber { get; set; }
+
+        [JsonProperty("tabNumber")]
+        public string? TabNumber { get; set; }
+
+        [JsonProperty("revision")]
+        public string? Revision { get; set; }
+
         [JsonProperty("description")]
         public string? Description { get; set; }
     }

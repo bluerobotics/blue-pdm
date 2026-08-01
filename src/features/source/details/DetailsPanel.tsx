@@ -3,7 +3,8 @@ import { t } from '@/lib/i18n'
 import { log } from '@/lib/logger'
 import { usePDMStore, LocalFile, DetailsPanelTab } from '@/stores/pdmStore'
 import { useShallow } from 'zustand/react/shallow'
-import { thumbnailCache } from '@/lib/thumbnailCache'
+import { buildThumbnailUrl } from '@/lib/thumbnailUrl'
+import { useRetryableImage } from '@/hooks/useRetryableImage'
 import { getFileIconType } from '@/lib/utils'
 import { formatFileSize } from '@/lib/utils'
 import { DraggableTab, TabDropZone, PanelLocation } from '@/components/shared/DraggableTab'
@@ -49,42 +50,18 @@ import {
 
 // Component to load OS icon for files
 function DetailsPanelIcon({ file, size = 32 }: { file: LocalFile; size?: number }) {
-  const [icon, setIcon] = useState<string | null>(null)
+  const iconUrl = useMemo(() => buildThumbnailUrl(file, 'grid'), [file])
+  const { src, onError } = useRetryableImage(iconUrl)
 
-  useEffect(() => {
-    if (file.isDirectory || !file.path) {
-      setIcon(null)
-      return
-    }
-
-    let cancelled = false
-
-    const loadIcon = async () => {
-      try {
-        // Use global thumbnail cache to avoid repeated IPC calls
-        const data = await thumbnailCache.get(file.path)
-        if (!cancelled && data) {
-          setIcon(data)
-        }
-      } catch {
-        // Silently fail
-      }
-    }
-
-    loadIcon()
-    return () => {
-      cancelled = true
-    }
-  }, [file.path, file.isDirectory])
-
-  if (icon) {
+  if (src) {
     return (
       <img
-        src={icon}
+        src={src}
         alt=""
         className="flex-shrink-0 rounded"
         style={{ width: size, height: size }}
-        onError={() => setIcon(null)}
+        decoding="async"
+        onError={onError}
       />
     )
   }
@@ -190,9 +167,6 @@ export function DetailsPanel() {
     path: string | null
   }>({ checked: false, installed: false, path: null })
 
-  // CAD thumbnail preview state
-  const [cadThumbnail, setCadThumbnail] = useState<string | null>(null)
-  const [cadThumbnailLoading, setCadThumbnailLoading] = useState(false)
   const [cadZoom, setCadZoom] = useState(100) // Zoom percentage (100 = fit to pane)
 
   // Handle tab drop from either panel
@@ -243,63 +217,15 @@ export function DetailsPanel() {
   // NOTE: PDF loading is now handled internally by PdfAnnotationViewer.
   // The old useEffect that created a data URL for the iframe has been removed.
 
-  // Load CAD preview when file changes (only if in thumbnail mode)
-  // Priority: 1) OLE preview extraction, 2) DM API preview, 3) OS thumbnail
-  useEffect(() => {
-    const loadPreview = async () => {
-      const ext = file?.extension?.toLowerCase() || ''
-      const isSolidWorks = ['.sldprt', '.sldasm', '.slddrw'].includes(ext)
+  // CAD preview URL. The main process resolves it against the thumbnail cache,
+  // preferring the full-resolution OLE stream and falling back to the Document
+  // Manager image, so this component no longer sequences those itself.
+  const cadPreviewUrl = useMemo(() => {
+    if (cadPreviewMode === 'edrawings' || detailsPanelTab !== 'preview' || !file) return null
+    return buildThumbnailUrl(file, 'preview')
+  }, [file, detailsPanelTab, cadPreviewMode])
 
-      // Don't load preview if we're in eDrawings mode
-      if (
-        cadPreviewMode === 'edrawings' ||
-        !isSolidWorks ||
-        detailsPanelTab !== 'preview' ||
-        !file?.path
-      ) {
-        setCadThumbnail(null)
-        return
-      }
-
-      setCadThumbnailLoading(true)
-      try {
-        // First, try direct OLE preview extraction (most reliable, high quality)
-        const oleResult = await window.electronAPI?.extractSolidWorksPreview?.(file.path)
-        if (oleResult?.success && oleResult.data) {
-          log.debug('[Preview]', 'Using OLE-extracted preview')
-          setCadThumbnail(oleResult.data)
-          setCadThumbnailLoading(false)
-          return
-        }
-
-        // Second, try SolidWorks Document Manager API
-        const previewResult = await window.electronAPI?.solidworks?.getPreview(file.path)
-        if (previewResult?.success && previewResult.data?.imageData) {
-          const mimeType = previewResult.data.mimeType || 'image/png'
-          log.debug('[Preview]', 'Using DM API preview')
-          setCadThumbnail(`data:${mimeType};base64,${previewResult.data.imageData}`)
-          setCadThumbnailLoading(false)
-          return
-        }
-
-        // Fall back to OS thumbnail extraction (uses cache)
-        const thumbData = await thumbnailCache.get(file.path)
-        if (thumbData) {
-          log.debug('[Preview]', 'Using OS thumbnail fallback')
-          setCadThumbnail(thumbData)
-        } else {
-          setCadThumbnail(null)
-        }
-      } catch (error) {
-        log.error('[Preview]', 'Failed to extract preview', { error: error })
-        setCadThumbnail(null)
-      } finally {
-        setCadThumbnailLoading(false)
-      }
-    }
-
-    loadPreview()
-  }, [file?.path, file?.extension, detailsPanelTab, cadPreviewMode])
+  const { src: cadThumbnail, onError: onCadPreviewError } = useRetryableImage(cadPreviewUrl)
 
   // Calculate folder stats when a folder is selected
   useEffect(() => {
@@ -1133,10 +1059,6 @@ export function DetailsPanel() {
                             </a>
                           </div>
                         )
-                      ) : cadThumbnailLoading ? (
-                        <div className="flex-1 flex items-center justify-center">
-                          <Loader2 className="animate-spin text-plm-accent" size={32} />
-                        </div>
                       ) : cadThumbnail ? (
                         // Show extracted thumbnail with zoom controls
                         <div className="flex-1 flex flex-col min-h-0">
@@ -1155,6 +1077,8 @@ export function DetailsPanel() {
                               src={cadThumbnail}
                               alt={file.name}
                               className="object-contain transition-transform duration-150"
+                              decoding="async"
+                              onError={onCadPreviewError}
                               style={{
                                 width: cadZoom === 100 ? '100%' : 'auto',
                                 height: cadZoom === 100 ? '100%' : 'auto',

@@ -10,24 +10,23 @@
  * - Label dragging
  */
 import { useCallback, useRef, type RefObject } from 'react'
-import type {
-  WorkflowState,
-  WorkflowTransition,
-  Point,
-  ResizingState,
-  TransitionEndpointDrag,
-  EdgePosition,
-} from '../types'
+import type { WorkflowState } from '@/types/workflow'
+
+import type { Point, ResizingState, HistoryEntry } from '../types'
 import { getNearestPointOnBoxEdge, findInsertionIndex } from '../utils'
-import { transitionService } from '../services'
 import type { TransitionPathType } from '@/types/workflow'
+
+import type { ConnectionPointer } from './useConnectionGesture'
 
 /**
  * Minimal pointer shape accepted by the canvas handlers. Both React synthetic
  * events and native DOM PointerEvents satisfy this, so the same handlers work
  * whether invoked from JSX or from window-level pointer listeners.
  */
-export type CanvasPointerInput = Pick<React.MouseEvent, 'clientX' | 'clientY' | 'button'>
+export type CanvasPointerInput = Pick<
+  React.MouseEvent,
+  'clientX' | 'clientY' | 'button' | 'altKey'
+>
 
 interface UseCanvasHandlersParams {
   // Refs
@@ -37,13 +36,13 @@ interface UseCanvasHandlersParams {
   mousePosRef: RefObject<Point>
   hasDraggedRef: RefObject<boolean>
   dragStartPosRef: RefObject<Point | null>
+  dragOriginRef: RefObject<Point | null>
   waypointHasDraggedRef: RefObject<boolean>
 
   // Canvas state
   pan: Point
   zoom: number
   canvasMode: string
-  isCreatingTransition: boolean
 
   // Dragging state
   draggingStateId: string | null
@@ -51,9 +50,6 @@ interface UseCanvasHandlersParams {
 
   // Resizing state
   currentResizing: ResizingState | null
-
-  // Transition endpoint
-  draggingTransitionEndpoint: TransitionEndpointDrag | null
 
   // Waypoint state
   waypoints: Record<string, Point[]>
@@ -68,24 +64,21 @@ interface UseCanvasHandlersParams {
 
   // Data
   states: WorkflowState[]
-  transitions: WorkflowTransition[]
-  hoveredStateId: string | null
-  isDraggingToCreateTransition: boolean
 
   // Callbacks
   setPan: (pan: Point) => void
-  setMousePos: (pos: Point) => void
   setDraggingStateId: (id: string | null) => void
   setFloatingToolbar: (toolbar: null) => void
   setAlignmentGuides: (guides: { vertical: number | null; horizontal: number | null }) => void
   setStates: React.Dispatch<React.SetStateAction<WorkflowState[]>>
-  setTransitions: React.Dispatch<React.SetStateAction<WorkflowTransition[]>>
-  setHoveredStateId: (id: string | null) => void
   setTempCurvePos: (pos: Point | null) => void
   setTempLabelPos: (pos: Point | null) => void
   setWaypoints: React.Dispatch<React.SetStateAction<Record<string, Point[]>>>
   setPinnedLabelPositions: React.Dispatch<React.SetStateAction<Record<string, Point>>>
-  setDraggingTransitionEndpoint: (endpoint: TransitionEndpointDrag | null) => void
+
+  // Connection gestures (creating a transition, or moving one of its ends)
+  updateConnectionPointer: (pointer: ConnectionPointer) => boolean
+  finishConnectionPointer: (pointer: ConnectionPointer) => Promise<boolean>
 
   // Functions
   checkDragThreshold: (clientX: number, clientY: number) => boolean
@@ -102,16 +95,10 @@ interface UseCanvasHandlersParams {
   updateStatePosition: (stateId: string, x: number, y: number) => Promise<void>
   stopDragging: () => void
   stopResizing: () => void
-  updateEdgePosition: (
-    transitionId: string,
-    endpoint: 'start' | 'end',
-    position: EdgePosition,
-  ) => void
   stopWaypointDrag: () => void
   stopLabelDrag: () => void
-  cancelTransitionCreation: () => void
   clearSelection: () => void
-  addToast: (type: 'success' | 'error' | 'info' | 'warning', message: string) => void
+  pushToUndo: (entry: HistoryEntry) => void
 }
 
 export function useCanvasHandlers(params: UseCanvasHandlersParams) {
@@ -122,15 +109,14 @@ export function useCanvasHandlers(params: UseCanvasHandlersParams) {
     mousePosRef,
     hasDraggedRef,
     dragStartPosRef,
+    dragOriginRef,
     waypointHasDraggedRef,
     pan,
     zoom,
     canvasMode,
-    isCreatingTransition,
     draggingStateId,
     dragOffset,
     currentResizing,
-    draggingTransitionEndpoint,
     waypoints,
     draggingCurveControl,
     draggingWaypointIndex,
@@ -139,22 +125,17 @@ export function useCanvasHandlers(params: UseCanvasHandlersParams) {
     draggingLabel,
     tempLabelPos,
     states,
-    transitions,
-    hoveredStateId,
-    isDraggingToCreateTransition,
     setPan,
-    setMousePos,
     setDraggingStateId,
     setFloatingToolbar,
     setAlignmentGuides,
     setStates,
-    setTransitions,
-    setHoveredStateId,
     setTempCurvePos,
     setTempLabelPos,
     setWaypoints,
     setPinnedLabelPositions,
-    setDraggingTransitionEndpoint,
+    updateConnectionPointer,
+    finishConnectionPointer,
     checkDragThreshold,
     markHasDragged,
     applySnapping,
@@ -165,12 +146,10 @@ export function useCanvasHandlers(params: UseCanvasHandlersParams) {
     updateStatePosition,
     stopDragging,
     stopResizing,
-    updateEdgePosition,
     stopWaypointDrag,
     stopLabelDrag,
-    cancelTransitionCreation,
     clearSelection,
-    addToast,
+    pushToUndo,
   } = params
 
   // Latest pan computed during an imperative (non-React) pan gesture; committed
@@ -203,12 +182,10 @@ export function useCanvasHandlers(params: UseCanvasHandlersParams) {
       const canvasX = (e.clientX - rect.left - pan.x) / zoom
       const canvasY = (e.clientY - rect.top - pan.y) / zoom
 
-      // Track the live pointer position in canvas space. Update the rubber-band
-      // preview (CreatingTransition / endpoint drag) so it follows the cursor.
       mousePosRef.current = { x: canvasX, y: canvasY }
-      if (isCreatingTransition || draggingTransitionEndpoint) {
-        setMousePos({ x: canvasX, y: canvasY })
-      }
+
+      // A connection being drawn or re-anchored owns the pointer outright.
+      if (updateConnectionPointer(toConnectionPointer(e, { x: canvasX, y: canvasY }))) return
 
       // Handle panning - apply the transform imperatively to the SVG group so a
       // pan gesture causes zero React re-renders; commit to state on pointer up.
@@ -282,29 +259,6 @@ export function useCanvasHandlers(params: UseCanvasHandlersParams) {
         return
       }
 
-      // Handle transition endpoint dragging
-      if (draggingTransitionEndpoint) {
-        for (const state of states) {
-          const dims = getDimensions(state.id)
-          const hw = dims.width / 2
-          const hh = dims.height / 2
-
-          if (
-            canvasX >= state.position_x - hw &&
-            canvasX <= state.position_x + hw &&
-            canvasY >= state.position_y - hh &&
-            canvasY <= state.position_y + hh
-          ) {
-            if (state.id !== draggingTransitionEndpoint.originalStateId) {
-              setHoveredStateId(state.id)
-              return
-            }
-          }
-        }
-        setHoveredStateId(null)
-        return
-      }
-
       // Handle waypoint dragging
       if (draggingCurveControl && draggingWaypointIndex !== null) {
         waypointHasDraggedRef.current = true
@@ -335,8 +289,7 @@ export function useCanvasHandlers(params: UseCanvasHandlersParams) {
       groupRef,
       viewportRef,
       mousePosRef,
-      isCreatingTransition,
-      setMousePos,
+      updateConnectionPointer,
       pan,
       zoom,
       draggingStateId,
@@ -354,8 +307,6 @@ export function useCanvasHandlers(params: UseCanvasHandlersParams) {
       states,
       getDimensions,
       updateDimensions,
-      draggingTransitionEndpoint,
-      setHoveredStateId,
       draggingCurveControl,
       draggingWaypointIndex,
       draggingWaypointAxis,
@@ -373,6 +324,17 @@ export function useCanvasHandlers(params: UseCanvasHandlersParams) {
       // Clear alignment guides
       clearAlignmentGuides()
 
+      // Committing a connection is decided purely by where the pointer is, so it
+      // needs nothing from the DOM beyond the release coordinates.
+      const rect = canvasRef.current?.getBoundingClientRect()
+      if (rect) {
+        const cursor = {
+          x: (e.clientX - rect.left - pan.x) / zoom,
+          y: (e.clientY - rect.top - pan.y) / zoom,
+        }
+        if (await finishConnectionPointer(toConnectionPointer(e, cursor))) return
+      }
+
       // Handle panning end - commit the imperatively-applied pan to React state
       if (draggingStateId === '_panning_') {
         if (pendingPanRef.current) {
@@ -387,102 +349,22 @@ export function useCanvasHandlers(params: UseCanvasHandlersParams) {
       // Handle state drag end
       if (draggingStateId) {
         const state = states.find((s) => s.id === draggingStateId)
+        const origin = dragOriginRef.current
         if (state && hasDraggedRef.current) {
-          // Save position to database
-          await updateStatePosition(draggingStateId, state.position_x, state.position_y)
+          const to = { x: state.position_x, y: state.position_y }
+          await updateStatePosition(draggingStateId, to.x, to.y)
+          // One entry per gesture, not per mouse-move, and only if it actually moved.
+          if (origin && (origin.x !== to.x || origin.y !== to.y)) {
+            pushToUndo({ type: 'state_move', stateId: draggingStateId, from: origin, to })
+          }
         }
         stopDragging()
-
-        // If we didn't drag, it was a click - deselect
-        if (!hasDraggedRef.current) {
-          // Handled by click handler
-        }
         return
       }
 
       // Handle resize end
       if (currentResizing) {
         stopResizing()
-        return
-      }
-
-      // Handle transition endpoint drag end
-      if (draggingTransitionEndpoint) {
-        const transition = transitions.find((t) => t.id === draggingTransitionEndpoint.transitionId)
-        if (!transition) {
-          setDraggingTransitionEndpoint(null)
-          setHoveredStateId(null)
-          return
-        }
-
-        // If hovering over a valid state, reconnect the transition
-        if (hoveredStateId && hoveredStateId !== draggingTransitionEndpoint.originalStateId) {
-          const endpoint = draggingTransitionEndpoint.endpoint === 'start' ? 'start' : 'end'
-          const { error } = await transitionService.reconnect(
-            transition.id,
-            endpoint,
-            hoveredStateId,
-          )
-
-          if (error) {
-            addToast('error', 'Failed to reconnect transition')
-          } else {
-            const updates =
-              draggingTransitionEndpoint.endpoint === 'start'
-                ? { from_state_id: hoveredStateId }
-                : { to_state_id: hoveredStateId }
-            setTransitions((prev) =>
-              prev.map((t) => (t.id === transition.id ? { ...t, ...updates } : t)),
-            )
-            addToast('success', 'Transition reconnected')
-          }
-        } else {
-          // Dropped on same state or empty space - store edge position
-          const rect = canvasRef.current?.getBoundingClientRect()
-          if (rect) {
-            const canvasX = (e.clientX - rect.left - pan.x) / zoom
-            const canvasY = (e.clientY - rect.top - pan.y) / zoom
-
-            const targetStateId = draggingTransitionEndpoint.originalStateId
-            const targetState = states.find((s) => s.id === targetStateId)
-            if (targetState) {
-              const dims = getDimensions(targetStateId)
-              const nearestPoint = getNearestPointOnBoxEdge(
-                targetState.position_x,
-                targetState.position_y,
-                canvasX,
-                canvasY,
-                dims.width,
-                dims.height,
-              )
-
-              // Calculate fraction along edge
-              let fraction = 0.5
-              const hw = dims.width / 2
-              const hh = dims.height / 2
-
-              switch (nearestPoint.edge) {
-                case 'left':
-                case 'right':
-                  fraction = (canvasY - (targetState.position_y - hh)) / dims.height
-                  break
-                case 'top':
-                case 'bottom':
-                  fraction = (canvasX - (targetState.position_x - hw)) / dims.width
-                  break
-              }
-              fraction = Math.max(0, Math.min(1, fraction))
-
-              updateEdgePosition(transition.id, draggingTransitionEndpoint.endpoint, {
-                edge: nearestPoint.edge,
-                fraction,
-              })
-            }
-          }
-        }
-
-        setDraggingTransitionEndpoint(null)
-        setHoveredStateId(null)
         return
       }
 
@@ -514,12 +396,6 @@ export function useCanvasHandlers(params: UseCanvasHandlersParams) {
         return
       }
 
-      // Handle creating transition (mouse up on canvas = cancel)
-      if (isDraggingToCreateTransition && !hoveredStateId) {
-        cancelTransitionCreation()
-        return
-      }
-
       // If clicking on empty canvas, deselect
       if (!hasDraggedRef.current && canvasMode === 'select') {
         clearSelection()
@@ -528,27 +404,21 @@ export function useCanvasHandlers(params: UseCanvasHandlersParams) {
     },
     [
       clearAlignmentGuides,
-      draggingStateId,
-      setDraggingStateId,
-      dragStartPosRef,
-      states,
-      hasDraggedRef,
-      updateStatePosition,
-      stopDragging,
-      currentResizing,
-      stopResizing,
-      draggingTransitionEndpoint,
-      transitions,
-      hoveredStateId,
-      setDraggingTransitionEndpoint,
-      setHoveredStateId,
-      setTransitions,
-      addToast,
       canvasRef,
       pan,
       zoom,
-      getDimensions,
-      updateEdgePosition,
+      finishConnectionPointer,
+      draggingStateId,
+      setDraggingStateId,
+      dragStartPosRef,
+      dragOriginRef,
+      states,
+      hasDraggedRef,
+      updateStatePosition,
+      pushToUndo,
+      stopDragging,
+      currentResizing,
+      stopResizing,
       draggingCurveControl,
       draggingWaypointIndex,
       tempCurvePos,
@@ -559,8 +429,6 @@ export function useCanvasHandlers(params: UseCanvasHandlersParams) {
       tempLabelPos,
       setPinnedLabelPositions,
       stopLabelDrag,
-      isDraggingToCreateTransition,
-      cancelTransitionCreation,
       canvasMode,
       clearSelection,
       setFloatingToolbar,
@@ -572,6 +440,10 @@ export function useCanvasHandlers(params: UseCanvasHandlersParams) {
     handleCanvasMouseMove,
     handleCanvasMouseUp,
   }
+}
+
+function toConnectionPointer(e: CanvasPointerInput, cursor: Point): ConnectionPointer {
+  return { cursor, clientX: e.clientX, clientY: e.clientY, altKey: e.altKey }
 }
 
 /**

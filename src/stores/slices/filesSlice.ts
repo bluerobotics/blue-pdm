@@ -25,7 +25,6 @@ import { recordMetric } from '@/lib/performanceMetrics'
 import { log } from '@/lib/logger'
 import { dropCommittedPendingMetadata } from '@/lib/pendingMetadata'
 import { logExplorer } from '@/lib/userActionLogger'
-import { thumbnailCache } from '@/lib/thumbnailCache'
 import { bumpFileMutationEpoch } from '@/lib/fileMutationEpoch'
 import { applyFileUpdates } from '../fileUpdates'
 
@@ -485,10 +484,6 @@ export const createFilesSlice: StateCreator<
       samplePaths: paths.slice(0, 3),
       beforeCount,
     })
-    // Invalidate thumbnail cache for removed files
-    for (const p of paths) {
-      thumbnailCache.invalidate(p)
-    }
     set((state) => {
       // Resolve LocalFile entries about to be removed so we can mirror the
       // removal onto state.serverFiles by relative path (forward-slash keyed).
@@ -895,11 +890,6 @@ export const createFilesSlice: StateCreator<
         newRelPath: newRelPathForItem,
         timestamp: Date.now(),
       })
-      // Invalidate thumbnail cache for all files in the folder
-      thumbnailCache.invalidateFolder(oldPath)
-    } else {
-      // Invalidate thumbnail cache for the renamed file
-      thumbnailCache.invalidate(oldPath)
     }
 
     // Determine path separator for nested file updates

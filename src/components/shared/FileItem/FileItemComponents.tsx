@@ -6,7 +6,7 @@
  * and then reflected here.
  */
 
-import { useState, useEffect, memo } from 'react'
+import { useMemo, memo } from 'react'
 import {
   FolderOpen,
   File,
@@ -24,7 +24,8 @@ import {
 } from 'lucide-react'
 import { LocalFile } from '@/stores/pdmStore'
 import { getFileIconType, getInitials, getAvatarColor } from '@/lib/utils'
-import { thumbnailCache } from '@/lib/thumbnailCache'
+import { buildThumbnailUrl } from '@/lib/thumbnailUrl'
+import { useRetryableImage } from '@/hooks/useRetryableImage'
 
 // ============================================================================
 // FILE ICON - Loads OS thumbnail with fallback to type-based icons
@@ -42,46 +43,28 @@ export interface FileIconProps {
  * - Loads SolidWorks thumbnails for supported files
  * - Falls back to extension-based icons
  * - Matches FileTree styling exactly
+ *
+ * Thumbnails render at every row size. There is deliberately no size gate here:
+ * this component backs the virtualized list and tree, where the browser fetches
+ * lazily for visible rows only and each file version is fetched at most once,
+ * so a small row costs nothing to show a preview in. The extension check inside
+ * buildThumbnailUrl is what keeps non-CAD files from ever making a request.
  */
 export const FileIcon = memo(function FileIcon({ file, size = 16, className = '' }: FileIconProps) {
-  const [icon, setIcon] = useState<string | null>(null)
+  const thumbnailUrl = useMemo(() => buildThumbnailUrl(file, 'grid'), [file])
 
-  useEffect(() => {
-    if (file.isDirectory || !file.path) {
-      setIcon(null)
-      return
-    }
+  const { src, onError } = useRetryableImage(thumbnailUrl)
 
-    let cancelled = false
-
-    const loadIcon = async () => {
-      try {
-        // Use global thumbnail cache to avoid repeated IPC calls
-        const data = await thumbnailCache.get(file.path)
-        if (!cancelled && data) {
-          setIcon(data)
-        }
-      } catch {
-        // Silently fail - will show default icon
-      }
-    }
-
-    loadIcon()
-
-    return () => {
-      cancelled = true
-    }
-  }, [file.path, file.isDirectory])
-
-  // Show OS icon if available
-  if (icon) {
+  if (src) {
     return (
       <img
-        src={icon}
+        src={src}
         alt=""
         className={`flex-shrink-0 ${className}`}
         style={{ width: size, height: size }}
-        onError={() => setIcon(null)}
+        loading="lazy"
+        decoding="async"
+        onError={onError}
       />
     )
   }

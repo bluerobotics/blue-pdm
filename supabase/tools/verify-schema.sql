@@ -17,7 +17,7 @@ DECLARE
     'file_share_links', 'file_comments', 'workflow_templates', 'workflow_states',
     'workflow_transitions', 'workflow_gates', 'workflow_gate_reviewers',
     'file_workflow_assignments', 'pending_reviews', 'workflow_review_history',
-    'revision_schemes', 'workflow_state_permissions', 'workflow_roles',
+    'workflow_history', 'file_state_entries', 'workflow_roles',
     'user_workflow_roles', 'backup_config', 'backup_history', 'backup_machines',
     'backup_locks', 'user_sessions', 'file_metadata_columns',
     -- Change control
@@ -63,7 +63,9 @@ DECLARE
     'handle_new_user', 'handle_new_organization', 'log_file_activity',
     'create_default_workflow', 'get_available_transitions', 'is_org_admin',
     'user_has_permission', 'get_best_price', 'calculate_bom_cost',
-    'generate_rfq_number', 'instantiate_process_template', 'approve_eco_gate'
+    'generate_rfq_number', 'instantiate_process_template', 'approve_eco_gate',
+    'execute_workflow_transition', 'complete_gate_review', 'get_my_pending_reviews',
+    'import_workflow_graph'
   ];
   missing_funcs TEXT[] := '{}';
   f TEXT;

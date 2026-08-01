@@ -8,6 +8,7 @@ import { useState } from 'react'
 import { RefreshCw, Loader2 } from 'lucide-react'
 import type { RefreshableActionProps } from './types'
 import { useSolidWorksStatus } from '@/hooks/useSolidWorksStatus'
+import { isSolidWorksUsable } from '@/types/solidworks'
 import { usePDMStore } from '@/stores/pdmStore'
 import { executeCommand } from '@/lib/commands'
 
@@ -18,9 +19,9 @@ export function MetadataActions({
   onClose,
   onRefresh,
 }: RefreshableActionProps) {
-  const { status } = useSolidWorksStatus()
+  const { status, hasChecked: swStatusChecked } = useSolidWorksStatus()
   const { user } = usePDMStore()
-  const swServiceRunning = status.running && status.dmApiAvailable
+  const swServiceRunning = isSolidWorksUsable(status)
   const [isSyncing, setIsSyncing] = useState(false)
 
   const ext = firstFile.extension?.toLowerCase() || ''
@@ -69,7 +70,7 @@ export function MetadataActions({
   // Determine tooltip based on state
   let tooltip = 'Sync metadata between BluePLM and SolidWorks file'
   if (!swServiceRunning) {
-    tooltip = 'SolidWorks service not running'
+    tooltip = swStatusChecked ? 'SolidWorks service not running' : 'Checking SolidWorks service...'
   } else if (!hasCheckedOutFiles) {
     tooltip = 'Check out files first to sync metadata'
   }

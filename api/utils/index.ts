@@ -30,3 +30,7 @@ export {
 
 // Webhooks
 export { webhooks, triggerWebhooks } from './webhooks.js'
+
+// Workflow engine
+export { changeFileStateViaWorkflow, stateChangeErrorResponse } from './workflow.js'
+export type { LegacyFileState, StateChangeResult } from './workflow.js'

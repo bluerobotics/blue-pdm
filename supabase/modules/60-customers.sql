@@ -4,7 +4,9 @@
 --
 -- This module contains:
 --   - customer_categories (seeded taxonomy, shared source of truth for API + UI)
---   - customer_accounts (the unit AI enrichment attaches to)
+--   - customer_accounts (the unit AI enrichment attaches to, and the home of
+--     the human-owned sales channel)
+--   - known_partners (named distributors and integrators, seeded onto accounts)
 --   - customers (mirror of Odoo res.partner)
 --   - customer_addresses (shipping addresses resolved from Odoo partner_shipping_id)
 --   - customer_orders / customer_order_lines (mirror of Odoo sale.order[.line])
@@ -92,6 +94,24 @@ CREATE INDEX IF NOT EXISTS idx_customer_categories_sort ON customer_categories(o
 -- domain. Several Odoo partners - a company plus its contacts, or repeat
 -- orders under slightly different names - collapse onto one account so the
 -- expensive research is only paid for once.
+--
+-- CHANNEL vs KIND vs CATEGORY - three different questions, deliberately kept
+-- on three different mechanisms:
+--
+--   kind      is this account a company or a private person?  (derived by the
+--             sync from the Odoo record)
+--   channel   how does this account buy from us?              (human-owned)
+--   category  what industry is this account in?               (AI enrichment)
+--
+-- channel is a closed set of a few dozen named partners that a person can
+-- verify by hand, not something to pay a model to guess at. It therefore lives
+-- as a plain column here rather than as a customer_enrichments row: enrichment
+-- is versioned, costs money to produce and is rewritten by a re-run, none of
+-- which is true of "this company is one of our distributors".
+--
+-- Nothing automated may overwrite a human's answer. The Odoo sync upserts this
+-- table with ON CONFLICT DO NOTHING so it cannot touch the column at all, and
+-- the distributor seed below only ever writes rows no person has edited.
 
 CREATE TABLE IF NOT EXISTS customer_accounts (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -103,6 +123,18 @@ CREATE TABLE IF NOT EXISTS customer_accounts (
   kind TEXT CHECK (kind IN ('company', 'individual')),
   primary_country TEXT,
 
+  -- Sales channel. 'direct' covers everyone who buys for their own use,
+  -- company or private person alike - it is the default because the overwhelming
+  -- majority of accounts are exactly that.
+  channel TEXT NOT NULL DEFAULT 'direct'
+    CHECK (channel IN ('direct', 'distributor', 'integrator')),
+  channel_set_at TIMESTAMPTZ,
+  channel_set_by UUID REFERENCES users(id),
+  -- Who last decided. 'seed' means the published partner list did, and the seed
+  -- may revise its own answer; 'manual' means a person did, and nothing
+  -- automated may touch it again. NULL means nothing has ever decided.
+  channel_source TEXT CHECK (channel_source IN ('seed', 'manual')),
+
   created_at TIMESTAMPTZ DEFAULT NOW(),
   created_by UUID REFERENCES users(id),
   updated_at TIMESTAMPTZ DEFAULT NOW(),
@@ -111,8 +143,43 @@ CREATE TABLE IF NOT EXISTS customer_accounts (
   UNIQUE(org_id, account_key)
 );
 
+-- Added after the table shipped, so existing installs need the explicit ALTERs.
+DO $$ BEGIN
+  ALTER TABLE customer_accounts ADD COLUMN channel TEXT NOT NULL DEFAULT 'direct'
+    CHECK (channel IN ('direct', 'distributor', 'integrator'));
+EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+
+DO $$ BEGIN
+  ALTER TABLE customer_accounts ADD COLUMN channel_set_at TIMESTAMPTZ;
+EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+
+DO $$ BEGIN
+  ALTER TABLE customer_accounts ADD COLUMN channel_set_by UUID REFERENCES users(id);
+EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+
+DO $$ BEGIN
+  ALTER TABLE customer_accounts ADD COLUMN channel_source TEXT
+    CHECK (channel_source IN ('seed', 'manual'));
+EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+
+-- Databases that ran the first cut of this module have seeded rows with no
+-- channel_source, which would look like a human ruling and freeze them. Anything
+-- already off 'direct' at this point can only have come from the seed, because
+-- that version shipped without a way for anyone to change it by hand.
+UPDATE customer_accounts
+SET channel_source = 'seed'
+WHERE channel_source IS NULL
+  AND channel <> 'direct';
+
 CREATE INDEX IF NOT EXISTS idx_customer_accounts_org_id ON customer_accounts(org_id);
 CREATE INDEX IF NOT EXISTS idx_customer_accounts_account_key ON customer_accounts(org_id, account_key);
+
+-- Partial: 'direct' is the default and will always be the overwhelming
+-- majority, so indexing it would be a scan of nearly the whole table. The
+-- partner tabs only ever ask for the other two.
+CREATE INDEX IF NOT EXISTS idx_customer_accounts_channel
+  ON customer_accounts(org_id, channel)
+  WHERE channel <> 'direct';
 
 -- ===========================================
 -- CUSTOMERS (mirror of Odoo res.partner)
@@ -220,7 +287,12 @@ CREATE TABLE IF NOT EXISTS customer_orders (
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
 
   erp_id TEXT,
+  -- The company the order is credited to, resolved from Odoo's
+  -- commercial_partner_id rather than the contact named on the order.
   customer_id UUID NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+  -- The contact who placed it, when that is a different partner. NULL when the
+  -- customer ordered under its own record.
+  contact_id UUID REFERENCES customers(id) ON DELETE SET NULL,
   shipping_address_id UUID REFERENCES customer_addresses(id) ON DELETE SET NULL,
 
   order_date TIMESTAMPTZ,
@@ -247,12 +319,18 @@ CREATE TABLE IF NOT EXISTS customer_orders (
   UNIQUE(org_id, erp_id)
 );
 
+-- Added after the table shipped, so existing installs need the explicit ALTER.
+DO $$ BEGIN
+  ALTER TABLE customer_orders ADD COLUMN contact_id UUID REFERENCES customers(id) ON DELETE SET NULL;
+EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+
 CREATE INDEX IF NOT EXISTS idx_customer_orders_org_id ON customer_orders(org_id);
 CREATE INDEX IF NOT EXISTS idx_customer_orders_erp_id ON customer_orders(org_id, erp_id) WHERE erp_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_customer_orders_customer_id ON customer_orders(customer_id);
 CREATE INDEX IF NOT EXISTS idx_customer_orders_order_date ON customer_orders(org_id, order_date DESC);
 CREATE INDEX IF NOT EXISTS idx_customer_orders_status ON customer_orders(org_id, status);
 CREATE INDEX IF NOT EXISTS idx_customer_orders_shipping_address_id ON customer_orders(shipping_address_id) WHERE shipping_address_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_customer_orders_contact_id ON customer_orders(contact_id) WHERE contact_id IS NOT NULL;
 
 -- ===========================================
 -- CUSTOMER ORDER LINES (mirror of Odoo sale.order.line)
@@ -475,6 +553,13 @@ CREATE TRIGGER customer_enrichment_run_items_updated
 -- constraint and the parent partial index above. DO NOTHING (rather than DO
 -- UPDATE) means an org that has hand-edited a label keeps it; changing a
 -- shipped display_name therefore requires an explicit UPDATE migration.
+--
+-- This taxonomy answers "what industry is this account in". It deliberately no
+-- longer contains a reseller/distributor branch: whether an account is a
+-- distributor is a known fact about a few dozen named partners, not something
+-- to infer, and it now lives on customer_accounts.channel. Leaving it in both
+-- places would let a model's guess disagree with a person's answer, with
+-- nothing to say which of the two the dashboard should believe.
 
 CREATE OR REPLACE FUNCTION seed_customer_categories(p_org_id UUID)
 RETURNS VOID AS $$
@@ -544,14 +629,7 @@ BEGIN
     (p_org_id, 'hobbyist_individual', 'maker_diy', 'Maker / DIY', 'Makers, tinkerers and DIY builders', 930),
     (p_org_id, 'hobbyist_individual', 'student', 'Student', 'Individual students and student projects', 940),
 
-    -- 10. Reseller and distributor
-    (p_org_id, 'reseller_distributor', NULL, 'Reseller & Distributor', 'Channel partners reselling or integrating the product', 1000),
-    (p_org_id, 'reseller_distributor', 'distributor', 'Distributor', 'Regional or national distributors holding stock', 1010),
-    (p_org_id, 'reseller_distributor', 'dealer', 'Dealer', 'Dealers selling to end users', 1020),
-    (p_org_id, 'reseller_distributor', 'integrator', 'Integrator', 'System integrators bundling the product into larger solutions', 1030),
-    (p_org_id, 'reseller_distributor', 'oem', 'OEM', 'OEMs embedding the product into their own equipment', 1040),
-
-    -- 11. Other / unknown
+    -- 10. Other / unknown
     (p_org_id, 'other_unknown', NULL, 'Other / Unknown', 'Accounts that do not fit the taxonomy or lack evidence', 1100),
     (p_org_id, 'other_unknown', 'other', 'Other', 'Identified but outside the defined categories', 1110),
     (p_org_id, 'other_unknown', 'insufficient_evidence', 'Insufficient Evidence', 'Research found no reliable evidence to classify the account', 1120)
@@ -571,6 +649,14 @@ BEGIN
   END LOOP;
 END $$;
 
+-- Retire the reseller/distributor branch from orgs seeded before channel
+-- existed. Only the taxonomy rows go: any customer_enrichments row that was
+-- classified into this branch is left exactly as it is, because enrichment is
+-- paid-for research and this file does not delete it. Such a row simply reads
+-- as an out-of-taxonomy label until it is re-run, which is the same handling
+-- any unrecognised model output already gets.
+DELETE FROM customer_categories WHERE category = 'reseller_distributor';
+
 -- Seed organizations created from now on
 CREATE OR REPLACE FUNCTION seed_customer_categories_for_new_org()
 RETURNS TRIGGER AS $$
@@ -588,6 +674,304 @@ DROP TRIGGER IF EXISTS seed_customer_categories_on_org_create ON organizations;
 CREATE TRIGGER seed_customer_categories_on_org_create
   AFTER INSERT ON organizations
   FOR EACH ROW EXECUTE FUNCTION seed_customer_categories_for_new_org();
+
+-- ===========================================
+-- SALES CHANNEL: THE KNOWN PARTNER LIST
+-- ===========================================
+-- Every partner we can name, and which channel they belong to. Two sources:
+-- the authorized distributors published at https://bluerobotics.com/distributors/,
+-- and integrators identified by sales from what they buy and build. Both are
+-- finite, hand-verifiable lists, which is exactly why channel is seeded from
+-- them rather than inferred - there is no reason to pay a model to guess at a
+-- fact we already know.
+--
+-- One list rather than one per channel, because the interesting operation is
+-- moving a partner between channels: JM Robotics is published as a distributor
+-- but is really an integrator, and with a channel column that correction is a
+-- one-word edit that then propagates to the data on the next run.
+--
+-- MATCHING. Each entry carries the account_key(s) an Odoo partner would land on,
+-- precomputed to match deriveAccount() in api/src/customers/grouping.ts:
+--
+--   company:<normalized name>   normalizeCompanyName(): lowercased, accents
+--                               folded, '&' expanded to 'and', punctuation
+--                               dropped, single-letter slash forms joined
+--                               ("A/S" -> "as"), then trailing legal-form
+--                               suffixes stripped ("Aquabots Pte Ltd" ->
+--                               "aquabots", "SubC Partner A/S" -> "subc partner")
+--   company:<domain>            the fallback key for a partner that has no
+--                               company name but does have a work email
+--   individual:<email>          for a partner whose only contact is a personal
+--                               mailbox: deriveAccount refuses to key a company
+--                               on gmail.com, so the domain form never appears
+--
+-- Which one an account actually got depends on how the partner happened to be
+-- entered in Odoo, so all plausible forms are listed. Keys are also matched
+-- against the 'key#site-suffix' form that disambiguateByAddress() can produce.
+--
+-- MAINTENANCE. Editing this list is the whole update procedure: re-running this
+-- file re-seeds existing accounts, and the insert trigger below catches partners
+-- that first appear in a later sync.
+
+DROP FUNCTION IF EXISTS known_distributors();
+
+CREATE OR REPLACE FUNCTION known_partners()
+RETURNS TABLE (name TEXT, channel TEXT, country TEXT, website TEXT, account_keys TEXT[]) AS $$
+  SELECT * FROM (VALUES
+    -- Published distributors
+    ('Adentu SUB'::TEXT, 'distributor'::TEXT, 'Chile'::TEXT, 'adentusub.com'::TEXT, ARRAY['company:adentu sub', 'company:adentusub.com']::TEXT[]),
+    ('AQUA Exploración', 'distributor', 'Mexico', 'aquaexploracion.com', ARRAY['company:aqua exploracion', 'company:aquaexploracion.com']),
+    ('Aquabots Pte Ltd', 'distributor', 'Singapore', 'aqua-bots.com', ARRAY['company:aquabots', 'company:aqua-bots.com']),
+    ('Astral-Subsea', 'distributor', 'Israel', 'astralsubsea.com', ARRAY['company:astral subsea', 'company:astralsubsea.com']),
+    ('Banergy', 'distributor', 'India', 'banergy.com', ARRAY['company:banergy', 'company:banergy.com']),
+    ('Battery Bill''s LLC', 'distributor', 'United States', 'batterybill.com', ARRAY['company:battery bills', 'company:batterybill.com']),
+    ('Bay Dynamics NZ', 'distributor', 'New Zealand', 'baydynamics.co.nz', ARRAY['company:bay dynamics nz', 'company:baydynamics.co.nz']),
+    ('BlueLink, LLC', 'distributor', 'United States', 'blue-linked.com', ARRAY['company:bluelink', 'company:blue-linked.com']),
+    ('BRS Robótica Submarina', 'distributor', 'Brazil', 'brsrobotica.com', ARRAY['company:brs robotica submarina', 'company:brsrobotica.com']),
+    ('Buccaneer Ltd', 'distributor', 'United Kingdom', 'buccaneermarine.com', ARRAY['company:buccaneer', 'company:buccaneermarine.com']),
+    ('Carcinus Ltd', 'distributor', 'United Kingdom', 'carcinus.co.uk', ARRAY['company:carcinus', 'company:carcinus.co.uk']),
+    ('Casco Antiguo Portugal - Iberagar S.A.', 'distributor', 'Portugal', 'cascoantiguopro.com', ARRAY['company:casco antiguo portugal iberagar', 'company:cascoantiguopro.com']),
+    ('Deep Supplies Pty Ltd', 'distributor', 'Australia', 'deep.supplies', ARRAY['company:deep supplies', 'company:deep.supplies']),
+    ('DeepCo', 'distributor', 'Colombia', 'deepco.com.co', ARRAY['company:deepco', 'company:deepco.com.co']),
+    ('Delta ROV Inc', 'distributor', 'Philippines', 'deltarov.com', ARRAY['company:delta rov', 'company:deltarov.com']),
+    ('EAS Marine', 'distributor', 'Canada', 'easmarine.ca', ARRAY['company:eas marine', 'company:easmarine.ca']),
+    ('Eco Robotics Ltd', 'distributor', 'Republic of Korea', 'eco-robotics.co.kr', ARRAY['company:eco robotics', 'company:eco-robotics.co.kr']),
+    ('FINDi Co., Ltd.', 'distributor', 'Japan', 'findi.co.jp', ARRAY['company:findi', 'company:findi.co.jp']),
+    ('Fluton Inc.', 'distributor', 'Republic of Korea', 'fluton.co.kr', ARRAY['company:fluton', 'company:fluton.co.kr']),
+    ('Full Tech', 'distributor', 'Brazil', 'fulltechdive.com.br', ARRAY['company:full tech', 'company:fulltechdive.com.br']),
+    ('Future Oceans International Co., Ltd', 'distributor', 'Taiwan', 'foi.com.tw', ARRAY['company:future oceans international', 'company:foi.com.tw']),
+    ('iGage Avmar', 'distributor', 'United States', 'igageavmar.com', ARRAY['company:igage avmar', 'company:igageavmar.com']),
+    ('Intelligent Machines', 'distributor', 'Greece', 'imachines.gr', ARRAY['company:intelligent machines', 'company:imachines.gr']),
+    ('INVOCEAN', 'distributor', 'United Arab Emirates', 'invoceangroup.com', ARRAY['company:invocean', 'company:invoceangroup.com']),
+    ('İSAT Underwater Technologies', 'distributor', 'Turkey', 'isat.com.tr', ARRAY['company:isat underwater technologies', 'company:isat.com.tr']),
+    -- Published as a distributor, but builds ROVs rather than reselling ours.
+    ('JM Robotics', 'integrator', 'Norway', 'jmrobotics.no', ARRAY['company:jm robotics', 'company:jmrobotics.no']),
+    ('MadaROV', 'distributor', 'Madagascar', 'madarov.mg', ARRAY['company:madarov', 'company:madarov.mg']),
+    ('Marine Thinking Inc.', 'distributor', 'Canada', 'marinethinking.com', ARRAY['company:marine thinking', 'company:marinethinking.com']),
+    ('Marine Vanguards', 'distributor', 'Saudi Arabia', 'marinevs.com', ARRAY['company:marine vanguards', 'company:marinevs.com']),
+    ('MARKO Ltd', 'distributor', 'Ukraine', 'markogroup.com', ARRAY['company:marko', 'company:markogroup.com']),
+    ('MES Services Ltd.', 'distributor', 'Viet Nam', 'mesvn.vn', ARRAY['company:mes services', 'company:mesvn.vn']),
+    ('NE Ocean Systems', 'distributor', 'United States', 'northeastoceansystems.com', ARRAY['company:ne ocean systems', 'company:northeastoceansystems.com']),
+    ('Ocean Robotix Pvt. Ltd', 'distributor', 'India', 'oceanrobotix.com', ARRAY['company:ocean robotix pvt', 'company:oceanrobotix.com']),
+    ('Oceanautics Pvt. Ltd.', 'distributor', 'India', 'oceanautics.net', ARRAY['company:oceanautics pvt', 'company:oceanautics.net']),
+    ('Oceanographic Research & Engineering', 'distributor', 'Japan', 'oceanaut.org', ARRAY['company:oceanographic research and engineering', 'company:oceanaut.org']),
+    ('Oceasian Technology Co., Ltd', 'distributor', 'China', 'oceasian.com', ARRAY['company:oceasian technology', 'company:oceasian.com']),
+    ('PANCORA Underwater Robotics', 'distributor', 'Argentina', 'pancora.com.ar', ARRAY['company:pancora underwater robotics', 'company:pancora.com.ar']),
+    ('QSTAR ROV Training & Subsea Solutions', 'distributor', 'Spain', 'qstar.eu', ARRAY['company:qstar rov training and subsea solutions', 'company:qstar.eu']),
+    ('RobotShop', 'distributor', 'Canada', 'robotshop.com', ARRAY['company:robotshop', 'company:robotshop.com']),
+    ('ROV Africa', 'distributor', 'South Africa', 'rovafrica.com', ARRAY['company:rov africa', 'company:rovafrica.com']),
+    ('ROV Expert (MDC)', 'distributor', 'France', 'rov-expert.fr', ARRAY['company:rov expert mdc', 'company:rov-expert.fr']),
+    ('ROV FUN', 'distributor', 'Japan', 'chick-fun.jp', ARRAY['company:rov fun', 'company:chick-fun.jp']),
+    ('ROV Service Chile', 'distributor', 'Chile', 'rovservice.cl', ARRAY['company:rov service chile', 'company:rovservice.cl']),
+    ('ROVOSTECH', 'distributor', 'Republic of Korea', 'rovostech.com', ARRAY['company:rovostech', 'company:rovostech.com']),
+    ('SARL Neptune Store', 'distributor', 'Algeria', 'neptunestore.net', ARRAY['company:sarl neptune store', 'company:neptunestore.net']),
+    ('Sarsub Ltd', 'distributor', 'United Kingdom', 'sarsub.co.uk', ARRAY['company:sarsub', 'company:sarsub.co.uk']),
+    ('Searobotix (Hangzhou AOHI Marine Engineering)', 'distributor', 'China', 'searobotix.com', ARRAY['company:searobotix hangzhou aohi marine engineering', 'company:searobotix', 'company:searobotix.com']),
+    ('Seascape Subsea BV', 'distributor', 'Netherlands', 'seascapesubsea.com', ARRAY['company:seascape subsea', 'company:seascapesubsea.com']),
+    ('SeaView Systems Inc.', 'distributor', 'United States', 'seaviewsystems.com', ARRAY['company:seaview systems', 'company:seaviewsystems.com']),
+    ('SepcoTech A/S', 'distributor', 'Denmark', 'sepcotech.com', ARRAY['company:sepcotech', 'company:sepcotech.com']),
+    ('SIX VOICE, Inc.', 'distributor', 'Japan', 'underwaterdrone.stores.jp', ARRAY['company:six voice']),
+    ('SORS Ricerche s.a.s.', 'distributor', 'Italy', 'rovsub.it', ARRAY['company:sors ricerche', 'company:rovsub.it']),
+    ('Southern Ocean Subsea PTY Ltd.', 'distributor', 'Australia', 'sosub.com.au', ARRAY['company:southern ocean subsea', 'company:sosub.com.au']),
+    ('SPOT X Underwater Vision', 'distributor', 'Australia', 'spotx.com.au', ARRAY['company:spot x underwater vision', 'company:spotx.com.au']),
+    ('SR Robotics', 'distributor', 'Poland', 'srrobotics.pl', ARRAY['company:sr robotics', 'company:srrobotics.pl']),
+    ('Sub Marine Store Oy', 'distributor', 'Finland', 'substore.fi', ARRAY['company:sub marine store', 'company:substore.fi']),
+    ('SubC Partner A/S', 'distributor', 'Denmark', 'subcpartner.com', ARRAY['company:subc partner', 'company:subcpartner.com']),
+    ('SubseaLED', 'distributor', 'Italy', 'subsealed.com', ARRAY['company:subsealed', 'company:subsealed.com']),
+    ('SubSeaRov', 'distributor', 'Italy', 'subsearov.it', ARRAY['company:subsearov', 'company:subsearov.it']),
+    ('SyERA', 'distributor', 'France', 'syera.fr', ARRAY['company:syera', 'company:syera.fr']),
+    ('Temasek Allied Engineering', 'distributor', 'Malaysia', 'temasekengineering.com.my', ARRAY['company:temasek allied engineering', 'company:temasekengineering.com.my']),
+    ('Undersea ROV', 'distributor', 'Australia', 'undersearov.com.au', ARRAY['company:undersea rov', 'company:undersearov.com.au']),
+    ('Underwater 360', 'distributor', 'Mexico', 'underwater360.com.mx', ARRAY['company:underwater 360', 'company:underwater360.com.mx']),
+    ('Underwater International GmbH', 'distributor', 'Germany', 'underwater-international.com', ARRAY['company:underwater international', 'company:underwater-international.com']),
+    ('Water Survey Tech', 'distributor', 'Poland', 'watersurveytech.pl', ARRAY['company:water survey tech', 'company:watersurveytech.pl']),
+    ('Werover', 'distributor', 'Turkey', 'werover.com', ARRAY['company:werover', 'company:werover.com']),
+
+    -- Integrators: companies that build our parts into a vehicle, robot or
+    -- instrument they sell on. Taken from the Q1/Q2 2026 review, and limited to
+    -- the ones whose own record says what they manufacture - a company that
+    -- merely buys thrusters in volume is not evidence enough, and lands here
+    -- only once somebody confirms it.
+    ('Aqua ROV', 'integrator', 'Chile', 'famar.cl', ARRAY['company:aqua rov', 'company:famar.cl']),
+    ('bathylogger', 'integrator', 'United States', '', ARRAY['company:bathylogger', 'individual:bathylogger@gmail.com']),
+    ('Bedrock Ocean', 'integrator', 'United States', 'bedrockocean.com', ARRAY['company:bedrock ocean', 'company:bedrockocean.com']),
+    ('Beneath the Horizons Research', 'integrator', 'Canada', 'urnd.ca', ARRAY['company:beneath the horizons research', 'company:urnd.ca']),
+    ('Blue Atlas Robotics', 'integrator', 'Denmark', 'blueatlasrobotics.com', ARRAY['company:blue atlas robotics', 'company:blueatlasrobotics.com']),
+    ('Boxfish Robotics', 'integrator', 'New Zealand', 'boxfish.nz', ARRAY['company:boxfish robotics', 'company:boxfish.nz']),
+    ('Chasing', 'integrator', 'China', 'chasing.com', ARRAY['company:chasing', 'company:chasing.com']),
+    ('Coratia Technologies', 'integrator', 'India', '', ARRAY['company:coratia technologies', 'individual:coratech2020@gmail.com']),
+    ('Crabi Robotics', 'integrator', 'United States', 'crabi-robotics.com', ARRAY['company:crabi robotics', 'company:crabi-robotics.com']),
+    ('EyeROV Technologies', 'integrator', 'India', 'eyerov.com', ARRAY['company:eyerov technologies', 'company:eyerov.com']),
+    ('FullDepth Co', 'integrator', 'Japan', 'fulldepth.co.jp', ARRAY['company:fulldepth', 'company:fulldepth.co.jp']),
+    ('GroAqua', 'integrator', 'Faroe Islands', 'groaqua.io', ARRAY['company:groaqua', 'company:groaqua.io']),
+    ('HOYTEK', 'integrator', 'Turkey', '', ARRAY['company:hoytek', 'individual:bertan.tezcan@gmail.com']),
+    ('Hullbot', 'integrator', 'Australia', 'hullbot.com', ARRAY['company:hullbot', 'company:hullbot.com']),
+    ('Hydromea', 'integrator', 'Switzerland', 'hydromea.com', ARRAY['company:hydromea', 'company:hydromea.com']),
+    ('Innovex Spa', 'integrator', 'Chile', 'innovex.cl', ARRAY['company:innovex', 'company:innovex.cl']),
+    ('Lenta Marine', 'integrator', 'Turkey', 'lentamarine.com', ARRAY['company:lenta marine', 'company:lentamarine.com']),
+    ('MarineNav Ltd', 'integrator', 'Canada', 'marinenav.ca', ARRAY['company:marinenav', 'company:marinenav.ca']),
+    ('Oceanbotics', 'integrator', 'United States', '', ARRAY['company:oceanbotics']),
+    ('Optoscale', 'integrator', 'Norway', 'optoscale.no', ARRAY['company:optoscale', 'company:optoscale.no']),
+    ('Outland Technology', 'integrator', 'United States', 'outlandtech.com', ARRAY['company:outland technology', 'company:outlandtech.com']),
+    ('PSD PTE Ltd.', 'integrator', 'Taiwan', 'psdrobot.com', ARRAY['company:psd', 'company:psdrobot.com']),
+    ('Q.I Incorporated', 'integrator', 'Japan', 'qi-inc.com', ARRAY['company:qi', 'company:qi-inc.com']),
+    ('Surfbee', 'integrator', 'Australia', 'surfbee.io', ARRAY['company:surfbee', 'company:surfbee.io']),
+    ('Tech Stream Spa', 'integrator', 'Chile', 'techstream.cl', ARRAY['company:tech stream', 'company:techstream.cl']),
+    ('TiVA AB', 'integrator', 'Sweden', 'tiva.se', ARRAY['company:tiva', 'company:tiva.se'])
+  ) AS d(name, channel, country, website, account_keys);
+$$ LANGUAGE sql IMMUTABLE;
+
+COMMENT ON FUNCTION known_partners() IS
+  'Every partner we can name and the channel they belong to: the published distributor list from bluerobotics.com/distributors, plus integrators identified from what they buy and build. Source of truth for customer_accounts.channel. Edit this list to add, remove or reclassify a partner; re-running the module re-seeds existing accounts and the insert trigger catches new ones.';
+
+-- Which channel, if any, the partner list puts an account key in.
+--
+-- Also matches the 'key#site-suffix' form disambiguateByAddress() produces, so
+-- a partner that got split across two sites is still recognised at both.
+DROP FUNCTION IF EXISTS known_distributor_for_key(TEXT);
+
+CREATE OR REPLACE FUNCTION known_partner_channel_for_key(p_account_key TEXT)
+RETURNS TEXT AS $$
+  SELECT d.channel
+  FROM known_partners() d
+  WHERE p_account_key = ANY(d.account_keys)
+     OR EXISTS (
+       SELECT 1 FROM unnest(d.account_keys) k WHERE p_account_key LIKE k || '#%'
+     )
+  LIMIT 1;
+$$ LANGUAGE sql STABLE;
+
+-- Records that a channel was changed, when, and on whose authority.
+--
+-- A trigger rather than something the client sends, because channel_source is
+-- what protects an answer from the next re-seed: a client that forgot to set it
+-- would leave the row looking machine-written and the seed would revise it.
+-- Defaulting to 'manual' is the safe direction - only the seed announces
+-- itself, so anything that does not must be assumed to be a person.
+--
+-- The announcement is a transaction-local setting rather than the column value
+-- because the two cases the trigger has to tell apart look identical in the
+-- row: a seed correcting its own earlier answer writes 'seed' over 'seed', and
+-- a person editing that same row leaves 'seed' in place untouched.
+--
+-- channel_set_by is only defaulted when the caller did not supply one.
+-- Overwriting it unconditionally would mean the column could never record
+-- anything but the current session, so a service-role change, where auth.uid()
+-- is NULL, could not attribute itself even when it knew who was responsible.
+CREATE OR REPLACE FUNCTION stamp_customer_account_channel()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.channel IS DISTINCT FROM OLD.channel THEN
+    NEW.channel_set_at := NOW();
+
+    IF current_setting('blueplm.channel_seeding', true) = 'on' THEN
+      NEW.channel_source := 'seed';
+      -- No person is responsible for a seeded answer, and leaving whoever last
+      -- touched the row attached to it would misattribute the machine's work.
+      NEW.channel_set_by := NULL;
+    ELSE
+      NEW.channel_source := 'manual';
+      IF NEW.channel_set_by IS NOT DISTINCT FROM OLD.channel_set_by THEN
+        NEW.channel_set_by := auth.uid();
+      END IF;
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS customer_accounts_channel_stamped ON customer_accounts;
+CREATE TRIGGER customer_accounts_channel_stamped
+  BEFORE UPDATE ON customer_accounts
+  FOR EACH ROW EXECUTE FUNCTION stamp_customer_account_channel();
+
+-- A partner that places its first order after this file was last run still
+-- arrives classified: the sync creates the account, and this catches it on the
+-- way in. Without it the list would silently go stale between installs.
+CREATE OR REPLACE FUNCTION classify_customer_account_channel()
+RETURNS TRIGGER AS $$
+DECLARE
+  v_channel TEXT;
+BEGIN
+  IF NEW.channel = 'direct' AND NEW.channel_source IS NULL THEN
+    v_channel := known_partner_channel_for_key(NEW.account_key);
+    IF v_channel IS NOT NULL THEN
+      NEW.channel := v_channel;
+      NEW.channel_set_at := NOW();
+      NEW.channel_source := 'seed';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS customer_accounts_channel_classified ON customer_accounts;
+CREATE TRIGGER customer_accounts_channel_classified
+  BEFORE INSERT ON customer_accounts
+  FOR EACH ROW EXECUTE FUNCTION classify_customer_account_channel();
+
+-- Apply the list to accounts that already exist.
+--
+-- Touches two kinds of row and no others: ones nothing has ever ruled on
+-- (channel_source IS NULL), and ones this seed itself wrote last time
+-- (channel_source = 'seed'). The second is what lets a correction to the list
+-- propagate - reclassifying JM Robotics from distributor to integrator reaches
+-- the data on the next run instead of being frozen out by its own earlier
+-- answer. An account a person set, in either direction, is never revisited, so
+-- a deliberate demotion back to 'direct' survives however many times this runs.
+--
+-- Rows are matched on channel_source rather than channel_set_by because a
+-- ruling made from the SQL editor has no auth.uid() to record, and it should
+-- hold just as firmly as one made in the app.
+DROP FUNCTION IF EXISTS seed_known_distributors(UUID);
+
+CREATE OR REPLACE FUNCTION seed_known_partners(p_org_id UUID)
+RETURNS INTEGER AS $$
+DECLARE
+  v_updated INTEGER;
+BEGIN
+  -- Announce the seed to stamp_customer_account_channel(), which otherwise
+  -- takes every change for a person's. Transaction-local, and cleared below so
+  -- that later statements in the same transaction are stamped normally.
+  PERFORM set_config('blueplm.channel_seeding', 'on', true);
+
+  UPDATE customer_accounts a
+  SET channel = p.channel
+  FROM (
+    SELECT a2.id, known_partner_channel_for_key(a2.account_key) AS channel
+    FROM customer_accounts a2
+    WHERE a2.org_id = p_org_id
+      AND (a2.channel_source IS NULL OR a2.channel_source = 'seed')
+  ) p
+  WHERE a.id = p.id
+    AND p.channel IS NOT NULL
+    AND a.channel IS DISTINCT FROM p.channel;
+
+  GET DIAGNOSTICS v_updated = ROW_COUNT;
+
+  PERFORM set_config('blueplm.channel_seeding', 'off', true);
+
+  RETURN v_updated;
+END;
+$$ LANGUAGE plpgsql;
+
+DO $$
+DECLARE
+  v_org RECORD;
+  v_updated INTEGER;
+  v_total INTEGER := 0;
+BEGIN
+  FOR v_org IN SELECT id FROM organizations LOOP
+    v_updated := seed_known_partners(v_org.id);
+    v_total := v_total + v_updated;
+  END LOOP;
+  RAISE NOTICE 'Known partners: % account(s) reclassified from the partner list', v_total;
+END $$;
+
+-- customer_partner_coverage() reads this list, but lives further down with the
+-- other analytics RPCs: it reports the window's revenue per partner, and the
+-- shared revenue predicate it needs is not defined until then.
+DROP FUNCTION IF EXISTS customer_distributor_coverage(UUID);
 
 -- ===========================================
 -- RLS POLICIES
@@ -660,10 +1044,16 @@ CREATE POLICY "Managers can insert customer accounts"
   ON customer_accounts FOR INSERT TO authenticated
   WITH CHECK (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('module:customers', 'create'));
 
+-- The only client-writable table in this module: setting an account's channel
+-- is a plain UPDATE from the app, everything else here is written by the
+-- service-role sync. WITH CHECK is what makes that safe - USING alone vets the
+-- row being replaced but not its replacement, so without it an org member could
+-- hand one of their accounts to another org by editing org_id.
 DROP POLICY IF EXISTS "Managers can update customer accounts" ON customer_accounts;
 CREATE POLICY "Managers can update customer accounts"
   ON customer_accounts FOR UPDATE TO authenticated
-  USING (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('module:customers', 'edit'));
+  USING (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('module:customers', 'edit'))
+  WITH CHECK (org_id IN (SELECT u.org_id FROM users u WHERE u.id = (SELECT auth.uid())) AND user_has_team_permission('module:customers', 'edit'));
 
 DROP POLICY IF EXISTS "Managers can delete customer accounts" ON customer_accounts;
 CREATE POLICY "Managers can delete customer accounts"
@@ -850,6 +1240,18 @@ COMMENT ON TABLE customer_accounts IS
 COMMENT ON COLUMN customer_accounts.account_key IS
   'Normalized company name or email domain. Stable identity for the account; changing it re-keys an account that enrichment already points at, so treat it as immutable once set.';
 
+COMMENT ON COLUMN customer_accounts.channel IS
+  'How this account buys from us: direct (buys for its own use, company or private person), distributor (resells our products as they are), or integrator (builds them into a system it sells on). A separate axis from kind (company vs person) and from the enrichment category (what industry the account is in). Human-owned: the Odoo sync cannot write it, and seed_known_partners() never overrules a person.';
+
+COMMENT ON COLUMN customer_accounts.channel_set_at IS
+  'When the channel was last written, stamped by trigger. Reporting only - what actually guards the value against a re-seed is channel_source.';
+
+COMMENT ON COLUMN customer_accounts.channel_source IS
+  'Whose answer the channel is. seed = the known_partners() list, which may revise its own earlier answer so that a correction to the list reaches the data. manual = a person, which nothing automated may overwrite, so a deliberate demotion back to direct survives every future re-seed. NULL = never set, still on the default. Stamped by trigger, which assumes manual unless seed_known_partners() announces itself - so a change made from the SQL editor counts as a person, which is the safe way round.';
+
+COMMENT ON COLUMN customer_accounts.channel_set_by IS
+  'Who last changed the channel. Defaulted from auth.uid() by trigger, but an explicitly supplied value is kept, so a service-role caller that knows the responsible user can record them. NULL means the change came from somewhere with no session, such as the seed itself or the SQL editor.';
+
 COMMENT ON TABLE customers IS
   'Mirror of Odoo res.partner. Written by the Odoo sync via upsert on (org_id, erp_id). Carries NO enrichment columns by design - all AI output lives on customer_enrichments so that a sync upsert cannot clobber it.';
 
@@ -867,6 +1269,12 @@ COMMENT ON TABLE customer_addresses IS
 
 COMMENT ON TABLE customer_orders IS
   'Mirror of Odoo sale.order. Pure synced data with no enrichment attached, upserted on (org_id, erp_id). odoo_write_date lets an incremental sync skip unchanged orders.';
+
+COMMENT ON COLUMN customer_orders.customer_id IS
+  'The company the order is credited to, from Odoo commercial_partner_id. Attributing to sale.order.partner_id instead splits a company history across its contacts and leaves the company itself reading as churned.';
+
+COMMENT ON COLUMN customer_orders.contact_id IS
+  'The contact who placed the order, when that is a different partner from the customer it is credited to. NULL when the customer ordered under its own record.';
 
 COMMENT ON TABLE customer_order_lines IS
   'Mirror of Odoo sale.order.line. Cascades from customer_orders because lines are meaningless without their order and are fully reproducible from a re-sync.';
@@ -1382,10 +1790,18 @@ $$ LANGUAGE sql STABLE;
 -- -------------------------------------------
 -- Cohort = the month of the customer's first order. month_index 0 is the
 -- acquisition month itself, so the first column is always 100%.
+--
+-- Anchored to p_as_of rather than to NOW(), and activity past it is excluded,
+-- so the grid is the picture at the end of the selected range. p_months is how
+-- many cohorts to draw rather than a second window: retention only means
+-- something across several cohorts, so a 30-day range still looks back far
+-- enough to have rows to compare.
 
 DROP FUNCTION IF EXISTS customer_cohort_retention(UUID, INTEGER);
+DROP FUNCTION IF EXISTS customer_cohort_retention(UUID, TIMESTAMPTZ, INTEGER);
 CREATE FUNCTION customer_cohort_retention(
   p_org_id UUID,
+  p_as_of TIMESTAMPTZ,
   p_months INTEGER DEFAULT 12
 ) RETURNS TABLE (
   cohort_month TIMESTAMPTZ,
@@ -1402,8 +1818,9 @@ CREATE FUNCTION customer_cohort_retention(
     FROM customers c
     WHERE c.org_id = p_org_id
       AND c.first_order_date IS NOT NULL
+      AND c.first_order_date < p_as_of
       AND date_trunc('month', c.first_order_date)
-          >= date_trunc('month', NOW()) - make_interval(months => GREATEST(COALESCE(p_months, 12), 1) - 1)
+          >= date_trunc('month', p_as_of) - make_interval(months => GREATEST(COALESCE(p_months, 12), 1) - 1)
   ),
   sizes AS (
     SELECT ch.cohort_month, COUNT(*)::BIGINT AS cohort_size
@@ -1424,6 +1841,7 @@ CREATE FUNCTION customer_cohort_retention(
     WHERE co.org_id = p_org_id
       AND customer_order_is_revenue(co.status)
       AND co.order_date IS NOT NULL
+      AND co.order_date < p_as_of
     GROUP BY 1, 2
   )
   SELECT
@@ -1485,14 +1903,32 @@ $$ LANGUAGE sql STABLE;
 -- Backs the workspace table: one row per customer with recency/frequency/
 -- monetary quintiles and the shared lifecycle segment.
 --
+-- order_count and total_spent are the window's, summed from customer_orders
+-- rather than read off the denormalised lifetime columns on customers, so the
+-- table agrees with the KPI strip above it instead of quietly reporting all of
+-- history while the dashboard reports a quarter of it.
+--
+-- The dates are deliberately NOT windowed. first_order_date and
+-- last_order_date answer "when did they start" and "when did we last hear from
+-- them", which are facts about the customer rather than about the window, and
+-- they are what customer_lifecycle_segment() reads - windowing them would make
+-- every customer in a 30-day view a prospect or a new customer and empty the
+-- segment facets of meaning. The segment is evaluated as of p_to.
+--
+-- Customers with no orders in the window still come back, at zero. The tab is
+-- a directory you search as much as a leaderboard, and dropping everyone quiet
+-- would make narrowing the range look like losing data.
+--
 -- Quintiles are computed over buyers only. Including never-ordered customers
 -- would push real buyers up a tile and make the bottom quintile meaningless.
 -- Prospects still come back (with NULL scores) so the table can list everyone.
 
 DROP FUNCTION IF EXISTS customer_rfm(UUID, TIMESTAMPTZ, INTEGER);
+DROP FUNCTION IF EXISTS customer_rfm(UUID, TIMESTAMPTZ, TIMESTAMPTZ, INTEGER);
 CREATE FUNCTION customer_rfm(
   p_org_id UUID,
-  p_as_of TIMESTAMPTZ DEFAULT NOW(),
+  p_from TIMESTAMPTZ,
+  p_to TIMESTAMPTZ,
   p_limit INTEGER DEFAULT 5000
 ) RETURNS TABLE (
   customer_id UUID,
@@ -1505,6 +1941,11 @@ CREATE FUNCTION customer_rfm(
   is_active BOOLEAN,
   order_count INTEGER,
   total_spent NUMERIC,
+  -- Not for display. The account roll-up in the client combines several of
+  -- these rows into one whose segment no query has computed, and it has to
+  -- decide "has this account ever ordered" from something the window cannot
+  -- zero out.
+  lifetime_orders INTEGER,
   first_order_date TIMESTAMPTZ,
   last_order_date TIMESTAMPTZ,
   recency_days INTEGER,
@@ -1514,9 +1955,22 @@ CREATE FUNCTION customer_rfm(
   segment TEXT,
   category TEXT,
   subcategory TEXT,
-  category_label TEXT
+  category_label TEXT,
+  channel TEXT
 ) AS $$
-  WITH base AS (
+  WITH win AS (
+    SELECT
+      co.customer_id,
+      COUNT(*)::INTEGER                   AS order_count,
+      COALESCE(SUM(co.total), 0)::NUMERIC AS total_spent
+    FROM customer_orders co
+    WHERE co.org_id = p_org_id
+      AND co.order_date >= p_from
+      AND co.order_date <  p_to
+      AND customer_order_is_revenue(co.status)
+    GROUP BY co.customer_id
+  ),
+  base AS (
     SELECT
       c.id,
       c.name,
@@ -1525,19 +1979,32 @@ CREATE FUNCTION customer_rfm(
       c.country,
       c.account_id,
       a.display_name AS account_name,
+      -- A customer with no account is nobody's distributor, so the fallback is
+      -- the same default the column has.
+      COALESCE(a.channel, 'direct') AS channel,
       c.is_active,
-      COALESCE(c.order_count, 0)     AS order_count,
-      COALESCE(c.total_spent, 0)::NUMERIC AS total_spent,
+      COALESCE(w.order_count, 0)          AS order_count,
+      COALESCE(w.total_spent, 0)::NUMERIC AS total_spent,
+      -- Only the tie-break for the row cap, never returned: two customers with
+      -- nothing in the window should be cut in the order of who matters, not
+      -- alphabetically.
+      COALESCE(c.total_spent, 0)::NUMERIC AS lifetime_spent,
+      -- The segment reads this rather than the window's count, so a customer
+      -- who bought for years and has been quiet all quarter is churned here
+      -- and not a prospect. Returned as well as used, because the client's
+      -- account roll-up has to make the same call over several rows.
+      COALESCE(c.order_count, 0)          AS lifetime_orders,
       c.first_order_date,
       c.last_order_date,
       CASE
         WHEN c.last_order_date IS NULL THEN NULL
-        ELSE EXTRACT(DAY FROM (p_as_of - c.last_order_date))::INTEGER
+        ELSE EXTRACT(DAY FROM (p_to - c.last_order_date))::INTEGER
       END AS recency_days,
       e.category,
       e.subcategory,
       COALESCE(leaf.display_name, parent.display_name, e.subcategory, e.category) AS category_label
     FROM customers c
+    LEFT JOIN win w ON w.customer_id = c.id
     LEFT JOIN customer_accounts a ON a.id = c.account_id
     LEFT JOIN customer_enrichments e
       ON e.account_id = c.account_id AND e.is_current
@@ -1551,6 +2018,8 @@ CREATE FUNCTION customer_rfm(
      AND parent.subcategory IS NULL
     WHERE c.org_id = p_org_id
   ),
+  -- Scored over the window's buyers, so the quintiles rank people against who
+  -- else was buying in the same period rather than against all of history.
   buyers AS (
     SELECT
       b.id,
@@ -1575,19 +2044,21 @@ CREATE FUNCTION customer_rfm(
     b.is_active,
     b.order_count,
     b.total_spent,
+    b.lifetime_orders,
     b.first_order_date,
     b.last_order_date,
     b.recency_days,
     q.r_score,
     q.f_score,
     q.m_score,
-    customer_lifecycle_segment(b.order_count, b.first_order_date, b.last_order_date, p_as_of),
+    customer_lifecycle_segment(b.lifetime_orders, b.first_order_date, b.last_order_date, p_to),
     b.category,
     b.subcategory,
-    b.category_label
+    b.category_label,
+    b.channel
   FROM base b
   LEFT JOIN buyers q ON q.id = b.id
-  ORDER BY b.total_spent DESC, b.name
+  ORDER BY b.total_spent DESC, b.lifetime_spent DESC, b.name
   LIMIT GREATEST(COALESCE(p_limit, 5000), 1);
 $$ LANGUAGE sql STABLE;
 
@@ -1625,6 +2096,88 @@ CREATE FUNCTION customer_segment_counts(
 $$ LANGUAGE sql STABLE;
 
 -- -------------------------------------------
+-- Accounts and revenue per sales channel
+-- -------------------------------------------
+-- Built off a spine of the three channels so a channel nobody is in still
+-- comes back as a zero. The partner tabs render their own count from this, and
+-- "Integrators 0" is a meaningful thing to see - an empty result would instead
+-- make the tab look broken.
+--
+-- revenue and orders are the window's. The two counts are not: they answer how
+-- many partners you HAVE, which is what somebody curating the list is checking
+-- against, and a tab label that dropped from 66 to 4 on switching to 30 days
+-- would read as data going missing rather than as a narrower question.
+
+DROP FUNCTION IF EXISTS customer_channel_counts(UUID);
+DROP FUNCTION IF EXISTS customer_channel_counts(UUID, TIMESTAMPTZ, TIMESTAMPTZ);
+CREATE FUNCTION customer_channel_counts(
+  p_org_id UUID,
+  p_from TIMESTAMPTZ,
+  p_to TIMESTAMPTZ
+)
+-- account_count / customer_count rather than accounts / customers: an output
+-- parameter shares a namespace with the body's identifiers, and `customers` is
+-- also the table this joins to.
+RETURNS TABLE (
+  channel TEXT,
+  account_count BIGINT,
+  customer_count BIGINT,
+  revenue NUMERIC,
+  orders BIGINT
+) AS $$
+  WITH spine(channel) AS (
+    VALUES ('direct'::TEXT), ('distributor'), ('integrator')
+  ),
+  acct AS (
+    SELECT a.channel, COUNT(*)::BIGINT AS account_count
+    FROM customer_accounts a
+    WHERE a.org_id = p_org_id
+    GROUP BY a.channel
+  ),
+  -- Aggregated separately from the account counts rather than by joining both
+  -- in one pass: an account with several contacts would otherwise be counted
+  -- once per contact.
+  --
+  -- The COALESCE mirrors customer_rfm: a customer with no account at all is
+  -- nobody's partner, so it counts as direct in both places. Joining through
+  -- customer_accounts instead would silently drop it from every channel.
+  cust AS (
+    SELECT
+      COALESCE(a.channel, 'direct') AS channel,
+      COUNT(*)::BIGINT              AS customer_count
+    FROM customers c
+    LEFT JOIN customer_accounts a ON a.id = c.account_id
+    WHERE c.org_id = p_org_id
+    GROUP BY 1
+  ),
+  sold AS (
+    SELECT
+      COALESCE(a.channel, 'direct')       AS channel,
+      COALESCE(SUM(co.total), 0)::NUMERIC AS revenue,
+      COUNT(*)::BIGINT                    AS orders
+    FROM customer_orders co
+    JOIN customers c ON c.id = co.customer_id
+    LEFT JOIN customer_accounts a ON a.id = c.account_id
+    WHERE co.org_id = p_org_id
+      AND co.order_date >= p_from
+      AND co.order_date <  p_to
+      AND customer_order_is_revenue(co.status)
+    GROUP BY 1
+  )
+  SELECT
+    s.channel,
+    COALESCE(ac.account_count, 0),
+    COALESCE(cu.customer_count, 0),
+    COALESCE(so.revenue, 0),
+    COALESCE(so.orders, 0)
+  FROM spine s
+  LEFT JOIN acct ac ON ac.channel = s.channel
+  LEFT JOIN cust cu ON cu.channel = s.channel
+  LEFT JOIN sold so ON so.channel = s.channel
+  ORDER BY s.channel;
+$$ LANGUAGE sql STABLE;
+
+-- -------------------------------------------
 -- Everything the detail panel shows, in one round trip
 -- -------------------------------------------
 -- The panel used to issue the customer, its orders and then a fan-out for
@@ -1636,12 +2189,20 @@ $$ LANGUAGE sql STABLE;
 -- mirrors the CustomerDetail interface in useCustomerDetail.ts - the two must
 -- change together.
 --
+-- Windowed like everything else in the module: the order list, the product
+-- rollup over it and the `window` totals all cover p_from..p_to. The customer
+-- record itself still carries its lifetime columns, because the panel derives
+-- the lifecycle badge from them.
+--
 -- SECURITY INVOKER like the rest of this section, so p_customer_id needs no
 -- org argument: a customer in another org simply is not visible and the
 -- function returns a null customer.
 DROP FUNCTION IF EXISTS customer_detail(UUID, INTEGER);
+DROP FUNCTION IF EXISTS customer_detail(UUID, TIMESTAMPTZ, TIMESTAMPTZ, INTEGER);
 CREATE FUNCTION customer_detail(
   p_customer_id UUID,
+  p_from TIMESTAMPTZ,
+  p_to TIMESTAMPTZ,
   p_order_limit INTEGER DEFAULT 100
 ) RETURNS JSONB AS $$
   WITH target AS (
@@ -1655,11 +2216,35 @@ CREATE FUNCTION customer_detail(
     WHERE c.id = p_customer_id
   ),
   recent_orders AS (
-    SELECT co.id, co.erp_id, co.order_date, co.status, co.total, co.discount, co.items_count
+    -- contact_name answers "who placed this", which stopped being obvious once
+    -- orders were credited to the company rather than the person named on them.
+    --
+    -- An order with no date cannot be placed in a window, so it drops out here
+    -- exactly as it does from every aggregate in this file.
+    SELECT co.id, co.erp_id, co.order_date, co.status, co.total, co.discount,
+           co.items_count, contact.name AS contact_name
     FROM customer_orders co
+    LEFT JOIN customers contact ON contact.id = co.contact_id
     WHERE co.customer_id = p_customer_id
+      AND co.order_date >= p_from
+      AND co.order_date <  p_to
     ORDER BY co.order_date DESC NULLS LAST
     LIMIT GREATEST(COALESCE(p_order_limit, 100), 1)
+  ),
+  -- Over every revenue order in the window, not just the ones the limit
+  -- returned, so the header stays truthful for a customer with more than
+  -- p_order_limit of them. Unconfirmed orders are excluded here and struck
+  -- through in the list, which is why this cannot be summed from recent_orders.
+  window_totals AS (
+    SELECT
+      COALESCE(SUM(co.total), 0)::NUMERIC       AS spend,
+      COUNT(*)::BIGINT                          AS orders,
+      COALESCE(SUM(co.items_count), 0)::NUMERIC AS units
+    FROM customer_orders co
+    WHERE co.customer_id = p_customer_id
+      AND co.order_date >= p_from
+      AND co.order_date <  p_to
+      AND customer_order_is_revenue(co.status)
   ),
   -- Rolled up over the orders actually returned, so the product list always
   -- agrees with the order list next to it.
@@ -1683,10 +2268,22 @@ CREATE FUNCTION customer_detail(
   )
   SELECT jsonb_build_object(
     'customer', (SELECT to_jsonb(t) FROM target t),
+    'window', (SELECT to_jsonb(w) FROM window_totals w),
     'accountName', (
       SELECT COALESCE(NULLIF(a.display_name, ''), a.account_key)
       FROM customer_accounts a
       WHERE a.id = (SELECT t.account_id FROM target t)
+    ),
+    -- The panel offers a control to change this, so it needs the account's id
+    -- alongside the value: customers.account_id is on the customer record, but
+    -- the update targets the account.
+    'accountChannel', COALESCE(
+      (
+        SELECT a.channel
+        FROM customer_accounts a
+        WHERE a.id = (SELECT t.account_id FROM target t)
+      ),
+      'direct'
     ),
     'orders', COALESCE(
       (SELECT jsonb_agg(to_jsonb(o) ORDER BY o.order_date DESC NULLS LAST) FROM recent_orders o),
@@ -1725,6 +2322,78 @@ CREATE FUNCTION customer_detail(
   );
 $$ LANGUAGE sql STABLE;
 
+-- -------------------------------------------
+-- How much of the partner list is actually in the data
+-- -------------------------------------------
+-- Every partner comes back whether or not it matched an account, because the
+-- gaps are the point: a partner with no account either has never ordered or is
+-- in Odoo under a name that normalises to a different key, and only a person
+-- can tell those two apart. The matched rows are worth showing too - they are
+-- where you would notice a partner keyed on a parent company's domain having
+-- swallowed the wrong account.
+--
+-- Lives here rather than beside known_partners() because total_spent is the
+-- window's revenue, which needs the shared predicate defined above.
+-- last_order_date stays lifetime for the same reason it does in customer_rfm:
+-- a partner that has gone quiet is exactly what you are looking for, and a
+-- windowed answer would report it as never.
+
+DROP FUNCTION IF EXISTS customer_partner_coverage(UUID);
+DROP FUNCTION IF EXISTS customer_partner_coverage(UUID, TIMESTAMPTZ, TIMESTAMPTZ);
+CREATE FUNCTION customer_partner_coverage(
+  p_org_id UUID,
+  p_from TIMESTAMPTZ,
+  p_to TIMESTAMPTZ
+) RETURNS TABLE (
+  name TEXT,
+  partner_channel TEXT,
+  country TEXT,
+  website TEXT,
+  account_id UUID,
+  account_key TEXT,
+  account_name TEXT,
+  channel TEXT,
+  contacts BIGINT,
+  total_spent NUMERIC,
+  last_order_date TIMESTAMPTZ
+) AS $$
+  WITH win AS (
+    SELECT
+      co.customer_id,
+      COALESCE(SUM(co.total), 0)::NUMERIC AS spent
+    FROM customer_orders co
+    WHERE co.org_id = p_org_id
+      AND co.order_date >= p_from
+      AND co.order_date <  p_to
+      AND customer_order_is_revenue(co.status)
+    GROUP BY co.customer_id
+  )
+  SELECT
+    d.name,
+    d.channel,
+    d.country,
+    d.website,
+    a.id,
+    a.account_key,
+    COALESCE(NULLIF(a.display_name, ''), a.account_key),
+    a.channel,
+    COUNT(c.id)::BIGINT,
+    COALESCE(SUM(w.spent), 0)::NUMERIC,
+    MAX(c.last_order_date)
+  FROM known_partners() d
+  LEFT JOIN customer_accounts a
+    ON a.org_id = p_org_id
+   AND (
+     a.account_key = ANY(d.account_keys)
+     OR EXISTS (SELECT 1 FROM unnest(d.account_keys) k WHERE a.account_key LIKE k || '#%')
+   )
+  LEFT JOIN customers c ON c.account_id = a.id
+  LEFT JOIN win w ON w.customer_id = c.id
+  GROUP BY d.name, d.channel, d.country, d.website, a.id, a.account_key, a.display_name, a.channel
+  -- Unmatched first: they are the ones that need a person to look at them.
+  ORDER BY (a.id IS NOT NULL), 1;
+$$ LANGUAGE sql STABLE;
+
 GRANT EXECUTE ON FUNCTION customer_non_revenue_statuses() TO authenticated;
 GRANT EXECUTE ON FUNCTION customer_order_is_revenue(TEXT) TO authenticated;
 GRANT EXECUTE ON FUNCTION customer_lifecycle_segment(INTEGER, TIMESTAMPTZ, TIMESTAMPTZ, TIMESTAMPTZ) TO authenticated;
@@ -1733,11 +2402,18 @@ GRANT EXECUTE ON FUNCTION customer_revenue_timeseries(UUID, TIMESTAMPTZ, TIMESTA
 GRANT EXECUTE ON FUNCTION customer_top_accounts(UUID, TIMESTAMPTZ, TIMESTAMPTZ, INTEGER) TO authenticated;
 GRANT EXECUTE ON FUNCTION customer_category_breakdown(UUID, TIMESTAMPTZ, TIMESTAMPTZ) TO authenticated;
 GRANT EXECUTE ON FUNCTION customer_geo_breakdown(UUID, TIMESTAMPTZ, TIMESTAMPTZ) TO authenticated;
-GRANT EXECUTE ON FUNCTION customer_cohort_retention(UUID, INTEGER) TO authenticated;
+GRANT EXECUTE ON FUNCTION customer_cohort_retention(UUID, TIMESTAMPTZ, INTEGER) TO authenticated;
 GRANT EXECUTE ON FUNCTION customer_top_products(UUID, TIMESTAMPTZ, TIMESTAMPTZ, INTEGER) TO authenticated;
-GRANT EXECUTE ON FUNCTION customer_rfm(UUID, TIMESTAMPTZ, INTEGER) TO authenticated;
+GRANT EXECUTE ON FUNCTION customer_rfm(UUID, TIMESTAMPTZ, TIMESTAMPTZ, INTEGER) TO authenticated;
 GRANT EXECUTE ON FUNCTION customer_segment_counts(UUID, TIMESTAMPTZ) TO authenticated;
-GRANT EXECUTE ON FUNCTION customer_detail(UUID, INTEGER) TO authenticated;
+GRANT EXECUTE ON FUNCTION customer_channel_counts(UUID, TIMESTAMPTZ, TIMESTAMPTZ) TO authenticated;
+GRANT EXECUTE ON FUNCTION customer_detail(UUID, TIMESTAMPTZ, TIMESTAMPTZ, INTEGER) TO authenticated;
+
+-- The partner list itself is not sensitive, and every reader below is
+-- SECURITY INVOKER, so the org's own rows stay behind RLS.
+GRANT EXECUTE ON FUNCTION known_partners() TO authenticated;
+GRANT EXECUTE ON FUNCTION known_partner_channel_for_key(TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION customer_partner_coverage(UUID, TIMESTAMPTZ, TIMESTAMPTZ) TO authenticated;
 
 COMMENT ON FUNCTION customer_non_revenue_statuses() IS
   'Odoo sale.order states excluded from revenue. Mirrors NON_REVENUE_ORDER_STATES in api/src/customers/odooSync.ts - the two must be changed together or the dashboard will disagree with customers.total_spent.';
@@ -1745,11 +2421,17 @@ COMMENT ON FUNCTION customer_non_revenue_statuses() IS
 COMMENT ON FUNCTION customer_lifecycle_segment(INTEGER, TIMESTAMPTZ, TIMESTAMPTZ, TIMESTAMPTZ) IS
   'Single definition of prospect/new/active/at_risk/churned, shared by the KPI strip, the sidebar segment counts and the table badges.';
 
+COMMENT ON FUNCTION customer_partner_coverage(UUID, TIMESTAMPTZ, TIMESTAMPTZ) IS
+  'Every named partner with the account it matched, or nothing when it matched none. Backs the coverage list in the Distributors and Integrators tabs: an unmatched partner has either never ordered or is in Odoo under a name that normalises to a different account_key, and only a person can tell those apart.';
+
+COMMENT ON FUNCTION customer_rfm(UUID, TIMESTAMPTZ, TIMESTAMPTZ, INTEGER) IS
+  'Roster behind the Customers, Accounts and partner tabs. order_count and total_spent cover p_from..p_to; first_order_date, last_order_date and the lifecycle segment are lifetime, evaluated as of p_to. Customers with nothing in the window come back at zero rather than being dropped.';
+
 -- ===========================================
 -- SCHEMA VERSION
 -- ===========================================
 
-SELECT update_schema_version(79, 'Customers dashboard performance: InitPlan-cacheable RLS on all customer tables, first_order_date and per-customer order indexes, segment counts folded into customer_analytics_summary, single-round-trip customer_detail RPC');
+SELECT update_schema_version(85, 'Date range governs the whole customers module: the roster, channel revenue, partner coverage and the detail panel take p_from/p_to and report the window instead of lifetime totals, with lifecycle dates and segments left lifetime as of the range end');
 
 -- ===========================================
 -- END OF CUSTOMERS MODULE

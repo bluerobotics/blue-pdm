@@ -6,7 +6,9 @@ import { usePDMStore } from '@/stores/pdmStore'
 import { customerQueries } from '../data/api'
 import { clearCustomerCache, load, peek, setGeneration } from '../data/cache'
 import type { CustomerRfmRow } from '../data/types'
+import { rollUpByAccount, type AccountRollup } from '../lib/rollup'
 import { matchesCategoryFilter } from '../lib/taxonomy'
+import { useCustomerWindow } from './useCustomerWindow'
 
 /**
  * Cap on rows pulled for the table. The list is virtualized so rendering is
@@ -30,7 +32,14 @@ export interface RosterRow extends CustomerRfmRow {
 
 export interface CustomerRosterResult {
   rows: RosterRow[]
-  /** Rows surviving the active filters, in the order the table should show. */
+  /**
+   * Accounts surviving the active filters: one entry per company, carrying the
+   * contacts underneath it. What the customer table and accounts tab render.
+   */
+  accounts: AccountRollup<RosterRow>[]
+  /** How many accounts exist before filtering, for the table's "n of m". */
+  accountCount: number
+  /** The rows behind `accounts`, flattened. Feeds the charts and the export. */
   visible: RosterRow[]
   loading: boolean
   error: string | null
@@ -52,12 +61,13 @@ export function useCustomerRoster(): CustomerRosterResult {
   const organization = usePDMStore((s) => s.organization)
   const filters = usePDMStore((s) => s.customerFilters)
   const dataVersion = usePDMStore((s) => s.customerDataVersion)
+  const window = useCustomerWindow()
 
   const orgId = organization?.id
 
   const query = useMemo(
-    () => (orgId ? customerQueries.rfm(orgId, ROW_LIMIT) : null),
-    [orgId],
+    () => (orgId ? customerQueries.rfm(orgId, window, ROW_LIMIT) : null),
+    [orgId, window],
   )
 
   const cached = query ? peek(query) : undefined
@@ -119,26 +129,50 @@ export function useCustomerRoster(): CustomerRosterResult {
   // are not deferred - those are single clicks and should feel immediate.
   const search = useDeferredValue(filters.search)
 
-  const visible = useMemo(() => {
+  // Filtering happens on the account, not the row. A company and its contacts
+  // are shown as one customer, so hiding half of one because an individual
+  // contact carries no orders of its own - and therefore reads as a prospect
+  // in a segment facet - would hide part of a customer that does match.
+  // Segment and category are properties of the account; presence, country and
+  // the search text can legitimately be true of any single member.
+  const allAccounts = useMemo(() => rollUpByAccount(rows), [rows])
+
+  const accounts = useMemo(() => {
     const needle = search.trim().toLowerCase()
 
-    return rows.filter((row) => {
-      if (filters.presence === 'active' && row.is_active === false) return false
-      if (filters.presence === 'gone' && row.is_active !== false) return false
+    return allAccounts.filter((account) => {
+      if (filters.presence === 'active' && !account.isActive) return false
+      if (filters.presence === 'gone' && account.isActive) return false
 
-      if (filters.segments.length > 0 && !filters.segments.includes(row.segment)) return false
+      if (filters.segments.length > 0 && !filters.segments.includes(account.segment)) return false
+
+      if (filters.channels.length > 0 && !filters.channels.includes(account.channel)) return false
 
       if (filters.countries.length > 0) {
-        if (!row.country || !filters.countries.includes(row.country)) return false
+        if (!account.countries.some((country) => filters.countries.includes(country))) return false
       }
 
-      if (!matchesCategoryFilter(filters.categories, row.category, row.subcategory)) return false
+      if (!matchesCategoryFilter(filters.categories, account.category, account.subcategory)) {
+        return false
+      }
 
-      if (needle && !row.searchBlob.includes(needle)) return false
+      if (needle && !account.members.some((member) => member.searchBlob.includes(needle))) {
+        return false
+      }
 
       return true
     })
-  }, [rows, search, filters.presence, filters.segments, filters.countries, filters.categories])
+  }, [
+    allAccounts,
+    search,
+    filters.presence,
+    filters.segments,
+    filters.countries,
+    filters.categories,
+    filters.channels,
+  ])
+
+  const visible = useMemo(() => accounts.flatMap((account) => account.members), [accounts])
 
   const refresh = useCallback(() => {
     clearCustomerCache()
@@ -147,6 +181,8 @@ export function useCustomerRoster(): CustomerRosterResult {
 
   return {
     rows,
+    accounts,
+    accountCount: allAccounts.length,
     visible,
     loading,
     error,

@@ -27,7 +27,9 @@ import {
 import { usePDMStore } from '@/stores/pdmStore'
 import { t } from '@/lib/i18n'
 import { useReviewsDashboard } from './hooks/useReviewsDashboard'
+import { useGateReviews } from './hooks/useGateReviews'
 import { ReviewFileRow } from './components/ReviewFileRow'
+import { GateReviewRow } from './components/GateReviewRow'
 import type { StatusFilter, ReviewScope } from './hooks/useReviewsDashboard'
 
 // ============================================================================
@@ -227,6 +229,8 @@ export function ReviewsDashboard() {
     setActiveTeamFilter,
   } = useReviewsDashboard()
 
+  const gateReviews = useGateReviews()
+
   const [showTeamConfig, setShowTeamConfig] = useState(false)
   const teamConfigRef = useRef<HTMLDivElement>(null)
 
@@ -247,7 +251,8 @@ export function ReviewsDashboard() {
 
   const handleRefresh = useCallback(() => {
     refresh()
-  }, [refresh])
+    void gateReviews.refresh()
+  }, [refresh, gateReviews])
 
   if (!user) {
     return <NotAuthenticatedState />
@@ -416,6 +421,28 @@ export function ReviewsDashboard() {
       {/* Review list */}
       {/* ------------------------------------------------------------------ */}
       <div className="flex-1 overflow-y-auto">
+        {/* Workflow gates block a state change, so they come before peer reviews */}
+        {gateReviews.reviews.length > 0 && (
+          <div className="p-2 border-b border-plm-border">
+            <div className="px-1 pb-1.5">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-plm-fg-muted">
+                {t('reviews.gates.title')}
+              </p>
+              <p className="text-[10px] text-plm-fg-muted/70">{t('reviews.gates.subtitle')}</p>
+            </div>
+            <div className="space-y-1.5">
+              {gateReviews.reviews.map((review) => (
+                <GateReviewRow
+                  key={review.review_id}
+                  review={review}
+                  isDeciding={gateReviews.decidingId === review.review_id}
+                  onDecide={gateReviews.decide}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
         {isLoading ? (
           <LoadingSkeleton />
         ) : error ? (

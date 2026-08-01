@@ -4,6 +4,7 @@ import { usePDMStore } from '@/stores/pdmStore'
 import type { CustomerBucket } from '@/stores/types'
 
 import { CategoryMixChart } from '../charts/CategoryMixChart'
+import { ChannelMixChart } from '../charts/ChannelMixChart'
 import { CohortHeatmap } from '../charts/CohortHeatmap'
 import { GeoBarsChart } from '../charts/GeoBarsChart'
 import { ParetoChart } from '../charts/ParetoChart'
@@ -12,6 +13,7 @@ import { RfmScatterChart } from '../charts/RfmScatterChart'
 import { TopProductsChart } from '../charts/TopProductsChart'
 import { KpiStrip, PortfolioStrip } from '../components/KpiStrip'
 import type { CustomerAnalyticsData, CustomerRfmRow } from '../data/types'
+import { useChannelCounts } from '../hooks/useChannelCounts'
 
 interface OverviewTabProps {
   data: CustomerAnalyticsData
@@ -32,6 +34,8 @@ export function OverviewTab({
   const setCustomerFilters = usePDMStore((s) => s.setCustomerFilters)
   const toggleCustomerFacet = usePDMStore((s) => s.toggleCustomerFacet)
   const setCustomerPanel = usePDMStore((s) => s.setCustomerPanel)
+
+  const channelCounts = useChannelCounts()
 
   // Stable so the memoized scatter, the costliest chart here to rebuild, is
   // not re-rendered by every unrelated change on this tab.
@@ -60,6 +64,12 @@ export function OverviewTab({
             loading={loading}
           />
         </div>
+
+        <ChannelMixChart
+          counts={channelCounts}
+          selected={filters.channels}
+          onSelect={(channel) => toggleCustomerFacet('channels', channel)}
+        />
 
         <ParetoChart data={data.topAccounts} loading={loading} />
 

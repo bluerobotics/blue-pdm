@@ -9,13 +9,13 @@ import type {
   WorkflowGate,
   TransitionPathType,
 } from '@/types/workflow'
-import type { Point, WaypointContextMenuData, ContextMenuData } from '../types'
+import type { Point, WaypointContextMenu, ContextMenuState } from '../types'
 import { WorkflowContextMenu } from './WorkflowContextMenu'
 
 interface ContextMenusProps {
   // Context menu state
-  contextMenu: ContextMenuData | null
-  waypointContextMenu: WaypointContextMenuData | null
+  contextMenu: ContextMenuState | null
+  waypointContextMenu: WaypointContextMenu | null
 
   // Data
   states: WorkflowState[]
@@ -42,8 +42,8 @@ interface ContextMenusProps {
 
   // Setters
   setWaypoints: React.Dispatch<React.SetStateAction<Record<string, Point[]>>>
-  setContextMenu: (menu: ContextMenuData | null) => void
-  setWaypointContextMenu: (menu: WaypointContextMenuData | null) => void
+  setContextMenu: (menu: ContextMenuState | null) => void
+  setWaypointContextMenu: (menu: WaypointContextMenu | null) => void
 
   // Notifications
   addToast: (type: 'success' | 'error' | 'info' | 'warning', message: string) => void

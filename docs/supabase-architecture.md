@@ -489,6 +489,7 @@ States within a workflow.
 | `color` | `TEXT` | Background color |
 | `icon` | `TEXT` | Icon name |
 | `position_x`, `position_y` | `INTEGER` | Canvas position |
+| `width`, `height` | `INTEGER` | Canvas node size |
 | `is_editable` | `BOOLEAN` | Files can be edited |
 | `requires_checkout` | `BOOLEAN` | Checkout required to edit |
 | `auto_increment_revision` | `BOOLEAN` | Bump revision on entry |
@@ -510,6 +511,10 @@ Allowed state-to-state transitions.
 | `line_arrow_head` | `transition_arrow_head` | Arrow placement |
 | `allowed_workflow_roles` | `UUID[]` | Who can trigger |
 | `auto_conditions` | `JSONB` | Auto-transition rules |
+| `start_edge`, `end_edge` | `transition_edge` | Which border the line attaches to |
+| `start_fraction`, `end_fraction` | `DECIMAL(4,3)` | Position along that border |
+| `waypoints` | `JSONB` | Routing control points |
+| `label_offset`, `label_pinned` | `JSONB` | Label placement |
 
 #### `workflow_gates`
 Gate/approval requirements on transitions.
@@ -552,16 +557,6 @@ User assignments to workflow roles.
 | `file_workflow_assignments` | Which workflow is assigned to each file |
 | `pending_reviews` | Active review requests |
 | `workflow_review_history` | Completed review audit log |
-| `revision_schemes` | Custom revision numbering schemes |
-| `workflow_state_permissions` | Per-state file permissions |
-| `workflow_transition_conditions` | Conditional transition rules |
-| `workflow_transition_actions` | Actions on transition (notify, convert) |
-| `workflow_transition_notifications` | Notification templates |
-| `workflow_transition_approvals` | Multi-level approval definitions |
-| `workflow_approval_reviewers` | Reviewers for approvals |
-| `workflow_auto_transitions` | Timed/conditional auto-transitions |
-| `workflow_tasks` | Background tasks (PDF generation) |
-| `pending_transition_approvals` | Active approval requests |
 | `workflow_history` | Transition audit log |
 | `file_state_entries` | Time tracking in each state |
 | `file_watchers` | File subscription list |
@@ -1258,6 +1253,21 @@ Server-side PostgreSQL functions called via `client.rpc()`:
 | `get_vault_files_fast(p_org_id, p_vault_id)` | Bulk fetch (no pagination) |
 | `get_vault_files_delta(p_org_id, p_vault_id, p_since)` | Incremental sync |
 | `move_file(p_file_id, p_new_path, ...)` | Atomic move with validation |
+
+### Workflow Engine
+
+All state changes go through these; nothing writes `files.state` or
+`file_workflow_assignments` directly.
+
+| Function | Purpose |
+|----------|---------|
+| `get_available_transitions(p_file_id, p_user_id)` | Transitions out of the file's current state, with the user's permission resolved |
+| `execute_workflow_transition(p_file_id, p_transition_id, p_comment)` | Validates state, role and checkout, opens gate reviews or advances the file, bumps the revision and writes history - all in one transaction |
+| `execute_transition_to_legacy_state(p_file_id, p_target_state, p_comment)` | Same engine, addressed by legacy state name (`released`, `obsolete`, ...) for the REST endpoints |
+| `complete_gate_review(p_pending_review_id, p_decision, p_comment, p_checklist_responses)` | Records one reviewer's decision and advances the file when the last blocking gate clears |
+| `get_my_pending_reviews()` | Gate reviews waiting on the signed-in user |
+| `user_can_run_transition(p_user_id, p_transition_id)` | Role check used by the engine and the transition list |
+| `import_workflow_graph(p_workflow_id, p_payload)` | Atomically replaces a workflow's states, transitions and gates |
 
 ### User/Organization
 

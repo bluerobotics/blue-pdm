@@ -1,7 +1,7 @@
 // WorkflowCard - Single workflow item in the list
 import { memo } from 'react'
 import { GitBranch, Edit3 } from 'lucide-react'
-import type { WorkflowTemplate } from './types'
+import type { WorkflowTemplate } from '@/types/workflow'
 
 interface WorkflowCardProps {
   workflow: WorkflowTemplate

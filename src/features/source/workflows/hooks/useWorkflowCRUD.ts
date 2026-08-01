@@ -7,8 +7,14 @@ import type {
   WorkflowTransition,
   WorkflowGate,
 } from '@/types/workflow'
-import type { HistoryEntry } from '../types'
-import { stateService, transitionService } from '../services'
+import type { EdgePosition, HistoryEntry } from '../types'
+import { stateService, transitionService, layoutService } from '../services'
+import { anchorPatch } from '../services/layoutService'
+
+export interface DeleteOptions {
+  /** Suppress the success toast when the caller reports the outcome itself. */
+  silent?: boolean
+}
 
 interface UseWorkflowCRUDOptions {
   // Core data
@@ -42,16 +48,10 @@ interface UseWorkflowCRUDOptions {
   // Transition creation state
   setIsCreatingTransition: (creating: boolean) => void
   setTransitionStartId: (id: string | null) => void
+  setTransitionStartAnchor: (anchor: EdgePosition | null) => void
   setIsDraggingToCreateTransition: (dragging: boolean) => void
   setHoveredStateId: (id: string | null) => void
   transitionStartId: string | null
-  justCompletedTransitionRef: React.MutableRefObject<boolean>
-  transitionCompletedAtRef: React.MutableRefObject<number>
-
-  // Waypoints
-  setWaypoints: React.Dispatch<
-    React.SetStateAction<Record<string, Array<{ x: number; y: number }>>>
-  >
 
   // Notifications
   addToast: (type: 'success' | 'error' | 'info' | 'warning', message: string) => void
@@ -81,12 +81,10 @@ export function useWorkflowCRUD(options: UseWorkflowCRUDOptions) {
     setFloatingToolbar,
     setIsCreatingTransition,
     setTransitionStartId,
+    setTransitionStartAnchor,
     setIsDraggingToCreateTransition,
     setHoveredStateId,
     transitionStartId,
-    justCompletedTransitionRef,
-    transitionCompletedAtRef,
-    setWaypoints,
     addToast,
     pushToUndo,
   } = options
@@ -121,12 +119,12 @@ export function useWorkflowCRUD(options: UseWorkflowCRUDOptions) {
       return null
     }
 
-    // Cast through unknown since DB row type may differ from interface
-    const createdState = data as unknown as WorkflowState
+    const createdState = data as WorkflowState
     setStates((prev) => [...prev, createdState])
     setSelectedStateId(createdState.id)
     setEditingState(createdState)
     setShowEditState(true)
+    pushToUndo?.({ type: 'state_add', state: createdState })
 
     return createdState
   }, [
@@ -138,13 +136,14 @@ export function useWorkflowCRUD(options: UseWorkflowCRUDOptions) {
     setEditingState,
     setShowEditState,
     addToast,
+    pushToUndo,
   ])
 
   /**
    * Delete a state from the workflow
    */
   const deleteState = useCallback(
-    async (stateId: string) => {
+    async (stateId: string, options?: DeleteOptions) => {
       if (!isAdmin) return false
 
       // Check if state has transitions
@@ -167,14 +166,17 @@ export function useWorkflowCRUD(options: UseWorkflowCRUDOptions) {
         return false
       }
 
+      // Layout writes queued during the last gesture would otherwise resurrect
+      // this row's columns after the delete has already gone through.
+      layoutService.cancelPending([stateId])
+
       setStates((prev) => prev.filter((s) => s.id !== stateId))
       setSelectedStateId(null)
       setFloatingToolbar(null)
-      addToast('success', 'State deleted')
+      if (!options?.silent) addToast('success', 'State deleted')
 
-      // Push to undo stack if available
       if (pushToUndo && state) {
-        pushToUndo({ type: 'state_delete', data: { state } })
+        pushToUndo({ type: 'state_delete', state })
       }
 
       return true
@@ -213,33 +215,37 @@ export function useWorkflowCRUD(options: UseWorkflowCRUDOptions) {
     [setStates],
   )
 
-  /**
-   * Start creating a transition from a state
-   */
-  const startTransition = useCallback(
-    (fromStateId: string) => {
-      if (!isAdmin) return
-      setIsCreatingTransition(true)
-      setTransitionStartId(fromStateId)
-    },
-    [isAdmin, setIsCreatingTransition, setTransitionStartId],
-  )
+  /** Clear every trace of an in-flight connection, however it ended. */
+  const finishTransitionCreation = useCallback(() => {
+    setIsCreatingTransition(false)
+    setTransitionStartId(null)
+    setTransitionStartAnchor(null)
+    setIsDraggingToCreateTransition(false)
+    setHoveredStateId(null)
+  }, [
+    setIsCreatingTransition,
+    setTransitionStartId,
+    setTransitionStartAnchor,
+    setIsDraggingToCreateTransition,
+    setHoveredStateId,
+  ])
 
   /**
-   * Complete transition creation by connecting to target state
+   * Complete transition creation by connecting to target state.
+   *
+   * The anchors the user dropped on are written in the insert itself, so the
+   * finished arrow renders exactly where the preview was: it used to be created
+   * anchorless and then given an arched waypoint, which made it jump away from
+   * where it had been drawn. A null anchor is a deliberate choice, not a missing
+   * value - it means the endpoint attaches to the node and re-routes as it moves.
    */
   const completeTransition = useCallback(
-    async (toStateId: string) => {
+    async (toStateId: string, anchors?: { start: EdgePosition | null; end: EdgePosition | null }) => {
       if (!selectedWorkflow || !transitionStartId || !isAdmin) return null
-
-      // Mark immediately that we're completing a transition to prevent subsequent events
-      justCompletedTransitionRef.current = true
-      transitionCompletedAtRef.current = Date.now()
 
       // Don't allow self-transitions
       if (transitionStartId === toStateId) {
-        setIsCreatingTransition(false)
-        setTransitionStartId(null)
+        finishTransitionCreation()
         return null
       }
 
@@ -250,8 +256,7 @@ export function useWorkflowCRUD(options: UseWorkflowCRUDOptions) {
 
       if (exists) {
         addToast('error', 'Transition already exists')
-        setIsCreatingTransition(false)
-        setTransitionStartId(null)
+        finishTransitionCreation()
         return null
       }
 
@@ -260,6 +265,8 @@ export function useWorkflowCRUD(options: UseWorkflowCRUDOptions) {
         from_state_id: transitionStartId,
         to_state_id: toStateId,
         line_style: 'solid' as const,
+        ...anchorPatch('start', anchors?.start ?? null),
+        ...anchorPatch('end', anchors?.end ?? null),
       }
 
       const { data, error } = await transitionService.create(newTransition)
@@ -267,11 +274,7 @@ export function useWorkflowCRUD(options: UseWorkflowCRUDOptions) {
       if (error || !data) {
         log.error('[Workflow]', 'Failed to create transition', { error })
         addToast('error', 'Failed to create transition')
-
-        setIsCreatingTransition(false)
-        setTransitionStartId(null)
-        setIsDraggingToCreateTransition(false)
-        setHoveredStateId(null)
+        finishTransitionCreation()
 
         return null
       }
@@ -284,22 +287,8 @@ export function useWorkflowCRUD(options: UseWorkflowCRUDOptions) {
       setEditingTransition(createdTransition)
       setShowEditTransition(true)
 
-      // Create a default waypoint for the new spline transition
-      const fromState = states.find((s) => s.id === transitionStartId)
-      const toState = states.find((s) => s.id === toStateId)
-      if (fromState && toState) {
-        const midX = (fromState.position_x + toState.position_x) / 2
-        const midY = (fromState.position_y + toState.position_y) / 2 - 40 // Offset up for natural curve
-        setWaypoints((prev) => ({
-          ...prev,
-          [createdTransition.id]: [{ x: midX, y: midY }],
-        }))
-      }
-
-      setIsCreatingTransition(false)
-      setTransitionStartId(null)
-      setIsDraggingToCreateTransition(false)
-      setHoveredStateId(null)
+      finishTransitionCreation()
+      pushToUndo?.({ type: 'transition_add', transition: createdTransition })
 
       return createdTransition
     },
@@ -308,19 +297,13 @@ export function useWorkflowCRUD(options: UseWorkflowCRUDOptions) {
       transitionStartId,
       isAdmin,
       transitions,
-      states,
-      justCompletedTransitionRef,
-      transitionCompletedAtRef,
       setTransitions,
       setSelectedTransitionId,
       setEditingTransition,
       setShowEditTransition,
-      setWaypoints,
-      setIsCreatingTransition,
-      setTransitionStartId,
-      setIsDraggingToCreateTransition,
-      setHoveredStateId,
+      finishTransitionCreation,
       addToast,
+      pushToUndo,
     ],
   )
 
@@ -328,7 +311,7 @@ export function useWorkflowCRUD(options: UseWorkflowCRUDOptions) {
    * Delete a transition
    */
   const deleteTransition = useCallback(
-    async (transitionId: string) => {
+    async (transitionId: string, options?: DeleteOptions) => {
       if (!isAdmin) return false
 
       const transition = transitions.find((t) => t.id === transitionId)
@@ -341,14 +324,22 @@ export function useWorkflowCRUD(options: UseWorkflowCRUDOptions) {
         return false
       }
 
+      layoutService.cancelPending([transitionId])
+
       setTransitions((prev) => prev.filter((t) => t.id !== transitionId))
+      // The database cascades the gates; drop them locally too so a transition
+      // that later reuses this id doesn't inherit them.
+      setGates((prev) => {
+        if (!(transitionId in prev)) return prev
+        const { [transitionId]: _removed, ...rest } = prev
+        return rest
+      })
       setSelectedTransitionId(null)
       setFloatingToolbar(null)
-      addToast('success', 'Transition deleted')
+      if (!options?.silent) addToast('success', 'Transition deleted')
 
-      // Push to undo stack if available
       if (pushToUndo && transition) {
-        pushToUndo({ type: 'transition_delete', data: { transition } })
+        pushToUndo({ type: 'transition_delete', transition })
       }
 
       return true
@@ -357,6 +348,7 @@ export function useWorkflowCRUD(options: UseWorkflowCRUDOptions) {
       isAdmin,
       transitions,
       setTransitions,
+      setGates,
       setSelectedTransitionId,
       setFloatingToolbar,
       addToast,
@@ -405,21 +397,6 @@ export function useWorkflowCRUD(options: UseWorkflowCRUDOptions) {
     [isAdmin, gates, setGates, setEditingGate, setShowEditGate, addToast],
   )
 
-  /**
-   * Cancel connect mode / creating transition
-   */
-  const cancelConnectMode = useCallback(() => {
-    setIsCreatingTransition(false)
-    setTransitionStartId(null)
-    setIsDraggingToCreateTransition(false)
-    setHoveredStateId(null)
-  }, [
-    setIsCreatingTransition,
-    setTransitionStartId,
-    setIsDraggingToCreateTransition,
-    setHoveredStateId,
-  ])
-
   return {
     // State operations
     addState,
@@ -427,10 +404,8 @@ export function useWorkflowCRUD(options: UseWorkflowCRUDOptions) {
     updateStatePosition,
 
     // Transition operations
-    startTransition,
     completeTransition,
     deleteTransition,
-    cancelConnectMode,
 
     // Gate operations
     addTransitionGate,

@@ -3,6 +3,7 @@ import { X } from 'lucide-react'
 import { usePDMStore } from '@/stores/pdmStore'
 
 import type { CategoryBreakdownRow } from '../data/types'
+import { channelMeta } from '../lib/channels'
 import { segmentMeta } from '../lib/segments'
 import { parseCategoryKey } from '../lib/taxonomy'
 
@@ -49,6 +50,12 @@ export function FilterChips({ categories }: FilterChipsProps) {
       label: 'Category',
       value: categoryLabel(key),
       onRemove: () => toggleCustomerFacet('categories', key),
+    })),
+    ...filters.channels.map((id) => ({
+      key: `channel:${id}`,
+      label: 'Channel',
+      value: channelMeta(id).plural,
+      onRemove: () => toggleCustomerFacet('channels', id),
     })),
     ...filters.countries.map((country) => ({
       key: `country:${country}`,

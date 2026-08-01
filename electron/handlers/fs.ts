@@ -250,6 +250,25 @@ const watcherScanCache: WatcherScanCache = {
   },
 }
 
+/**
+ * Drop a path from the cached scan after mutating it behind the watcher's back.
+ *
+ * Handlers that delete files stop the watcher first, so no watcher event ever arrives to
+ * prune the entry. Without this the delta scan keeps handing the renderer a file that is
+ * no longer on disk, and the row reappears on the next refresh.
+ *
+ * @param absolutePath - Absolute path of the entry that was removed from disk
+ */
+function forgetScanCacheEntry(absolutePath: string): void {
+  if (!workingDirectory || !workingFilesScanCache) return
+  if (workingFilesScanCache.rootDir !== workingDirectory) return
+
+  const relativePath = path.relative(workingDirectory, absolutePath).replace(/\\/g, '/')
+  if (!relativePath || relativePath.startsWith('..')) return
+
+  deleteScanEntry(workingFilesScanCache.entries, relativePath)
+}
+
 // Track delete operations for debugging
 let deleteOperationCounter = 0
 
@@ -1920,6 +1939,7 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
         if (!result.success) {
           return result
         }
+        forgetScanCacheEntry(targetPath)
         return { success: true }
       } finally {
         if (needsWatcherPause) {
@@ -2012,6 +2032,7 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
         try {
           // Skip if file doesn't exist
           if (!fs.existsSync(targetPath)) {
+            forgetScanCacheEntry(targetPath)
             results.push({ path: targetPath, success: true }) // Already deleted, consider success
             continue
           }
@@ -2077,6 +2098,7 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
           }
 
           if (deleted) {
+            forgetScanCacheEntry(targetPath)
             results.push({ path: targetPath, success: true })
           } else {
             let errorMsg = lastError || 'Unknown error'
@@ -2160,11 +2182,13 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
 
         try {
           if (!fs.existsSync(targetPath)) {
+            forgetScanCacheEntry(targetPath)
             results.push({ path: targetPath, success: true })
             continue
           }
 
           await shell.trashItem(targetPath)
+          forgetScanCacheEntry(targetPath)
           results.push({ path: targetPath, success: true })
         } catch (error) {
           const errorMsg = String(error)
@@ -2306,6 +2330,10 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
           const totalDuration = Date.now() - startTime
           log(`[Rename-DEBUG] SUCCESS on attempt ${attempt} after ${totalDuration}ms`)
           log(`Renamed: ${oldPath} -> ${newPath} (${fileCount} files)`)
+          // A rename relocates entries rather than removing them, and a directory rename
+          // moves a whole subtree. Renames are rare, so drop the cache and let the next
+          // list call rebuild it instead of patching keys by hand.
+          watcherScanCache.invalidate()
           return { success: true, fileCount }
         } catch (error) {
           const attemptDuration = Date.now() - attemptStart
@@ -2807,6 +2835,10 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
       try {
         fs.renameSync(sourcePath, destPath)
         log(`Moved (rename): ${sourcePath} -> ${destPath} (${fileCount} files)`)
+        // A move relocates entries rather than removing them, and moving a directory
+        // shifts a whole subtree. Moves are rare, so drop the cache and let the next
+        // list call rebuild it instead of patching keys by hand.
+        watcherScanCache.invalidate()
         return { success: true, fileCount }
       } catch (renameErr) {
         log('Rename failed, trying copy+delete: ' + String(renameErr))
@@ -2816,11 +2848,13 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
         const copiedCount = copyDirSync(sourcePath, destPath)
         fs.rmSync(sourcePath, { recursive: true, force: true })
         log(`Moved (copy+delete) directory: ${sourcePath} -> ${destPath} (${copiedCount} files)`)
+        watcherScanCache.invalidate()
         return { success: true, fileCount: copiedCount }
       } else {
         copyFileWritable(sourcePath, destPath)
         fs.unlinkSync(sourcePath)
         log('Moved (copy+delete) file: ' + sourcePath + ' -> ' + destPath)
+        watcherScanCache.invalidate()
         return { success: true, fileCount: 1 }
       }
     } catch (error) {

@@ -38,10 +38,13 @@ export const ItemCard = memo(function ItemCard({
     isDirectory: false,
   }
 
+  // Item rows carry no mtime or size for the primary file, so the row's own
+  // change token stands in as the thumbnail version.
   const thumbnail = useThumbnail({
     file: previewFile,
     iconSize,
     isProcessing: false,
+    version: row.lastModified ?? undefined,
   })
 
   const showDetails = iconSize >= 80
@@ -71,10 +74,8 @@ export const ItemCard = memo(function ItemCard({
             file={previewFile}
             iconSize={iconSize}
             thumbnail={thumbnail.thumbnail}
-            thumbnailError={thumbnail.thumbnailError}
-            loadingThumbnail={thumbnail.loadingThumbnail}
             folderIconColor=""
-            onThumbnailError={() => thumbnail.setThumbnailError(true)}
+            onThumbnailError={thumbnail.onThumbnailError}
           />
         )}
       </div>

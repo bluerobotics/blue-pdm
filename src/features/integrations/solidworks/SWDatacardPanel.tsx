@@ -1,12 +1,12 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { log } from '@/lib/logger'
 import { usePDMStore, LocalFile } from '@/stores/pdmStore'
-import { thumbnailCache } from '@/lib/thumbnailCache'
+import { buildThumbnailUrl } from '@/lib/thumbnailUrl'
+import { useRetryableImage } from '@/hooks/useRetryableImage'
 import {
   FileBox,
   Layers,
   FilePen,
-  Loader2,
   RefreshCw,
   ExternalLink,
   ZoomIn,
@@ -58,8 +58,7 @@ function useSolidWorksService() {
 
 // Main preview panel for SolidWorks files
 export function SWDatacardPanel({ file }: { file: LocalFile }) {
-  const [preview, setPreview] = useState<string | null>(null)
-  const [previewLoading, setPreviewLoading] = useState(false)
+  const [refreshToken, setRefreshToken] = useState(0)
   const [previewZoom, setPreviewZoom] = useState(100)
   const [activeConfigName, setActiveConfigName] = useState<string | undefined>(undefined)
 
@@ -94,70 +93,16 @@ export function SWDatacardPanel({ file }: { file: LocalFile }) {
     loadActiveConfig()
   }, [file?.path, status.running])
 
-  // Load preview - Priority: OLE preview -> SW service -> OS thumbnail
-  // Effect 1: Try OLE/thumbnail preview (works for older SW files in CFB format)
-  useEffect(() => {
-    const loadOlePreview = async () => {
-      if (!file?.path) return
+  // Preview URL. The main process resolves it against the thumbnail cache,
+  // preferring the full-resolution OLE stream and falling back to the Document
+  // Manager image, so the ordering that used to live in two effects here is now
+  // done once per file version instead of on every mount.
+  const previewUrl = useMemo(
+    () => buildThumbnailUrl(file, 'preview', { refreshToken, configuration: activeConfigName }),
+    [file, refreshToken, activeConfigName],
+  )
 
-      setPreviewLoading(true)
-      setPreview(null)
-
-      try {
-        // Try direct OLE preview extraction (works for older SW files)
-        const oleResult = await window.electronAPI?.extractSolidWorksPreview?.(file.path)
-        if (oleResult?.success && oleResult.data) {
-          log.debug('[Preview]', 'Using OLE-extracted preview')
-          setPreview(oleResult.data)
-          setPreviewLoading(false)
-          return
-        }
-
-        // OLE failed - Fall back to OS thumbnail as immediate fallback (uses cache)
-        const thumbData = await thumbnailCache.get(file.path)
-        if (thumbData) {
-          log.debug('[Preview]', 'Using OS thumbnail fallback')
-          setPreview(thumbData)
-        }
-      } catch (error) {
-        log.error('[Preview]', 'Failed to load OLE preview', { error: error })
-      } finally {
-        setPreviewLoading(false)
-      }
-    }
-
-    loadOlePreview()
-  }, [file?.path])
-
-  // Effect 2: Try SW service preview when service becomes available AND we don't have a preview
-  useEffect(() => {
-    const loadServicePreview = async () => {
-      if (preview || !file?.path || !status.running) return
-
-      log.debug('[Preview]', 'Attempting SW service preview', { fileName: file.name })
-      setPreviewLoading(true)
-
-      try {
-        const previewResult = await window.electronAPI?.solidworks?.getPreview(
-          file.path,
-          activeConfigName,
-        )
-        if (previewResult?.success && previewResult.data?.imageData) {
-          const mimeType = previewResult.data.mimeType || 'image/png'
-          log.debug('[Preview]', 'Using SW service preview')
-          setPreview(`data:${mimeType};base64,${previewResult.data.imageData}`)
-        } else if (previewResult?.error) {
-          log.debug('[Preview]', 'SW service preview failed', { error: previewResult.error })
-        }
-      } catch (error) {
-        log.error('[Preview]', 'Failed to load SW service preview', { error: error })
-      } finally {
-        setPreviewLoading(false)
-      }
-    }
-
-    loadServicePreview()
-  }, [file?.path, file?.name, activeConfigName, status.running, preview])
+  const { src: preview, onError: onPreviewError } = useRetryableImage(previewUrl)
 
   // Handle mouse wheel zoom on preview
   const handlePreviewWheel = (e: React.WheelEvent) => {
@@ -166,39 +111,11 @@ export function SWDatacardPanel({ file }: { file: LocalFile }) {
     setPreviewZoom((prev) => Math.max(50, Math.min(300, prev + delta)))
   }
 
-  // Refresh preview
-  const refreshPreview = async () => {
-    setPreviewLoading(true)
-    setPreview(null)
-    try {
-      const oleResult = await window.electronAPI?.extractSolidWorksPreview?.(file.path)
-      if (oleResult?.success && oleResult.data) {
-        setPreview(oleResult.data)
-        return
-      }
-
-      if (status.running) {
-        const previewResult = await window.electronAPI?.solidworks?.getPreview(
-          file.path,
-          activeConfigName,
-        )
-        if (previewResult?.success && previewResult.data?.imageData) {
-          const mimeType = previewResult.data.mimeType || 'image/png'
-          setPreview(`data:${mimeType};base64,${previewResult.data.imageData}`)
-          return
-        }
-      }
-
-      // Fall back to OS thumbnail (uses cache)
-      const thumbData = await thumbnailCache.get(file.path)
-      if (thumbData) {
-        setPreview(thumbData)
-      }
-    } catch {
-      // Silent fail
-    } finally {
-      setPreviewLoading(false)
-    }
+  // Discard the cached image and re-extract. Only needed when the stored
+  // preview is wrong despite the file being unchanged; an actual edit changes
+  // the URL on its own.
+  const refreshPreview = () => {
+    setRefreshToken(Date.now())
   }
 
   // Open in eDrawings
@@ -220,13 +137,13 @@ export function SWDatacardPanel({ file }: { file: LocalFile }) {
       >
         {/* Preview content */}
         <div className="absolute inset-0 flex items-center justify-center p-4">
-          {previewLoading ? (
-            <Loader2 className="animate-spin text-cyan-400" size={48} />
-          ) : preview ? (
+          {preview ? (
             <img
               src={preview}
               alt={file.name}
               className="max-w-full max-h-full object-contain transition-transform duration-150"
+              decoding="async"
+              onError={onPreviewError}
               style={{
                 transform: `scale(${previewZoom / 100})`,
                 filter: 'drop-shadow(0 4px 12px rgba(0, 0, 0, 0.4))',
@@ -268,11 +185,10 @@ export function SWDatacardPanel({ file }: { file: LocalFile }) {
         {/* Refresh button - top right */}
         <button
           onClick={refreshPreview}
-          disabled={previewLoading}
           className="absolute top-3 right-3 p-1.5 bg-black/50 hover:bg-black/70 backdrop-blur-sm rounded text-plm-fg-muted hover:text-white transition-all"
           title="Refresh preview"
         >
-          <RefreshCw size={14} className={previewLoading ? 'animate-spin' : ''} />
+          <RefreshCw size={14} />
         </button>
       </div>
 

@@ -1,5 +1,5 @@
 // Workflow data management hook - uses centralized Zustand store
-import { useCallback, useEffect, type SetStateAction, type Dispatch } from 'react'
+import { useCallback, useEffect, useRef, type SetStateAction, type Dispatch } from 'react'
 import { log } from '@/lib/logger'
 import { usePDMStore } from '@/stores/pdmStore'
 import type {
@@ -13,6 +13,12 @@ import { workflowService, stateService, transitionService } from '../services'
 interface UseWorkflowDataOptions {
   onWorkflowSelect?: (workflow: WorkflowTemplate, states: WorkflowState[]) => void
   onSelectionClear?: () => void
+}
+
+export interface WorkflowDetails {
+  states: WorkflowState[]
+  transitions: WorkflowTransition[]
+  gates: Record<string, WorkflowGate[]>
 }
 
 export function useWorkflowData(options: UseWorkflowDataOptions = {}) {
@@ -42,6 +48,9 @@ export function useWorkflowData(options: UseWorkflowDataOptions = {}) {
   // Derived state
   const selectedWorkflow = getSelectedWorkflow()
   const isLoading = workflowsLoading
+
+  // Incremented per detail load so a slow response can tell it has been superseded
+  const loadGenerationRef = useRef(0)
 
   // Admin check based on effective role
   const effectiveRole = getEffectiveRole()
@@ -77,33 +86,30 @@ export function useWorkflowData(options: UseWorkflowDataOptions = {}) {
    * Returns the loaded data for canvas positioning
    */
   const loadWorkflowDetails = useCallback(
-    async (
-      workflow: WorkflowTemplate,
-    ): Promise<{
-      states: WorkflowState[]
-      transitions: WorkflowTransition[]
-      gates: Record<string, WorkflowGate[]>
-    }> => {
-      // Load states - cast through unknown since DB row may differ from interface
+    async (workflow: WorkflowTemplate): Promise<WorkflowDetails | null> => {
+      // Clicking through the list faster than the queries return would otherwise
+      // let an earlier load finish last and paint the wrong workflow.
+      const generation = ++loadGenerationRef.current
+      const isStale = () => generation !== loadGenerationRef.current
+
       const statesResult = await stateService.getByWorkflow(workflow.id)
-      const statesData = (statesResult.data || []) as unknown as WorkflowState[]
+      if (isStale()) return null
+      const statesData = statesResult.data || []
       setWorkflowStates(statesData)
 
-      // Load transitions
       const transitionsResult = await transitionService.getByWorkflow(workflow.id)
-      const transitionsData = (transitionsResult.data || []) as WorkflowTransition[]
+      if (isStale()) return null
+      const transitionsData = transitionsResult.data || []
       setWorkflowTransitions(transitionsData)
 
-      // Load gates for each transition
       let gatesByTransition: Record<string, WorkflowGate[]> = {}
       if (transitionsData.length > 0) {
         const transitionIds = transitionsData.map((t) => t.id)
         const gatesResult = await transitionService.getGatesGroupedByTransition(transitionIds)
-        gatesByTransition = (gatesResult.data || {}) as Record<string, WorkflowGate[]>
-        setWorkflowGates(gatesByTransition)
-      } else {
-        setWorkflowGates({})
+        if (isStale()) return null
+        gatesByTransition = gatesResult.data || {}
       }
+      setWorkflowGates(gatesByTransition)
 
       return {
         states: statesData,
@@ -123,6 +129,8 @@ export function useWorkflowData(options: UseWorkflowDataOptions = {}) {
       options.onSelectionClear?.()
 
       const details = await loadWorkflowDetails(workflow)
+      if (!details) return null
+
       options.onWorkflowSelect?.(workflow, details.states)
 
       return details
@@ -229,30 +237,31 @@ export function useWorkflowData(options: UseWorkflowDataOptions = {}) {
     loadWorkflows()
   }, [organization?.id]) // Only depend on org ID, not the full object
 
-  // Setters that match the original React.Dispatch<SetStateAction<T>> API for backward compatibility
-  // These support both direct values and updater functions
+  // Setters that match the React.Dispatch<SetStateAction<T>> API the canvas hooks
+  // expect. Updater functions read from the store rather than from a captured
+  // render value, so two updates within the same tick can't clobber each other.
   const setStates: Dispatch<SetStateAction<WorkflowState[]>> = useCallback(
     (value) => {
       if (typeof value === 'function') {
         const updater = value as (prev: WorkflowState[]) => WorkflowState[]
-        setWorkflowStates(updater(workflowStates))
+        setWorkflowStates(updater(usePDMStore.getState().workflowStates))
       } else {
         setWorkflowStates(value)
       }
     },
-    [workflowStates, setWorkflowStates],
+    [setWorkflowStates],
   )
 
   const setTransitions: Dispatch<SetStateAction<WorkflowTransition[]>> = useCallback(
     (value) => {
       if (typeof value === 'function') {
         const updater = value as (prev: WorkflowTransition[]) => WorkflowTransition[]
-        setWorkflowTransitions(updater(workflowTransitions))
+        setWorkflowTransitions(updater(usePDMStore.getState().workflowTransitions))
       } else {
         setWorkflowTransitions(value)
       }
     },
-    [workflowTransitions, setWorkflowTransitions],
+    [setWorkflowTransitions],
   )
 
   const setGates: Dispatch<SetStateAction<Record<string, WorkflowGate[]>>> = useCallback(
@@ -261,12 +270,12 @@ export function useWorkflowData(options: UseWorkflowDataOptions = {}) {
         const updater = value as (
           prev: Record<string, WorkflowGate[]>,
         ) => Record<string, WorkflowGate[]>
-        setWorkflowGates(updater(workflowGates))
+        setWorkflowGates(updater(usePDMStore.getState().workflowGates))
       } else {
         setWorkflowGates(value)
       }
     },
-    [workflowGates, setWorkflowGates],
+    [setWorkflowGates],
   )
 
   const setSelectedWorkflow: Dispatch<SetStateAction<WorkflowTemplate | null>> = useCallback(

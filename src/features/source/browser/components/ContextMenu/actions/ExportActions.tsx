@@ -15,6 +15,7 @@ import {
 import type { ActionComponentProps } from './types'
 import { usePDMStore } from '@/stores/pdmStore'
 import { useSolidWorksStatus } from '@/hooks/useSolidWorksStatus'
+import { isSolidWorksAlive } from '@/types/solidworks'
 import { getEffectiveExportSettings } from '@/features/settings/system'
 import { getSerializationSettings, combineBaseAndTab } from '@/lib/serialization'
 import { log } from '@/lib/logger'
@@ -23,14 +24,35 @@ import { ContextSubmenu } from '../components'
 type ExportFormat = 'step' | 'iges' | 'stl' | 'pdf' | 'dxf'
 type SubmenuKey = ExportFormat | 'step-from-drawing'
 
+/** The values the SolidWorks service actually substituted into the export filename */
+interface ResolvedExportMetadata {
+  partNumber?: string
+  tabNumber?: string
+  revision?: string
+  description?: string
+}
+
+/**
+ * Only the PDF export reports back what it resolved, and `result.data` is a union across
+ * every export format, so read the field defensively rather than narrowing the union.
+ */
+function readResolvedMetadata(data: unknown): ResolvedExportMetadata | undefined {
+  if (!data || typeof data !== 'object' || !('resolvedMetadata' in data)) return undefined
+  const value = (data as { resolvedMetadata?: unknown }).resolvedMetadata
+  if (!value || typeof value !== 'object') return undefined
+  return value as ResolvedExportMetadata
+}
+
 export function ExportActions({
   contextFiles,
   multiSelect: _multiSelect,
   firstFile: _firstFile,
   onClose,
 }: ActionComponentProps) {
-  const { status } = useSolidWorksStatus()
-  const swServiceRunning = status.running
+  const { status, hasChecked: swStatusChecked } = useSolidWorksStatus()
+  // Treat an unconfirmed status as available so the submenu doesn't disappear
+  // before the first poll lands, or while the service is busy with other work.
+  const swServiceRunning = !swStatusChecked || isSolidWorksAlive(status)
   const [isExporting, setIsExporting] = useState<string | null>(null)
   const [exportSubmenu, setExportSubmenu] = useState<SubmenuKey | null>(null)
   const submenuTimeoutRef = useRef<NodeJS.Timeout | null>(null)
@@ -117,9 +139,17 @@ export function ExportActions({
           `${i}/${fileCount}`,
         )
 
-        // Build PDM metadata for export filename pattern
-        const baseNumber = file.pdmData?.part_number || file.pendingMetadata?.part_number || ''
-        const description = file.pdmData?.description || file.pendingMetadata?.description || ''
+        // Build PDM metadata for export filename pattern.
+        // Pending edits win over pdmData, matching what the Item Number and Description
+        // columns display - otherwise an uncommitted renumber is ignored by export.
+        const baseNumber =
+          file.pendingMetadata?.part_number !== undefined
+            ? (file.pendingMetadata.part_number ?? '')
+            : file.pdmData?.part_number || ''
+        const description =
+          file.pendingMetadata?.description !== undefined
+            ? (file.pendingMetadata.description ?? '')
+            : file.pdmData?.description || ''
         const revision = (file.pdmData?.revision || '').trim()
 
         // Get tab number from pending config tabs (default config)
@@ -235,12 +265,33 @@ export function ExportActions({
               outputPaths: exportedFiles,
               format: format.toUpperCase(),
             })
+
+            // The service resolves the filename from the source file's own properties and
+            // only falls back to what we sent, so it may have used a different number than
+            // fullItemNumber. Tag the export with what was actually used, otherwise the new
+            // file's Item Number silently contradicts its own filename.
+            const resolved = readResolvedMetadata(result.data)
+            const resolvedItemNumber = resolved?.partNumber || fullItemNumber
+            const resolvedDescription = resolved?.description || description
+
+            if (resolved?.partNumber && resolved.partNumber !== fullItemNumber) {
+              log.warn('[Export]', `Source file properties disagree with BluePLM`, {
+                inputPath: file.path,
+                pdmItemNumber: fullItemNumber,
+                fileItemNumber: resolved.partNumber,
+              })
+              addToast(
+                'warning',
+                `${file.name} has item number ${resolved.partNumber} in its file properties but ${fullItemNumber} in BluePLM. The export used ${resolved.partNumber}. Run Sync Metadata to correct the file.`,
+              )
+            }
+
             if (exportedFiles && exportedFiles.length > 0) {
               for (const exportedPath of exportedFiles) {
                 usePDMStore.getState().updatePendingMetadata(exportedPath, {
-                  part_number: fullItemNumber,
-                  description,
-                  revision: revision || '',
+                  part_number: resolvedItemNumber,
+                  description: resolvedDescription,
+                  revision: resolved?.revision || revision || '',
                 })
               }
             }

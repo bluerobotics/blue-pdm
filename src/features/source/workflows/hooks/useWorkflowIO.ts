@@ -1,17 +1,30 @@
 // Import/Export operations for workflows
 import { useCallback, useRef, useState } from 'react'
+
 import { log } from '@/lib/logger'
-import { supabase } from '@/lib/supabase'
-import type { WorkflowTemplate, WorkflowState, WorkflowTransition } from '@/types/workflow'
-import { stateService, transitionService, workflowService } from '../services'
+import { t } from '@/lib/i18n'
+import type {
+  WorkflowTemplate,
+  WorkflowState,
+  WorkflowTransition,
+  WorkflowGate,
+} from '@/types/workflow'
+
+import { workflowService } from '../services'
+import {
+  buildExportPayload,
+  parseWorkflowExport,
+  type WorkflowExport,
+  type ParseResult,
+} from '../utils'
 
 /** Pending import info for confirmation dialog */
 export interface PendingImport {
   file: File
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  data: any
+  payload: WorkflowExport
   stateCount: number
   transitionCount: number
+  gateCount: number
 }
 
 interface UseWorkflowIOOptions {
@@ -19,11 +32,13 @@ interface UseWorkflowIOOptions {
   selectedWorkflow: WorkflowTemplate | null
   states: WorkflowState[]
   transitions: WorkflowTransition[]
+  gates: Record<string, WorkflowGate[]>
   isAdmin: boolean
 
-  // Setters
-  setStates: React.Dispatch<React.SetStateAction<WorkflowState[]>>
-  setTransitions: React.Dispatch<React.SetStateAction<WorkflowTransition[]>>
+  // Reload the canvas from the database once the import transaction commits
+  reloadWorkflow: () => Promise<void>
+
+  // Selection
   setSelectedStateId: (id: string | null) => void
   setSelectedTransitionId: (id: string | null) => void
 
@@ -31,14 +46,21 @@ interface UseWorkflowIOOptions {
   addToast: (type: 'success' | 'error' | 'info' | 'warning', message: string) => void
 }
 
+const INVALID_FILE_MESSAGES: Record<Exclude<ParseResult, { ok: true }>['reason'], string> = {
+  'not-an-object': 'workflows.import.notAWorkflowFile',
+  'no-states': 'workflows.import.noStates',
+  'bad-state': 'workflows.import.badState',
+  'bad-transition': 'workflows.import.badTransition',
+}
+
 export function useWorkflowIO(options: UseWorkflowIOOptions) {
   const {
     selectedWorkflow,
     states,
     transitions,
+    gates,
     isAdmin,
-    setStates,
-    setTransitions,
+    reloadWorkflow,
     setSelectedStateId,
     setSelectedTransitionId,
     addToast,
@@ -57,49 +79,9 @@ export function useWorkflowIO(options: UseWorkflowIOOptions) {
   const exportWorkflow = useCallback(() => {
     if (!selectedWorkflow) return
 
-    // Create export data structure
-    const exportData = {
-      version: '1.0',
-      exportedAt: new Date().toISOString(),
-      workflow: {
-        name: selectedWorkflow.name,
-        description: selectedWorkflow.description,
-        canvas_config: selectedWorkflow.canvas_config,
-      },
-      states: states.map((s) => ({
-        name: s.name,
-        label: s.label,
-        description: s.description,
-        color: s.color,
-        icon: s.icon,
-        position_x: s.position_x,
-        position_y: s.position_y,
-        is_editable: s.is_editable,
-        requires_checkout: s.requires_checkout,
-        auto_increment_revision: s.auto_increment_revision,
-        sort_order: s.sort_order,
-        // Use name as reference key for transitions
-        _key: s.name,
-      })),
-      transitions: transitions.map((t) => {
-        const fromState = states.find((s) => s.id === t.from_state_id)
-        const toState = states.find((s) => s.id === t.to_state_id)
-        return {
-          from_state: fromState?.name,
-          to_state: toState?.name,
-          name: t.name,
-          description: t.description,
-          line_style: t.line_style,
-          line_path_type: t.line_path_type,
-          line_arrow_head: t.line_arrow_head,
-          line_thickness: t.line_thickness,
-          line_color: t.line_color,
-        }
-      }),
-    }
+    const payload = buildExportPayload(selectedWorkflow, states, transitions, gates)
 
-    // Download as JSON file
-    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' })
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
@@ -110,136 +92,75 @@ export function useWorkflowIO(options: UseWorkflowIOOptions) {
     URL.revokeObjectURL(url)
 
     addToast('success', 'Workflow exported')
-  }, [selectedWorkflow, states, transitions, addToast])
+  }, [selectedWorkflow, states, transitions, gates, addToast])
 
   /**
-   * Request import - validates file and sets pending state for confirmation
+   * Request import - validates the file and sets pending state for confirmation
    */
   const requestImport = useCallback(
     async (file: File) => {
       if (!selectedWorkflow || !isAdmin) return
 
+      let raw: unknown
       try {
-        const text = await file.text()
-        const importData = JSON.parse(text)
-
-        // Validate import data
-        if (!importData.version || !importData.states || !Array.isArray(importData.states)) {
-          addToast('error', 'Invalid workflow file format')
-          return
-        }
-
-        // Set pending import for confirmation dialog
-        setPendingImport({
-          file,
-          data: importData,
-          stateCount: importData.states.length,
-          transitionCount: importData.transitions?.length || 0,
-        })
+        raw = JSON.parse(await file.text())
       } catch (error) {
-        log.error('[Workflow]', 'Failed to parse workflow file', { error: error })
-        addToast('error', 'Failed to parse workflow file')
+        log.error('[Workflow]', 'Failed to parse workflow file', { error })
+        addToast('error', t('workflows.import.unreadableFile'))
+        return
       }
+
+      const result = parseWorkflowExport(raw)
+      if (!result.ok) {
+        addToast('error', t(INVALID_FILE_MESSAGES[result.reason]))
+        return
+      }
+
+      setPendingImport({
+        file,
+        payload: result.payload,
+        stateCount: result.payload.states.length,
+        transitionCount: result.payload.transitions.length,
+        gateCount: result.payload.transitions.reduce((sum, tr) => sum + tr.gates.length, 0),
+      })
     },
     [selectedWorkflow, isAdmin, addToast],
   )
 
   /**
-   * Confirm and execute import
+   * Confirm and execute import.
+   *
+   * The whole replacement happens in one database transaction, so a failure
+   * leaves the existing workflow exactly as it was rather than half-wiped.
    */
   const confirmImport = useCallback(async () => {
     if (!selectedWorkflow || !isAdmin || !pendingImport) return
 
     setIsImporting(true)
     try {
-      const importData = pendingImport.data
+      const { data, error } = await workflowService.importGraph(
+        selectedWorkflow.id,
+        pendingImport.payload,
+      )
+      if (error) throw error
 
-      // Delete existing transitions first (due to foreign key constraints)
-      // Use raw supabase for bulk deletes since services don't have this
-      await supabase.from('workflow_transitions').delete().eq('workflow_id', selectedWorkflow.id)
-
-      // Delete existing states
-      await supabase.from('workflow_states').delete().eq('workflow_id', selectedWorkflow.id)
-
-      // Create new states and build ID mapping
-      const stateIdMap: Record<string, string> = {}
-      const newStates: WorkflowState[] = []
-
-      for (const stateData of importData.states) {
-        const { data: newState, error } = await stateService.create({
-          workflow_id: selectedWorkflow.id,
-          name: stateData.name,
-          label: stateData.label,
-          description: stateData.description,
-          color: stateData.color || '#6B7280',
-          icon: stateData.icon || 'circle',
-          position_x: stateData.position_x || 100,
-          position_y: stateData.position_y || 100,
-          is_editable: stateData.is_editable ?? true,
-          requires_checkout: stateData.requires_checkout ?? true,
-          auto_increment_revision: stateData.auto_increment_revision ?? false,
-          sort_order: stateData.sort_order || 0,
-        })
-
-        if (error || !newState) throw error
-
-        // Map the original state name/key to new ID
-        stateIdMap[stateData._key || stateData.name] = newState.id
-        // Cast through unknown since DB row type may differ from interface
-        newStates.push(newState as unknown as WorkflowState)
-      }
-
-      // Create transitions using the ID mapping
-      const newTransitions: WorkflowTransition[] = []
-
-      if (importData.transitions && Array.isArray(importData.transitions)) {
-        for (const transData of importData.transitions) {
-          const fromStateId = stateIdMap[transData.from_state]
-          const toStateId = stateIdMap[transData.to_state]
-
-          if (!fromStateId || !toStateId) {
-            log.warn('[Workflow]', 'Skipping transition: state not found', {
-              from: transData.from_state,
-              to: transData.to_state,
-            })
-            continue
-          }
-
-          const { data: newTrans, error } = await transitionService.create({
-            workflow_id: selectedWorkflow.id,
-            from_state_id: fromStateId,
-            to_state_id: toStateId,
-            name: transData.name,
-            description: transData.description,
-            line_style: transData.line_style || 'solid',
-          })
-
-          if (error || !newTrans) throw error
-          // Cast through unknown since DB row type may differ from interface
-          newTransitions.push(newTrans as unknown as WorkflowTransition)
-        }
-      }
-
-      // Update workflow metadata if provided
-      if (importData.workflow) {
+      if (pendingImport.payload.workflow.canvas_config) {
         await workflowService.update(selectedWorkflow.id, {
-          description: importData.workflow.description,
-          canvas_config: importData.workflow.canvas_config,
+          description: pendingImport.payload.workflow.description,
+          canvas_config: pendingImport.payload.workflow.canvas_config,
         })
       }
 
-      // Update local state
-      setStates(newStates)
-      setTransitions(newTransitions)
       setSelectedStateId(null)
       setSelectedTransitionId(null)
+      await reloadWorkflow()
 
       addToast(
         'success',
-        `Imported ${newStates.length} states and ${newTransitions.length} transitions`,
+        `Imported ${data?.state_count ?? 0} states and ${data?.transition_count ?? 0} transitions`,
       )
     } catch (error) {
-      log.error('[Workflow]', 'Failed to import workflow', { error: error })
+      log.error('[Workflow]', 'Failed to import workflow', { error })
       addToast(
         'error',
         `Failed to import workflow: ${error instanceof Error ? error.message : 'Unknown error'}`,
@@ -252,8 +173,7 @@ export function useWorkflowIO(options: UseWorkflowIOOptions) {
     selectedWorkflow,
     isAdmin,
     pendingImport,
-    setStates,
-    setTransitions,
+    reloadWorkflow,
     setSelectedStateId,
     setSelectedTransitionId,
     addToast,

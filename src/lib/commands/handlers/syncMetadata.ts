@@ -30,12 +30,20 @@ import {
   getSerializationSettings,
   combineBaseAndTab,
 } from '@/lib/serialization'
+import { getSwReferencesCached } from '@/lib/solidworks'
 import type { PendingMetadata } from '@/stores/types'
 
 // SolidWorks file extensions
 const SW_EXTENSIONS = ['.sldprt', '.sldasm', '.slddrw']
 const DRAWING_EXTENSIONS = ['.slddrw']
 const PART_ASSEMBLY_EXTENSIONS = ['.sldprt', '.sldasm']
+
+/**
+ * How long to keep suppressing the FileWatcher after writing properties into a SW file.
+ * Must outlast the watcher's debounce so our own write is filtered out rather than the
+ * user's next legitimate edit.
+ */
+const WATCHER_SUPPRESSION_MS = 5_000
 
 function logSync(
   level: 'info' | 'warn' | 'error' | 'debug',
@@ -60,10 +68,35 @@ interface ExtractedMetadata {
   revision: string | null
   inheritedFromParent?: boolean
   parentModelPath?: string
+  /**
+   * The drawing's own part number, before parent inheritance replaced it.
+   * Only set when `inheritedFromParent` is true, so callers can detect a
+   * drawing whose stored properties have drifted from its parent model.
+   */
+  ownPartNumber?: string | null
+  /** The drawing's own description, before parent inheritance replaced it */
+  ownDescription?: string | null
   /** True if drawing needs SW API for inheritance but SW isn't running */
   drawingNeedsSwButNotRunning?: boolean
   /** True if SW is running but COM inaccessible (permissions mismatch) */
   drawingNeedsSwComFix?: boolean
+}
+
+/**
+ * Per-outcome counts from a background metadata refresh pass.
+ *
+ * `unchanged` and `failed` are tracked separately because a pass that reads every file and
+ * finds them all already in sync looks identical, from the outside, to one that errored.
+ */
+export interface MetadataRefreshSummary {
+  /** Files whose pending metadata was updated from the file on disk */
+  refreshed: number
+  /** Files read successfully whose metadata already matched the database */
+  unchanged: number
+  /** Files that could not be read */
+  failed: number
+  /** Files never attempted: not SolidWorks files, not checked out, or service unavailable */
+  skipped: number
 }
 
 /**
@@ -87,7 +120,7 @@ interface DrawingReferencesResult {
  */
 async function getDrawingReferences(fullPath: string): Promise<DrawingReferencesResult> {
   try {
-    const result = await window.electronAPI?.solidworks?.getReferences?.(fullPath)
+    const result = await getSwReferencesCached(fullPath)
 
     // Check for specific SOLIDWORKS_NOT_RUNNING error from the service
     if (!result?.success && result?.error === 'SOLIDWORKS_NOT_RUNNING') {
@@ -491,6 +524,8 @@ async function pullDrawingMetadata(fullPath: string): Promise<ExtractedMetadata 
           revision: drawingMetadata.revision, // Keep drawing's own revision!
           inheritedFromParent: true,
           parentModelPath: parentFullPath,
+          ownPartNumber: drawingMetadata.partNumber,
+          ownDescription: drawingMetadata.description,
         }
       }
     }
@@ -543,6 +578,8 @@ async function pullDrawingMetadata(fullPath: string): Promise<ExtractedMetadata 
         revision: drawingMetadata.revision,
         inheritedFromParent: true,
         parentModelPath: inferredParentPath,
+        ownPartNumber: drawingMetadata.partNumber,
+        ownDescription: drawingMetadata.description,
       }
     }
   }
@@ -807,7 +844,104 @@ async function pushPartAssemblyMetadata(
     // fired by our SW write is filtered out, not the next legitimate user edit.
     setTimeout(() => {
       usePDMStore.getState().clearExpectedFileChanges([watcherKey])
-    }, 5000)
+    }, WATCHER_SUPPRESSION_MS)
+  }
+}
+
+/**
+ * Recover the base item number from a resolved number that may already carry a tab.
+ *
+ * The parent's configuration-level `Number` is the combined base+tab value, but
+ * `Base Item Number` must stay unsuffixed. The tab separator is org-configurable,
+ * so strip whatever separator characters sit between the two rather than assuming '-'.
+ */
+function deriveBaseNumber(partNumber: string, tabNumber: string | null | undefined): string {
+  if (!tabNumber || !partNumber.endsWith(tabNumber)) return partNumber
+  const base = partNumber.slice(0, partNumber.length - tabNumber.length).replace(/[-_.\s]+$/, '')
+  return base || partNumber
+}
+
+/**
+ * PUSH: write parent-inherited metadata into a drawing's own custom properties.
+ *
+ * Drawings take their item number and description from the referenced model, but until
+ * now nothing wrote those values back into the drawing file. A drawing copied from
+ * another item therefore kept the source item's `Number` on disk indefinitely, and it
+ * was unreachable from the UI because `lockDrawingItemNumber` makes the cell read-only.
+ * PDF export reads these properties directly and prefers them over BluePLM's value, so a
+ * drifted drawing yields both a misnamed PDF and a wrong title block.
+ *
+ * Revision is deliberately never written - the drawing's own revision table is
+ * authoritative, which is why `pullDrawingMetadata` keeps it and the exporter refuses the
+ * PDM revision fallback for drawings.
+ */
+async function pushDrawingMetadata(
+  file: LocalFile,
+  fullPath: string,
+  metadata: ExtractedMetadata,
+): Promise<{ success: boolean; error?: string }> {
+  const props: Record<string, string> = {}
+
+  if (metadata.partNumber) {
+    props['Number'] = metadata.partNumber
+    props['Base Item Number'] = deriveBaseNumber(metadata.partNumber, metadata.tabNumber)
+  }
+  if (metadata.description) {
+    props['Description'] = metadata.description
+  }
+
+  if (Object.keys(props).length === 0) {
+    return { success: true }
+  }
+
+  logSync('info', 'Writing inherited properties to drawing', {
+    fullPath,
+    parentModelPath: metadata.parentModelPath,
+    from: { partNumber: metadata.ownPartNumber, description: metadata.ownDescription },
+    to: { partNumber: metadata.partNumber, description: metadata.description },
+  })
+
+  // Suppress the FileWatcher while we mutate SLDDRW bytes, otherwise it fires mid-write
+  // and triggers a vault reload that races the post-write hash refresh below.
+  const store = usePDMStore.getState()
+  const watcherKey = file.relativePath
+  store.addExpectedFileChanges([watcherKey])
+
+  let writeSucceeded = false
+  try {
+    // File-level only: drawings have sheets rather than configurations, and both the
+    // exporter and pullDrawingMetadata read the drawing's file-level properties.
+    const result = await window.electronAPI?.solidworks?.setProperties(fullPath, props)
+    if (!result?.success) {
+      return { success: false, error: result?.error || 'Failed to write drawing properties' }
+    }
+
+    writeSucceeded = true
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  } finally {
+    if (writeSucceeded) {
+      try {
+        const hashResult = await window.electronAPI?.hashFile(fullPath)
+        if (hashResult?.success && hashResult.hash) {
+          usePDMStore.getState().updateFileInStore(file.path, { localHash: hashResult.hash })
+        } else {
+          // Clearing is safer than leaving the pre-write hash that no longer matches disk.
+          usePDMStore.getState().updateFileInStore(file.path, { localHash: undefined })
+        }
+      } catch (error) {
+        logSync('warn', 'Exception rehashing drawing after PUSH; clearing stale localHash', {
+          fullPath,
+          error: String(error),
+        })
+        usePDMStore.getState().updateFileInStore(file.path, { localHash: undefined })
+      }
+    }
+
+    setTimeout(() => {
+      usePDMStore.getState().clearExpectedFileChanges([watcherKey])
+    }, WATCHER_SUPPRESSION_MS)
   }
 }
 
@@ -854,13 +988,13 @@ function getSwFilesFromSelection(allFiles: LocalFile[], selectedFiles: LocalFile
  * @param files - Files to refresh (will filter to checked-out SW files)
  * @param vaultPath - The vault root path for constructing full paths
  * @param userId - Current user ID for filtering to checked-out files
- * @returns Count of refreshed and skipped files
+ * @returns Per-outcome counts for the refresh pass
  */
 export async function refreshMetadataForFiles(
   files: LocalFile[],
   vaultPath: string,
   userId: string | undefined,
-): Promise<{ refreshed: number; skipped: number }> {
+): Promise<MetadataRefreshSummary> {
   // Filter to SolidWorks files checked out by the current user
   const swFiles = files.filter((f) => {
     if (f.isDirectory) return false
@@ -873,7 +1007,7 @@ export async function refreshMetadataForFiles(
   })
 
   if (swFiles.length === 0) {
-    return { refreshed: 0, skipped: files.length }
+    return { refreshed: 0, unchanged: 0, failed: 0, skipped: files.length }
   }
 
   // Check if SolidWorks service is running - skip silently if not
@@ -885,11 +1019,11 @@ export async function refreshMetadataForFiles(
         dmAvailable: status?.data?.documentManagerAvailable,
         fileCount: swFiles.length,
       })
-      return { refreshed: 0, skipped: swFiles.length }
+      return { refreshed: 0, unchanged: 0, failed: 0, skipped: swFiles.length }
     }
   } catch {
     // If we can't check status, skip silently
-    return { refreshed: 0, skipped: swFiles.length }
+    return { refreshed: 0, unchanged: 0, failed: 0, skipped: swFiles.length }
   }
 
   logSync('info', 'Auto-refreshing metadata for changed files', {
@@ -899,6 +1033,8 @@ export async function refreshMetadataForFiles(
 
   const store = usePDMStore.getState()
   let refreshed = 0
+  let unchanged = 0
+  let failed = 0
 
   for (const file of swFiles) {
     try {
@@ -935,7 +1071,20 @@ export async function refreshMetadataForFiles(
               revision: metadata.revision,
               partNumber: metadata.partNumber,
             })
+          } else {
+            unchanged++
+            logSync('info', 'Auto-refresh: file already in sync, nothing to update', {
+              filePath: file.relativePath,
+              revision: metadata.revision,
+              partNumber: metadata.partNumber,
+              inheritedFromParent: metadata.inheritedFromParent ?? false,
+            })
           }
+        } else {
+          failed++
+          logSync('warn', 'Auto-refresh: could not read drawing metadata', {
+            filePath: file.relativePath,
+          })
         }
       } else {
         // For parts/assemblies: Only refresh REVISION from file
@@ -981,10 +1130,23 @@ export async function refreshMetadataForFiles(
               filePath: file.relativePath,
               revision: metadata.revision,
             })
+          } else {
+            unchanged++
+            logSync('info', 'Auto-refresh: revision already in sync, nothing to update', {
+              filePath: file.relativePath,
+              revision: metadata.revision,
+            })
           }
+        } else {
+          failed++
+          logSync('warn', 'Auto-refresh: could not read properties', {
+            filePath: file.relativePath,
+            error: result?.error,
+          })
         }
       }
     } catch (error) {
+      failed++
       // Silent failure - user can manually refresh if needed
       logSync('warn', 'Auto-refresh failed for file', {
         filePath: file.relativePath,
@@ -993,7 +1155,7 @@ export async function refreshMetadataForFiles(
     }
   }
 
-  return { refreshed, skipped: swFiles.length - refreshed }
+  return { refreshed, unchanged, failed, skipped: 0 }
 }
 
 export const syncMetadataCommand: Command<SyncMetadataParams> = {
@@ -1049,6 +1211,15 @@ export const syncMetadataCommand: Command<SyncMetadataParams> = {
       return isLocalOnly || isCheckedOutByMe
     })
 
+    // Parts/assemblies must be processed first. They are pushed BluePLM -> file, while a
+    // drawing inherits from its parent model's file. Selection order alone would let a
+    // drawing read the parent's pre-push properties and inherit the value we are replacing.
+    filesToProcess.sort((a, b) => {
+      const aIsDrawing = DRAWING_EXTENSIONS.includes(a.extension.toLowerCase())
+      const bIsDrawing = DRAWING_EXTENSIONS.includes(b.extension.toLowerCase())
+      return Number(aIsDrawing) - Number(bIsDrawing)
+    })
+
     const skippedCount = allSwFiles.length - filesToProcess.length
     if (skippedCount > 0) {
       logSync('info', 'Skipping files not eligible for metadata sync', {
@@ -1059,10 +1230,17 @@ export const syncMetadataCommand: Command<SyncMetadataParams> = {
       })
     }
 
-    // Check if SolidWorks service is running
+    // Check if SolidWorks service is running. When the service is busy it can't
+    // answer a ping, so it reports running: false with no capabilities - fall
+    // back to the last known snapshot rather than rejecting a live service.
     const status = await window.electronAPI?.solidworks?.getServiceStatus?.()
+    const lastKnownStatus = usePDMStore.getState().solidworksServiceStatus
+    const serviceAlive = !!(status?.data?.running || status?.data?.busy)
+    const dmAvailable =
+      status?.data?.documentManagerAvailable ??
+      (status?.data?.busy ? lastKnownStatus.dmApiAvailable : undefined)
 
-    if (!status?.data?.running) {
+    if (!serviceAlive) {
       ctx.addToast('error', 'SolidWorks service is not running. Start it from Settings.')
       return {
         success: false,
@@ -1074,7 +1252,7 @@ export const syncMetadataCommand: Command<SyncMetadataParams> = {
       }
     }
 
-    if (!status?.data?.documentManagerAvailable) {
+    if (!dmAvailable) {
       ctx.addToast('error', 'Document Manager not available. Configure license key in Settings.')
       return {
         success: false,
@@ -1125,6 +1303,7 @@ export const syncMetadataCommand: Command<SyncMetadataParams> = {
     let failed = 0
     let pulled = 0 // Drawings where we pulled metadata
     let pushed = 0 // Parts/assemblies where we pushed metadata
+    let drawingsCorrected = 0 // Drawings whose own properties had drifted from their parent
     let drawingsNeedingSw = 0 // Drawings that need SW for parent inheritance
     let drawingsNeedingSwComFix = 0 // Drawings where SW COM is inaccessible
     const errors: string[] = []
@@ -1184,6 +1363,34 @@ export const syncMetadataCommand: Command<SyncMetadataParams> = {
                 neededSwButNotRunning: metadata.drawingNeedsSwButNotRunning,
               })
             }
+
+            // PUSH: the drawing's own properties can have drifted from its parent (most
+            // often when the drawing was copied from another item). Only correct them when
+            // the parent actually resolved - without it there is no authoritative value.
+            const partNumberDrifted =
+              !!metadata.partNumber && metadata.ownPartNumber !== metadata.partNumber
+            const descriptionDrifted =
+              !!metadata.description && metadata.ownDescription !== metadata.description
+
+            if (metadata.inheritedFromParent && (partNumberDrifted || descriptionDrifted)) {
+              const writeResult = await pushDrawingMetadata(file, fullPath, metadata)
+
+              if (writeResult.success) {
+                drawingsCorrected++
+                logSync('info', 'PUSH complete - corrected drawing properties', {
+                  filePath: file.path,
+                  partNumber: metadata.partNumber,
+                })
+              } else {
+                failed++
+                const errorMsg = `Failed to correct ${file.name}: ${writeResult.error}`
+                errors.push(errorMsg)
+                logSync('error', 'PUSH to drawing failed', {
+                  filePath: file.path,
+                  error: writeResult.error,
+                })
+              }
+            }
           }
 
           succeeded++
@@ -1231,6 +1438,10 @@ export const syncMetadataCommand: Command<SyncMetadataParams> = {
     if (pulled > 0) parts.push(`${pulled} drawing${pulled > 1 ? 's' : ''} updated`)
     if (pushed > 0)
       parts.push(`${pushed} part${pushed > 1 ? 's' : ''}/assembl${pushed > 1 ? 'ies' : 'y'} synced`)
+    if (drawingsCorrected > 0)
+      parts.push(
+        `${drawingsCorrected} drawing${drawingsCorrected > 1 ? 's' : ''} corrected from parent`,
+      )
     if (skippedCount > 0) parts.push(`${skippedCount} skipped (not checked out)`)
     if (failed > 0) parts.push(`${failed} failed`)
 
@@ -1243,7 +1454,7 @@ export const syncMetadataCommand: Command<SyncMetadataParams> = {
         'warning',
         `SolidWorks COM not accessible. Run BluePLM and SolidWorks with the same permissions.`,
       )
-    } else if (pulled > 0 || pushed > 0) {
+    } else if (pulled > 0 || pushed > 0 || drawingsCorrected > 0) {
       ctx.addToast('success', `Sync complete: ${parts.join(', ')}`)
     } else {
       ctx.addToast('info', 'No metadata changes to sync')

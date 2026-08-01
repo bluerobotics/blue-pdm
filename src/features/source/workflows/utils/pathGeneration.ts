@@ -3,7 +3,7 @@
  */
 import { STRAIGHT_LENGTH } from '../constants'
 import type { Point, PointWithEdge } from '../types'
-import { getPerpendicularDirection } from './geometry'
+import { getExitDirection } from './geometry'
 
 /**
  * Generate a smooth SVG path through multiple waypoints with perpendicular box exits
@@ -14,9 +14,9 @@ export const generateSplinePath = (
   waypointsList: Point[],
   end: PointWithEdge,
 ): string => {
-  // Get perpendicular directions for start and end
-  const startDir = start.edge ? getPerpendicularDirection(start.edge) : null
-  const endDir = end.edge ? getPerpendicularDirection(end.edge) : null
+  // Directions the line leaves each node's surface in
+  const startDir = getExitDirection(start)
+  const endDir = getExitDirection(end)
 
   // Calculate the "stub" points - ends of the perpendicular straight segments
   const startStub = startDir
@@ -148,9 +148,8 @@ export const getPointOnSpline = (
   end: PointWithEdge,
   t: number = 0.5,
 ): Point => {
-  // Get perpendicular directions
-  const startDir = start.edge ? getPerpendicularDirection(start.edge) : null
-  const endDir = end.edge ? getPerpendicularDirection(end.edge) : null
+  const startDir = getExitDirection(start)
+  const endDir = getExitDirection(end)
 
   const startStub = startDir
     ? { x: start.x + startDir.x * STRAIGHT_LENGTH, y: start.y + startDir.y * STRAIGHT_LENGTH }
@@ -175,12 +174,18 @@ export const getPointOnSpline = (
     totalLength += len
   }
 
+  // Every point is coincident, so there is no path to walk along
+  if (totalLength === 0) {
+    return { x: start.x, y: start.y }
+  }
+
   // Find which segment t falls in
   const targetLength = t * totalLength
   let accumulatedLength = 0
 
   for (let i = 0; i < segmentLengths.length; i++) {
-    if (accumulatedLength + segmentLengths[i] >= targetLength) {
+    // A zero-length segment cannot contain t and would divide by zero below
+    if (segmentLengths[i] > 0 && accumulatedLength + segmentLengths[i] >= targetLength) {
       // t falls in this segment
       const segmentProgress = (targetLength - accumulatedLength) / segmentLengths[i]
       return {

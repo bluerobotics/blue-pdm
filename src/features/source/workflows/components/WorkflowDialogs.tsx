@@ -11,7 +11,7 @@ import {
   EditTransitionDialog,
 } from '../dialogs'
 import { stateService, transitionService } from '../services'
-import type { WorkflowTemplate, WorkflowState, WorkflowTransition } from '../types'
+import type { WorkflowTemplate, WorkflowState, WorkflowTransition } from '@/types/workflow'
 
 interface WorkflowDialogsProps {
   // Visibility

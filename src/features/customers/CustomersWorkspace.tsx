@@ -6,12 +6,15 @@ import type { CustomersTab } from '@/stores/types'
 
 import { FilterChips } from './components/FilterChips'
 import { FirstRunHero } from './components/FirstRunHero'
+import { useChannelCounts } from './hooks/useChannelCounts'
 import { useCustomerAnalytics } from './hooks/useCustomerAnalytics'
 import { useCustomerRoster } from './hooks/useCustomerRoster'
+import { CHANNELS } from './lib/channels'
 import { formatCount } from './lib/format'
 import { RANGE_OPTIONS, rangeOption } from './lib/ranges'
 import { AccountsTab } from './tabs/AccountsTab'
 import { OverviewTab } from './tabs/OverviewTab'
+import { PartnersTab } from './tabs/PartnersTab'
 import { CustomerTable } from './table/CustomerTable'
 import { exportCustomersCsv } from './lib/export'
 
@@ -19,6 +22,8 @@ const TABS: { id: CustomersTab; label: string }[] = [
   { id: 'overview', label: 'Overview' },
   { id: 'customers', label: 'Customers' },
   { id: 'accounts', label: 'Accounts' },
+  { id: 'distributors', label: CHANNELS.distributor.plural },
+  { id: 'integrators', label: CHANNELS.integrator.plural },
 ]
 
 /**
@@ -38,6 +43,7 @@ export function CustomersWorkspace() {
 
   const analytics = useCustomerAnalytics()
   const roster = useCustomerRoster()
+  const channels = useChannelCounts()
 
   const searchRef = useRef<HTMLInputElement>(null)
 
@@ -69,8 +75,8 @@ export function CustomersWorkspace() {
   }, [setCustomerPanel])
 
   const handleExport = useCallback(() => {
-    exportCustomersCsv(roster.visible)
-  }, [roster.visible])
+    exportCustomersCsv(roster.visible, filters.range)
+  }, [roster.visible, filters.range])
 
   const refreshAnalytics = analytics.refresh
   const refreshRoster = roster.refresh
@@ -93,19 +99,37 @@ export function CustomersWorkspace() {
       <div className="flex-shrink-0 px-4 pt-3 pb-2 space-y-2.5 border-b border-plm-border">
         <div className="flex items-center gap-2">
           <div className="flex rounded bg-plm-input p-0.5">
-            {TABS.map((entry) => (
-              <button
-                key={entry.id}
-                onClick={() => setTab(entry.id)}
-                className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
-                  tab === entry.id
-                    ? 'bg-plm-bg text-plm-fg shadow-sm'
-                    : 'text-plm-fg-muted hover:text-plm-fg'
-                }`}
-              >
-                {entry.label}
-              </button>
-            ))}
+            {TABS.map((entry) => {
+              // Partner counts are shown on the tab because they are the point:
+              // these are curated lists, so "how many are there" is the first
+              // thing you want to know, and a zero is information rather than
+              // an empty tab that looks broken.
+              const count =
+                entry.id === 'distributors'
+                  ? channels.byChannel.distributor.account_count
+                  : entry.id === 'integrators'
+                    ? channels.byChannel.integrator.account_count
+                    : null
+
+              return (
+                <button
+                  key={entry.id}
+                  onClick={() => setTab(entry.id)}
+                  className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+                    tab === entry.id
+                      ? 'bg-plm-bg text-plm-fg shadow-sm'
+                      : 'text-plm-fg-muted hover:text-plm-fg'
+                  }`}
+                >
+                  {entry.label}
+                  {count != null && !channels.loading && (
+                    <span className="ml-1.5 text-plm-fg-muted tabular-nums">
+                      {formatCount(count)}
+                    </span>
+                  )}
+                </button>
+              )
+            })}
           </div>
 
           <div className="relative flex-1 max-w-xs">
@@ -133,7 +157,10 @@ export function CustomersWorkspace() {
 
           <div className="flex-1" />
 
-          <div className="flex rounded bg-plm-input p-0.5">
+          <div
+            className="flex rounded bg-plm-input p-0.5"
+            title="Scopes the whole workspace: every amount and count below is for this period. Segments and last-order dates stay lifetime."
+          >
             {RANGE_OPTIONS.map((option) => (
               <button
                 key={option.id}
@@ -154,7 +181,7 @@ export function CustomersWorkspace() {
           <button
             onClick={handleExport}
             disabled={roster.visible.length === 0}
-            title={`Export ${formatCount(roster.visible.length)} filtered customers as CSV`}
+            title={`Export ${formatCount(roster.visible.length)} filtered customers as CSV, with spend and orders ${rangeOption(filters.range).scopeLabel}`}
             className="p-1.5 rounded text-plm-fg-muted hover:text-plm-fg hover:bg-plm-bg-light transition-colors disabled:opacity-40"
           >
             <Download size={14} />
@@ -210,14 +237,22 @@ export function CustomersWorkspace() {
 
         {tab === 'customers' && (
           <CustomerTable
-            rows={roster.visible}
+            accounts={roster.accounts}
             loading={roster.loading}
-            totalCount={roster.rows.length}
+            totalCount={roster.accountCount}
             truncated={roster.truncated}
           />
         )}
 
-        {tab === 'accounts' && <AccountsTab rows={roster.visible} loading={roster.loading} />}
+        {tab === 'accounts' && <AccountsTab accounts={roster.accounts} loading={roster.loading} />}
+
+        {(tab === 'distributors' || tab === 'integrators') && (
+          <PartnersTab
+            channel={tab === 'distributors' ? 'distributor' : 'integrator'}
+            accounts={roster.accounts}
+            loading={roster.loading}
+          />
+        )}
       </div>
 
       {analytics.refreshing && (

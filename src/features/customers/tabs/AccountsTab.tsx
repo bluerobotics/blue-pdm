@@ -5,28 +5,14 @@ import { Building2 } from 'lucide-react'
 import { usePDMStore } from '@/stores/pdmStore'
 
 import type { CustomerRfmRow } from '../data/types'
+import { channelMeta } from '../lib/channels'
 import { formatAmount, formatCount, formatRelativeDays } from '../lib/format'
+import type { AccountRollup } from '../lib/rollup'
 import { segmentMeta } from '../lib/segments'
 
 interface AccountsTabProps {
-  rows: CustomerRfmRow[]
+  accounts: AccountRollup<CustomerRfmRow>[]
   loading: boolean
-}
-
-interface AccountRollup {
-  key: string
-  name: string
-  contacts: number
-  spend: number
-  orders: number
-  /** Best (lowest) recency across the account's contacts. */
-  recency: number | null
-  countries: Set<string>
-  categoryLabel: string | null
-  segment: string
-  /** The contact to open when the row is clicked: the highest spender. */
-  leadCustomerId: string
-  leadCustomerName: string
 }
 
 /** Row height in px. Fixed so the virtualizer needs no measurement pass. */
@@ -41,61 +27,27 @@ const ROW_GAP = 4
  *
  * The grouping mirrors what enrichment attaches to: several Odoo partners (a
  * company plus its contacts) collapse onto one account so research is paid for
- * once. Customers with no account stand alone.
+ * once. Customers with no account stand alone. Both this tab and the customer
+ * table roll up through `rollUpByAccount`, so the two cannot disagree about an
+ * account's spend or its segment.
  *
  * Virtualized for the same reason the customer table is: an org whose partners
  * are mostly individuals rolls up to nearly one account per customer, and this
  * used to put every one of them in the DOM at once.
  */
-export function AccountsTab({ rows, loading }: AccountsTabProps) {
+export function AccountsTab({ accounts, loading }: AccountsTabProps) {
   const setCustomerPanel = usePDMStore((s) => s.setCustomerPanel)
   const openCustomerId = usePDMStore((s) => s.customerPanel?.customerId ?? null)
 
   const scrollRef = useRef<HTMLDivElement>(null)
 
-  const accounts = useMemo(() => {
-    const map = new Map<string, AccountRollup>()
-
-    for (const row of rows) {
-      const key = row.account_id ?? `customer:${row.customer_id}`
-      const existing = map.get(key)
-
-      if (!existing) {
-        map.set(key, {
-          key,
-          name: row.account_name ?? row.name,
-          contacts: 1,
-          spend: row.total_spent,
-          orders: row.order_count,
-          recency: row.recency_days,
-          countries: new Set(row.country ? [row.country] : []),
-          categoryLabel: row.category_label,
-          segment: row.segment,
-          leadCustomerId: row.customer_id,
-          leadCustomerName: row.name,
-        })
-        continue
-      }
-
-      existing.contacts += 1
-      existing.spend += row.total_spent
-      existing.orders += row.order_count
-      if (row.country) existing.countries.add(row.country)
-      if (row.recency_days != null) {
-        existing.recency =
-          existing.recency == null ? row.recency_days : Math.min(existing.recency, row.recency_days)
-      }
-      if (row.total_spent > 0 && row.total_spent >= existing.spend - row.total_spent) {
-        existing.leadCustomerId = row.customer_id
-        existing.leadCustomerName = row.name
-      }
-    }
-
-    return Array.from(map.values()).sort((a, b) => b.spend - a.spend)
-  }, [rows])
+  const sorted = useMemo(
+    () => [...accounts].sort((a, b) => b.totalSpent - a.totalSpent),
+    [accounts],
+  )
 
   const virtualizer = useVirtualizer({
-    count: accounts.length,
+    count: sorted.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => ROW_HEIGHT + ROW_GAP,
     overscan: 8,
@@ -115,7 +67,7 @@ export function AccountsTab({ rows, loading }: AccountsTabProps) {
     )
   }
 
-  if (accounts.length === 0) {
+  if (sorted.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-16 gap-2 text-center">
         <Building2 size={22} className="text-plm-fg-muted/60" />
@@ -128,7 +80,7 @@ export function AccountsTab({ rows, loading }: AccountsTabProps) {
     <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto">
       <div className="relative" style={{ height: virtualizer.getTotalSize() }}>
         {virtualizer.getVirtualItems().map((virtualRow) => {
-          const account = accounts[virtualRow.index]
+          const account = sorted[virtualRow.index]
 
           return (
             <div
@@ -138,7 +90,7 @@ export function AccountsTab({ rows, loading }: AccountsTabProps) {
             >
               <AccountRow
                 account={account}
-                isOpen={openCustomerId === account.leadCustomerId}
+                isOpen={openCustomerId === account.lead.customer_id}
                 onOpen={setCustomerPanel}
               />
             </div>
@@ -150,17 +102,18 @@ export function AccountsTab({ rows, loading }: AccountsTabProps) {
 }
 
 interface AccountRowProps {
-  account: AccountRollup
+  account: AccountRollup<CustomerRfmRow>
   isOpen: boolean
   onOpen: (panel: { customerId: string; name: string }) => void
 }
 
 const AccountRow = memo(function AccountRow({ account, isOpen, onOpen }: AccountRowProps) {
   const meta = segmentMeta(account.segment)
+  const channel = channelMeta(account.channel)
 
   return (
     <button
-      onClick={() => onOpen({ customerId: account.leadCustomerId, name: account.leadCustomerName })}
+      onClick={() => onOpen({ customerId: account.lead.customer_id, name: account.lead.name })}
       className={`w-full h-full flex items-center gap-3 px-3 rounded-lg border text-left transition-colors ${
         isOpen
           ? 'border-plm-accent/50 bg-plm-selection/30'
@@ -175,18 +128,27 @@ const AccountRow = memo(function AccountRow({ account, isOpen, onOpen }: Account
           >
             {meta.label}
           </span>
+          {/* Partners only: badging 'Direct' would label nearly every row. */}
+          {account.channel !== 'direct' && (
+            <span
+              className={`px-1.5 py-px rounded text-[10px] font-medium shrink-0 ${channel.badgeClass}`}
+              title={channel.description}
+            >
+              {channel.label}
+            </span>
+          )}
         </div>
         <div className="text-[11px] text-plm-fg-muted truncate">
           {account.categoryLabel ?? 'Unclassified'}
-          {account.countries.size > 0 && ` · ${Array.from(account.countries).join(', ')}`}
-          {account.contacts > 1 && ` · ${account.contacts} contacts`}
+          {account.countries.length > 0 && ` · ${account.countries.join(', ')}`}
+          {account.hasMembers && ` · ${account.members.length} contacts`}
         </div>
       </div>
 
       <div className="text-right shrink-0">
-        <div className="text-sm tabular-nums text-plm-fg">{formatAmount(account.spend)}</div>
+        <div className="text-sm tabular-nums text-plm-fg">{formatAmount(account.totalSpent)}</div>
         <div className="text-[11px] text-plm-fg-muted tabular-nums">
-          {formatCount(account.orders)} orders · {formatRelativeDays(account.recency)}
+          {formatCount(account.orderCount)} orders · {formatRelativeDays(account.recencyDays)}
         </div>
       </div>
     </button>

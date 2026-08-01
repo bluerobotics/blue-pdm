@@ -7,11 +7,20 @@
 import { supabase } from '@/lib/supabase'
 import type { Database } from '@/types/database'
 
+import { exportPayloadAsJson } from '../utils/workflowExport'
+import type { WorkflowExport } from '../utils/workflowExport'
+
 type WorkflowTemplateRow = Database['public']['Tables']['workflow_templates']['Row']
 
 export interface WorkflowServiceResult<T> {
   data: T | null
   error: Error | null
+}
+
+export interface ImportGraphResult {
+  state_count: number
+  transition_count: number
+  gate_count: number
 }
 
 // Type-safe access to workflow_templates table
@@ -108,6 +117,26 @@ export const workflowService = {
 
     return {
       data: error ? null : undefined,
+      error: error ? new Error(error.message) : null,
+    }
+  },
+
+  /**
+   * Replace a workflow's states, transitions and gates from an exported payload.
+   * Runs as a single database transaction, so the existing graph survives intact
+   * if any part of the new one is rejected.
+   */
+  async importGraph(
+    workflowId: string,
+    payload: WorkflowExport,
+  ): Promise<WorkflowServiceResult<ImportGraphResult>> {
+    const { data, error } = await supabase.rpc('import_workflow_graph', {
+      p_workflow_id: workflowId,
+      p_payload: exportPayloadAsJson(payload),
+    })
+
+    return {
+      data: data as ImportGraphResult | null,
       error: error ? new Error(error.message) : null,
     }
   },

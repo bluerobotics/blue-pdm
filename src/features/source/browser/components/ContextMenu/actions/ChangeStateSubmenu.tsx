@@ -17,6 +17,7 @@ import {
   executeTransition,
 } from '@/lib/workflows'
 import { log } from '@/lib/logger'
+import { t } from '@/lib/i18n'
 import type { AvailableTransition } from '@/types/workflow'
 
 import { ContextSubmenu } from '../components'
@@ -25,7 +26,6 @@ interface ChangeStateSubmenuProps {
   targetFile: LocalFile
   onClose: () => void
   onRefresh: (silent?: boolean) => void
-  handleOpenReviewModal: (file: LocalFile) => void
   showStateSubmenu: boolean
   setShowStateSubmenu: (show: boolean) => void
   stateSubmenuTimeoutRef: React.MutableRefObject<NodeJS.Timeout | null>
@@ -35,7 +35,6 @@ export function ChangeStateSubmenu({
   targetFile,
   onClose,
   onRefresh,
-  handleOpenReviewModal,
   showStateSubmenu,
   setShowStateSubmenu,
   stateSubmenuTimeoutRef,
@@ -87,16 +86,16 @@ export function ChangeStateSubmenu({
   }
 
   const loadTransitions = async () => {
-    if (!fileId) return
+    if (!fileId || !user) return
     setLoading(true)
     try {
-      let result = await getAvailableTransitions(fileId)
+      let result = await getAvailableTransitions(fileId, user.id)
 
       // No transitions usually means the file isn't assigned to a workflow yet.
       if (!result.error && (!result.data || result.data.length === 0)) {
         const assigned = await ensureAssignment()
         if (assigned) {
-          result = await getAvailableTransitions(fileId)
+          result = await getAvailableTransitions(fileId, user.id)
         }
       }
 
@@ -127,30 +126,45 @@ export function ChangeStateSubmenu({
 
     setExecuting(true)
     try {
-      const result = await executeTransition(fileId, transition.transition_id, user.id)
+      const { data: result, error } = await executeTransition(fileId, transition.transition_id)
 
-      if (result.success) {
-        addToast('success', `Moved to ${transition.to_state_name}`)
+      if (error || !result) {
+        addToast('error', error?.message ?? t('workflows.transition.failed'))
+        return
+      }
+
+      // Gated transitions open pending reviews instead of moving the file; the
+      // reviewers see them in the Reviews dashboard and the last approval advances it.
+      if (result.requires_review) {
+        addToast(
+          'info',
+          result.success
+            ? t('workflows.transition.reviewRequested')
+            : (result.error_message ?? t('workflows.transition.awaitingReview')),
+        )
         onRefresh(true)
         onClose()
         setShowStateSubmenu(false)
         return
       }
 
-      if ('requiresReview' in result && result.requiresReview) {
-        addToast('info', 'This transition requires review approval')
-        handleOpenReviewModal(targetFile)
+      if (result.success) {
+        addToast(
+          'success',
+          t('workflows.transition.moved', {
+            state: result.new_state_name ?? transition.to_state_name,
+          }),
+        )
+        onRefresh(true)
         onClose()
         setShowStateSubmenu(false)
         return
       }
 
-      const message =
-        result.error instanceof Error ? result.error.message : 'Failed to change state'
-      addToast('error', message)
+      addToast('error', result.error_message ?? t('workflows.transition.failed'))
     } catch (error) {
       log.error('[Workflow]', 'Failed to execute transition', { error })
-      addToast('error', 'Failed to change state')
+      addToast('error', t('workflows.transition.failed'))
     } finally {
       setExecuting(false)
     }

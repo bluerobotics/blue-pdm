@@ -19,7 +19,9 @@ export interface SyncCounts {
   reactivated?: number
   marked_inactive?: number
   linked?: number
+  renamed?: number
   skipped_unknown_partner?: number
+  rolled_up_to_company?: number
   replaced?: number
 }
 
@@ -60,6 +62,11 @@ export interface CustomerSyncResult {
   error: string | null
   canSync: boolean
   dismiss: () => void
+  /**
+   * Clear the summary of the last run without clearing an error, so a summary
+   * that times out on screen cannot take a failure down with it.
+   */
+  dismissResult: () => void
 }
 
 /**
@@ -446,6 +453,10 @@ export function useCustomerSync(onComplete?: () => void): CustomerSyncResult {
     setCustomerSync({ result: null, error: null })
   }, [setCustomerSync])
 
+  const dismissResult = useCallback(() => {
+    setCustomerSync({ result: null })
+  }, [setCustomerSync])
+
   return {
     sync,
     stop,
@@ -456,5 +467,6 @@ export function useCustomerSync(onComplete?: () => void): CustomerSyncResult {
     error: state.error,
     canSync,
     dismiss,
+    dismissResult,
   }
 }

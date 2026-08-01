@@ -1,12 +1,14 @@
 import { useMemo, useState } from 'react'
-import { ChevronDown, ChevronRight, Globe, Layers, Users, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, Globe, Handshake, Layers, Users, X } from 'lucide-react'
 
 import { usePDMStore } from '@/stores/pdmStore'
 
 import { SyncControl } from './components/SyncControl'
 import { SyncSummary } from './components/SyncSummary'
+import { useChannelCounts } from './hooks/useChannelCounts'
 import { useCustomerFacets } from './hooks/useCustomerFacets'
 import { useCustomerSync } from './hooks/useCustomerSync'
+import { CHANNEL_IDS, channelMeta } from './lib/channels'
 import { formatCompact, formatCount } from './lib/format'
 import { SEGMENT_IDS, segmentMeta } from './lib/segments'
 import { categoryKey } from './lib/taxonomy'
@@ -26,6 +28,7 @@ export function CustomersNavigator() {
   const invalidateCustomerData = usePDMStore((s) => s.invalidateCustomerData)
 
   const { segmentCounts, categories, geo } = useCustomerFacets()
+  const channels = useChannelCounts()
   const sync = useCustomerSync(invalidateCustomerData)
 
   const [showTaxonomy, setShowTaxonomy] = useState(true)
@@ -86,6 +89,7 @@ export function CustomersNavigator() {
     filters.segments.length +
     filters.categories.length +
     filters.countries.length +
+    filters.channels.length +
     (filters.presence === 'all' ? 0 : 1)
 
   return (
@@ -93,7 +97,7 @@ export function CustomersNavigator() {
       <div className="p-3 border-b border-plm-border space-y-2.5">
         <SyncControl sync={sync} />
 
-        {sync.result && <SyncSummary result={sync.result} />}
+        {sync.result && <SyncSummary result={sync.result} onExpire={sync.dismissResult} />}
 
         {activeFilterCount > 0 && (
           <button
@@ -121,6 +125,28 @@ export function CustomersNavigator() {
                 count={stats?.buyers}
                 selected={selected}
                 onClick={() => toggleCustomerFacet('segments', id)}
+                dot={meta.badgeClass}
+              />
+            )
+          })}
+        </Section>
+
+        {/* Counts are accounts, not buyers, unlike every other facet here: a
+            channel is a property of the account, and "3 distributors" is the
+            number a person curating the list is checking against - so unlike
+            the facets above and below, this one does not follow the range. */}
+        <Section icon={Handshake} title="Channel">
+          {CHANNEL_IDS.map((id) => {
+            const meta = channelMeta(id)
+
+            return (
+              <FacetRow
+                key={id}
+                label={meta.plural}
+                title={meta.description}
+                count={channels.byChannel[id].account_count}
+                selected={filters.channels.includes(id)}
+                onClick={() => toggleCustomerFacet('channels', id)}
                 dot={meta.badgeClass}
               />
             )

@@ -10,6 +10,8 @@ import type {
   GateReviewer,
   PendingReview,
   AvailableTransition,
+  MyPendingReview,
+  TransitionResult,
 } from '../types/workflow'
 
 // ============================================
@@ -292,9 +294,11 @@ export async function updateFileWorkflowState(fileId: string, newStateId: string
 
 export async function getAvailableTransitions(
   fileId: string,
+  userId: string,
 ): Promise<{ data: AvailableTransition[] | null; error: Error | null }> {
   const { data, error } = await supabase.rpc('get_available_transitions', {
     p_file_id: fileId,
+    p_user_id: userId,
   })
 
   return { data, error }
@@ -321,9 +325,12 @@ export async function getPendingReviews(orgId: string) {
     .order('requested_at', { ascending: false })
 }
 
-export async function getMyPendingReviews() {
+export async function getMyPendingReviews(): Promise<{
+  data: MyPendingReview[] | null
+  error: Error | null
+}> {
   const { data, error } = await supabase.rpc('get_my_pending_reviews')
-  return { data, error }
+  return { data, error: error ? new Error(error.message) : null }
 }
 
 export async function createPendingReview(
@@ -338,25 +345,27 @@ export async function createPendingReview(
   return supabase.from('pending_reviews').insert(review).select().single()
 }
 
+/**
+ * Record a decision on one gate review. When the decision clears the last
+ * blocking gate the file advances as part of the same transaction, so callers
+ * should re-read the file rather than assuming it stayed put.
+ */
 export async function submitReviewDecision(
   reviewId: string,
-  decision: 'approved' | 'rejected',
-  reviewedBy: string,
+  decision: 'approved' | 'rejected' | 'kicked_back',
   comment?: string,
   checklistResponses?: Record<string, boolean>,
-) {
-  return supabase
-    .from('pending_reviews')
-    .update({
-      status: decision,
-      reviewed_by: reviewedBy,
-      reviewed_at: new Date().toISOString(),
-      review_comment: comment,
-      checklist_responses: checklistResponses || {},
-    })
-    .eq('id', reviewId)
-    .select()
-    .single()
+): Promise<{ data: TransitionResult | null; error: Error | null }> {
+  const { data, error } = await supabase.rpc('complete_gate_review', {
+    p_pending_review_id: reviewId,
+    p_decision: decision,
+    p_comment: comment ?? undefined,
+    p_checklist_responses: checklistResponses ?? {},
+  })
+
+  if (error) return { data: null, error: new Error(error.message) }
+
+  return { data: readTransitionResult(data), error: null }
 }
 
 // ============================================
@@ -394,121 +403,46 @@ export async function getReviewHistory(
 // Workflow Transition (Execute)
 // ============================================
 
+/**
+ * Reads the jsonb the engine RPCs return. Every field is optional on the wire:
+ * a refusal carries only the error, a gated transition only `requires_review`.
+ */
+function readTransitionResult(value: unknown): TransitionResult {
+  const raw = (typeof value === 'object' && value !== null ? value : {}) as Record<string, unknown>
+
+  return {
+    success: raw.success === true,
+    requires_review: raw.requires_review === true,
+    new_state_id: typeof raw.new_state_id === 'string' ? raw.new_state_id : null,
+    new_state_name: typeof raw.new_state_name === 'string' ? raw.new_state_name : null,
+    new_revision: typeof raw.new_revision === 'string' ? raw.new_revision : null,
+    error_code: typeof raw.error_code === 'string' ? raw.error_code : null,
+    error_message: typeof raw.error_message === 'string' ? raw.error_message : null,
+  }
+}
+
+/**
+ * Move a file along a transition.
+ *
+ * All of the work happens in `execute_workflow_transition`: it re-checks the
+ * file's current state, the caller's workflow roles and the checkout rules,
+ * then either opens the transition's blocking gates or advances the file,
+ * bumps the revision and writes history - in one transaction.
+ */
 export async function executeTransition(
   fileId: string,
   transitionId: string,
-  userId: string,
-  _options?: {
-    comment?: string
-    checklistResponses?: Record<string, boolean>
-  },
-) {
-  // Get the transition details with to_state and get org_id from workflow
-  const { data: transition, error: transitionError } = await supabase
-    .from('workflow_transitions')
-    .select(
-      `
-      *,
-      to_state:workflow_states!workflow_transitions_to_state_id_fkey (
-        *
-      ),
-      workflow:workflow_templates!workflow_transitions_workflow_id_fkey (
-        org_id
-      )
-    `,
-    )
-    .eq('id', transitionId)
-    .single()
+  options?: { comment?: string },
+): Promise<{ data: TransitionResult | null; error: Error | null }> {
+  const { data, error } = await supabase.rpc('execute_workflow_transition', {
+    p_file_id: fileId,
+    p_transition_id: transitionId,
+    p_comment: options?.comment ?? undefined,
+  })
 
-  if (transitionError || !transition) {
-    return { success: false, error: transitionError || new Error('Transition not found') }
-  }
+  if (error) return { data: null, error: new Error(error.message) }
 
-  const toState = transition.to_state as { maps_to_file_state?: string } | null
-  const workflow = transition.workflow as { org_id: string } | null
-
-  // Check for blocking gates
-  const { data: gates } = await supabase
-    .from('workflow_gates')
-    .select('*')
-    .eq('transition_id', transitionId)
-    .eq('is_blocking', true)
-
-  if (gates && gates.length > 0) {
-    // Check for pending reviews
-    const { data: pendingReviews } = await supabase
-      .from('pending_reviews')
-      .select('*')
-      .eq('file_id', fileId)
-      .eq('transition_id', transitionId)
-      .eq('status', 'pending')
-
-    if (pendingReviews && pendingReviews.length > 0) {
-      return {
-        success: false,
-        error: new Error('This transition has pending reviews'),
-        pendingReviews,
-      }
-    }
-
-    // Create review requests for gates
-    if (workflow?.org_id) {
-      for (const gate of gates) {
-        await supabase.from('pending_reviews').insert({
-          org_id: workflow.org_id,
-          file_id: fileId,
-          transition_id: transitionId,
-          gate_id: gate.id,
-          requested_by: userId,
-          status: 'pending',
-        })
-      }
-    }
-
-    return {
-      success: false,
-      error: new Error('Review required'),
-      requiresReview: true,
-    }
-  }
-
-  // No blocking gates - execute transition
-  const { error: updateError } = await supabase
-    .from('file_workflow_assignments')
-    .update({ current_state_id: transition.to_state_id })
-    .eq('file_id', fileId)
-
-  if (updateError) {
-    return { success: false, error: updateError }
-  }
-
-  // Update the canonical file state so the vault list reflects the change
-  const { error: fileUpdateError } = await supabase
-    .from('files')
-    .update({
-      workflow_state_id: transition.to_state_id,
-      state_changed_at: new Date().toISOString(),
-      state_changed_by: userId,
-    })
-    .eq('id', fileId)
-
-  if (fileUpdateError) {
-    return { success: false, error: fileUpdateError }
-  }
-
-  // Update the legacy file state enum if the workflow state maps to one
-  if (toState?.maps_to_file_state) {
-    await supabase
-      .from('files')
-      .update({
-        state: toState.maps_to_file_state,
-        state_changed_at: new Date().toISOString(),
-        state_changed_by: userId,
-      })
-      .eq('id', fileId)
-  }
-
-  return { success: true, toStateId: transition.to_state_id }
+  return { data: readTransitionResult(data), error: null }
 }
 
 // ============================================

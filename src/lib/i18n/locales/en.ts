@@ -686,6 +686,19 @@ export const en: TranslationDict = {
 
   // Reviews dashboard
   reviews: {
+    gates: {
+      title: 'Workflow gates',
+      subtitle: 'Approvals blocking a state change',
+      empty: 'No gate approvals are waiting on you',
+      approve: 'Approve',
+      reject: 'Reject',
+      kickBack: 'Kick back',
+      approved: 'Approval recorded',
+      rejected: 'Decision recorded',
+      advanced: 'Approved; the file moved to {{state}}',
+      failed: 'Could not record the decision',
+      requestedBy: 'Requested by {{email}}',
+    },
     myReviews: 'My Reviews',
     allReviews: 'All Reviews',
     pending: 'Pending',
@@ -710,6 +723,41 @@ export const en: TranslationDict = {
 
   // Workflows
   workflows: {
+    layoutSaveFailed: 'Could not save the diagram layout',
+    transition: {
+      moved: 'Moved to {{state}}',
+      failed: 'Failed to change state',
+      reviewRequested: 'Review requested; the file moves once the gates are approved',
+      awaitingReview: 'This transition is waiting on a review',
+    },
+    import: {
+      unreadableFile: 'That file is not valid JSON',
+      notAWorkflowFile: 'That file is not a workflow export',
+      noStates: 'The file contains no states to import',
+      badState: 'The file has a malformed or duplicated state',
+      badTransition: 'The file has a transition pointing at a missing state',
+      title: 'Import workflow',
+      question: 'Import workflow from {{file}}?',
+      warning:
+        'This replaces everything in {{workflow}} with {{states}} states, {{transitions}} transitions and {{gates}} gates.',
+      confirm: 'Import',
+      importing: 'Importing...',
+    },
+    emptyCanvas: 'Select a workflow to edit',
+    history: {
+      undoStateAdd: 'Undo: state removed',
+      undoStateDelete: 'Undo: state restored',
+      undoStateMove: 'Undo: state moved back',
+      undoTransitionAdd: 'Undo: transition removed',
+      undoTransitionDelete: 'Undo: transition restored',
+      undoFailed: 'Undo failed',
+      redoStateAdd: 'Redo: state added',
+      redoStateDelete: 'Redo: state deleted',
+      redoStateMove: 'Redo: state moved',
+      redoTransitionAdd: 'Redo: transition added',
+      redoTransitionDelete: 'Redo: transition deleted',
+      redoFailed: 'Redo failed',
+    },
     toolbar: {
       selectWorkflow: 'Select workflow',
       selectWorkflowPlaceholder: 'Select workflow...',

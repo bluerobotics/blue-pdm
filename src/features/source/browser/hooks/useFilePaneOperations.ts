@@ -139,6 +139,7 @@ export function useFilePaneOperations({
 
       let succeeded = 0
       let failed = 0
+      let awaitingReview = 0
 
       setStatusMessage(`Changing state to ${newState}...`)
 
@@ -149,29 +150,37 @@ export function useFilePaneOperations({
               state: newState as 'not_tracked' | 'wip' | 'in_review' | 'released' | 'obsolete',
             })
 
+            // A gated transition opens reviews instead of moving the file.
+            if (result.requiresReview) return 'review' as const
+
             if (result.success && result.file) {
               updateFileInStore(file.path, {
                 pdmData: { ...file.pdmData!, ...result.file },
               })
-              return true
+              return 'ok' as const
             }
-            return false
+            return 'failed' as const
           } catch {
-            return false
+            return 'failed' as const
           }
         }),
       )
 
-      for (const success of results) {
-        if (success) succeeded++
+      for (const result of results) {
+        if (result === 'ok') succeeded++
+        else if (result === 'review') awaitingReview++
         else failed++
       }
 
       setStatusMessage('')
 
+      if (awaitingReview > 0) {
+        addToast('info', `${awaitingReview} file(s) are waiting on workflow approval`)
+      }
+
       if (failed > 0) {
         addToast('warning', `Updated state for ${succeeded}/${syncedFiles.length} files`)
-      } else {
+      } else if (succeeded > 0) {
         addToast('success', `Changed ${succeeded} file${succeeded > 1 ? 's' : ''} to ${newState}`)
       }
     },

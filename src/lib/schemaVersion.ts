@@ -26,7 +26,7 @@ import { supabase } from './supabase'
 
 // The schema version this app version expects
 // Increment this when releasing app updates that require schema changes
-export const EXPECTED_SCHEMA_VERSION = 81
+export const EXPECTED_SCHEMA_VERSION = 86
 
 // Minimum schema version that will still work (for soft warnings vs hard errors)
 // Set this to allow some backwards compatibility
@@ -114,6 +114,11 @@ export const VERSION_DESCRIPTIONS: Record<number, string> = {
   79: 'Customers dashboard performance: InitPlan-cacheable RLS, first_order_date and per-customer order indexes, segment counts in customer_analytics_summary, single-round-trip customer_detail RPC',
   80: 'Module access allowlist: module_access table plus user_can_access_module/get_denied_modules/get_module_access_config/set_module_access, and removal of permission rows for retired modules',
   81: 'Incremental Odoo customer sync: sync_watermark on integration_sync_log records how far through Odoo\u2019s write_date history a successful run got, so the next run pulls only what changed',
+  82: 'Orders are credited to the company rather than the contact named on them: customer_orders.contact_id records who placed the order',
+  83: 'Sales channel on customer accounts: direct/distributor/integrator as a human-owned axis, seeded from the published distributor list, replacing the reseller/distributor branch of the AI taxonomy',
+  84: 'Known partners carry their own channel: integrators seeded alongside distributors, and channel_source records whether the list or a person set an account\u2019s channel',
+  85: 'The customers date range governs the whole module: customer_rfm, customer_channel_counts, customer_partner_coverage, customer_detail and customer_cohort_retention take the selected window and report it, instead of the roster and the detail panel showing lifetime totals beside a windowed dashboard',
+  86: 'Workflow diagrams save their layout: node size on workflow_states, endpoint anchors, waypoints and label placement on workflow_transitions, plus execute_workflow_transition/complete_gate_review as the single atomic path a file takes through a workflow, an auditable workflow_history and file_state_entries, and the removal of ten never-wired advanced workflow tables',
   // Note: Process templates module (v26+) is optional - see modules/process-templates.sql
 }
 

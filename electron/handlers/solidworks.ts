@@ -26,6 +26,7 @@ import {
   type SwServiceResult,
   type SwParsedError,
 } from './solidworksErrors'
+import type { ExtractedImage, ThumbnailTier } from './thumbnails/types'
 
 // ============================================
 // Configuration Constants
@@ -37,8 +38,15 @@ const SERVICE_STARTUP_TIMEOUT_MS = 10000
 /** Interval between ping attempts during startup (ms) */
 const SERVICE_STARTUP_POLL_INTERVAL_MS = 500
 
-/** Maximum concurrent SW commands to prevent service overload */
-const SW_MAX_CONCURRENT_COMMANDS = 3
+/**
+ * Maximum concurrent SW commands.
+ *
+ * The C# service reads stdin and runs commands one at a time, so dispatching
+ * more than one only starts extra timeout clocks against a service that cannot
+ * answer yet: short operations expire while queued behind a long export, and
+ * their late responses arrive with no caller left to receive them.
+ */
+const SW_MAX_CONCURRENT_COMMANDS = 1
 
 /** Ping timeout for status checks (ms) - short to avoid blocking */
 const STATUS_PING_TIMEOUT_MS = 2000
@@ -54,12 +62,12 @@ const PING_CACHE_TTL_MS = 1000
 const BUSY_PING_CACHE_TTL_MS = 3000
 
 /**
- * Maximum continuous in-flight window (ms) during which the status handler
- * synthesizes a "busy" result instead of issuing a real ping. An in-flight
- * command is itself proof of liveness, but this bound ensures a genuinely hung
- * (alive but unresponsive) SolidWorks is still eventually probed.
+ * Grace period (ms) added to an in-flight command's own timeout before the
+ * status handler stops synthesizing "busy" and probes with a real ping. An
+ * in-flight command is proof of liveness up to its timeout; past that it should
+ * have resolved, so anything still running is worth probing.
  */
-const SYNTHESIZED_BUSY_MAX_MS = 30_000
+const SYNTHESIZED_BUSY_GRACE_MS = 5_000
 
 // ============================================
 // Module State
@@ -75,9 +83,9 @@ let logWarn: (message: string, data?: unknown) => void = console.warn
 // SolidWorks service state
 let swServiceProcess: ChildProcess | null = null
 let swServiceBuffer = ''
-let swPendingRequests: Map<
+const swPendingRequests: Map<
   number,
-  { resolve: (value: SWServiceResult) => void; reject: (error: Error) => void }
+  { resolve: (value: SwServiceResult) => void; reject: (error: Error) => void }
 > = new Map()
 let swRequestId = 0
 let solidWorksInstalled: boolean | null = null
@@ -107,11 +115,20 @@ const thumbnailsInProgress = new Set<string>()
  * Queue priority. Higher runs first; ties keep FIFO order.
  *
  * Browsing a folder floods the queue with one getPreview per file. Behind a
- * concurrency of 3 that pushes interactive work (a status ping, the properties for
- * the file the user just selected) tens of slots back, and it times out.
+ * single-command queue that pushes interactive work (the properties for the file
+ * the user just selected) tens of slots back, and it times out.
+ *
+ * Previews sit between the two: they are on screen and cheap (a read-only
+ * Document Manager call, single-digit milliseconds once warm), so they must not
+ * wait behind a multi-second export, but they must also not delay work the user
+ * explicitly asked for.
  */
 const PRIORITY_BULK = 0
-const PRIORITY_INTERACTIVE = 1
+const PRIORITY_PREVIEW = 1
+const PRIORITY_INTERACTIVE = 2
+
+/** Read-only preview extractions, which the thumbnail cache drives. */
+const PREVIEW_ACTIONS = new Set(['getPreview', 'getThumbnail'])
 
 /**
  * Actions that must not queue behind a folder's worth of preview extractions:
@@ -135,14 +152,16 @@ const INTERACTIVE_ACTIONS = new Set([
 ])
 
 function getCommandPriority(action: string): number {
-  return INTERACTIVE_ACTIONS.has(action) ? PRIORITY_INTERACTIVE : PRIORITY_BULK
+  if (INTERACTIVE_ACTIONS.has(action)) return PRIORITY_INTERACTIVE
+  if (PREVIEW_ACTIONS.has(action)) return PRIORITY_PREVIEW
+  return PRIORITY_BULK
 }
 
 /** Queue of pending commands waiting to be sent */
 interface QueuedCommand {
   command: Record<string, unknown>
   options?: { timeoutMs?: number }
-  resolve: (value: SWServiceResult) => void
+  resolve: (value: SwServiceResult) => void
   queuedAt: number
   priority: number
 }
@@ -151,19 +170,41 @@ const commandQueue: QueuedCommand[] = []
 let activeCommandCount = 0
 
 /**
- * Timestamp (ms) of when the current continuous in-flight burst began, i.e. when
- * activeCommandCount last transitioned from 0 to a positive value. Null while
- * idle. Used to bound the synthesized-busy window in the status handler so a
- * wedged operation cannot mask itself as "busy" forever.
+ * Maximum number of timed-out request ids remembered, so a late response can be
+ * reported as "the caller already gave up" instead of looking like corruption.
  */
-let inFlightSince: number | null = null
+const MAX_TRACKED_TIMED_OUT_REQUESTS = 100
+
+/** Number of characters of an unparseable response line to include in logs. */
+const RESPONSE_LOG_PREVIEW_CHARS = 200
+
+/** Request id -> action, for requests whose caller timed out. Bounded FIFO. */
+const recentlyTimedOutRequests = new Map<number, string>()
+
+function recordTimedOutRequest(id: number, action: string): void {
+  recentlyTimedOutRequests.set(id, action)
+  while (recentlyTimedOutRequests.size > MAX_TRACKED_TIMED_OUT_REQUESTS) {
+    const oldest = recentlyTimedOutRequests.keys().next().value
+    if (oldest === undefined) break
+    recentlyTimedOutRequests.delete(oldest)
+  }
+}
+
+/**
+ * Timestamp (ms) by which the in-flight command must have resolved, i.e. its
+ * dispatch time plus its own timeout. Null while idle. Bounds the
+ * synthesized-busy window in the status handler so a wedged operation cannot
+ * mask itself as "busy" forever, while letting a legitimately long operation
+ * (a 5-minute export) stay busy for as long as it is allowed to run.
+ */
+let inFlightBusyUntil: number | null = null
 
 // ============================================
 // Ping Cache State
 // ============================================
 
 interface PingCacheEntry {
-  result: SWServiceResult
+  result: SwServiceResult
   timestamp: number
 }
 
@@ -209,11 +250,82 @@ let activeDmOperations = 0
 const DM_OPERATIONS = new Set(['getBom', 'getReferences'])
 
 /**
+ * PIDs of SolidWorks instances the service launched for us. A headless launch
+ * keeps the __wglDummyWindowFodder window title for its whole life, which is the
+ * watchdog's zombie criterion, so without this the watchdog kills the instance
+ * an export is actively using.
+ */
+const swOwnedPids = new Set<number>()
+
+/**
+ * How long orphan cleanup stays suspended after the service reports it is
+ * launching SolidWorks. Covers CreateInstance (tens of seconds) plus the 60s
+ * StartupProcessCompleted wait, i.e. the window where SLDWORKS.exe exists but
+ * its PID has not been reported yet.
+ */
+const SW_LAUNCH_GRACE_MS = 120_000
+
+/** Timestamp of the service's most recent "launching SolidWorks" notice, if still within the grace window. */
+let swLaunchStartedAt: number | null = null
+
+/** Markers the service writes to stderr to hand us ownership of a SolidWorks process. */
+const SW_LAUNCH_MARKER = '[SW-API] LAUNCHING_SW'
+const SW_LAUNCHED_PID_PATTERN = /\[SW-API\] LAUNCHED_PID=(\d+)/
+const SW_RELEASED_PID_PATTERN = /\[SW-API\] RELEASED_PID=(\d+)/
+
+/**
+ * Reads SolidWorks process-ownership markers out of the service's stderr stream.
+ */
+function trackSwProcessOwnership(stderr: string): void {
+  if (stderr.includes(SW_LAUNCH_MARKER)) {
+    swLaunchStartedAt = Date.now()
+    log('[SolidWorks] Service is launching SolidWorks - orphan cleanup suspended')
+  }
+
+  const launched = stderr.match(SW_LAUNCHED_PID_PATTERN)
+  if (launched) {
+    const pid = parseInt(launched[1], 10)
+    swOwnedPids.add(pid)
+    swLaunchStartedAt = null
+    log(`[SolidWorks] Now owns SolidWorks PID ${pid} - exempt from orphan cleanup`)
+  }
+
+  const released = stderr.match(SW_RELEASED_PID_PATTERN)
+  if (released) {
+    const pid = parseInt(released[1], 10)
+    swOwnedPids.delete(pid)
+    log(`[SolidWorks] Released SolidWorks PID ${pid}`)
+  }
+}
+
+/** True while the service is starting a SolidWorks instance we do not know the PID of yet. */
+function isSwLaunchInProgress(): boolean {
+  if (swLaunchStartedAt === null) return false
+
+  if (Date.now() - swLaunchStartedAt > SW_LAUNCH_GRACE_MS) {
+    swLaunchStartedAt = null
+    return false
+  }
+
+  return true
+}
+
+/**
  * Placeholder for future use - records when a SolidWorks file was opened.
  * Currently not used since we only kill definitive zombie processes.
  */
 export function recordSolidWorksFileOpen(): void {
   // No-op for now - we only kill __wgldummywindowfodder which is always safe
+}
+
+interface LockingProcessInfo {
+  processName?: string
+  appName?: string
+}
+
+function isLockingProcessList(data: unknown): data is { processes: LockingProcessInfo[] } {
+  if (typeof data !== 'object' || data === null) return false
+  return Array.isArray((data as { processes?: unknown }).processes)
 }
 
 /**
@@ -230,18 +342,18 @@ export async function findLockingProcessViaService(filePath: string): Promise<st
       { action: 'findLockingProcesses', filePath },
       { timeoutMs: 5000 },
     )
-    if (result?.success && result.data?.count > 0 && result.data?.processes?.length > 0) {
-      // Return the first process name (e.g., "SLDWORKS" or "excel")
-      return result.data.processes[0].processName || result.data.processes[0].appName || 'Unknown'
-    }
-    return null
+    if (!result?.success || !isLockingProcessList(result.data)) return null
+
+    // Return the first process name (e.g., "SLDWORKS" or "excel")
+    const [firstProcess] = result.data.processes
+    if (!firstProcess) return null
+
+    return firstProcess.processName || firstProcess.appName || 'Unknown'
   } catch {
     // Service not running or error - return null (caller will fall through)
     return null
   }
 }
-
-// SWServiceResult is imported from solidworksErrors.ts
 
 // ============================================
 // Process Management Helpers
@@ -325,14 +437,33 @@ function findSolidWorksProcesses(): { pid: number; name: string; windowTitle: st
  * Determines if a SolidWorks process is orphaned (zombie state).
  * Only kills processes with the OpenGL dummy window - this is the definitive zombie indicator.
  * Other states like "N/A" or empty are too risky as they can occur during normal loading.
+ * Instances we launched ourselves are never orphaned: they run hidden, so they
+ * carry the same dummy window title for their entire life.
  * @param proc - Process info from findSolidWorksProcesses
  * @returns true if the process is definitely a zombie
  */
 function isOrphanedProcess(proc: { pid: number; name: string; windowTitle: string }): boolean {
+  if (swOwnedPids.has(proc.pid)) {
+    return false
+  }
+
   const title = proc.windowTitle.toLowerCase()
   // Only the OpenGL dummy window is a definite zombie indicator
   // Other states (N/A, empty, etc.) are too risky - can occur during normal loading
   return title === '__wgldummywindowfodder'
+}
+
+/**
+ * Drops ownership of PIDs that no longer exist, so a recycled PID can never
+ * grant a stranger's process permanent immunity.
+ */
+function pruneOwnedSwPids(livePids: number[]): void {
+  for (const pid of swOwnedPids) {
+    if (!livePids.includes(pid)) {
+      swOwnedPids.delete(pid)
+      log(`[SolidWorks] Owned SolidWorks PID ${pid} is gone - dropping ownership`)
+    }
+  }
 }
 
 /**
@@ -357,10 +488,18 @@ async function killOrphanedSolidWorksProcesses(forceAll: boolean = false): Promi
     return { found: 0, orphaned: 0, killed: 0, errors: [] }
   }
 
+  // A launch in progress has already created SLDWORKS.exe but has not reported
+  // its PID yet, so nothing can be told apart from a zombie right now.
+  if (!forceAll && isSwLaunchInProgress()) {
+    log('[SolidWorks Watchdog] Skipping orphan check - SolidWorks launch in progress')
+    return { found: 0, orphaned: 0, killed: 0, errors: [] }
+  }
+
   log(`[SolidWorks] [SCAN] SCANNING FOR ${forceAll ? 'ALL' : 'ORPHANED'} SLDWORKS PROCESSES`)
 
   const processes = findSolidWorksProcesses()
   log(`[SolidWorks] Found ${processes.length} SLDWORKS.exe process(es)`)
+  pruneOwnedSwPids(processes.map((proc) => proc.pid))
 
   const result = {
     found: processes.length,
@@ -391,12 +530,15 @@ async function killOrphanedSolidWorksProcesses(forceAll: boolean = false): Promi
           timeout: 10000,
         })
         result.killed++
+        swOwnedPids.delete(proc.pid)
         log(`[SolidWorks] [OK] Killed PID ${proc.pid}`)
       } catch (error) {
         const errMsg = `Failed to kill PID ${proc.pid}: ${String(error)}`
         logError(`[SolidWorks] [FAIL] ${errMsg}`)
         result.errors.push(errMsg)
       }
+    } else if (swOwnedPids.has(proc.pid)) {
+      log(`[SolidWorks] Skipping PID ${proc.pid} (launched by us)`)
     } else {
       log(`[SolidWorks] Skipping PID ${proc.pid} (appears active with document open)`)
     }
@@ -578,6 +720,12 @@ function clearServiceState(reason: string, force: boolean = false): void {
     req.reject(new Error(reason))
   }
   swPendingRequests.clear()
+  recentlyTimedOutRequests.clear()
+
+  // The dead service can no longer own or release SolidWorks instances; anything
+  // it left behind is a genuine orphan again.
+  swOwnedPids.clear()
+  swLaunchStartedAt = null
 
   // Clear queued commands
   for (const queued of commandQueue) {
@@ -586,7 +734,7 @@ function clearServiceState(reason: string, force: boolean = false): void {
   }
   commandQueue.length = 0
   activeCommandCount = 0
-  inFlightSince = null
+  inFlightBusyUntil = null
 
   // Invalidate ping cache
   pingCache = null
@@ -622,8 +770,8 @@ function isUnder(normalizedFilePath: string, normalizedFolder: string): boolean 
 /**
  * Drop queued preview/thumbnail extractions whose path matches a predicate.
  *
- * Only affects commands still waiting in the queue. The up-to-3 already dispatched
- * to the service cannot be aborted, so callers should expect a residual tail of at
+ * Only affects commands still waiting in the queue. The one already dispatched to
+ * the service cannot be aborted, so callers should expect a residual tail of at
  * most SW_MAX_CONCURRENT_COMMANDS running to their per-operation timeout.
  */
 function cancelQueuedPreviewsWhere(
@@ -686,10 +834,10 @@ function cancelPreviewsForFolder(folderPath: string): {
 /**
  * Cancel queued previews the user has navigated away from.
  *
- * Browsing a folder enqueues one getPreview per file against a concurrency-3 queue,
- * so moving on before it drains leaves tens of requests that nobody will look at
- * ahead of the ones that matter. `keepFolderPath` is the folder now on screen; its
- * requests are left in place.
+ * Browsing a folder enqueues one getPreview per file against a single-command
+ * queue, so moving on before it drains leaves tens of requests that nobody will
+ * look at ahead of the ones that matter. `keepFolderPath` is the folder now on
+ * screen; its requests are left in place.
  */
 function cancelStalePreviews(keepFolderPath?: string): { cancelledCount: number } {
   const normalizedKeep = keepFolderPath ? normalizeForCompare(keepFolderPath) : null
@@ -743,10 +891,12 @@ function processQueue(): void {
       )
     }
 
-    // Mark the start of a continuous in-flight burst (0 -> 1 transition)
-    if (activeCommandCount === 0) {
-      inFlightSince = Date.now()
-    }
+    // How long this command may legitimately keep the service occupied
+    const commandBudgetMs = queued.options?.timeoutMs ?? getOperationTimeout(action)
+    inFlightBusyUntil = Math.max(
+      inFlightBusyUntil ?? 0,
+      Date.now() + commandBudgetMs + SYNTHESIZED_BUSY_GRACE_MS,
+    )
     activeCommandCount++
 
     // Execute the command directly (bypassing queue since we're already processing)
@@ -754,7 +904,7 @@ function processQueue(): void {
       .then((result) => {
         activeCommandCount--
         if (activeCommandCount === 0) {
-          inFlightSince = null
+          inFlightBusyUntil = null
         }
         queued.resolve(result)
         // Continue processing queue
@@ -763,7 +913,7 @@ function processQueue(): void {
       .catch((error) => {
         activeCommandCount--
         if (activeCommandCount === 0) {
-          inFlightSince = null
+          inFlightBusyUntil = null
         }
         logError(`[SolidWorks Queue] ${action} execution failed: ${error}`)
         queued.resolve({ success: false, error: 'Command execution failed' })
@@ -817,6 +967,7 @@ async function executeCommandDirect(
   const result = await new Promise<SwServiceResult>((resolve) => {
     const timeout = setTimeout(() => {
       swPendingRequests.delete(id)
+      recordTimedOutRequest(id, action)
       const elapsed = Date.now() - startTime
       logError(`[SolidWorks Cmd] [TIMEOUT] TIMEOUT: ${action} (id: ${id}) after ${elapsed}ms`, {
         filePath: filePath ? path.basename(filePath) : undefined,
@@ -910,7 +1061,7 @@ async function executeCommandDirect(
 async function pollServiceUntilReady(
   timeoutMs: number = SERVICE_STARTUP_TIMEOUT_MS,
   pollIntervalMs: number = SERVICE_STARTUP_POLL_INTERVAL_MS,
-): Promise<SWServiceResult> {
+): Promise<SwServiceResult> {
   const startTime = Date.now()
   let attemptCount = 0
 
@@ -1055,112 +1206,47 @@ function handleSWServiceOutput(data: string): void {
   const lines = swServiceBuffer.split('\n')
   swServiceBuffer = lines.pop() || ''
 
-  // #region agent log - Buffer processing
-  const fs = require('fs')
-  const debugLogPath = 'c:\\Users\\emill\\Documents\\GitHub\\bluePLM\\.cursor\\debug.log'
-  const writeDebugLog = (entry: Record<string, unknown>) => {
-    try {
-      fs.appendFileSync(debugLogPath, JSON.stringify(entry) + '\n')
-    } catch {}
-  }
-  if (lines.length > 0) {
-    writeDebugLog({
-      location: 'solidworks.ts:BUFFER_RECV',
-      message: 'Buffer processing',
-      data: {
-        lineCount: lines.length,
-        bufferRemaining: swServiceBuffer.length,
-        pendingRequestIds: Array.from(swPendingRequests.keys()),
-      },
-      timestamp: Date.now(),
-      sessionId: 'debug-session',
-      hypothesisId: 'BUFFER_PROCESSING',
-    })
-  }
-  // #endregion
-
   for (const line of lines) {
     if (!line.trim()) continue
 
     try {
-      const result = JSON.parse(line) as SWServiceResult & { requestId?: number }
-
-      // Match response to request by requestId (if present) or fall back to FIFO
+      const result = JSON.parse(line) as SwServiceResult & { requestId?: number }
       const requestId = result.requestId
+
       if (requestId !== undefined && swPendingRequests.has(requestId)) {
         const handlers = swPendingRequests.get(requestId)!
         swPendingRequests.delete(requestId)
-        // #region agent log - Direct match
-        writeDebugLog({
-          location: 'solidworks.ts:DIRECT_MATCH',
-          message: 'Response matched by requestId',
-          data: {
-            requestId,
-            success: result.success,
-            hasData: !!result.data,
-            dataKeys: result.data ? Object.keys(result.data) : [],
-          },
-          timestamp: Date.now(),
-          sessionId: 'debug-session',
-          hypothesisId: 'DIRECT_MATCH',
-        })
-        // #endregion
         handlers.resolve(result)
-      } else {
-        // #region agent log - FIFO fallback WARNING
-        writeDebugLog({
-          location: 'solidworks.ts:FIFO_FALLBACK',
-          message: 'FIFO fallback triggered - no matching requestId',
-          data: {
-            responseRequestId: requestId,
-            responseSuccess: result.success,
-            responseError: result.error,
-            pendingRequestIds: Array.from(swPendingRequests.keys()),
-            responseDataKeys: result.data ? Object.keys(result.data) : [],
-          },
-          timestamp: Date.now(),
-          sessionId: 'debug-session',
-          hypothesisId: 'FIFO_FALLBACK',
-        })
-        // #endregion
-        // Fallback to FIFO for backwards compatibility
-        const entry = swPendingRequests.entries().next().value
-        if (entry) {
-          const [id, handlers] = entry
-          // #region agent log - FIFO match details
-          writeDebugLog({
-            location: 'solidworks.ts:FIFO_MATCH',
-            message: 'FIFO matched response to wrong request',
-            data: {
-              matchedToRequestId: id,
-              responseRequestId: requestId,
-              responseSuccess: result.success,
-            },
-            timestamp: Date.now(),
-            sessionId: 'debug-session',
-            hypothesisId: 'FIFO_FALLBACK',
-          })
-          // #endregion
-          swPendingRequests.delete(id)
-          handlers.resolve(result)
-        }
+        continue
       }
-    } catch (parseError) {
-      log('[SolidWorks Service] Failed to parse output: ' + line)
-      // #region agent log - Parse error
-      writeDebugLog({
-        location: 'solidworks.ts:PARSE_ERROR',
-        message: 'Failed to parse JSON response',
-        data: {
-          lineLength: line.length,
-          linePreview: line.substring(0, 200),
-          error: String(parseError),
-        },
-        timestamp: Date.now(),
-        sessionId: 'debug-session',
-        hypothesisId: 'BUFFER_CORRUPTION',
+
+      // No FIFO fallback: the service answers one command at a time, so a
+      // response that no longer has a waiting caller belongs to a request that
+      // already timed out. Handing it to the oldest pending request made a
+      // successful export report an unrelated command's error (and delivered
+      // the export's own success to a later command).
+      if (requestId !== undefined && recentlyTimedOutRequests.has(requestId)) {
+        const action = recentlyTimedOutRequests.get(requestId)!
+        recentlyTimedOutRequests.delete(requestId)
+        log(
+          `[SolidWorks Service] Discarded late response for timed-out ${action} (id: ${requestId})`,
+          { success: result.success, error: result.error },
+        )
+        continue
+      }
+
+      logWarn('[SolidWorks Service] Discarded unmatched response', {
+        requestId,
+        success: result.success,
+        error: result.error,
+        pendingRequests: Array.from(swPendingRequests.keys()),
       })
-      // #endregion
+    } catch (error) {
+      logError('[SolidWorks Service] Failed to parse output', {
+        linePreview: line.substring(0, RESPONSE_LOG_PREVIEW_CHARS),
+        lineLength: line.length,
+        error: String(error),
+      })
     }
   }
 }
@@ -1175,7 +1261,7 @@ function handleSWServiceOutput(data: string): void {
 async function sendSWCommand(
   command: Record<string, unknown>,
   options?: { timeoutMs?: number; bypassQueue?: boolean },
-): Promise<SWServiceResult> {
+): Promise<SwServiceResult> {
   const action = command.action as string
   const isDmOperation = DM_OPERATIONS.has(action)
 
@@ -1223,7 +1309,7 @@ async function sendSWCommand(
     }
 
     // Wrap resolve to decrement DM counter when command completes
-    const wrappedResolve = (result: SWServiceResult) => {
+    const wrappedResolve = (result: SwServiceResult) => {
       if (isDmOperation) {
         activeDmOperations--
         log(`[SolidWorks] DM operation ${action} completed (active: ${activeDmOperations})`)
@@ -1350,7 +1436,7 @@ async function startSWService(
   dmLicenseKey?: string,
   cleanupOrphans?: boolean,
   verboseLogging?: boolean,
-): Promise<SWServiceResult> {
+): Promise<SwServiceResult> {
   const startTime = Date.now()
   log('[SolidWorks] [START] START SERVICE REQUESTED')
   logServiceState('startSWService called')
@@ -1470,6 +1556,8 @@ async function startSWService(
       swServiceProcess.stderr?.on('data', (data: Buffer) => {
         const stderr = data.toString().trim()
         if (stderr) {
+          trackSwProcessOwnership(stderr)
+
           // Filter out verbose ping-related messages to reduce log spam
           // Pings happen every 5 seconds and generate 6-7 lines each
           const isPingMessage =
@@ -1584,96 +1672,187 @@ async function stopSWService(): Promise<void> {
   logServiceState('After stopSWService')
 }
 
-// Extract SolidWorks thumbnail from file
-// For SW 2020+ files, uses Document Manager API as primary method (CFB/OLE doesn't work for new format)
-async function extractSolidWorksThumbnail(
+/** Extensions that can carry an embedded SolidWorks preview image. */
+const SW_THUMBNAIL_EXTENSIONS = ['.sldprt', '.sldasm', '.slddrw']
+
+/** Per-file budget for a preview extraction, which is a cheap read-only DM call. */
+const THUMBNAIL_COMMAND_TIMEOUT_MS = 10_000
+
+/** Smallest CFB stream worth inspecting for an image. */
+const MIN_PREVIEW_STREAM_BYTES = 100
+
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+
+/** Identify an image by its magic bytes, or null if it is not one we handle. */
+function detectImageMimeType(buffer: Buffer): string | null {
+  if (buffer.length >= 8 && buffer.subarray(0, 8).equals(PNG_SIGNATURE)) return 'image/png'
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return 'image/jpeg'
+  }
+  if (buffer.length >= 2 && buffer[0] === 0x42 && buffer[1] === 0x4d) return 'image/bmp'
+  return null
+}
+
+/**
+ * Wrap a bare device-independent bitmap in the 14-byte file header that makes
+ * it a readable BMP. Older SolidWorks files store previews this way.
+ */
+function dibToBmp(dibData: Buffer): Buffer | null {
+  const isDib =
+    dibData.length > 4 &&
+    dibData[0] === 0x28 &&
+    dibData[1] === 0x00 &&
+    dibData[2] === 0x00 &&
+    dibData[3] === 0x00
+  if (!isDib) return null
+
+  const headerSize = dibData.readInt32LE(0)
+  const pixelOffset = 14 + headerSize
+  const fileSize = 14 + dibData.length
+
+  const bmpHeader = Buffer.alloc(14)
+  bmpHeader.write('BM', 0)
+  bmpHeader.writeInt32LE(fileSize, 2)
+  bmpHeader.writeInt32LE(0, 6)
+  bmpHeader.writeInt32LE(pixelOffset, 10)
+
+  return Buffer.concat([bmpHeader, dibData])
+}
+
+/**
+ * Raised when a preview could not be determined, as opposed to being determined
+ * absent.
+ *
+ * The distinction matters because the thumbnail cache remembers "this file has
+ * no preview" for as long as the file is unchanged. Recording that after a
+ * cancelled request or while the service is down would hide a perfectly good
+ * preview until the file was next edited.
+ */
+export class PreviewUndeterminedError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'PreviewUndeterminedError'
+  }
+}
+
+function isCancellation(result: SwServiceResult): boolean {
+  return typeof result.error === 'string' && result.error.startsWith('Cancelled:')
+}
+
+/**
+ * Extract the low-resolution preview embedded in a SolidWorks file.
+ *
+ * For SW 2020+ files the Document Manager API is the only method that works,
+ * since those files are no longer OLE compound documents; the CFB scan remains
+ * as a fallback for pre-2015 files and for when the service is unavailable.
+ *
+ * Resolves null only when the file is known to have no preview. Throws
+ * PreviewUndeterminedError when neither method could give an answer.
+ */
+export async function extractThumbnailBytes(
   filePath: string,
-): Promise<{ success: boolean; data?: string; error?: string }> {
+  configuration?: string,
+): Promise<ExtractedImage | null> {
   const fileName = path.basename(filePath)
   const ext = path.extname(filePath).toLowerCase()
 
-  // Only attempt SW thumbnail extraction for SolidWorks files
-  const swExtensions = ['.sldprt', '.sldasm', '.slddrw']
-  if (!swExtensions.includes(ext)) {
-    return { success: false, error: 'Not a SolidWorks file' }
-  }
+  if (!SW_THUMBNAIL_EXTENSIONS.includes(ext)) return null
 
   thumbnailsInProgress.add(filePath)
 
   try {
-    // Primary method: Use Document Manager API (works for SW 2020+ files)
-    // The SW service should be auto-started on app launch
+    // Whether the Document Manager ran to completion and reported no image,
+    // which is a real answer rather than a failure to get one.
+    let dmReportedNoImage = false
+
     if (swServiceProcess?.stdin) {
       try {
         const dmResult = await sendSWCommand(
-          { action: 'getPreview', filePath },
-          { timeoutMs: 10000 }, // 10 second timeout for thumbnails
+          { action: 'getPreview', filePath, configuration },
+          { timeoutMs: THUMBNAIL_COMMAND_TIMEOUT_MS },
         )
 
-        if (dmResult.success && dmResult.data) {
-          const previewData = dmResult.data as { imageData?: string; mimeType?: string }
+        if (isCancellation(dmResult)) {
+          throw new PreviewUndeterminedError(dmResult.error ?? 'Cancelled')
+        }
+
+        if (dmResult.success) {
+          const previewData = (dmResult.data ?? {}) as { imageData?: string; mimeType?: string }
           if (previewData.imageData) {
-            const mimeType = previewData.mimeType || 'image/png'
             log(`[SWThumbnail] Got preview via DM API for ${fileName}`)
-            return { success: true, data: `data:${mimeType};base64,${previewData.imageData}` }
+            return {
+              buffer: Buffer.from(previewData.imageData, 'base64'),
+              mimeType: previewData.mimeType || 'image/png',
+            }
           }
+          dmReportedNoImage = true
         }
       } catch (dmErr) {
-        // DM API failed, fall through to CFB extraction
+        if (dmErr instanceof PreviewUndeterminedError) throw dmErr
         log(`[SWThumbnail] DM API failed for ${fileName}, trying CFB: ${dmErr}`)
       }
     }
 
-    // Fallback: Try CFB/OLE extraction (for older pre-2015 files)
-    if (!(await isOleCompoundFile(filePath))) {
-      log(`[SWThumbnail] ${fileName} is not an OLE compound file, skipping CFB read`)
-      return { success: false, error: 'No thumbnail found' }
-    }
+    if (await isOleCompoundFile(filePath)) {
+      try {
+        const fileBuffer = fs.readFileSync(filePath)
+        const cfb = CFB.read(fileBuffer, { type: 'buffer' })
 
-    try {
-      const fileBuffer = fs.readFileSync(filePath)
-      const cfb = CFB.read(fileBuffer, { type: 'buffer' })
+        for (const entry of cfb.FileIndex) {
+          if (!entry || !entry.content || entry.content.length < MIN_PREVIEW_STREAM_BYTES) continue
 
-      // Look for preview streams
-      for (const entry of cfb.FileIndex) {
-        if (!entry || !entry.content || entry.content.length < 100) continue
-
-        // Check for PNG signature
-        const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
-        const contentBuffer = Buffer.from(entry.content as number[] | Uint8Array)
-        if (contentBuffer.slice(0, 8).equals(pngSignature)) {
-          log(`[SWThumbnail] Found PNG in entry "${entry.name}"`)
-          const base64 = Buffer.from(entry.content).toString('base64')
-          return { success: true, data: `data:image/png;base64,${base64}` }
+          const contentBuffer = Buffer.from(entry.content as number[] | Uint8Array)
+          const mimeType = detectImageMimeType(contentBuffer)
+          if (mimeType) {
+            log(`[SWThumbnail] Found ${mimeType} in entry "${entry.name}"`)
+            return { buffer: contentBuffer, mimeType }
+          }
         }
 
-        // Check for JPEG signature
-        if (entry.content[0] === 0xff && entry.content[1] === 0xd8 && entry.content[2] === 0xff) {
-          log(`[SWThumbnail] Found JPEG in entry "${entry.name}"`)
-          const base64 = Buffer.from(entry.content).toString('base64')
-          return { success: true, data: `data:image/jpeg;base64,${base64}` }
+        // The container was read in full and holds no image.
+        log(`[SWThumbnail] No thumbnail found in ${fileName}`)
+        return null
+      } catch (cfbErr) {
+        const errStr = String(cfbErr)
+        if (!errStr.includes('Header Signature')) {
+          logError(`[SWThumbnail] CFB extraction failed for ${fileName}: ${cfbErr}`)
         }
-
-        // Check for BMP
-        if (entry.content[0] === 0x42 && entry.content[1] === 0x4d) {
-          log(`[SWThumbnail] Found BMP in entry "${entry.name}"`)
-          const base64 = Buffer.from(entry.content).toString('base64')
-          return { success: true, data: `data:image/bmp;base64,${base64}` }
-        }
-      }
-    } catch (cfbErr) {
-      // CFB extraction also failed (expected for SW 2020+ files)
-      // Don't log header signature errors as they're expected for new format files
-      const errStr = String(cfbErr)
-      if (!errStr.includes('Header Signature')) {
-        logError(`[SWThumbnail] CFB extraction failed for ${fileName}: ${cfbErr}`)
       }
     }
 
-    log(`[SWThumbnail] No thumbnail found in ${fileName}`)
-    return { success: false, error: 'No thumbnail found' }
+    // The CFB path could not answer, so only a completed DM call counts.
+    if (dmReportedNoImage) {
+      log(`[SWThumbnail] No thumbnail found in ${fileName}`)
+      return null
+    }
+
+    throw new PreviewUndeterminedError(
+      `SolidWorks service unavailable, cannot determine preview for ${fileName}`,
+    )
   } finally {
     thumbnailsInProgress.delete(filePath)
+  }
+}
+
+// Extract SolidWorks thumbnail from file as a data URL (legacy IPC surface)
+async function extractSolidWorksThumbnail(
+  filePath: string,
+): Promise<{ success: boolean; data?: string; error?: string }> {
+  const ext = path.extname(filePath).toLowerCase()
+  if (!SW_THUMBNAIL_EXTENSIONS.includes(ext)) {
+    return { success: false, error: 'Not a SolidWorks file' }
+  }
+
+  try {
+    const image = await extractThumbnailBytes(filePath)
+    if (!image) return { success: false, error: 'No thumbnail found' }
+
+    return {
+      success: true,
+      data: `data:${image.mimeType};base64,${image.buffer.toString('base64')}`,
+    }
+  } catch (error) {
+    return { success: false, error: String(error) }
   }
 }
 
@@ -1706,107 +1885,113 @@ async function isOleCompoundFile(filePath: string): Promise<boolean> {
   }
 }
 
-// Extract high-quality preview from SolidWorks file
-async function extractSolidWorksPreview(
-  filePath: string,
-): Promise<{ success: boolean; data?: string; error?: string }> {
+/** CFB streams that hold a full-size preview, in descending order of quality. */
+const PREVIEW_STREAM_NAMES = [
+  'PreviewPNG',
+  'Preview',
+  'PreviewBitmap',
+  '\\x05PreviewMetaFile',
+  'Thumbnails/thumbnail.png',
+  'PackageContents',
+]
+
+/**
+ * Extract the full-size preview stored in an OLE compound SolidWorks file.
+ *
+ * Higher quality than the Document Manager thumbnail, but only available for
+ * pre-2015 files, and it costs a full read of the file. The thumbnail cache
+ * ensures that read happens at most once per file version.
+ */
+export async function extractPreviewBytes(filePath: string): Promise<ExtractedImage | null> {
   const fileName = path.basename(filePath)
   log(`[SWPreview] Extracting preview from: ${fileName}`)
 
   if (!(await isOleCompoundFile(filePath))) {
     log(`[SWPreview] ${fileName} is not an OLE compound file, skipping CFB read`)
-    return { success: false, error: 'No preview stream found in file' }
+    return null
   }
 
   try {
     const fileBuffer = fs.readFileSync(filePath)
     const cfb = CFB.read(fileBuffer, { type: 'buffer' })
 
-    const previewStreamNames = [
-      'PreviewPNG',
-      'Preview',
-      'PreviewBitmap',
-      '\\x05PreviewMetaFile',
-      'Thumbnails/thumbnail.png',
-      'PackageContents',
-    ]
-
-    // Try named streams first
-    for (const streamName of previewStreamNames) {
+    for (const streamName of PREVIEW_STREAM_NAMES) {
       try {
         const entry = CFB.find(cfb, streamName)
-        if (entry && entry.content && entry.content.length > 100) {
-          log(`[SWPreview] Found stream "${streamName}" with ${entry.content.length} bytes`)
+        if (!entry || !entry.content || entry.content.length <= MIN_PREVIEW_STREAM_BYTES) continue
 
-          // Check PNG
-          const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
-          const contentBuf = Buffer.from(entry.content as number[] | Uint8Array)
-          if (contentBuf.slice(0, 8).equals(pngSignature)) {
-            log(`[SWPreview] Found PNG preview in "${streamName}"!`)
-            const base64 = contentBuf.toString('base64')
-            return { success: true, data: `data:image/png;base64,${base64}` }
-          }
+        const contentBuf = Buffer.from(entry.content as number[] | Uint8Array)
 
-          // Check BMP
-          if (contentBuf[0] === 0x42 && contentBuf[1] === 0x4d) {
-            log(`[SWPreview] Found BMP preview in "${streamName}"!`)
-            const base64 = contentBuf.toString('base64')
-            return { success: true, data: `data:image/bmp;base64,${base64}` }
-          }
+        const mimeType = detectImageMimeType(contentBuf)
+        if (mimeType) {
+          log(`[SWPreview] Found ${mimeType} preview in "${streamName}"`)
+          return { buffer: contentBuf, mimeType }
+        }
 
-          // Check DIB (convert to BMP)
-          if (
-            contentBuf[0] === 0x28 &&
-            contentBuf[1] === 0x00 &&
-            contentBuf[2] === 0x00 &&
-            contentBuf[3] === 0x00
-          ) {
-            log(`[SWPreview] Found DIB preview in "${streamName}", converting to BMP...`)
-            const dibData = contentBuf
-            const headerSize = dibData.readInt32LE(0)
-            const pixelOffset = 14 + headerSize
-            const fileSize = 14 + dibData.length
-
-            const bmpHeader = Buffer.alloc(14)
-            bmpHeader.write('BM', 0)
-            bmpHeader.writeInt32LE(fileSize, 2)
-            bmpHeader.writeInt32LE(0, 6)
-            bmpHeader.writeInt32LE(pixelOffset, 10)
-
-            const bmpData = Buffer.concat([bmpHeader, Buffer.from(dibData)])
-            const base64 = bmpData.toString('base64')
-            return { success: true, data: `data:image/bmp;base64,${base64}` }
-          }
+        const bmp = dibToBmp(contentBuf)
+        if (bmp) {
+          log(`[SWPreview] Converted DIB preview in "${streamName}" to BMP`)
+          return { buffer: bmp, mimeType: 'image/bmp' }
         }
       } catch {
-        // Stream doesn't exist
+        // Stream doesn't exist in this file
       }
     }
 
-    // Try all entries
     for (const entry of cfb.FileIndex) {
-      if (!entry || !entry.content || entry.content.length < 100) continue
+      if (!entry || !entry.content || entry.content.length < MIN_PREVIEW_STREAM_BYTES) continue
 
-      const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
-      if (Buffer.from(entry.content.slice(0, 8)).equals(pngSignature)) {
-        log(`[SWPreview] Found PNG in entry "${entry.name}"!`)
-        const base64 = Buffer.from(entry.content).toString('base64')
-        return { success: true, data: `data:image/png;base64,${base64}` }
-      }
+      const contentBuf = Buffer.from(entry.content as number[] | Uint8Array)
+      const mimeType = detectImageMimeType(contentBuf)
 
-      if (entry.content[0] === 0xff && entry.content[1] === 0xd8 && entry.content[2] === 0xff) {
-        log(`[SWPreview] Found JPEG in entry "${entry.name}"!`)
-        const base64 = Buffer.from(entry.content).toString('base64')
-        return { success: true, data: `data:image/jpeg;base64,${base64}` }
+      // Unnamed BMP streams are frequently UI chrome rather than the model
+      // preview, so the untargeted scan only accepts compressed formats.
+      if (mimeType === 'image/png' || mimeType === 'image/jpeg') {
+        log(`[SWPreview] Found ${mimeType} in entry "${entry.name}"`)
+        return { buffer: contentBuf, mimeType }
       }
     }
 
     log(`[SWPreview] No preview stream found in ${fileName}`)
-    return { success: false, error: 'No preview stream found in file' }
+    return null
   } catch (error) {
     logError(`[SWPreview] Failed to extract preview from ${fileName}: ${error}`)
-    return { success: false, error: String(error) }
+    return null
   }
+}
+
+// Extract high-quality preview from SolidWorks file as a data URL (legacy IPC surface)
+async function extractSolidWorksPreview(
+  filePath: string,
+): Promise<{ success: boolean; data?: string; error?: string }> {
+  const image = await extractPreviewBytes(filePath)
+  if (!image) return { success: false, error: 'No preview stream found in file' }
+
+  return {
+    success: true,
+    data: `data:${image.mimeType};base64,${image.buffer.toString('base64')}`,
+  }
+}
+
+/**
+ * Adapter used by the thumbnail cache.
+ *
+ * The panel-sized tier prefers the full-resolution OLE stream and falls back to
+ * the Document Manager thumbnail, matching the order the detail panels used to
+ * implement individually. A requested configuration skips the OLE stream, which
+ * only ever holds the file's default preview.
+ */
+export async function extractCadImage(
+  filePath: string,
+  tier: ThumbnailTier,
+  configuration?: string,
+): Promise<ExtractedImage | null> {
+  if (tier === 'preview' && !configuration) {
+    const olePreview = await extractPreviewBytes(filePath)
+    if (olePreview) return olePreview
+  }
+
+  return extractThumbnailBytes(filePath, configuration)
 }
 
 // Export functions for use by fs handlers
@@ -2624,10 +2809,9 @@ export function registerSolidWorksHandlers(
     // commands on a single thread, so it cannot answer a ping until the in-flight
     // operation returns anyway - and the in-flight command is itself proof of
     // liveness. Synthesize a "busy" status from the cached capabilities instead.
-    // Bounded by SYNTHESIZED_BUSY_MAX_MS so a genuinely hung op is still probed.
+    // Bounded by the command's own timeout so a genuinely hung op is still probed.
     const commandInFlight = activeCommandCount > 0 || commandQueue.length > 0
-    const withinBusyWindow =
-      inFlightSince !== null && now - inFlightSince < SYNTHESIZED_BUSY_MAX_MS
+    const withinBusyWindow = inFlightBusyUntil !== null && now < inFlightBusyUntil
     if (commandInFlight && withinBusyWindow) {
       const cachedData = pingCache?.result.data as Record<string, unknown> | undefined
       const dmAvailable = (cachedData?.documentManagerAvailable as boolean) ?? false

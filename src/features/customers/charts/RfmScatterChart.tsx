@@ -72,8 +72,9 @@ function selectPoints(points: ScatterPoint[]): ScatterPoint[] {
 /**
  * Recency against frequency, bubble size by spend.
  *
- * Plots only customers who have actually bought. Prospects have no recency, so
- * they would all pile onto one axis and squash the real distribution.
+ * Plots only customers who bought inside the selected range. Everyone else
+ * sits at zero orders with no recency to plot, so they would pile onto one
+ * axis and squash the real distribution.
  *
  * Points are split into one series per lifecycle segment so each series can
  * carry a flat fill. Colouring a single series meant emitting a <Cell> element
@@ -131,7 +132,7 @@ export const RfmScatterChart = memo(function RfmScatterChart({
   const subtitle =
     series.plotted < series.total
       ? `Showing ${formatCount(series.plotted)} of ${formatCount(series.total)} customers - every top spender, the rest evenly sampled. Click a bubble to open.`
-      : 'Each bubble is a customer; size is lifetime spend. Click to open.'
+      : 'Each bubble is a customer; size is spend in the selected range. Click to open.'
 
   return (
     <ChartFrame
@@ -140,7 +141,7 @@ export const RfmScatterChart = memo(function RfmScatterChart({
       height={300}
       loading={loading}
       empty={series.total === 0}
-      emptyMessage="No customers with confirmed orders yet"
+      emptyMessage="No customers with confirmed orders in this period"
     >
       <ResponsiveContainer width="100%" height="100%">
         <ScatterChart margin={{ top: 8, right: 12, bottom: 18, left: 4 }}>
@@ -188,7 +189,7 @@ export const RfmScatterChart = memo(function RfmScatterChart({
                   <TooltipRow color={meta.color(theme)} label="Segment" value={meta.label} />
                   <TooltipRow label="Last order" value={formatRelativeDays(row.recency_days)} />
                   <TooltipRow label="Orders" value={formatCount(row.order_count)} />
-                  <TooltipRow label="Lifetime spend" value={formatAmount(row.total_spent)} />
+                  <TooltipRow label="Spend" value={formatAmount(row.total_spent)} />
                   {row.category_label && (
                     <TooltipRow label="Category" value={row.category_label} />
                   )}

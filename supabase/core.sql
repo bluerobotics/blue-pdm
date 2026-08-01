@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 -- Insert initial version for new installations
 INSERT INTO schema_version (id, version, description, applied_at, applied_by)
-VALUES (1, 81, 'Incremental Odoo customer sync: sync_watermark on integration_sync_log', NOW(), 'migration')
+VALUES (1, 86, 'Workflow diagrams save their layout: node size on workflow_states, endpoint anchors, waypoints and label placement on workflow_transitions, plus an atomic transition engine, an auditable workflow_history and the removal of ten never-wired advanced workflow tables', NOW(), 'migration')
 ON CONFLICT (id) DO UPDATE SET 
   version = EXCLUDED.version,
   description = EXCLUDED.description,

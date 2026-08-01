@@ -6,7 +6,8 @@ import { usePDMStore } from '@/stores/pdmStore'
 import { customerQueries, type DateWindow } from '../data/api'
 import { clearCustomerCache, load, peek, setGeneration } from '../data/cache'
 import { EMPTY_ANALYTICS, type CustomerAnalyticsData } from '../data/types'
-import { rangeOption, resolveWindow } from '../lib/ranges'
+import { rangeOption, type ResolvedWindow } from '../lib/ranges'
+import { useCustomerWindow } from './useCustomerWindow'
 
 export interface CustomerAnalyticsResult {
   data: CustomerAnalyticsData
@@ -15,7 +16,7 @@ export interface CustomerAnalyticsResult {
   /** True while a refresh runs over data that is already on screen. */
   refreshing: boolean
   refresh: () => void
-  window: { from: string; to: string; comparisonLabel: string }
+  window: ResolvedWindow
 }
 
 /**
@@ -35,10 +36,9 @@ export function useCustomerAnalytics(): CustomerAnalyticsResult {
   const bucket = usePDMStore((s) => s.customerFilters.bucket)
   const dataVersion = usePDMStore((s) => s.customerDataVersion)
 
-  // Memoized on the preset alone. Without this the window would resolve to new
-  // ISO strings on every render and loop the effect forever. A manual refresh
-  // deliberately does not move the window - it re-runs the same query.
-  const window = useMemo(() => resolveWindow(range), [range])
+  // A manual refresh deliberately does not move the window - it re-runs the
+  // same query.
+  const window = useCustomerWindow()
 
   const orgId = organization?.id
   const months = rangeOption(range).cohortMonths
@@ -145,7 +145,7 @@ function buildQueries(orgId: string, window: DateWindow, bucket: string, months:
     topAccounts: customerQueries.topAccounts(orgId, window),
     categories: customerQueries.categories(orgId, window),
     geo: customerQueries.geo(orgId, window),
-    cohorts: customerQueries.cohorts(orgId, months),
+    cohorts: customerQueries.cohorts(orgId, window, months),
     topProducts: customerQueries.topProducts(orgId, window),
   }
 }

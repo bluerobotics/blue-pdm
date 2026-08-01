@@ -21,6 +21,7 @@ import type {
 import type { OperationLogSlice } from './slices/operationLogSlice'
 import type { NewAnnotationData } from '../features/source/details/components/PdfAnnotationViewer'
 import type { FileAnnotation, ECO, Supplier } from '../types/database'
+import type { SolidWorksServiceStatus } from '../types/solidworks'
 
 // ============================================================================
 // Type Aliases — UI enums & discriminated unions
@@ -1621,6 +1622,19 @@ export interface IntegrationsSlice {
   /** Flag indicating a batch SolidWorks operation is in progress (e.g., 80-file check-in) */
   isBatchSWOperationRunning: boolean
 
+  /**
+   * Last known SolidWorks service status, shared by every consumer of
+   * `useSolidWorksStatus` so short-lived components (context menus) don't start
+   * from a stale "not running" snapshot.
+   */
+  solidworksServiceStatus: SolidWorksServiceStatus
+
+  /** True while a service status check is in flight */
+  solidworksStatusChecking: boolean
+
+  /** Unix timestamp ms of the last completed status check, null if never checked */
+  solidworksStatusLastChecked: number | null
+
   // ═══════════════════════════════════════════════════════════════
   // Actions
   // ═══════════════════════════════════════════════════════════════
@@ -1650,6 +1664,12 @@ export interface IntegrationsSlice {
 
   /** Set whether a batch SolidWorks operation is running */
   setIsBatchSWOperationRunning: (running: boolean) => void
+
+  /** Replace the shared SolidWorks service status snapshot */
+  setSolidworksServiceStatus: (status: SolidWorksServiceStatus) => void
+
+  /** Set whether a SolidWorks service status check is in flight */
+  setSolidworksStatusChecking: (checking: boolean) => void
 
   // ═══════════════════════════════════════════════════════════════
   // Backward compatibility aliases
@@ -2014,7 +2034,12 @@ export interface ItemBrowserSlice {
 // Customers Slice
 // ============================================================================
 
-export type CustomersTab = 'overview' | 'customers' | 'accounts'
+export type CustomersTab =
+  | 'overview'
+  | 'customers'
+  | 'accounts'
+  | 'distributors'
+  | 'integrators'
 
 export type CustomerBucket = 'day' | 'week' | 'month' | 'quarter'
 
@@ -2037,6 +2062,14 @@ export interface CustomerFilters {
   /** Composite taxonomy keys: 'category' or 'category::subcategory'. */
   categories: string[]
   countries: string[]
+  /**
+   * Sales channels from customer_accounts.channel. Typed as string[] for the
+   * same reason segments is: the store stays independent of src/features.
+   *
+   * The Distributors and Integrators tabs scope themselves rather than writing
+   * here, so this stays a filter the user chose, not one a tab imposed.
+   */
+  channels: string[]
   presence: CustomerPresence
 }
 
@@ -2106,7 +2139,10 @@ export interface CustomersSlice {
   invalidateCustomerData: () => void
   setCustomerFilters: (patch: Partial<CustomerFilters>) => void
   /** Adds or removes one value from a multi-select facet. Used by cross-filtering. */
-  toggleCustomerFacet: (facet: 'segments' | 'categories' | 'countries', value: string) => void
+  toggleCustomerFacet: (
+    facet: 'segments' | 'categories' | 'countries' | 'channels',
+    value: string,
+  ) => void
   resetCustomerFilters: () => void
   setCustomerPanel: (panel: CustomerPanelState | null) => void
   setCustomerSync: (patch: Partial<CustomerSyncState>) => void

@@ -396,8 +396,7 @@ export function useFloatingToolbarActions(options: UseFloatingToolbarActionsOpti
       const { data, error } = await stateService.create(newState)
 
       if (!error && data) {
-        // Cast through unknown since DB row type may differ from interface
-        setStates((prev) => [...prev, data as unknown as WorkflowState])
+        setStates((prev) => [...prev, data])
         addToast('success', 'State duplicated')
       }
     }
