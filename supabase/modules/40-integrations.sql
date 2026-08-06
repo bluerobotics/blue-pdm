@@ -515,7 +515,13 @@ RETURNS TABLE (
   last_sync_count INT
 ) AS $$
 BEGIN
-  IF p_org_id NOT IN (SELECT org_id FROM users WHERE users.id = auth.uid()) THEN
+  -- Returns the empty set rather than raising, so is_org_member() rather than
+  -- require_org_member(). The test was
+  -- `p_org_id NOT IN (SELECT org_id FROM users WHERE users.id = auth.uid())`,
+  -- which is NULL for an account that has not joined an organization, so the
+  -- RETURN was skipped and the query below ran for the named organization.
+  -- Reproduced against another tenant's Odoo integration.
+  IF NOT is_org_member(p_org_id) THEN
     RETURN;
   END IF;
   
@@ -546,7 +552,10 @@ RETURNS TABLE (
   created_at TIMESTAMPTZ
 ) AS $$
 BEGIN
-  IF p_org_id NOT IN (SELECT org_id FROM users WHERE users.id = auth.uid()) THEN
+  -- Same NULL-unsafe test as get_org_integration_status. Reproduced: an account
+  -- with users.org_id NULL read another tenant's saved Odoo configuration -
+  -- its URL, database name and service account - over PostgREST.
+  IF NOT is_org_member(p_org_id) THEN
     RETURN;
   END IF;
   

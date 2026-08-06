@@ -912,7 +912,30 @@ END;
 $$ LANGUAGE plpgsql STABLE;
 
 -- Parts with pricing view
-CREATE OR REPLACE VIEW parts_with_pricing AS
+--
+-- security_invoker, and not readable by anon.
+--
+-- Without it this view was the largest hole in the release, and nothing in the
+-- release could see it. A view has no row-level security of its own, and one
+-- that is not security_invoker reads its base tables as the view's *owner* -
+-- here postgres, which Supabase's demotion leaves holding BYPASSRLS. So RLS on
+-- files, part_suppliers and suppliers did not apply, and the view returned
+-- every organization's rows to anyone who could select from it. Supabase's
+-- default grants meant that included anon: file ids, part numbers,
+-- descriptions, paths, revisions, states, preferred supplier, supplier code and
+-- unit price, all readable at GET /rest/v1/parts_with_pricing with no JWT.
+--
+-- Neither check caught it. check_anon_reach() filtered relkind = 'r', and
+-- check_org_gates() only looks at functions. Both now cover views; see
+-- check_anon_reach() in core.sql.
+--
+-- security_invoker = true makes the base-table reads happen as the querying
+-- user, so RLS applies to them and each caller sees their own organization.
+-- That is the half that also closes the leak to authenticated users of *other*
+-- tenants, which revoking anon on its own would have left open.
+DROP VIEW IF EXISTS parts_with_pricing;
+CREATE VIEW parts_with_pricing
+WITH (security_invoker = true) AS
 SELECT 
   f.id, f.org_id, f.vault_id, f.file_path, f.file_name, f.part_number,
   f.description, f.revision, f.version, f.state, f.file_type,
@@ -928,6 +951,12 @@ SELECT
   f.created_at, f.updated_at
 FROM files f
 WHERE f.deleted_at IS NULL AND f.part_number IS NOT NULL;
+
+-- Named explicitly rather than left to enforce_anon_execute_posture() at the
+-- end of this file, so the view is never anon-readable even for the moment
+-- between CREATE VIEW and the sweep.
+REVOKE ALL ON parts_with_pricing FROM PUBLIC, anon;
+GRANT SELECT ON parts_with_pricing TO authenticated, service_role;
 
 -- ===========================================
 -- REALTIME

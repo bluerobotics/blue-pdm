@@ -186,24 +186,98 @@ END $$;
 -- anon explicitly on every function in public, so PUBLIC holding nothing meant
 -- nothing at all, and this printed an all-clear over a schema whose every
 -- function anon could call.
+--
+-- Views are included now. They were not before - every inventory filtered
+-- relkind = 'r' - and parts_with_pricing, a view, was returning every
+-- organization's parts and prices to unauthenticated callers the whole time
+-- this script was reporting the schema clean.
+--
+-- Rows are blocking or advisory. Only blocking withholds the stamp. The
+-- advisory case is a default privilege owned by a role you are not a member of:
+-- on Supabase that is supabase_admin, nothing you can run from the SQL editor
+-- can cancel it, and treating it as fatal made a correctly installed database
+-- impossible to stamp - which is what v90 did, while advising you to run the
+-- function that had just failed to do it.
 
-SELECT kind, identity, detail FROM check_anon_reach() ORDER BY kind, identity;
+SELECT kind, identity, severity, detail FROM check_anon_reach()
+ORDER BY CASE severity WHEN 'blocking' THEN 0 ELSE 1 END, kind, identity;
 
 DO $$
 DECLARE
-  v_count INTEGER;
+  v_blocking INTEGER;
+  v_advisory INTEGER;
 BEGIN
-  SELECT count(*) INTO v_count FROM check_anon_reach();
+  SELECT count(*) FILTER (WHERE severity = 'blocking'),
+         count(*) FILTER (WHERE severity = 'advisory')
+    INTO v_blocking, v_advisory
+  FROM check_anon_reach();
 
-  IF v_count > 0 THEN
-    RAISE WARNING '❌ % object(s) reachable without authentication. Listed above; the stamp is withheld.', v_count;
+  IF v_blocking > 0 THEN
+    RAISE WARNING '❌ % object(s) reachable without authentication. Listed above; the stamp is withheld.', v_blocking;
   ELSE
     RAISE NOTICE '✅ Nothing in public is reachable by anon outside the allowlist';
+  END IF;
+
+  IF v_advisory > 0 THEN
+    RAISE NOTICE 'ℹ️  % advisory item(s) listed above - real, but not something you can change from here, so they do not withhold the stamp.', v_advisory;
   END IF;
 END $$;
 
 -- What anon is deliberately allowed, so the list above can be read against it.
 SELECT signature, reason FROM anon_execute_allowlist() ORDER BY signature;
+
+-- ===========================================
+-- CHECK NO MEMBERSHIP TEST IS NULL-UNSAFE
+-- ===========================================
+-- `p_org_id NOT IN (SELECT org_id FROM users WHERE id = auth.uid())` is NULL,
+-- not true, when the caller's users.org_id is NULL - which is every account
+-- that has signed up and not yet joined an organization. The IF is not taken
+-- and the function proceeds against the organization it was handed.
+--
+-- check_org_gates() cannot find these: it probes as postgres with auth.uid()
+-- NULL, and require_org_member() refuses that case for an unrelated reason, so
+-- the probe sees a refusal and scores the function gated. The one caller that
+-- triggers the bug is the one the probe cannot impersonate. Hence a source
+-- check.
+
+SELECT signature, detail FROM check_null_unsafe_org_gates() ORDER BY signature;
+
+DO $$
+DECLARE
+  v_count INTEGER;
+BEGIN
+  SELECT count(*) INTO v_count FROM check_null_unsafe_org_gates();
+
+  IF v_count > 0 THEN
+    RAISE WARNING '❌ % function(s) test organization membership in a way that admits a user with no organization. Listed above; the stamp is withheld.', v_count;
+  ELSE
+    RAISE NOTICE '✅ No NULL-unsafe organization membership tests';
+  END IF;
+END $$;
+
+-- ===========================================
+-- CHECK THE GATED ARGUMENT IS THE ONE THAT SELECTS THE ROW
+-- ===========================================
+-- create_file_share_link() checked p_org_id, which was genuinely the caller's
+-- own organization, and then acted on p_file_id, which was not. Both existing
+-- checks passed it: it refuses an unauthenticated caller, and the roles allowed
+-- to execute it were correct. What was wrong was the relationship between two
+-- arguments, which neither check looks at.
+
+SELECT signature, detail FROM check_unbound_entity_args() ORDER BY signature;
+
+DO $$
+DECLARE
+  v_count INTEGER;
+BEGIN
+  SELECT count(*) INTO v_count FROM check_unbound_entity_args();
+
+  IF v_count > 0 THEN
+    RAISE WARNING '❌ % function(s) check one argument and then act on another. Listed above; the stamp is withheld.', v_count;
+  ELSE
+    RAISE NOTICE '✅ Every function that gates on an org id also uses it to select rows';
+  END IF;
+END $$;
 
 -- ===========================================
 -- RELEASE MANIFEST

@@ -1,0 +1,64 @@
+﻿
+=== PREFLIGHT ===
+PostgREST is answering and the seed is present.
+
+=== ATTACKS (expecting: fixed) ===
+
+[refused ] F2a     anon reads parts_with_pricing (another tenant's parts and prices)
+         HTTP 401: {"code":"42501","details":null,"hint":null,"message":"permission denied for view 
+parts_with_pricing"}
+[refused ] F2b     Umbrella member reads Acme parts through parts_with_pricing
+         HTTP 200: [{"part_number":"UMB-0001","description":"A widget"}]
+[refused ] F3a     Umbrella member mints a share link for an Acme file
+         HTTP 403: {"code":"42501","details":null,"hint":null,"message":"Not authorized for this file"}
+[refused ] F3b     anon redeems that cross-tenant token (require_auth=true ignored)
+         no token was minted
+[refused ] F3c     anon exhausts a 10-download allowance without downloading anything
+         no token was minted
+[refused ] F4a     org-less account reads Acme's Odoo configuration
+         HTTP 200: []
+[refused ] F4a2    org-less account reads Acme's integration status
+         HTTP 200: []
+[refused ] F4b     org-less account reads Acme's item-designation assignments
+         HTTP 403: {"code":"42501","details":null,"hint":null,"message":"Not authorized for this organization"}
+[refused ] F4c     org-less account OVERWRITES a row in Acme's item_images
+         HTTP 403: {"code":"42501","details":null,"hint":null,"message":"Not authorized for this organization"}
+[refused ] F4d     org-less account DELETES a row from Acme's item_images
+         HTTP 403: {"code":"42501","details":null,"hint":null,"message":"Not authorized for this organization"}
+[refused ] F4e     org-less account reads Acme's item designations
+         HTTP 403: {"code":"42501","details":null,"hint":null,"message":"Not authorized for this organization"}
+[refused ] F4f     org-less account writes an Acme item designation (admin check should stop this)
+         HTTP 403: {"code":"42501","details":null,"hint":null,"message":"Not authorized for this organization"}
+[refused ] F5a     org slug enumeration: an existing org is distinguishable from a miss carrying the same answer
+         hit ={"users": {"email": true, "phone": true, "google": true}, "suppliers": {"email": true, "phone": true, 
+"google": true}}
+         miss={"users": {"email": true, "phone": true, "google": true}, "suppliers": {"email": true, "phone": true, 
+"google": true}}
+
+=== POSITIVE CONTROLS (must pass before and after) ===
+
+[works   ] C1      Acme member still reads Acme parts through parts_with_pricing
+         HTTP 200: [{"part_number":"ACME-SECRET-0001","preferred_supplier":{"currency": "USD", "unit_price": 
+14250.0000, "supplier_id": "aaaaaaaa-4444-4000-8000-000000000001", "supplier_code": "CONF-FORGE", "supplier_na...
+[works   ] C1b     ...and sees no other tenant in it
+         UMB-0001 present: False
+[works   ] C2      Acme member still mints a share link for their OWN file
+         HTTP 200: [{"link_id":"7c5b1ac5-ddbb-4f59-aa05-200ef128eeed","token":"86a35af235f54a728fc1f3fd9010a546","expir
+es_at":"2026-08-13T19:52:22.527109+00:00"}]
+[works   ] C3      anon recipient still validates a legitimate share link
+         HTTP 200: [{"is_valid":true,"file_id":"aaaaaaaa-3333-4000-8000-000000000001","org_id":"aaaaaaaa-0000-4000-8000
+-000000000001","file_version":null,"error_message":null}]
+[works   ] C4      6 more validations do NOT exhaust a 3-download allowance
+         HTTP 200: [{"is_valid":true,"file_id":"aaaaaaaa-3333-4000-8000-000000000001","org_id":"aaaaaaaa-0000-4000-8000
+-000000000001","file_version":null,"error_message":null}]
+[works   ] C5      sign-in screen still reads auth providers with the anon key
+         HTTP 200: {"saml": true, "google": true}
+[works   ] C6      Acme member still reads their OWN Odoo configuration
+         HTTP 200: [{"id":"728c7cfc-519f-4cdd-9738-dcda7fa7feb0","name":"Acme Production Odoo","description":"live 
+ERP","url":"https://acme-secret.odoo.com","database":"acme_prod"...
+[works   ] C7      Acme member still writes their OWN item_images row
+         HTTP 200: {"id":"d9932e15-ea08-40ea-84aa-c9982928a2b5","org_id":"aaaaaaaa-0000-4000-8000-000000000001","part_n
+umber":"ACME-SECRET-0001","image_type":"icon","icon_name":"r...
+
+0 of 13 attacks succeeded; 0 of 8 enforced positive controls broken.
+OK: every attack was refused, and every positive control still works.

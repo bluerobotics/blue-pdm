@@ -1,0 +1,103 @@
+DO
+docker : psql:/blueplm/tools/verify-schema.sql:76: NOTICE:  Γ£à All 76 expected tables exist
+At C:\Users\emill\AppData\Local\Temp\ps-script-49637423-1c7e-4254-ac09-db8b09eefff8.ps1:94 char:1
++ docker compose exec -T -e PGPASSWORD=postgres db psql --no-psqlrc -U  ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (psql:/blueplm/t...ed tables exist:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+DO
+psql:/blueplm/tools/verify-schema.sql:105: NOTICE:  Γ£à All 18 key functions exist
+DO
+psql:/blueplm/tools/verify-schema.sql:136: NOTICE:  Γ£à RLS enabled on all tables
+ signature | status | detail 
+-----------+--------+--------
+(0 rows)
+
+DO
+psql:/blueplm/tools/verify-schema.sql:179: NOTICE:  Γ£à Every org-scoped RPC refused a foreign organization when asked
+       kind        |          identity           |                                                                               detail                                                                               
+-------------------+-----------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ default_privilege | supabase_admin on functions | ALTER DEFAULT PRIVILEGES still grants EXECUTE to anon, so the next function created in public will be anon-executable. Run: SELECT enforce_anon_execute_posture();
+(1 row)
+
+DO
+psql:/blueplm/tools/verify-schema.sql:203: WARNING:  Γ¥î 1 object(s) reachable without authentication. Listed above; 
+the stamp is withheld.
+          signature           |              reason              
+------------------------------+----------------------------------
+ get_org_auth_providers(text) | sign-in screen, pre-login
+ validate_share_link(text)    | share link recipients, pre-login
+(2 rows)
+
+      module       |                                        object                                        | status | detail 
+-------------------+--------------------------------------------------------------------------------------+--------+--------
+ 10-source-files   | apply_workflow_transition(uuid,uuid,uuid,text,jsonb)                                 | ok     | 
+ 10-source-files   | checkin_file(uuid,uuid,text,bigint,text,text,text,text,integer,jsonb,text,text,text) | ok     | 
+ 10-source-files   | checkout_file(uuid,uuid,text,text,text)                                              | ok     | 
+ 10-source-files   | create_default_workflow(uuid,uuid)                                                   | ok     | 
+ 10-source-files   | create_file_share_link(uuid,uuid,uuid,integer,integer,boolean)                       | ok     | 
+ 10-source-files   | execute_transition_to_legacy_state(uuid,text,text)                                   | ok     | 
+ 10-source-files   | files                                                                                | ok     | 
+ 10-source-files   | get_available_transitions(uuid,uuid)                                                 | ok     | 
+ 10-source-files   | get_item_definition_settings(uuid)                                                   | ok     | 
+ 10-source-files   | get_item_images(uuid)                                                                | ok     | 
+ 10-source-files   | get_next_serial_number(uuid)                                                         | ok     | 
+ 10-source-files   | get_user_vault_access(uuid)                                                          | ok     | 
+ 10-source-files   | get_vault_files_delta(uuid,uuid,timestamptz)                                         | ok     | 
+ 10-source-files   | get_vault_files_fast(uuid,uuid)                                                      | ok     | 
+ 10-source-files   | merge_custom_properties(jsonb,jsonb)                                                 | ok     | 
+ 10-source-files   | move_file(uuid,uuid,text,text)                                                       | ok     | 
+ 10-source-files   | preview_next_serial_number(uuid)                                                     | ok     | 
+ 10-source-files   | rename_folder_files(text,text,uuid,uuid)                                             | ok     | 
+ 10-source-files   | update_item_definition_settings(uuid,jsonb)                                          | ok     | 
+ 10-source-files   | update_serialization_settings_safe(uuid,jsonb)                                       | ok     | 
+ 15-inspection     | inspection_characteristics                                                           | ok     | 
+ 15-inspection     | inspection_characteristic_versions                                                   | ok     | 
+ 20-change-control | check_gate_requirements(uuid,text)                                                   | ok     | 
+ 20-change-control | eco_gate_approvals                                                                   | ok     | 
+ 20-change-control | instantiate_process_template(uuid,uuid)                                              | ok     | 
+ 30-supply-chain   | generate_rfq_number(uuid)                                                            | ok     | 
+ 30-supply-chain   | rfq_number_counters                                                                  | ok     | 
+ 40-integrations   | apply_pending_license_assignments(uuid)                                              | ok     | 
+ 40-integrations   | integration_credentials                                                              | ok     | 
+ 50-extensions     | get_extension_config(uuid,text)                                                      | ok     | 
+ 50-extensions     | get_extension_stats(uuid,text)                                                       | ok     | 
+ 60-customers      | seed_customer_categories(uuid)                                                       | ok     | 
+ core              | require_org_member(uuid)                                                             | ok     | 
+ core              | schema_release_version()                                                             | ok     | 
+ core              | verify_and_stamp_schema()                                                            | ok     | 
+(35 rows)
+
+psql:/blueplm/tools/verify-schema.sql:248: WARNING:  Schema NOT stamped. Recorded version stays at 0, this release is 
+90.
+psql:/blueplm/tools/verify-schema.sql:248: WARNING:    [security] supabase_admin on functions - anon-reachable ALTER 
+DEFAULT PRIVILEGES still grants EXECUTE to anon, so the next function created in public will be anon-executable. Run: 
+SELECT enforce_anon_execute_posture();
+psql:/blueplm/tools/verify-schema.sql:248: ERROR:  Schema verification failed: 1 problem(s) listed above. Fix them - 
+for a missing or stale object, re-run the module file named beside it - then run this script again.
+CONTEXT:  PL/pgSQL function inline_code_block line 21 at RAISE
+ recorded_version | release_version | total_tables | total_functions | total_policies 
+------------------+-----------------+--------------+-----------------+----------------
+                0 |              90 |          102 |             149 |            263
+(1 row)
+
+docker : WARNING:  Could not cancel the anon default privilege held by supabase_admin. Functions created later will be 
+anon-executable until enforce_anon_execute_posture() is re-run as a member of that role.
+At C:\Users\emill\AppData\Local\Temp\ps-script-767d23e8-6d1a-48a3-bd98-c7334d944773.ps1:95 char:1
++ docker compose exec -T -e PGPASSWORD=postgres db psql --no-psqlrc -U  ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (WARNING:  Could...r of that role.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+ enforce_anon_execute_posture 
+------------------------------
+                            0
+(1 row)
+
+    grantor     |                                                   defaclacl                                                    
+----------------+----------------------------------------------------------------------------------------------------------------
+ supabase_admin | {postgres=X/supabase_admin,anon=X/supabase_admin,authenticated=X/supabase_admin,service_role=X/supabase_admin}
+ postgres       | {postgres=X/postgres,authenticated=X/postgres,service_role=X/postgres}
+(2 rows)
+

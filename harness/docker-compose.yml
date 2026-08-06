@@ -1,0 +1,55 @@
+# Faithful-enough reproduction of a Supabase project's role and privilege
+# posture, built from Supabase's own bootstrap SQL rather than from a stock
+# Postgres container.
+#
+# The point of this file is the *roles*, not the data. Two previous attempts at
+# the security work it verifies passed against containers where `postgres` was
+# still a superuser, which makes every ACL check meaningless. See
+# initdb/90-assert-harness.sql: the container refuses to finish starting if the
+# posture it is supposed to reproduce is not actually in place.
+
+name: blueplm-harness
+
+services:
+  db:
+    image: postgres:${PG_TAG:-17.6}
+    environment:
+      # supabase_admin is the initdb bootstrap superuser, exactly as on Supabase.
+      # This matters: Postgres 16+ refuses `ALTER ROLE <bootstrap> NOSUPERUSER`
+      # outright ("The bootstrap superuser must have the SUPERUSER attribute"),
+      # so a container whose bootstrap role is `postgres` cannot reproduce
+      # Supabase's demotion and silently tests as superuser.
+      POSTGRES_USER: supabase_admin
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_HOST_AUTH_METHOD: md5
+    volumes:
+      - ./supabase-init:/supabase-init:ro
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+      - ./sql:/sql:ro
+      - ../supabase:/blueplm:ro
+    ports:
+      - "${PGPORT_HOST:-55432}:5432"
+    command:
+      - postgres
+      - -c
+      - log_min_messages=warning
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U supabase_admin -d postgres"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  rest:
+    image: postgrest/postgrest:v12.2.3
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGRST_DB_URI: postgres://authenticator:authenticator@db:5432/postgres
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: ${JWT_SECRET:-blueplm-harness-super-secret-jwt-token-with-at-least-32-characters}
+      PGRST_DB_USE_LEGACY_GUCS: "false"
+    ports:
+      - "${RESTPORT_HOST:-53000}:3000"

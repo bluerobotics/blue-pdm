@@ -1,0 +1,6 @@
+# These are read inside a Linux container. Checking them out with CRLF makes the
+# entrypoint script fail with a bare "not found" that names the interpreter, and
+# leaves psql parsing stray carriage returns. This already happened once.
+*.sh text eol=lf
+*.sql text eol=lf
+*.yml text eol=lf

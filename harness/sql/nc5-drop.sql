@@ -1,0 +1,1 @@
+DROP FUNCTION IF EXISTS get_extension_config(UUID, TEXT, BOOLEAN);

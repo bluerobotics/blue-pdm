@@ -92,7 +92,7 @@ against this schema.
 The app reads `schema_version.version` on startup and warns if it does not match
 `EXPECTED_SCHEMA_VERSION` in `src/lib/schemaVersion.ts`.
 
-- Current schema version: **89** (keep in sync with `schema_release_version()` in `core.sql`)
+- Current schema version: **91** (keep in sync with `schema_release_version()` in `core.sql`)
 - The number is written by **verification only**: `tools/verify-schema.sql` calls
   `verify_and_stamp_schema()`, which checks the release manifest in `core.sql` and stamps
   the version only if every object the release requires is present. Running `core.sql` or
@@ -178,8 +178,18 @@ health check. It reports:
 - …and then stamps the schema version if all of that holds
 
 On a complete, correct install every check passes and it prints `Schema verified and
-stamped at version 89`. If it refuses to stamp, it names the objects that are missing or
+stamped at version 91`. If it refuses to stamp, it names the objects that are missing or
 stale and the module each belongs to; run those files and run it again.
+
+One kind of report is deliberately *not* a reason to withhold the stamp. On Supabase there
+is a default-privilege entry owned by `supabase_admin` that grants `EXECUTE` on new
+functions to `anon`, and no role available to a project can alter it. Version 90 treated
+that as fatal, which meant a database with every object correctly installed could never be
+stamped, and the failure told the operator to run the function that had just been unable to
+change it. It is now reported as advisory. It has no effect on anything that already
+exists — everything shipped is revoked by name — and its actual consequence, that a
+function created by some later migration is born reachable by `anon`, is caught by name in
+the same check.
 
 The `Missing functions: generate_rfq_number` report this script used to produce was real
 rather than stale — `30-supply-chain.sql` had not created that function since
@@ -193,18 +203,76 @@ consulted inside it. When such a function also takes a `p_org_id`, that argument
 which organization it acts on — and PostgREST exposes it to whoever holds `EXECUTE`.
 A newly created function grants `EXECUTE` to `PUBLIC`, which includes `anon`, so a
 `GRANT EXECUTE ... TO authenticated` written beside a new function looks like a
-restriction and is not one.
+restriction and is not one. On Supabase it is worse than that: the bootstrap runs
 
-As of 89 both halves are handled:
+```sql
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT ALL ON FUNCTIONS TO postgres, anon, authenticated, service_role;
+```
+
+which *adds* an explicit `anon=X/postgres` on top of the built-in `PUBLIC` default. Version
+89 tried to close this with `REVOKE ... FROM PUBLIC`, which strips only the implicit entry
+and leaves the explicit grant to `anon` in place — so it removed nothing, on a platform
+where it needed to remove everything. Naming the role is the only thing that revokes it.
+`revoke_public_execute_on_org_rpcs()` was that attempt and is gone.
+
+Three things handle it now:
 
 - Every such function calls `require_org_member(p_org_id)` first, which raises unless
   `auth.uid()` belongs to that organization. An unknown organization id gets the same
   authorization error as one the caller is not a member of, so the function cannot be
   used to find out which ids are real; `NULL` gets its own message.
-- `revoke_public_execute_on_org_rpcs()` runs at the end of `core.sql` and every module,
-  withdrawing `PUBLIC` from the whole class. It is applied by class rather than function
-  by function because these modules `DROP` and re-`CREATE` functions, which resets the
-  ACL on every install, and because the class keeps covering RPCs added later.
+- `enforce_anon_execute_posture()` runs at the end of `core.sql` and every module. It
+  withdraws `EXECUTE` from `anon` **by name** on everything in `public` except a short
+  pre-login allowlist, and does the same for views and materialized views. It is applied
+  by class rather than function by function because these modules `DROP` and re-`CREATE`
+  functions, which resets the ACL on every install, and because the class keeps covering
+  objects added later.
+- `check_anon_reach()` then refuses to certify a database where anything outside that
+  allowlist is still reachable. This is the part that has to be structural, because the
+  sweep cannot be made permanent: `ALTER DEFAULT PRIVILEGES` cannot cancel the built-in
+  `PUBLIC EXECUTE` default at all, and the `supabase_admin` entry is beyond a project's
+  reach. A function created by a later ad-hoc migration therefore *is* born reachable by
+  `anon`. Nothing prevents that; verification catches it.
+
+### Gating the argument that selects the row
+
+`require_org_member(p_org_id)` only proves the caller belongs to the organization they
+named. If a second argument chooses the row, that argument needs checking too.
+`create_file_share_link` did not do this: it took `p_org_id` and `p_file_id`, verified the
+first and inserted the second, so a member of any organization could mint a share token for
+another tenant's file. Functions in this position either compare the entity's own `org_id`
+to `p_org_id`, or drop `p_org_id` as an authority altogether and derive the organization
+from the entity with `require_file_access()` / `require_vault_access()`.
+`check_unbound_entity_args()` reports a function that gates on `p_org_id` and then never
+uses it to constrain anything.
+
+### Membership tests must be NULL-safe
+
+An account that has signed up but not joined an organization has `users.org_id` set to
+`NULL`. That makes
+
+```sql
+IF p_org_id NOT IN (SELECT org_id FROM users WHERE id = auth.uid()) THEN
+```
+
+evaluate to `NULL` rather than true, so the `IF` is not taken and the body runs against
+whatever organization was named. Nine of these shipped in v90. Use
+`require_org_member(p_org_id)`, or `NOT is_org_member(p_org_id)` where the function returns
+a value instead of raising. `check_null_unsafe_org_gates()` scans for the shape and refuses
+to certify a database that contains it — including in a position where some other condition
+currently happens to cover it, because a gate whose correctness depends on a neighbouring
+check is not a gate.
+
+### Views
+
+A view has no row-level security of its own, and unless it is created
+`WITH (security_invoker = true)` it reads its underlying tables as its owner, so their
+policies do not apply either. `parts_with_pricing` was neither, and was readable by `anon`:
+every organization's part numbers, descriptions, revisions, preferred suppliers and unit
+prices, with no JWT. New views in `public` should be `security_invoker` and granted to
+`authenticated`/`service_role` only. Both `check_anon_reach()` and
+`tools/emergency-lockdown.sql` cover views and materialized views.
 
 Three functions are exempt from the membership check and named in `verify-schema.sql`:
 `create_default_job_titles`, `create_default_permission_teams` and

@@ -81,14 +81,17 @@ ON CONFLICT (id) DO NOTHING;
 -- what a database must contain to be allowed to claim it.
 
 CREATE OR REPLACE FUNCTION schema_release_version() RETURNS INTEGER
-LANGUAGE sql IMMUTABLE AS $$ SELECT 90 $$;
+LANGUAGE sql IMMUTABLE AS $$ SELECT 91 $$;
 
 CREATE OR REPLACE FUNCTION schema_release_description() RETURNS TEXT
 LANGUAGE sql IMMUTABLE AS $$ SELECT
-  'EXECUTE is withdrawn from anon by name rather than through PUBLIC, which on Supabase '
-  'removed nothing; functions reached through an entity id resolve the organization from '
-  'that entity and take the acting user from auth.uid(); and verification calls each '
-  'org-scoped function with a foreign organization id rather than reading its source'
+  'Views are covered by the anon sweep and by verification, and parts_with_pricing - '
+  'which returned every organization''s parts and prices to an unauthenticated caller - '
+  'is security_invoker and withdrawn from anon; create_file_share_link resolves the '
+  'organization from the file rather than from the argument beside it; membership tests '
+  'are NULL-safe, so an account whose users.org_id is still NULL is refused instead of '
+  'admitted; and verification no longer withholds the stamp for a default privilege the '
+  'operator has no power to cancel'
 $$;
 
 -- One row per object this release requires, scoped to the module that creates it.
@@ -118,8 +121,25 @@ LANGUAGE sql IMMUTABLE AS $$
   SELECT * FROM (VALUES
     -- core.sql
     ('core', NULL, 'function', 'require_org_member(uuid)', NULL),
-    ('core', NULL, 'function', 'verify_and_stamp_schema()', NULL),
+    ('core', NULL, 'function', 'is_org_member(uuid)', NULL),
     ('core', NULL, 'function', 'schema_release_version()', NULL),
+    -- The checks themselves are release content. A database carrying v90's
+    -- copy of check_anon_reach() would look at no views at all and report a
+    -- clean schema over the parts_with_pricing leak, so the manifest pins the
+    -- shape of each: `severity` only exists in the version that distinguishes
+    -- blocking from advisory, and `relkind` only in the one that reaches views.
+    ('core', NULL, 'function', 'check_anon_reach()', 'severity'),
+    -- strip_sql_noise, not a phrase from the pattern it looks for: `requires`
+    -- is tested against the source with literals removed, and every mention of
+    -- the pattern inside this function is inside a literal.
+    ('core', NULL, 'function', 'check_null_unsafe_org_gates()', 'strip_sql_noise'),
+    ('core', NULL, 'function', 'check_unbound_entity_args()', 'proargmodes'),
+    -- One row per identity: check_schema_release() also reports unknown
+    -- overloads while walking the manifest, and a second row for the same
+    -- function would report each of those twice. The probe names the newest of
+    -- the checks this function has to call, which cannot be present in a build
+    -- that predates the others.
+    ('core', NULL, 'function', 'verify_and_stamp_schema()', 'check_unbound_entity_args'),
 
     -- 10-source-files.sql - REQUIRED, so probe is NULL
     ('10-source-files', NULL, 'table', 'files', NULL),
@@ -134,7 +154,12 @@ LANGUAGE sql IMMUTABLE AS $$
     ('10-source-files', NULL, 'function', 'update_item_definition_settings(uuid,jsonb)', 'require_org_member'),
     ('10-source-files', NULL, 'function', 'get_item_images(uuid)', 'require_org_member'),
     ('10-source-files', NULL, 'function', 'create_default_workflow(uuid,uuid)', 'require_org_member'),
-    ('10-source-files', NULL, 'function', 'create_file_share_link(uuid,uuid,uuid,integer,integer,boolean)', 'require_org_member'),
+    -- Resolves the organization from p_file_id. It used to gate on p_org_id and
+    -- then insert p_file_id without ever comparing them, so a member of any
+    -- organization could mint a working token for another tenant's file.
+    ('10-source-files', NULL, 'function', 'create_file_share_link(uuid,uuid,uuid,integer,integer,boolean)', 'require_file_access'),
+    ('10-source-files', NULL, 'function', 'validate_share_link(text)', 'require_auth'),
+    ('10-source-files', NULL, 'function', 'consume_share_link(text)', NULL),
     -- Entity-scoped: these resolve the organization from the id they are given
     -- and gate on that. They took no p_org_id, so the old sweep never saw them.
     ('10-source-files', NULL, 'function', 'checkout_file(uuid,uuid,text,text,text)', 'require_file_access'),
@@ -157,6 +182,10 @@ LANGUAGE sql IMMUTABLE AS $$
     -- 30-supply-chain.sql
     ('30-supply-chain', 'rfqs', 'table', 'rfq_number_counters', NULL),
     ('30-supply-chain', 'rfqs', 'function', 'generate_rfq_number(uuid)', 'require_org_member'),
+    -- A view, so it has no RLS of its own. to_regclass resolves views as well
+    -- as tables; whether it is security_invoker and whether anon can read it
+    -- are check_anon_reach()'s business.
+    ('30-supply-chain', 'rfqs', 'table', 'parts_with_pricing', NULL),
 
     -- 40-integrations.sql
     ('40-integrations', 'webhooks', 'table', 'integration_credentials', NULL),
@@ -372,6 +401,15 @@ DECLARE
     'create_default_permission_teams',
     'seed_customer_categories'
   ];
+  -- Predicates. Answering is what they are for, so the "did it answer?" test
+  -- below scores them ungated, wrongly. is_org_member(p_org_id) returning false
+  -- for a foreign organization is the gate working, not the gate missing; it is
+  -- the thing the callers in this list are gated *by*. It discloses nothing - a
+  -- caller learns only whether they themselves are a member - and it is granted
+  -- to authenticated, never to anon.
+  c_predicate TEXT[] := ARRAY[
+    'is_org_member'
+  ];
   r RECORD;
   v_args TEXT;
   v_sqlstate TEXT;
@@ -390,6 +428,7 @@ BEGIN
       AND p.prokind = 'f'
       AND pg_get_function_identity_arguments(p.oid) ~ '\mp_org_id\M'
       AND NOT (p.proname = ANY (c_trigger_only))
+      AND NOT (p.proname = ANY (c_predicate))
     ORDER BY 1
   LOOP
     -- A random organization id for p_org_id, NULL for everything else. A
@@ -474,13 +513,35 @@ REVOKE ALL ON FUNCTION check_org_gates() FROM PUBLIC, anon, authenticated;
 -- unless something takes it away. enforce_anon_execute_posture() is what takes
 -- it away; this is the check that it did, and the one that notices the next
 -- function somebody adds without running it.
+--
+-- WHY THERE IS A severity COLUMN
+--
+-- The previous version returned one undifferentiated list and
+-- verify_and_stamp_schema() treated every row in it as fatal. Supabase creates a
+-- default-privilege entry owned by supabase_admin as well as the one owned by
+-- postgres, and `postgres` is not a member of supabase_admin, so
+-- `ALTER DEFAULT PRIVILEGES FOR ROLE supabase_admin ...` raises
+-- insufficient_privilege no matter who runs it from the SQL editor.
+-- enforce_anon_execute_posture() warned and moved on, this function reported the
+-- row, and the stamp was withheld - permanently, on a correctly installed
+-- database, with all 35 manifest objects reporting ok. The advice printed
+-- alongside was to run the very function that had just failed.
+--
+-- A check the operator cannot act on must not be able to block them. Rows are
+-- now 'blocking' or 'advisory', and only 'blocking' withholds the stamp. A
+-- default-privilege row is advisory exactly when the caller is not a member of
+-- the grantor and therefore could not have cancelled it; the identical row is
+-- still blocking for a caller who could. tools/emergency-lockdown.sql draws the
+-- same line, so the two scripts now agree about what "clean" means.
+DROP FUNCTION IF EXISTS check_anon_reach() CASCADE;
 CREATE OR REPLACE FUNCTION check_anon_reach()
-RETURNS TABLE (kind TEXT, identity TEXT, detail TEXT)
+RETURNS TABLE (kind TEXT, identity TEXT, severity TEXT, detail TEXT)
 LANGUAGE plpgsql AS $$
 BEGIN
   RETURN QUERY
   SELECT 'function'::TEXT,
          p.oid::regprocedure::TEXT,
+         'blocking'::TEXT,
          'executable by anon and not in anon_execute_allowlist(). '
            || 'Run: SELECT enforce_anon_execute_posture();'
   FROM pg_proc p
@@ -498,6 +559,7 @@ BEGIN
   RETURN QUERY
   SELECT 'table'::TEXT,
          c.relname::TEXT,
+         'blocking'::TEXT,
          'has no row-level security, so anon reads it directly over PostgREST'
   FROM pg_class c
   JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -507,13 +569,68 @@ BEGIN
     AND c.relname <> 'schema_version'
   ORDER BY 2;
 
-  -- The default privileges themselves, which is what makes this recur.
+  -- Views and materialized views. This block is here because nothing in the
+  -- previous release looked at them: the table sweep above filters
+  -- relkind = 'r', and parts_with_pricing is relkind = 'v'. It was readable at
+  -- GET /rest/v1/parts_with_pricing with no JWT at all, returning every
+  -- organization's file ids, part numbers, descriptions, paths, revisions,
+  -- states, preferred supplier, supplier code and unit price. Both of the
+  -- release's security checks reported the schema clean while it did so.
+  RETURN QUERY
+  SELECT CASE c.relkind WHEN 'v' THEN 'view' ELSE 'matview' END::TEXT,
+         c.relname::TEXT,
+         'blocking'::TEXT,
+         'readable by anon over PostgREST. A view has no row-level security of '
+           || 'its own, so this is an unauthenticated read of whatever it '
+           || 'selects. Run: SELECT enforce_anon_execute_posture();'
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname = 'public'
+    AND c.relkind IN ('v', 'm')
+    AND has_table_privilege('anon', c.oid, 'SELECT')
+  ORDER BY 2;
+
+  -- A view that is not security_invoker reads its base tables as the view's
+  -- owner. The owner here is postgres, which Supabase's demotion leaves holding
+  -- BYPASSRLS, so RLS on files and part_suppliers does not apply and every
+  -- tenant's rows come back - to any authenticated caller, not just to anon.
+  -- Revoking anon alone would have left that half of the leak open.
+  RETURN QUERY
+  SELECT 'view'::TEXT,
+         c.relname::TEXT,
+         'blocking'::TEXT,
+         'is not security_invoker, so it reads its base tables as its owner ('
+           || pg_get_userbyid(c.relowner) || ') and row-level security does not '
+           || 'apply. Any grantee sees every organization''s rows. Fix: ALTER VIEW '
+           || quote_ident(c.relname) || ' SET (security_invoker = true);'
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname = 'public'
+    AND c.relkind = 'v'
+    AND COALESCE((SELECT option_value FROM pg_options_to_table(c.reloptions)
+                  WHERE option_name = 'security_invoker'), 'off') NOT IN ('true', 'on')
+    AND (has_table_privilege('anon', c.oid, 'SELECT')
+         OR has_table_privilege('authenticated', c.oid, 'SELECT'))
+  ORDER BY 2;
+
+  -- The default privileges themselves, which is what makes the function case
+  -- recur. Advisory when the caller could not cancel it even if they wanted to.
   RETURN QUERY
   SELECT 'default_privilege'::TEXT,
          COALESCE(pg_get_userbyid(d.defaclrole), '?') || ' on functions',
-         'ALTER DEFAULT PRIVILEGES still grants EXECUTE to anon, so the next '
-           || 'function created in public will be anon-executable. Run: '
-           || 'SELECT enforce_anon_execute_posture();'
+         CASE WHEN pg_has_role(current_user, d.defaclrole, 'MEMBER')
+              THEN 'blocking' ELSE 'advisory' END::TEXT,
+         CASE WHEN pg_has_role(current_user, d.defaclrole, 'MEMBER')
+           THEN 'ALTER DEFAULT PRIVILEGES still grants EXECUTE to anon, and you '
+                || 'are a member of ' || pg_get_userbyid(d.defaclrole) || ' so you '
+                || 'can cancel it. Run: SELECT enforce_anon_execute_posture();'
+           ELSE 'ALTER DEFAULT PRIVILEGES grants EXECUTE to anon on functions '
+                || 'created by ' || pg_get_userbyid(d.defaclrole) || '. ' || current_user
+                || ' is not a member of that role and cannot cancel it; on Supabase '
+                || 'nothing you can run from the SQL editor can. Advisory only. It '
+                || 'affects functions created BY that role, and BluePLM''s are created '
+                || 'by ' || current_user || ', which is swept at the end of every file.'
+         END
   FROM pg_default_acl d
   JOIN pg_namespace n ON n.oid = d.defaclnamespace
   WHERE n.nspname = 'public'
@@ -526,6 +643,162 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION check_anon_reach() FROM PUBLIC, anon, authenticated;
+
+-- Membership tests that are wrong when the caller has no organization yet.
+--
+--   IF p_org_id NOT IN (SELECT org_id FROM users WHERE id = auth.uid()) THEN
+--     RAISE EXCEPTION 'Not authorized for this organization';
+--   END IF;
+--
+-- reads as a gate and is not one. A newly created account has users.org_id
+-- NULL, so the subquery yields a single NULL row, `x NOT IN (NULL)` is NULL
+-- rather than true, the IF is not taken, and the body runs against whatever
+-- organization the caller named. Nine of these shipped. Four happened to be
+-- saved by a conjoined `AND NOT is_org_admin()`; five were not, and from an
+-- account with no organization the reviewer read another tenant's Odoo
+-- configuration and integration status, read its item-designation assignments,
+-- and overwrote and then deleted a row in its item_images.
+--
+-- check_org_gates() cannot catch this. It probes as the caller of
+-- verify-schema.sql, which is postgres in the SQL editor, where auth.uid() is
+-- NULL; `NULL NOT IN (...)` is also NULL, but require_org_member() raises
+-- 'Not authenticated' first, so the probe sees a refusal and scores the function
+-- gated. The one input that triggers the bug is the one input the probe cannot
+-- present. So this is a source check, deliberately - it is looking for a shape
+-- that must not exist, not for a behaviour.
+--
+-- The shape is banned outright rather than only where it is currently
+-- exploitable. A gate whose correctness depends on a second condition someone
+-- may later remove is not a gate. Use is_org_member() or require_org_member().
+CREATE OR REPLACE FUNCTION check_null_unsafe_org_gates()
+RETURNS TABLE (signature TEXT, detail TEXT)
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+  r RECORD;
+  v_src TEXT;
+BEGIN
+  FOR r IN
+    SELECT p.oid, p.oid::regprocedure::TEXT AS sig
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public'
+      AND p.prokind = 'f'
+      AND p.prolang = (SELECT oid FROM pg_language WHERE lanname = 'plpgsql')
+      -- The checkers describe the pattern in order to look for it.
+      AND p.proname NOT IN ('check_null_unsafe_org_gates', 'strip_sql_noise')
+    ORDER BY 1
+  LOOP
+    -- Comments and string literals removed, so a note about the pattern does
+    -- not read as the pattern, and whitespace flattened so line breaks inside
+    -- the expression do not hide it.
+    v_src := lower(regexp_replace(strip_sql_noise(pg_get_functiondef(r.oid)), '\s+', ' ', 'g'));
+
+    IF v_src ~ 'not +in *\( *select +org_id +from +users\M' THEN
+      signature := r.sig;
+      detail := 'uses NOT IN (SELECT org_id FROM users ...), which evaluates to '
+             || 'NULL - not true - when the caller''s users.org_id is NULL, so the '
+             || 'refusal never fires for an account that has not joined an '
+             || 'organization yet. Use require_org_member(p_org_id), or '
+             || 'NOT is_org_member(p_org_id) where the function returns rather '
+             || 'than raises.';
+      RETURN NEXT;
+    ELSIF v_src ~ '(<>|!=) *\( *select +org_id +from +users\M' THEN
+      signature := r.sig;
+      detail := 'compares an organization id with (SELECT org_id FROM users ...) '
+             || 'using <> or !=, which is NULL when the caller''s users.org_id is '
+             || 'NULL, so the refusal never fires. Use is_org_member() instead.';
+      RETURN NEXT;
+    END IF;
+  END LOOP;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION check_null_unsafe_org_gates() FROM PUBLIC, anon, authenticated;
+
+-- Functions that check one argument and then act on another.
+--
+-- create_file_share_link took p_org_id and p_file_id, called
+-- require_org_member(p_org_id) - which passed, because the caller really was a
+-- member of the organization they named - and then inserted p_file_id without
+-- ever asking which organization that file belonged to. Passing your own org id
+-- with somebody else's file id minted a working share token for their file. The
+-- argument that was checked was not the argument that selected the row.
+--
+-- Neither existing check could see it. check_org_gates() calls the function with
+-- NULLs and looks for a refusal, and it got one, because require_org_member()
+-- refuses an unauthenticated caller. check_anon_reach() only asks who may
+-- execute, and the answer - authenticated members - was correct. The function
+-- was certified by both while being wrong for the one caller that mattered.
+--
+-- The rule here is narrow on purpose, because a check that cannot be satisfied
+-- is worse than no check: finding 1 was exactly that, a verifier reporting a
+-- condition the operator had no power to clear, withholding the stamp forever.
+-- So this reports only the specific contradiction of gating on p_org_id while
+-- never once using p_org_id to constrain a row. A function that says
+-- `WHERE org_id = p_org_id` somewhere, or that derives the organization from
+-- the entity through a require_..._access() helper, is doing the binding and is
+-- left alone - including get_vault_files_delta(), whose vault filter sits on a
+-- different line from its org filter but is still inside the same query.
+CREATE OR REPLACE FUNCTION check_unbound_entity_args()
+RETURNS TABLE (signature TEXT, detail TEXT)
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+  r RECORD;
+  v_src TEXT;
+  v_args TEXT;
+BEGIN
+  FOR r IN
+    SELECT p.oid,
+           p.oid::regprocedure::TEXT AS sig,
+           p.proargnames,
+           p.proargmodes
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public'
+      AND p.prokind = 'f'
+      AND p.prosecdef
+      AND p.prolang = (SELECT oid FROM pg_language WHERE lanname = 'plpgsql')
+      AND 'p_org_id' = ANY(COALESCE(p.proargnames, '{}'))
+      AND p.proname <> 'check_unbound_entity_args'
+    ORDER BY 1
+  LOOP
+    -- IN arguments only. An OUT column called link_id is a result, not a way to
+    -- reach into another tenant.
+    SELECT string_agg(a.name, ', ' ORDER BY a.ord) INTO v_args
+    FROM unnest(r.proargnames) WITH ORDINALITY AS a(name, ord)
+    WHERE a.name ~ '_id$'
+      AND a.name <> 'p_org_id'
+      AND (r.proargmodes IS NULL OR r.proargmodes[a.ord] IN ('i', 'b'))
+      -- Who is acting, not which row is acted on.
+      AND a.name NOT IN ('p_user_id', 'p_created_by', 'p_actor_id', 'p_updated_by');
+
+    CONTINUE WHEN v_args IS NULL;
+
+    v_src := lower(regexp_replace(strip_sql_noise(pg_get_functiondef(r.oid)), '\s+', ' ', 'g'));
+
+    -- Not gated on the org argument at all: that is check_org_gates()'s
+    -- business, and a function gating on the entity instead is the fix, not the
+    -- fault.
+    CONTINUE WHEN v_src !~ '(require_org_member|is_org_member) *\( *p_org_id';
+
+    -- Bound if the organization argument constrains a row anywhere, or if the
+    -- entity is resolved through an access helper that returns its org.
+    CONTINUE WHEN v_src ~ 'org_id *= *p_org_id'
+              OR v_src ~ 'require_\w+_access *\(';
+
+    signature := r.sig;
+    detail := 'gates on p_org_id but never uses it to constrain a row, while '
+           || v_args || ' select(s) the row it acts on. A caller who is a '
+           || 'genuine member of the organization they name can therefore pass '
+           || 'another tenant''s id and be served. Either compare the entity''s '
+           || 'own org_id to p_org_id, or derive the organization from the '
+           || 'entity with a require_..._access() helper and ignore p_org_id.';
+    RETURN NEXT;
+  END LOOP;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION check_unbound_entity_args() FROM PUBLIC, anon, authenticated;
 
 -- The only writer of schema_version. Stamps the release number if and only if
 -- every requirement of every installed module is satisfied; on failure it
@@ -570,6 +843,26 @@ BEGIN
              'detail', detail
            )
     FROM check_anon_reach()
+    -- Advisory rows are reported by tools/verify-schema.sql and do not withhold
+    -- the stamp. The only advisory case is a default privilege owned by a role
+    -- the caller is not a member of, which on Supabase means supabase_admin:
+    -- real, worth printing, and impossible for the operator to act on. Treating
+    -- it as fatal made a correctly installed database unstampable for ever.
+    WHERE severity = 'blocking'
+
+    UNION ALL
+    SELECT json_build_object(
+             'module', 'security', 'object', signature, 'status', 'null-unsafe-gate',
+             'detail', detail
+           )
+    FROM check_null_unsafe_org_gates()
+
+    UNION ALL
+    SELECT json_build_object(
+             'module', 'security', 'object', signature, 'status', 'unbound-entity-arg',
+             'detail', detail
+           )
+    FROM check_unbound_entity_args()
   ) s;
 
   IF v_count > 0 THEN
@@ -1449,6 +1742,32 @@ $$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
 
 GRANT EXECUTE ON FUNCTION require_org_member(UUID) TO authenticated;
 
+-- The same question as require_org_member(), for the callers that answer with a
+-- value rather than by raising - a set-returning function that returns no rows,
+-- or one that returns {"success": false, ...}.
+--
+-- It exists so that those callers stop writing the test out by hand. The
+-- hand-written form was
+--
+--   p_org_id NOT IN (SELECT org_id FROM users WHERE id = auth.uid())
+--
+-- which is NULL, not true, for an account whose users.org_id is still NULL, so
+-- the IF was not taken and the function proceeded. This returns a strict
+-- boolean: false for a NULL argument, false for no JWT, false for a user with
+-- no organization, false for a different organization. There is no input for
+-- which it is neither true nor false, which is the whole point.
+CREATE OR REPLACE FUNCTION is_org_member(p_org_id UUID)
+RETURNS BOOLEAN AS $$
+  SELECT p_org_id IS NOT NULL
+     AND auth.uid() IS NOT NULL
+     AND EXISTS (
+       SELECT 1 FROM users
+       WHERE id = auth.uid() AND org_id = p_org_id
+     );
+$$ LANGUAGE sql STABLE SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION is_org_member(UUID) TO authenticated;
+
 -- Who is acting. The only honest answer to that question inside a SECURITY
 -- DEFINER function.
 --
@@ -1530,8 +1849,13 @@ LANGUAGE sql IMMUTABLE AS $$
     -- only which auth methods are enabled.
     ('get_org_auth_providers(text)', 'sign-in screen, pre-login'),
     -- File share links are opened by recipients who are not BluePLM users. The
-    -- unguessable token in the link is the credential.
-    ('validate_share_link(text)', 'share link recipients, pre-login')
+    -- unguessable token in the link is the credential - which is only true
+    -- since generate_share_token() started producing 128 bits from a strong
+    -- source instead of twelve characters of random().
+    ('validate_share_link(text)', 'share link recipients, pre-login'),
+    -- The download itself. Split out of validate_share_link() so that asking
+    -- whether a link is good no longer spends one of its downloads.
+    ('consume_share_link(text)', 'share link recipients, pre-login')
   ) AS a(signature, reason);
 $$;
 
@@ -1625,17 +1949,35 @@ BEGIN
     v_count := v_count + 1;
   END LOOP;
 
-  -- Sweeping after the fact is not enough on its own: the bootstrap's default
-  -- privilege re-grants EXECUTE to anon on every function created from here on,
-  -- so a function added by a later module - or by a migration written after this
-  -- release - would be born open again and stay that way until someone
-  -- remembered to re-run the sweep. Cancelling the default makes the safe
-  -- posture the one you get by doing nothing.
+  -- Cancel the bootstrap's explicit anon grant on functions created from here
+  -- on. This is worth doing and it is NOT sufficient, and the previous release
+  -- claimed otherwise:
+  --
+  --   "a function created after this runs is not anon-executable to begin with"
+  --
+  -- That is false, and measurably so. Postgres merges the built-in default for
+  -- functions - EXECUTE to PUBLIC - into every new function's ACL, and
+  -- ALTER DEFAULT PRIVILEGES cannot suppress it. Revoking EXECUTE ON FUNCTIONS
+  -- FROM PUBLIC here removes `=X/postgres` from the pg_default_acl row and the
+  -- next function created still comes out with `=X/postgres` in its proacl;
+  -- emptying the row completely deletes it and the function then gets the
+  -- built-in default, which is the same thing. Either way anon reaches it
+  -- through PUBLIC. There is no version of this loop that makes a later
+  -- function born closed.
+  --
+  -- So the guarantee does not come from here. It comes from check_anon_reach()
+  -- being blocking: a function added by an ad-hoc migration is anon-reachable,
+  -- verification refuses to stamp, and the app keeps saying the database is out
+  -- of date until someone re-runs the sweep. That is the structural part. This
+  -- loop only narrows the window from two grants to one.
   --
   -- Default privileges are recorded per granting role, so each role that has one
-  -- needs its own statement. Supabase sets them for postgres and may set them
-  -- for supabase_admin too; a role we cannot alter is skipped rather than fatal,
-  -- because the sweep above still closes what already exists.
+  -- needs its own statement. Supabase sets them for postgres and also for
+  -- supabase_admin, and postgres is not a member of supabase_admin, so the
+  -- second one cannot be cancelled from the SQL editor by anybody. That is not
+  -- a fault to be fixed here and it must not block a release:
+  -- check_anon_reach() reports it as advisory for a caller who could not have
+  -- cancelled it, and tools/emergency-lockdown.sql says the same.
   FOR d IN
     SELECT DISTINCT pg_get_userbyid(a.defaclrole) AS grantor
     FROM pg_default_acl a
@@ -1647,14 +1989,55 @@ BEGIN
         WHERE x.grantee = 'anon'::regrole AND x.privilege_type = 'EXECUTE'
       )
   LOOP
+    -- NOTE: everything inside this handler is swallowed, including a RAISE that
+    -- was meant to abort. Nothing here is a gate, so that is safe today. If a
+    -- check is ever added to this loop, put it before the BEGIN.
     BEGIN
       EXECUTE format(
         'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM anon',
         d.grantor
       );
     EXCEPTION WHEN insufficient_privilege THEN
-      RAISE WARNING 'Could not cancel the anon default privilege held by %. Functions created later will be anon-executable until enforce_anon_execute_posture() is re-run as a member of that role.', d.grantor;
+      RAISE NOTICE 'Could not cancel the anon default privilege held by % - % is not a member of that role. Advisory: it governs functions created BY %, and BluePLM''s are created by %, which this sweep closes.',
+        d.grantor, current_user, d.grantor, current_user;
     END;
+  END LOOP;
+
+  -- Views and materialized views.
+  --
+  -- These were not swept at all, and nothing checked them. parts_with_pricing
+  -- is a view, so relkind = 'v', and every inventory in the release filtered
+  -- relkind = 'r'. It was readable at GET /rest/v1/parts_with_pricing with no
+  -- JWT, and it returned every organization's rows because a view without
+  -- security_invoker reads its base tables as its owner and the owner holds
+  -- BYPASSRLS. Revoking anon is half the fix; the other half is
+  -- security_invoker on the view itself, which is set where the view is
+  -- defined and checked by check_anon_reach().
+  --
+  -- There is no allowlist here. Nothing pre-login reads a relation directly.
+  FOR r IN
+    SELECT c.oid, quote_ident(c.relname) AS signature
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relkind IN ('v', 'm')
+      AND has_table_privilege('anon', c.oid, 'SELECT')
+  LOOP
+    SELECT ARRAY(
+      SELECT role_name FROM unnest(v_preserve) AS role_name
+      WHERE has_table_privilege(role_name, r.oid, 'SELECT')
+    ) INTO v_keep;
+
+    EXECUTE format('REVOKE ALL ON TABLE public.%s FROM anon', r.signature);
+
+    IF has_table_privilege('anon', r.oid, 'SELECT') THEN
+      FOREACH v_role IN ARRAY v_keep LOOP
+        EXECUTE format('GRANT SELECT ON TABLE public.%s TO %I', r.signature, v_role);
+      END LOOP;
+      EXECUTE format('REVOKE ALL ON TABLE public.%s FROM PUBLIC', r.signature);
+    END IF;
+
+    v_count := v_count + 1;
   END LOOP;
 
   -- The allowlist has to be granted back explicitly, because cancelling the
@@ -2229,6 +2612,22 @@ DROP FUNCTION IF EXISTS update_org_branding(UUID, TEXT, TEXT);
 GRANT EXECUTE ON FUNCTION update_org_branding(UUID, TEXT, TEXT, TEXT, TEXT, TEXT) TO authenticated;
 
 -- Get org auth providers
+--
+-- Reachable by anon: the sign-in screen calls it before anyone has signed in.
+-- That makes the difference between its two answers an oracle, and it used to
+-- be a loud one. A real organization returned `auth_providers::json`, a jsonb
+-- value rendered with jsonb's key ordering and no space after the colon; an
+-- organization that does not exist returned a json_build_object() literal,
+-- rendered with json's insertion ordering and ` : ` between key and value. The
+-- two were distinguishable by whitespace alone, so anyone holding the
+-- publishable key could enumerate org slugs and learn which SSO providers a
+-- named target has enabled.
+--
+-- Both answers now go through the same jsonb value and the same cast, so an
+-- organization with no configured providers and an organization that does not
+-- exist are byte-identical. An organization that HAS configured providers is
+-- still distinguishable, and has to be: the screen exists to show different
+-- buttons. What is closed is the free enumeration of every slug.
 CREATE OR REPLACE FUNCTION get_org_auth_providers(p_org_slug TEXT)
 RETURNS JSON AS $$
 DECLARE
@@ -2236,15 +2635,14 @@ DECLARE
 BEGIN
   SELECT auth_providers INTO auth_settings
   FROM organizations WHERE slug = p_org_slug;
-  
-  IF auth_settings IS NULL THEN
-    RETURN json_build_object(
-      'users', json_build_object('google', true, 'email', true, 'phone', true),
-      'suppliers', json_build_object('google', true, 'email', true, 'phone', true)
-    );
-  END IF;
-  
-  RETURN auth_settings::json;
+
+  RETURN COALESCE(
+    auth_settings,
+    jsonb_build_object(
+      'users', jsonb_build_object('google', true, 'email', true, 'phone', true),
+      'suppliers', jsonb_build_object('google', true, 'email', true, 'phone', true)
+    )
+  )::json;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 

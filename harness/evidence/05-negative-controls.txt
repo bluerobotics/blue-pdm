@@ -1,0 +1,24 @@
+﻿=== NEGATIVE CONTROLS ===
+baseline verifies clean at 91
+
+--- NC1  finding 2: parts_with_pricing as a plain view, readable by anon
+  caught: stamp withheld, version still 0, reason mentions 'anon-reachable'
+  repaired: stamped again at 91
+
+--- NC2  finding 3: create_file_share_link gating p_org_id, acting on p_file_id
+  caught: stamp withheld, version still 0, reason mentions 'unbound-entity-arg'
+  repaired: stamped again at 91
+
+--- NC3  finding 4: NOT IN (SELECT org_id FROM users ...)
+  caught: stamp withheld, version still 0, reason mentions 'null-unsafe-gate'
+  repaired: stamped again at 91
+
+--- NC4  a function created later, born anon-executable
+  caught: stamp withheld, version still 0, reason mentions 'anon-reachable'
+  repaired: stamped again at 91
+
+--- NC5  a leftover overload from a previous release
+  caught: stamp withheld, version still 0, reason mentions 'extra'
+  repaired: stamped again at 91
+
+OK: every hole was caught by the verifier, and removing it restored the stamp.

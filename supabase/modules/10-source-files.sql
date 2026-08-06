@@ -1839,7 +1839,11 @@ BEGIN
     RAISE EXCEPTION 'Workflow not found';
   END IF;
 
-  IF v_org_id <> (SELECT org_id FROM users WHERE id = auth.uid()) OR NOT is_org_admin() THEN
+  -- `v_org_id <> (SELECT org_id FROM users WHERE id = auth.uid())` is NULL when
+  -- the caller has no organization, so the OR fell through to is_org_admin(),
+  -- which is false for such a user - safe, but only by accident of the
+  -- neighbouring condition. Made sound on its own.
+  IF NOT is_org_member(v_org_id) OR NOT is_org_admin() THEN
     RAISE EXCEPTION 'Only organization admins can import a workflow';
   END IF;
 
@@ -1961,20 +1965,23 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 GRANT EXECUTE ON FUNCTION import_workflow_graph(UUID, JSONB) TO authenticated;
 
 -- Generate share token
+--
+-- The token is the entire credential for an anonymous download, so it has to be
+-- unguessable. It was twelve characters drawn from random(), which is a
+-- deterministic PRNG seeded per session: not a secret generator, and 12 chars
+-- of it is a small space to walk anyway.
+--
+-- gen_random_uuid() is backed by the server's strong random source in Postgres
+-- 13+, which is what pgcrypto's gen_random_bytes() uses too. It is preferred
+-- here only because it needs no schema qualification: pgcrypto lives in the
+-- extensions schema on Supabase and in public elsewhere, and a SECURITY DEFINER
+-- function should not be relying on search_path to find it.
 DROP FUNCTION IF EXISTS generate_share_token() CASCADE;
 CREATE OR REPLACE FUNCTION generate_share_token()
 RETURNS TEXT AS $$
-DECLARE
-  chars TEXT := 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  result TEXT := '';
-  i INTEGER;
-BEGIN
-  FOR i IN 1..12 LOOP
-    result := result || substr(chars, floor(random() * length(chars) + 1)::int, 1);
-  END LOOP;
-  RETURN result;
-END;
-$$ LANGUAGE plpgsql;
+  -- 32 hex characters, 128 bits.
+  SELECT replace(gen_random_uuid()::text, '-', '');
+$$ LANGUAGE sql VOLATILE;
 
 -- Create file share link
 DO $$ BEGIN PERFORM drop_function_overloads('create_file_share_link'); END $$;
@@ -1989,8 +1996,36 @@ DECLARE
   v_token TEXT;
   v_expires_at TIMESTAMPTZ;
   v_link_id UUID;
+  v_file_org_id UUID;
 BEGIN
-  PERFORM require_org_member(p_org_id);
+  -- The gate is on the file, not on p_org_id.
+  --
+  -- This function took two ids and checked one of them. require_org_member(
+  -- p_org_id) confirmed the caller belongs to the organization they named, and
+  -- then p_file_id was inserted without ever being compared to it. An
+  -- authenticated member of any organization could pass their own org id - so
+  -- the gate was satisfied honestly - together with a file id belonging to
+  -- somebody else, and receive a working token for that file. Redeeming it as
+  -- anon returned is_valid = true. Both of the release's checks certified this
+  -- function as correct: the manifest saw 'require_org_member' in the source,
+  -- and check_org_gates() called it with a foreign p_org_id and was refused,
+  -- which is true and beside the point.
+  --
+  -- The general shape is: a gate on one argument while a second argument selects
+  -- the row. Whenever a function is reached through an entity id, the
+  -- organization has to be *derived from that entity*, and the argument that
+  -- names an organization is at best redundant. require_file_access() does the
+  -- derivation and raises if the caller is not a member of the file's org.
+  v_file_org_id := require_file_access(p_file_id);
+
+  -- p_org_id is now only accepted if it agrees. It is kept in the signature so
+  -- existing callers keep working, but it decides nothing; disagreeing with it
+  -- is refused rather than ignored, so a caller that believed it was scoping the
+  -- request is told it was not.
+  IF p_org_id IS NOT NULL AND p_org_id <> v_file_org_id THEN
+    RAISE EXCEPTION 'File does not belong to that organization'
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
 
   LOOP
     v_token := generate_share_token();
@@ -2001,8 +2036,10 @@ BEGIN
     v_expires_at := NOW() + (p_expires_in_days || ' days')::interval;
   END IF;
   
+  -- org_id is the file's, and created_by is whoever actually called, not
+  -- whoever the request body named.
   INSERT INTO file_share_links (org_id, file_id, token, created_by, expires_at, max_downloads, require_auth)
-  VALUES (p_org_id, p_file_id, v_token, p_created_by, v_expires_at, p_max_downloads, p_require_auth)
+  VALUES (v_file_org_id, p_file_id, v_token, current_actor_id(), v_expires_at, p_max_downloads, p_require_auth)
   RETURNING id INTO v_link_id;
   
   RETURN QUERY SELECT v_link_id, v_token, v_expires_at;
@@ -2012,11 +2049,31 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 GRANT EXECUTE ON FUNCTION create_file_share_link(UUID, UUID, UUID, INTEGER, INTEGER, BOOLEAN) TO authenticated;
 
 -- Validate share link
+--
+-- Three things were wrong with this, all reachable by anon holding a token.
+--
+--   1. It ignored require_auth entirely. A link created with require_auth = true
+--      validated for an unauthenticated caller exactly as one created without.
+--      The flag was stored, returned by nothing, and consulted nowhere.
+--   2. It spent the download allowance on *validation*. Nothing here downloads
+--      anything - the caller does that afterwards with the file id - so any anon
+--      caller could burn a ten-download link with twelve calls to this function
+--      and never fetch a byte. Consumption now lives in consume_share_link(),
+--      which the download path calls once it has actually served the file.
+--   3. It returned the link's org_id. Until the fix above, the link's org_id was
+--      whatever the creator passed and could differ from the file's, so a
+--      consumer that trusted this went looking for the file in the wrong tenant.
+--      It now reports the org the file is really in.
+--
+-- Kept on the anon allowlist: recipients of a share link are not BluePLM users,
+-- and the token is the credential. That is only defensible because the token is
+-- now 128 bits from a strong source - see generate_share_token().
 DROP FUNCTION IF EXISTS validate_share_link(TEXT) CASCADE;
 CREATE OR REPLACE FUNCTION validate_share_link(p_token TEXT)
 RETURNS TABLE (is_valid BOOLEAN, file_id UUID, org_id UUID, file_version INTEGER, error_message TEXT) AS $$
 DECLARE
   v_link RECORD;
+  v_file_org_id UUID;
 BEGIN
   SELECT * INTO v_link FROM file_share_links WHERE token = p_token;
   
@@ -2034,17 +2091,65 @@ BEGIN
     RETURN QUERY SELECT false::boolean, NULL::uuid, NULL::uuid, NULL::integer, 'Link has expired'::text;
     RETURN;
   END IF;
+
+  -- COALESCE because require_auth is nullable and a NULL there must not read as
+  -- "no authentication required" by accident.
+  IF COALESCE(v_link.require_auth, false) AND auth.uid() IS NULL THEN
+    RETURN QUERY SELECT false::boolean, NULL::uuid, NULL::uuid, NULL::integer,
+                        'This link requires you to sign in'::text;
+    RETURN;
+  END IF;
   
   IF v_link.max_downloads IS NOT NULL AND v_link.download_count >= v_link.max_downloads THEN
     RETURN QUERY SELECT false::boolean, NULL::uuid, NULL::uuid, NULL::integer, 'Download limit reached'::text;
     RETURN;
   END IF;
-  
-  UPDATE file_share_links SET download_count = download_count + 1, last_accessed_at = NOW() WHERE token = p_token;
-  
-  RETURN QUERY SELECT true::boolean, v_link.file_id, v_link.org_id, v_link.file_version, NULL::text;
+
+  SELECT f.org_id INTO v_file_org_id FROM files f
+   WHERE f.id = v_link.file_id AND f.deleted_at IS NULL;
+
+  IF v_file_org_id IS NULL THEN
+    RETURN QUERY SELECT false::boolean, NULL::uuid, NULL::uuid, NULL::integer, 'Link not found'::text;
+    RETURN;
+  END IF;
+
+  UPDATE file_share_links SET last_accessed_at = NOW() WHERE token = p_token;
+
+  RETURN QUERY SELECT true::boolean, v_link.file_id, v_file_org_id, v_link.file_version, NULL::text;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Spend one download against a link. Separate from validate_share_link() so
+-- that the allowance is spent by downloading and not by asking.
+--
+-- Re-checks everything validate_share_link() checks, in one UPDATE, so that two
+-- concurrent redemptions of the last remaining download cannot both succeed:
+-- the WHERE clause is evaluated under the row lock the UPDATE takes.
+DROP FUNCTION IF EXISTS consume_share_link(TEXT) CASCADE;
+CREATE OR REPLACE FUNCTION consume_share_link(p_token TEXT)
+RETURNS BOOLEAN AS $$
+DECLARE
+  v_updated INTEGER;
+BEGIN
+  UPDATE file_share_links
+     SET download_count = COALESCE(download_count, 0) + 1,
+         last_accessed_at = NOW()
+   WHERE token = p_token
+     AND is_active
+     AND (expires_at IS NULL OR expires_at > NOW())
+     AND (max_downloads IS NULL OR COALESCE(download_count, 0) < max_downloads)
+     AND (NOT COALESCE(require_auth, false) OR auth.uid() IS NOT NULL);
+
+  GET DIAGNOSTICS v_updated = ROW_COUNT;
+  RETURN v_updated > 0;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Both are on anon_execute_allowlist() in core.sql, which is what
+-- enforce_anon_execute_posture() re-grants from at the end of this file. The
+-- explicit grants here are for the window before that sweep runs.
+GRANT EXECUTE ON FUNCTION validate_share_link(TEXT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION consume_share_link(TEXT) TO anon, authenticated;
 
 -- Notify file watchers
 DROP FUNCTION IF EXISTS notify_file_watchers() CASCADE;
@@ -2155,6 +2260,11 @@ BEGIN
   -- were attributed to, which made the audit trail a field in the request body.
   v_actor := current_actor_id();
 
+  -- The gate is the only statement in this block, and it must stay that way.
+  -- The handler below turns a refusal into a JSON result, which is what these
+  -- RPCs need - but it will do that for anything raised in here, so a second
+  -- check added after this line would have its RAISE swallowed and the function
+  -- would carry on and answer. New checks go before the BEGIN.
   BEGIN
     PERFORM require_file_access(p_file_id);
   EXCEPTION WHEN insufficient_privilege THEN
@@ -2350,6 +2460,11 @@ BEGIN
   -- both whose checkout was honoured and whose name went on the new version.
   v_actor := current_actor_id();
 
+  -- The gate is the only statement in this block, and it must stay that way.
+  -- The handler below turns a refusal into a JSON result, which is what these
+  -- RPCs need - but it will do that for anything raised in here, so a second
+  -- check added after this line would have its RAISE swallowed and the function
+  -- would carry on and answer. New checks go before the BEGIN.
   BEGIN
     PERFORM require_file_access(p_file_id);
   EXCEPTION WHEN insufficient_privilege THEN
@@ -2934,9 +3049,12 @@ RETURNS item_images AS $$
 DECLARE
   v_row item_images;
 BEGIN
-  IF p_org_id NOT IN (SELECT org_id FROM users WHERE id = auth.uid()) THEN
-    RAISE EXCEPTION 'Not authorized for this organization';
-  END IF;
+  -- Was: p_org_id NOT IN (SELECT org_id FROM users WHERE id = auth.uid()).
+  -- NULL, not true, for an account that has not joined an organization, so the
+  -- RAISE never happened and this wrote into whatever organization it was
+  -- given. Reproduced: an account with users.org_id NULL overwrote another
+  -- tenant's item_images row over PostgREST.
+  PERFORM require_org_member(p_org_id);
 
   INSERT INTO item_images (
     org_id, part_number, image_type, icon_name, icon_color, image_storage_path, updated_by, updated_at
@@ -2967,9 +3085,9 @@ CREATE OR REPLACE FUNCTION reset_item_image(
 )
 RETURNS BOOLEAN AS $$
 BEGIN
-  IF p_org_id NOT IN (SELECT org_id FROM users WHERE id = auth.uid()) THEN
-    RAISE EXCEPTION 'Not authorized for this organization';
-  END IF;
+  -- Same NULL-unsafe test as upsert_item_image, and the same consequence: an
+  -- account with no organization deleted another tenant's row.
+  PERFORM require_org_member(p_org_id);
 
   DELETE FROM item_images WHERE org_id = p_org_id AND part_number = p_part_number;
   RETURN TRUE;
@@ -3058,9 +3176,9 @@ DROP FUNCTION IF EXISTS get_item_designations(UUID) CASCADE;
 CREATE OR REPLACE FUNCTION get_item_designations(p_org_id UUID)
 RETURNS SETOF item_designations AS $$
 BEGIN
-  IF p_org_id NOT IN (SELECT org_id FROM users WHERE id = auth.uid()) THEN
-    RAISE EXCEPTION 'Not authorized for this organization';
-  END IF;
+  -- NULL-unsafe before this: an account with no organization read - and, via
+  -- the seeding branch below, wrote into - any organization it named.
+  PERFORM require_org_member(p_org_id);
 
   IF NOT EXISTS (SELECT 1 FROM item_designations WHERE org_id = p_org_id) THEN
     INSERT INTO item_designations (org_id, name, sort_order, created_by)
@@ -3093,8 +3211,15 @@ DECLARE
   v_row item_designations;
   v_sort INTEGER;
 BEGIN
-  IF p_org_id NOT IN (SELECT org_id FROM users WHERE id = auth.uid())
-     OR NOT (is_org_admin() OR user_has_team_permission('system:item-designations', 'edit')) THEN
+  -- The membership half of this test was NULL-unsafe. It happened not to be
+  -- exploitable, because the admin half is conjoined with AND and is_org_admin()
+  -- returns false outright for a user with no organization. That is luck, not
+  -- design - the two conditions are independent and either could be edited
+  -- without the other - so the membership test is made sound in its own right
+  -- rather than left leaning on its neighbour.
+  PERFORM require_org_member(p_org_id);
+
+  IF NOT (is_org_admin() OR user_has_team_permission('system:item-designations', 'edit')) THEN
     RAISE EXCEPTION 'Not authorized to manage item designations';
   END IF;
 
@@ -3128,8 +3253,10 @@ CREATE OR REPLACE FUNCTION delete_item_designation(
 )
 RETURNS BOOLEAN AS $$
 BEGIN
-  IF p_org_id NOT IN (SELECT org_id FROM users WHERE id = auth.uid())
-     OR NOT (is_org_admin() OR user_has_team_permission('system:item-designations', 'edit')) THEN
+  -- Membership test made sound in its own right; see upsert_item_designation.
+  PERFORM require_org_member(p_org_id);
+
+  IF NOT (is_org_admin() OR user_has_team_permission('system:item-designations', 'edit')) THEN
     RAISE EXCEPTION 'Not authorized to manage item designations';
   END IF;
 
@@ -3148,9 +3275,9 @@ CREATE OR REPLACE FUNCTION get_item_designation_assignments(
 )
 RETURNS SETOF item_designation_assignments AS $$
 BEGIN
-  IF p_org_id NOT IN (SELECT org_id FROM users WHERE id = auth.uid()) THEN
-    RAISE EXCEPTION 'Not authorized for this organization';
-  END IF;
+  -- NULL-unsafe before this. Reproduced: an account with users.org_id NULL read
+  -- another tenant's designation assignments over PostgREST.
+  PERFORM require_org_member(p_org_id);
 
   RETURN QUERY
   SELECT * FROM item_designation_assignments
@@ -3172,8 +3299,10 @@ RETURNS item_designation_assignments AS $$
 DECLARE
   v_row item_designation_assignments;
 BEGIN
-  IF p_org_id NOT IN (SELECT org_id FROM users WHERE id = auth.uid())
-     OR NOT (is_org_admin() OR user_has_team_permission('system:item-designations', 'edit')) THEN
+  -- Membership test made sound in its own right; see upsert_item_designation.
+  PERFORM require_org_member(p_org_id);
+
+  IF NOT (is_org_admin() OR user_has_team_permission('system:item-designations', 'edit')) THEN
     RAISE EXCEPTION 'Not authorized to edit item designations';
   END IF;
 
@@ -3181,6 +3310,26 @@ BEGIN
     DELETE FROM item_designation_assignments
     WHERE org_id = p_org_id AND vault_id = p_vault_id AND part_number = p_part_number;
     RETURN NULL;
+  END IF;
+
+  -- Finding 3's shape in a milder form: p_org_id is gated, but p_vault_id and
+  -- p_designation_id used to be written through unexamined. The row lands in
+  -- the caller's own organisation, so this was never a cross-tenant read - but
+  -- a foreign id would either be accepted, quietly pointing a local row at
+  -- another tenant's vault, or rejected by the foreign key, which turns the
+  -- error into an oracle for whether a given uuid exists in some other
+  -- organisation. An argument that selects a row has to be checked against the
+  -- organisation the caller was admitted to, even when the write is local.
+  IF NOT EXISTS (SELECT 1 FROM vaults
+                  WHERE id = p_vault_id AND org_id = p_org_id) THEN
+    RAISE EXCEPTION 'Not authorized for this vault'
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM item_designations
+                  WHERE id = p_designation_id AND org_id = p_org_id) THEN
+    RAISE EXCEPTION 'Not authorized for this item designation'
+      USING ERRCODE = 'insufficient_privilege';
   END IF;
 
   INSERT INTO item_designation_assignments (
@@ -3284,6 +3433,11 @@ BEGIN
   -- p_user_id is ignored; the acting user comes from the JWT.
   v_actor := current_actor_id();
 
+  -- The gate is the only statement in this block, and it must stay that way.
+  -- The handler below turns a refusal into a JSON result, which is what these
+  -- RPCs need - but it will do that for anything raised in here, so a second
+  -- check added after this line would have its RAISE swallowed and the function
+  -- would carry on and answer. New checks go before the BEGIN.
   BEGIN
     PERFORM require_file_access(p_file_id);
   EXCEPTION WHEN insufficient_privilege THEN
@@ -3435,23 +3589,61 @@ DECLARE
   v_new_prefix TEXT;
   v_actor UUID;
   v_org_id UUID;
+  v_candidate_vaults UUID[];
 BEGIN
   -- p_user_id is ignored; the acting user comes from the JWT.
   v_actor := current_actor_id();
 
   -- p_vault_id defaulted to NULL and NULL meant "every vault", so a single call
-  -- rewrote matching paths across every organization in the database. There is
-  -- no caller that wants that and no way to authorize it, so the argument is now
-  -- required and the vault decides which organization this may touch.
-  IF p_vault_id IS NULL THEN
-    RETURN jsonb_build_object(
-      'success', false,
-      'error', 'A vault is required',
-      'updated', 0
-    );
-  END IF;
+  -- rewrote matching paths across every organization in the database. That had
+  -- to stop.
+  --
+  -- The previous release stopped it by refusing outright when p_vault_id was
+  -- NULL, which closed the hole and broke a working flow with it: all three
+  -- callers pass `activeVaultId || undefined`, and activeVaultId is null until
+  -- something sets it - it starts null in vaultsSlice, and a profile that has
+  -- connected vaults but has never switched between them still has it null. For
+  -- those users renaming a folder began returning "A vault is required".
+  --
+  -- So NULL is accepted again, but it no longer means "every vault everywhere".
+  -- It means "work out which vault, inside the caller's own organization". The
+  -- authority is identical either way, because vault access in this schema is
+  -- organization membership and nothing more - see require_vault_access(). If
+  -- the prefix matches files in more than one of the caller's vaults the call is
+  -- refused rather than guessed at, because a folder rename that silently spans
+  -- vaults is not something any caller asked for.
+  IF p_vault_id IS NOT NULL THEN
+    v_org_id := require_vault_access(p_vault_id);
+  ELSE
+    SELECT u.org_id INTO v_org_id FROM users u WHERE u.id = v_actor;
 
-  v_org_id := require_vault_access(p_vault_id);
+    IF v_org_id IS NULL THEN
+      RAISE EXCEPTION 'Not authorized for this organization'
+        USING ERRCODE = 'insufficient_privilege';
+    END IF;
+
+    SELECT array_agg(DISTINCT f.vault_id)
+      INTO v_candidate_vaults
+    FROM files f
+    WHERE f.org_id = v_org_id
+      AND f.deleted_at IS NULL
+      AND f.vault_id IS NOT NULL
+      AND LOWER(f.file_path) LIKE LOWER(RTRIM(p_old_folder_path, '/')) || '/%';
+
+    IF v_candidate_vaults IS NULL THEN
+      RETURN jsonb_build_object('success', true, 'updated', 0, 'total', 0);
+    END IF;
+
+    IF array_length(v_candidate_vaults, 1) > 1 THEN
+      RETURN jsonb_build_object(
+        'success', false,
+        'error', 'That folder path exists in more than one vault. Open the vault you want to rename in and try again.',
+        'updated', 0
+      );
+    END IF;
+
+    p_vault_id := v_candidate_vaults[1];
+  END IF;
 
   v_old_prefix := RTRIM(p_old_folder_path, '/');
   v_new_prefix := RTRIM(p_new_folder_path, '/');
@@ -3718,7 +3910,11 @@ BEGIN
       'error_message', 'File not found');
   END IF;
 
-  IF v_file.org_id <> (SELECT org_id FROM users WHERE id = v_user_id) THEN
+  -- Was `v_file.org_id <> (SELECT org_id FROM users WHERE id = v_user_id)`,
+  -- which is NULL for a caller whose users.org_id is NULL, so the refusal did
+  -- not fire and the transition ran against another tenant's file. Nothing else
+  -- in this function stood between that and the write.
+  IF NOT is_org_member(v_file.org_id) THEN
     RETURN jsonb_build_object('success', false, 'error_code', 'FORBIDDEN',
       'error_message', 'File belongs to another organization');
   END IF;
@@ -3810,6 +4006,11 @@ BEGIN
   -- caller, but everything above it - which transitions exist out of this file's
   -- current state, and whether the file has a workflow at all - answered for any
   -- file id given to it. Gate before reading rather than before writing.
+  -- The gate is the only statement in this block, and it must stay that way.
+  -- The handler below turns a refusal into a JSON result, which is what these
+  -- RPCs need - but it will do that for anything raised in here, so a second
+  -- check added after this line would have its RAISE swallowed and the function
+  -- would carry on and answer. New checks go before the BEGIN.
   BEGIN
     PERFORM require_file_access(p_file_id);
   EXCEPTION WHEN insufficient_privilege THEN
@@ -3897,7 +4098,8 @@ BEGIN
       'error_message', 'This review has already been decided');
   END IF;
 
-  IF v_review.org_id <> (SELECT org_id FROM users WHERE id = v_user_id) THEN
+  -- NULL-unsafe in the same way as execute_workflow_transition above.
+  IF NOT is_org_member(v_review.org_id) THEN
     RETURN jsonb_build_object('success', false, 'error_code', 'FORBIDDEN',
       'error_message', 'Review belongs to another organization');
   END IF;

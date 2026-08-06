@@ -1,0 +1,31 @@
+﻿=== tearing down ===
+=== starting database ===
+
+db-1  | === HARNESS ASSERTIONS PASSED ===
+db-1  |     rolname     | rolsuper | rolcanlogin | rolinherit | rolbypassrls 
+
+
+
+
+db-1  |     grantor     | defaclobjtype |                                                   defaclacl                  
+                                  
+db-1  |  postgres       | f             | 
+{postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}
+db-1  |  supabase_admin | f             | 
+{postgres=X/supabase_admin,anon=X/supabase_admin,authenticated=X/supabase_admin,service_role=X/supabase_admin}
+
+
+
+=== installing release ===
+--- postgres : /blueplm/core.sql
+--- postgres : /blueplm/modules/10-source-files.sql
+--- postgres : /blueplm/modules/15-inspection.sql
+--- postgres : /blueplm/modules/20-change-control.sql
+--- postgres : /blueplm/modules/30-supply-chain.sql
+--- postgres : /blueplm/modules/40-integrations.sql
+--- postgres : /blueplm/modules/50-extensions.sql
+--- postgres : /blueplm/modules/60-customers.sql
+install complete
+=== seeding ===
+=== starting PostgREST ===
+harness ready

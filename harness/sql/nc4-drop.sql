@@ -1,0 +1,1 @@
+DROP FUNCTION IF EXISTS nc_born_open(TEXT);
