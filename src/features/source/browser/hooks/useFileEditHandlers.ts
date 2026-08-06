@@ -3,6 +3,8 @@ import type { LocalFile } from '@/stores/pdmStore'
 import { usePDMStore } from '@/stores/pdmStore'
 import { executeCommand } from '@/lib/commands'
 import { resolveFileMetadata, resolveTabNumber, resolvedText } from '@/lib/metadata/overlay'
+import { reportMetadataWrite } from '@/lib/metadata/reportMetadataWrite'
+import type { PendingMetadataRollback } from '@/stores/types'
 import { log } from '@/lib/logger'
 
 // SolidWorks file extensions that support custom properties
@@ -45,11 +47,11 @@ export interface FileEditHandlersDeps {
   updatePendingMetadata: (
     path: string,
     updates: { part_number?: string | null; description?: string | null; revision?: string },
-  ) => void
+  ) => PendingMetadataRollback
   onRefresh: (silent?: boolean) => void
 
   // Auto-save to SolidWorks file
-  saveConfigsToSWFile: (file: LocalFile) => Promise<void>
+  saveConfigsToSWFile: (file: LocalFile, rollback: PendingMetadataRollback) => Promise<void>
 }
 
 export interface UseFileEditHandlersReturn {
@@ -396,7 +398,7 @@ export function useFileEditHandlers(deps: FileEditHandlersDeps): UseFileEditHand
       }
 
       // Update pending metadata in store
-      updatePendingMetadata(file.path, pendingUpdates)
+      const rollback = updatePendingMetadata(file.path, pendingUpdates)
 
       // Clear edit state first so UI is responsive
       setEditingCell(null)
@@ -417,13 +419,15 @@ export function useFileEditHandlers(deps: FileEditHandlersDeps): UseFileEditHand
             ...file,
             pendingMetadata: { ...file.pendingMetadata, ...pendingUpdates },
           }
-          await saveConfigsToSWFile(updatedFile)
+          await saveConfigsToSWFile(updatedFile, rollback)
         } catch (error) {
+          // saveConfigsToSWFile already reverts and reports what it caught; anything reaching here
+          // escaped it, so the edit is still recorded and has to be taken back the same way.
           log.error('[FileEdit]', 'Failed to save inline edit to SW file', {
             error: error,
             path: file.path,
           })
-          addToast('error', 'Failed to save changes to file')
+          reportMetadataWrite(rollback, 'failed')
         }
       } else {
         log.info('[FileEdit]', 'Skipping SW save - not a SolidWorks file', { ext, path: file.path })

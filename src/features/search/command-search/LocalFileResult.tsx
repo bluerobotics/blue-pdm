@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { File, Folder, ArrowRight, FolderOpen } from 'lucide-react'
+import { resolvePartNumber, resolvedText } from '@/lib/metadata/overlay'
 import type { LocalFileResultProps } from './types'
 import { getStateIndicator } from './utils'
 
@@ -41,6 +42,10 @@ export function LocalFileResult({
     onOpenFileLocation()
   }
 
+  // The search behind this result already matches on the pending edit, so the badge has to show
+  // the same number - otherwise typing the new number returns a row labelled with the old one.
+  const partNumber = resolvedText(resolvePartNumber(file))
+
   return (
     <>
       <button
@@ -61,8 +66,8 @@ export function LocalFileResult({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium text-plm-fg truncate">{file.name}</span>
-            {file.pdmData?.part_number && (
-              <span className="text-xs text-plm-accent font-mono">{file.pdmData.part_number}</span>
+            {partNumber && (
+              <span className="text-xs text-plm-accent font-mono">{partNumber}</span>
             )}
             {getStateIndicator(file.pdmData?.workflow_state)}
           </div>

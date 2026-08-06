@@ -24,6 +24,7 @@ import {
   type FileReferenceDiagnostic,
 } from '@/lib/supabase'
 import { copyToClipboard } from '@/lib/clipboard'
+import { resolvePartNumber, resolvedText } from '@/lib/metadata/overlay'
 import { useSolidWorksService } from '@/features/integrations/solidworks/SolidWorksPanel'
 import { matchSwPathToDb, type PathMatchResult, type SWServiceReference } from '@/lib/solidworks'
 
@@ -142,7 +143,11 @@ export function ReferenceDiagnostics({ onClose }: ReferenceDiagnosticsProps) {
     return files.filter((f) => f.extension?.toLowerCase() === '.sldasm' && f.pdmData?.id)
   }, [files])
 
-  // Filter assemblies by search
+  // Filter assemblies by search.
+  //
+  // The part number is a label for finding the right assembly, not one of the values this panel
+  // diagnoses - it compares reference paths, never metadata - so it follows the same overlay as
+  // every other picker rather than showing the server's copy.
   const filteredAssemblies = useMemo(() => {
     if (!searchQuery) return assemblyFiles.slice(0, 50) // Limit for performance
     const query = searchQuery.toLowerCase()
@@ -151,7 +156,7 @@ export function ReferenceDiagnostics({ onClose }: ReferenceDiagnosticsProps) {
         (f) =>
           f.name.toLowerCase().includes(query) ||
           f.relativePath.toLowerCase().includes(query) ||
-          f.pdmData?.part_number?.toLowerCase().includes(query),
+          resolvePartNumber(f).value?.toLowerCase().includes(query),
       )
       .slice(0, 50)
   }, [assemblyFiles, searchQuery])
@@ -383,9 +388,9 @@ export function ReferenceDiagnostics({ onClose }: ReferenceDiagnosticsProps) {
                     <Layers size={14} className="text-amber-400 flex-shrink-0" />
                     <span className="text-xs text-plm-fg truncate">{file.name}</span>
                   </div>
-                  {file.pdmData?.part_number && (
+                  {resolvePartNumber(file).value && (
                     <div className="text-[10px] text-plm-accent mt-0.5 pl-5 truncate">
-                      {file.pdmData.part_number}
+                      {resolvedText(resolvePartNumber(file))}
                     </div>
                   )}
                   <div className="text-[10px] text-plm-fg-muted mt-0.5 pl-5 truncate">

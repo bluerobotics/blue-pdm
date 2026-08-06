@@ -16,6 +16,7 @@ import {
   type InspectionMethodOption,
 } from '@/lib/supabase'
 import { log } from '@/lib/logger'
+import { resolveFileMetadata, resolvedText } from '@/lib/metadata/overlay'
 import {
   getInspectionTemplates,
   generateInspectionSheet,
@@ -719,9 +720,14 @@ export function InspectionTab({ file }: InspectionTabProps) {
 
       setIsGenerating(true)
       try {
-        const brNumber = file.pdmData?.part_number ?? ''
-        const revision = file.pdmData?.revision ?? ''
-        const description = file.pdmData?.description ?? ''
+        // The sheet is generated from what is on screen right now - the rows below are the
+        // user's uncommitted table edits - so its identifying fields follow the same overlay.
+        // A report titled with the number the user has just replaced is the drawing-export bug
+        // in a different deliverable.
+        const identity = resolveFileMetadata(file)
+        const brNumber = resolvedText(identity.partNumber)
+        const revision = resolvedText(identity.revision)
+        const description = resolvedText(identity.description)
         const partName = description || file.pdmData?.file_name || file.name
         const drawingName = file.pdmData?.file_name ?? file.name
 

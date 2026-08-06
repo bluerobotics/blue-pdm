@@ -17,6 +17,8 @@ import {
   resolveRevision,
   resolvedText,
 } from '@/lib/metadata/overlay'
+import { reportMetadataWrite } from '@/lib/metadata/reportMetadataWrite'
+import type { PendingMetadataRollback } from '@/stores/types'
 import { WhereUsedTab, SWPropertiesTab } from '@/features/integrations/solidworks'
 import { SWDatacardPanel } from '@/features/integrations/solidworks'
 import { InspectionTab } from '@/features/integrations/solidworks'
@@ -311,8 +313,11 @@ export function DetailsPanel() {
     async (
       targetFile: LocalFile,
       updates: { part_number?: string | null; description?: string | null; revision?: string },
+      rollback: PendingMetadataRollback,
     ) => {
       const ext = targetFile.extension?.toLowerCase() || ''
+      // Not a SolidWorks document: there is no file write, and the pending edit is the only record
+      // of it until check-in promotes it. Nothing to undo.
       if (!['.sldprt', '.sldasm', '.slddrw'].includes(ext)) return
 
       const watcherKey = targetFile.relativePath
@@ -335,6 +340,10 @@ export function DetailsPanel() {
         if (description) props['Description'] = description
         if (revision) props['Revision'] = revision
 
+        // Clearing every field leaves nothing to write, and this path has never emitted the empty
+        // values that would delete the properties. The edit stays pending and reaches the database
+        // at check-in; the file keeps its old values. Left alone here - undoing the edit would make
+        // the field unclearable from this panel, which is worse than the divergence.
         if (Object.keys(props).length === 0) return
 
         // Check if file is open in SolidWorks
@@ -441,7 +450,7 @@ export function DetailsPanel() {
         }
 
         if (result?.success) {
-          addToast('success', 'Saved metadata to file')
+          reportMetadataWrite(rollback, 'landed')
           // Mark as recently modified to protect from LoadFiles overwrite
           if (targetFile.pdmData?.id) {
             usePDMStore.getState().markFileAsRecentlyModified(targetFile.pdmData.id)
@@ -482,10 +491,14 @@ export function DetailsPanel() {
             localVersion: undefined,
           })
         } else {
-          addToast('error', 'Failed to save metadata to file')
+          reportMetadataWrite(rollback, 'failed')
         }
       } catch (error) {
-        addToast('error', `Failed to save: ${error instanceof Error ? error.message : String(error)}`)
+        log.error('[DetailsPanel]', 'Metadata write threw', {
+          path: targetFile.path,
+          error: String(error),
+        })
+        reportMetadataWrite(rollback, 'failed')
       } finally {
         clearTimeout(slowWriteTimer)
         // Delay clearing watcher suppression so the debounced FileWatcher event
@@ -552,14 +565,14 @@ export function DetailsPanel() {
     }
 
     // Update pending metadata in store
-    updatePendingMetadata(file.path, pendingUpdates)
+    const rollback = updatePendingMetadata(file.path, pendingUpdates)
 
     // Clear edit state first so UI is responsive
     setEditingField(null)
     setEditValue('')
 
     // Auto-save to SolidWorks file
-    await saveMetadataToSWFile(file, pendingUpdates)
+    await saveMetadataToSWFile(file, pendingUpdates, rollback)
   }
 
   // Handle generating a serial number for item number - auto-saves immediately
@@ -589,13 +602,13 @@ export function DetailsPanel() {
 
       // Update pending metadata
       const pendingUpdates = { part_number: serial }
-      updatePendingMetadata(file.path, pendingUpdates)
+      const rollback = updatePendingMetadata(file.path, pendingUpdates)
 
       // Now start the save operation (this is what takes time)
       setIsGeneratingSerial(true)
 
       // Auto-save to SolidWorks file
-      await saveMetadataToSWFile(file, pendingUpdates)
+      await saveMetadataToSWFile(file, pendingUpdates, rollback)
 
       // Exit edit mode after successful save
       setEditingField(null)

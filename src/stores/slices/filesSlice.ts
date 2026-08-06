@@ -26,6 +26,7 @@ import { log } from '@/lib/logger'
 import { isPathHidden, readHiddenFolderPaths } from '@/lib/hiddenFolders'
 import { dropCommittedPendingMetadata } from '@/lib/pendingMetadata'
 import { resolveDescription, resolvePartNumber } from '@/lib/metadata/overlay'
+import { applyPendingEdit, noPendingEdit, revertPendingEdit } from '@/lib/metadata/pendingEdits'
 import { logExplorer } from '@/lib/userActionLogger'
 import { bumpFileMutationEpoch } from '@/lib/fileMutationEpoch'
 import { applyFileUpdates } from '../fileUpdates'
@@ -597,120 +598,83 @@ export const createFilesSlice: StateCreator<
             reason: !checkedOutBy ? 'not_checked_out' : 'checked_out_by_other',
           },
         )
-        return
+        return noPendingEdit(path)
       }
     }
 
-    set((state) => {
-      // Calculate new pending metadata
-      const file = state.files.find((f) => f.path === path)
-      const existingPending = file?.pendingMetadata || state.persistedPendingMetadata[path] || {}
-      log.debug('[filesSlice]', 'updatePendingMetadata: existingPending', existingPending as Record<string, unknown>)
+    // The edit is recorded as pending and nowhere else. Copying it into pdmData as well - which
+    // this action used to do - makes an unverified value read back as one the server confirmed,
+    // and leaves nothing to undo when the write it was made for fails. Readers overlay pending
+    // over committed through src/lib/metadata/overlay.ts instead.
+    const existingPending = file?.pendingMetadata ?? state.persistedPendingMetadata[path]
+    const { pending, rollback } = applyPendingEdit(path, existingPending, metadata, file?.diffStatus)
 
-      // Handle config_tabs merge specially (per-config tab numbers)
-      let newConfigTabs = existingPending.config_tabs
-      if (metadata.config_tabs) {
-        newConfigTabs = {
-          ...(existingPending.config_tabs || {}),
-          ...metadata.config_tabs,
-        }
-      }
+    log.debug('[filesSlice]', 'updatePendingMetadata: newPending', pending as Record<string, unknown>)
 
-      // Handle config_descriptions merge specially (per-config descriptions)
-      let newConfigDescriptions = existingPending.config_descriptions
-      if (metadata.config_descriptions) {
-        newConfigDescriptions = {
-          ...(existingPending.config_descriptions || {}),
-          ...metadata.config_descriptions,
-        }
-      }
-
-      const newPending = {
-        ...existingPending,
-        ...metadata,
-        config_tabs: newConfigTabs,
-        config_descriptions: newConfigDescriptions,
-      }
-
-      log.debug('[filesSlice]', 'updatePendingMetadata: newPending', newPending as Record<string, unknown>)
-      log.debug('[filesSlice]', `updatePendingMetadata: persisting to key: ${path}`)
-
-      return {
-        // Update file in files array
-        files: state.files.map((f) => {
-          if (f.path === path) {
-            // Also update the pdmData to show the changes immediately in UI
-            const updatedPdmData = f.pdmData
-              ? {
-                  ...f.pdmData,
-                  part_number:
-                    metadata.part_number !== undefined
-                      ? metadata.part_number
-                      : f.pdmData.part_number,
-                  description:
-                    metadata.description !== undefined
-                      ? metadata.description
-                      : f.pdmData.description,
-                  revision:
-                    metadata.revision !== undefined ? metadata.revision : f.pdmData.revision,
-                }
-              : f.pdmData
-            return {
+    set((state) => ({
+      files: state.files.map((f) =>
+        f.path === path
+          ? {
               ...f,
-              pendingMetadata: newPending,
-              pdmData: updatedPdmData,
+              pendingMetadata: pending,
               // Mark as modified if it has pdmData (synced file)
               diffStatus: f.pdmData ? 'modified' : f.diffStatus,
             }
-          }
-          return f
-        }),
-        // Also persist for app restart survival
-        persistedPendingMetadata: {
-          ...state.persistedPendingMetadata,
-          [path]: newPending,
-        },
+          : f,
+      ),
+      // Also persist for app restart survival
+      persistedPendingMetadata: {
+        ...state.persistedPendingMetadata,
+        [path]: pending,
+      },
+    }))
+
+    return rollback
+  },
+
+  revertPendingMetadata: (rollback) => {
+    if (rollback.fields.length === 0) return
+
+    set((state) => {
+      const file = state.files.find((f) => f.path === rollback.path)
+      const current = file?.pendingMetadata ?? state.persistedPendingMetadata[rollback.path]
+      const restored = revertPendingEdit(current, rollback)
+
+      log.info('[filesSlice]', 'revertPendingMetadata', {
+        path: rollback.path,
+        fields: rollback.fields,
+        stillPending: restored ? Object.keys(restored) : [],
+      })
+
+      const persistedPendingMetadata = { ...state.persistedPendingMetadata }
+      if (restored) persistedPendingMetadata[rollback.path] = restored
+      else delete persistedPendingMetadata[rollback.path]
+
+      return {
+        files: state.files.map((f) =>
+          f.path === rollback.path
+            ? {
+                ...f,
+                pendingMetadata: restored,
+                // Nothing pending means 'modified' was a leftover of the attempt, not a fact.
+                diffStatus: restored ? f.diffStatus : rollback.previousDiffStatus,
+              }
+            : f,
+        ),
+        persistedPendingMetadata,
       }
     })
   },
 
   clearPendingMetadata: (path) => {
     set((state) => {
-      const file = state.files.find((f) => f.path === path)
-      const pending = file?.pendingMetadata
       // Destructure to exclude `path` key, using _ for intentionally discarded value
       const { [path]: _, ...remainingPersisted } = state.persistedPendingMetadata
 
-      // Merge pending values into pdmData before clearing
-      // This ensures the UI still shows the new values after clearing
-      // Use !== undefined check instead of ?? to handle null values correctly
-      // (null should be preserved as the new value, not trigger fallback)
-      const mergedPdmData =
-        file?.pdmData && pending
-          ? {
-              ...file.pdmData,
-              part_number:
-                pending.part_number !== undefined ? pending.part_number : file.pdmData.part_number,
-              description:
-                pending.description !== undefined ? pending.description : file.pdmData.description,
-              revision: pending.revision !== undefined ? pending.revision : file.pdmData.revision,
-            }
-          : file?.pdmData
-
-      log.info('[filesSlice]', 'clearPendingMetadata', {
-        path,
-        pendingPartNumber: pending?.part_number,
-        currentPdmPartNumber: file?.pdmData?.part_number,
-        mergedPartNumber: mergedPdmData?.part_number,
-      })
+      log.info('[filesSlice]', 'clearPendingMetadata', { path })
 
       return {
-        files: state.files.map((f) => {
-          if (f.path === path) {
-            return { ...f, pendingMetadata: undefined, pdmData: mergedPdmData }
-          }
-          return f
-        }),
+        files: state.files.map((f) => (f.path === path ? { ...f, pendingMetadata: undefined } : f)),
         persistedPendingMetadata: remainingPersisted,
       }
     })

@@ -28,6 +28,7 @@ import {
 import { supabase } from '@/lib/supabase'
 import { usePDMStore } from '@/stores/pdmStore'
 import { log } from '@/lib/logger'
+import { resolveFileMetadata, resolvePartNumber, resolvedText } from '@/lib/metadata/overlay'
 import type { RFQ, RFQItem, RFQStatus, RFQSupplier } from '@/types/rfq'
 import { getRFQStatusInfo, formatCurrency } from '@/types/rfq'
 import { generateRFQPdf, type OrgBranding } from '@/lib/rfqPdf'
@@ -424,6 +425,16 @@ function RFQDetailView({
 
     const nextLineNumber = items.length + 1
 
+    // The line is a snapshot of the part the user just picked, and they picked it by the number
+    // on their screen. Taking the committed value instead would quote a number that changes the
+    // moment they check the file in, with nothing that would ever correct the line.
+    //
+    // This is the least clear-cut of the overlay decisions: unlike an exported PDF, the row is
+    // durable shared state, so a pending value here becomes indistinguishable from a confirmed
+    // one for every other user, and an abandoned edit leaves a number that never existed. The
+    // row keeps file_id, so the quote can still be reconciled against the file it came from.
+    const identity = resolveFileMetadata(file)
+
     try {
       const { data, error } = await db
         .from('rfq_items')
@@ -431,9 +442,9 @@ function RFQDetailView({
           rfq_id: rfq.id,
           line_number: nextLineNumber,
           file_id: fileId,
-          part_number: file.pdmData.part_number || file.name,
-          description: file.pdmData.description,
-          revision: file.pdmData.revision,
+          part_number: identity.partNumber.value || file.name,
+          description: identity.description.value,
+          revision: resolvedText(identity.revision),
           quantity: 1,
         })
         .select(
@@ -1288,7 +1299,7 @@ function RFQDetailView({
                       <File size={14} className="text-plm-fg-muted" />
                       <span className="text-xs text-plm-fg truncate flex-1">{file.name}</span>
                       <span className="text-[10px] text-plm-fg-muted">
-                        {file.pdmData?.part_number}
+                        {resolvedText(resolvePartNumber(file))}
                       </span>
                     </button>
                   ))}

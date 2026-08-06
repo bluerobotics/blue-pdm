@@ -8,7 +8,7 @@
  */
 import { createContext, useContext, useMemo, type ReactNode } from 'react'
 import type { LocalFile } from '@/stores/pdmStore'
-import type { OperationType } from '@/stores/types'
+import type { OperationType, PendingMetadataRollback } from '@/stores/types'
 
 /**
  * Context value type for file pane handlers
@@ -39,7 +39,8 @@ export interface FilePaneHandlersContextValue {
   toggleFileConfigExpansion: (file: LocalFile) => void
   hasPendingMetadataChanges: (file: LocalFile) => boolean
   savingConfigsToSW: Set<string>
-  saveConfigsToSWFile: (file: LocalFile) => void
+  /** `rollback` undoes the pending edit when nothing reaches the file - see useConfigHandlers. */
+  saveConfigsToSWFile: (file: LocalFile, rollback: PendingMetadataRollback) => void
 
   // Drawing reference handlers
   canHaveDrawingRefs: (file: LocalFile) => boolean

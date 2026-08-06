@@ -61,7 +61,7 @@ export function TabNumberCell({ file }: CellRendererBaseProps): React.ReactNode 
             if (e.key === 'Enter') {
               // Update pending metadata with validated value
               const validated = validateTabInput(editValue, tabValidationOptions)
-              updatePendingMetadata(file.path, { tab_number: validated || null })
+              const rollback = updatePendingMetadata(file.path, { tab_number: validated || null })
               handleSaveCellEdit()
               // Auto-save to SW file
               const ext = file.extension?.toLowerCase() || ''
@@ -70,7 +70,7 @@ export function TabNumberCell({ file }: CellRendererBaseProps): React.ReactNode 
                   ...file,
                   pendingMetadata: { ...file.pendingMetadata, tab_number: validated || null },
                 }
-                saveConfigsToSWFile(updatedFile)
+                saveConfigsToSWFile(updatedFile, rollback)
               }
             } else if (e.key === 'Escape') {
               handleCancelCellEdit()
@@ -80,7 +80,7 @@ export function TabNumberCell({ file }: CellRendererBaseProps): React.ReactNode 
           onBlur={() => {
             // Update pending metadata on blur with validated value
             const validated = validateTabInput(editValue, tabValidationOptions)
-            updatePendingMetadata(file.path, { tab_number: validated || null })
+            const rollback = updatePendingMetadata(file.path, { tab_number: validated || null })
             handleSaveCellEdit()
             // Auto-save to SW file
             const ext = file.extension?.toLowerCase() || ''
@@ -89,7 +89,7 @@ export function TabNumberCell({ file }: CellRendererBaseProps): React.ReactNode 
                 ...file,
                 pendingMetadata: { ...file.pendingMetadata, tab_number: validated || null },
               }
-              saveConfigsToSWFile(updatedFile)
+              saveConfigsToSWFile(updatedFile, rollback)
             }
           }}
           onClick={(e) => e.stopPropagation()}

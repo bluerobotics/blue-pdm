@@ -172,7 +172,7 @@ export function ItemNumberCell({ file }: CellRendererBaseProps): React.ReactNode
       }
 
       // Update pending metadata in store
-      updatePendingMetadata(file.path, { part_number: serial })
+      const rollback = updatePendingMetadata(file.path, { part_number: serial })
 
       // Now start the save operation (this is what takes time)
       setIsGenerating(true)
@@ -184,7 +184,7 @@ export function ItemNumberCell({ file }: CellRendererBaseProps): React.ReactNode
           ...file,
           pendingMetadata: { ...file.pendingMetadata, part_number: serial },
         }
-        await saveConfigsToSWFile(updatedFile)
+        await saveConfigsToSWFile(updatedFile, rollback)
       } else {
         addToast('success', `Generated: ${serial}`)
       }

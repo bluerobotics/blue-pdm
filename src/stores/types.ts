@@ -190,6 +190,24 @@ export interface PendingMetadata {
   config_descriptions?: Record<string, string>
 }
 
+// What it takes to undo one pending edit, captured before the edit is recorded.
+//
+// A pending value is the only record that an edit was ever made - nothing copies it into pdmData
+// any more - and check-in promotes whatever it finds pending. So a write that never reached the
+// file has to be able to take its value back out again, or the database receives it at the next
+// check-in as though the file had accepted it.
+export interface PendingMetadataRollback {
+  path: string
+  // Only the fields this edit touched. Earlier edits that did reach the file are still owed to the
+  // server and must survive an unrelated failure.
+  fields: (keyof PendingMetadata)[]
+  // The whole pending set as it stood before the edit; a field missing from it was not pending.
+  previous: PendingMetadata | undefined
+  // Restored only when the revert leaves nothing pending, since 'modified' would then be a leftover
+  // of the attempt rather than a fact about the file.
+  previousDiffStatus: DiffStatus | undefined
+}
+
 // Local file info from filesystem
 export interface LocalFile {
   name: string
@@ -987,7 +1005,9 @@ export interface FilesSlice {
   updateFilesInStore: (updates: Array<{ path: string; updates: Partial<LocalFile> }>) => void
   removeFilesFromStore: (paths: string[]) => void
   addFilesToStore: (files: LocalFile[]) => void
-  updatePendingMetadata: (path: string, metadata: PendingMetadata) => void
+  // Returns what it takes to undo the edit, for callers that follow it with a file write.
+  updatePendingMetadata: (path: string, metadata: PendingMetadata) => PendingMetadataRollback
+  revertPendingMetadata: (rollback: PendingMetadataRollback) => void
   clearPendingMetadata: (path: string) => void
   clearPendingConfigMetadata: (path: string) => void
   clearPersistedPendingMetadataForPaths: (paths: string[]) => void

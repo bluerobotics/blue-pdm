@@ -904,8 +904,8 @@ export function useLoadFiles() {
                     persistedPendingMetadata[buildFullPath(loadingForVaultPath, pdmData.file_path)]
                   : undefined)
 
-              // Compare against the raw server row, not finalPdmData - pending values are
-              // merged into that below, which would make every edit look already committed.
+              // Compare against the server row: an edit the server already holds is not an edit,
+              // and leaving it pending marks the file as needing check-in forever.
               const preservedPending = dropCommittedPendingMetadata(recoveredPending, pdmData)
 
               // Check if this file was recently modified locally (e.g., just saved to SW file + DB)
@@ -915,8 +915,12 @@ export function useLoadFiles() {
 
               // Determine final pdmData:
               // 1. If file was recently modified locally, use preserved pdmData (highest priority)
-              // 2. If pendingMetadata exists, merge pending values into pdmData
-              // 3. Otherwise use server pdmData as-is
+              // 2. Otherwise use server pdmData as-is
+              //
+              // Pending values are deliberately NOT merged in here. Doing so re-created, on every
+              // vault load, the same conflation updatePendingMetadata used to perform: the edit
+              // read back as a value the server confirmed. Readers overlay pending over committed
+              // at render time through src/lib/metadata/overlay.ts.
               let finalPdmData = pdmData
 
               if (recentlyModifiedData) {
@@ -932,24 +936,6 @@ export function useLoadFiles() {
                     reason: 'recently_modified',
                   },
                 )
-              } else if (preservedPending && pdmData) {
-                // Pending metadata exists - merge pending values into pdmData for immediate UI display
-                // This ensures the UI shows the user's edits even after a file refresh
-                finalPdmData = {
-                  ...pdmData,
-                  part_number:
-                    preservedPending.part_number !== undefined
-                      ? preservedPending.part_number
-                      : pdmData.part_number,
-                  description:
-                    preservedPending.description !== undefined
-                      ? preservedPending.description
-                      : pdmData.description,
-                  revision:
-                    preservedPending.revision !== undefined
-                      ? preservedPending.revision
-                      : pdmData.revision,
-                }
               }
 
               // Preserve checked_out_user info if the checkout user hasn't changed

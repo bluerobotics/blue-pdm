@@ -487,6 +487,15 @@ export const en: TranslationDict = {
       unpushedWarnLeave:
         'You have inspection changes that have not been pushed to the SOLIDWORKS drawing. Leave anyway?',
     },
+    // Writing datacard edits into the SolidWorks file. A failed write takes the edit back out of
+    // the pending set, so the messages have to say that rather than just report the failure.
+    metadataWrite: {
+      failed: 'Could not write the metadata to the file — your edit was not kept',
+      serviceOffline:
+        'Start the SolidWorks service to edit metadata on SolidWorks files — your edit was not kept',
+      partial: 'Saved {{saved}} configuration(s), {{failed}} failed — the edit is still pending',
+      saved: 'Saved metadata to file',
+    },
     details: {
       dragToReorder: 'Drag to reorder or move to right panel',
       selectFileToView: 'Select a file to view details',

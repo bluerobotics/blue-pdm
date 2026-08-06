@@ -54,6 +54,8 @@ import {
   getReferencesForDrawing,
 } from '@/lib/supabase/files/queries'
 import type { DrawingRefItem } from '@/stores/types'
+import { reportMetadataWrite } from '@/lib/metadata/reportMetadataWrite'
+import type { PendingMetadataRollback } from '@/stores/types'
 import { log } from '@/lib/logger'
 import { beginWatcherSuppression } from '@/lib/fileWatcherSuppression'
 import { refreshLocalFileFacts } from '@/lib/refreshLocalFileFacts'
@@ -313,7 +315,14 @@ export interface UseConfigHandlersReturn {
   canHaveConfigs: (file: LocalFile) => boolean
   /** Check if file is an assembly (can show BOM under configs) */
   isAssembly: (file: LocalFile) => boolean
-  saveConfigsToSWFile: (file: LocalFile) => Promise<void>
+  /**
+   * Writes the file's pending metadata into the SolidWorks document.
+   *
+   * `rollback` comes from the `updatePendingMetadata` call that recorded the edit. When nothing
+   * reaches the file the edit is taken back out, so that check-in cannot promote a value the file
+   * refused. It is required rather than optional so a new caller cannot quietly skip it.
+   */
+  saveConfigsToSWFile: (file: LocalFile, rollback: PendingMetadataRollback) => Promise<void>
   hasPendingMetadataChanges: (file: LocalFile) => boolean
   getSelectedConfigsForFile: (filePath: string) => string[]
   toggleFileConfigExpansion: (file: LocalFile) => Promise<void>
@@ -635,10 +644,12 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
 
   // Save ALL pending metadata to SolidWorks file (base + config metadata)
   const saveConfigsToSWFile = useCallback(
-    async (file: LocalFile) => {
+    async (file: LocalFile, rollback: PendingMetadataRollback) => {
       const swStatus = usePDMStore.getState().integrations.solidworks.status
       if (swStatus !== 'online' && swStatus !== 'partial') {
-        addToast('error', 'Start the SolidWorks service to save metadata to SolidWorks files')
+        // The write cannot even be attempted, so the edit has nowhere to land but the database at
+        // the next check-in - which is exactly the divergence to avoid. Take it back.
+        reportMetadataWrite(rollback, 'unattempted')
         return
       }
 
@@ -925,11 +936,14 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
         }
 
         if (successCount > 0) {
-          if (failedCount > 0) {
-            addToast('warning', `Saved ${successCount} config(s), ${failedCount} failed`)
-          } else {
-            addToast('success', `Saved metadata to file`)
-          }
+          // A partial write keeps the edit pending on purpose: the value is in the file for the
+          // configurations that took it, so removing it would guarantee the divergence instead of
+          // preventing it. Until the write can be verified per configuration this is the honest
+          // half-answer, and the toast says which half.
+          reportMetadataWrite(rollback, failedCount > 0 ? 'partial' : 'landed', {
+            saved: successCount,
+            failed: failedCount,
+          })
 
           // Mark that we just saved - prevents accidental reload from clearing our changes
           justSavedConfigs.current.add(file.path)
@@ -954,11 +968,11 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
           // skips the version increment) plus size/mtime, which drive diff status.
           await refreshLocalFileFacts(file)
         } else if (failedCount > 0) {
-          addToast('error', 'Failed to save metadata to file')
+          reportMetadataWrite(rollback, 'failed')
         }
       } catch (error) {
         log.error('[ConfigHandlers]', 'Failed to save to SW', { error: error })
-        addToast('error', 'Failed to save metadata to file')
+        reportMetadataWrite(rollback, 'failed')
       } finally {
         // Remove processing marker so file watcher can resume normal operation
         usePDMStore.getState().removeProcessingFolder(file.relativePath)

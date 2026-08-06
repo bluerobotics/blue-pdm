@@ -4,6 +4,7 @@ import { syncSolidWorksFileMetadata, getWhereUsed } from '@/lib/supabase'
 import { log } from '@/lib/logger'
 import { beginWatcherSuppression } from '@/lib/fileWatcherSuppression'
 import { refreshLocalFileFacts } from '@/lib/refreshLocalFileFacts'
+import { resolveFileMetadata } from '@/lib/metadata/overlay'
 import {
   FileBox,
   Layers,
@@ -1030,7 +1031,13 @@ export function SWPropertiesTab({ file }: { file: LocalFile }) {
       // Extract description
       const description = allProps['Description'] || allProps['description'] || null
 
-      // Check if anything changed
+      // Check if anything changed.
+      //
+      // Committed values on purpose, and the one place in this phase that must stay that way.
+      // The question being asked is whether the file disagrees with the database row; overlaying
+      // a pending edit would ask instead whether the file agrees with what the user just typed,
+      // and report "already up to date" for a file that still holds the old value. That is the
+      // divergence this button exists to surface.
       const currentPn = file.pdmData?.part_number || null
       const currentDesc = file.pdmData?.description || null
       const newPn = partNumber || null
@@ -1082,12 +1089,18 @@ export function SWPropertiesTab({ file }: { file: LocalFile }) {
     try {
       const properties: Record<string, string> = {}
 
-      // Map PDM metadata to SW properties
-      if (file.pdmData.part_number) {
-        properties['Base Item Number'] = file.pdmData.part_number
+      // Map PDM metadata to SW properties.
+      //
+      // Overlaid, unlike the comparison above: this is the write that makes the file agree, and
+      // the value the user is asking to push is the one they can see. It only wrote the pending
+      // edit before because updatePendingMetadata copied it into pdmData; with that gone the
+      // overlay is what keeps the button from pushing the number the user just replaced.
+      const identity = resolveFileMetadata(file)
+      if (identity.partNumber.value) {
+        properties['Base Item Number'] = identity.partNumber.value
       }
-      if (file.pdmData.description) {
-        properties['Description'] = file.pdmData.description
+      if (identity.description.value) {
+        properties['Description'] = identity.description.value
       }
 
       if (Object.keys(properties).length === 0) {
@@ -1236,6 +1249,9 @@ export function SWPropertiesTab({ file }: { file: LocalFile }) {
                 </button>
               )}
             </div>
+            {/* Committed values, for the same reason handleSyncFromSwFile compares against them:
+                this block is the database side of a database-versus-file comparison, and the
+                highlight below means "the file disagrees with the row". */}
             <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-xs">
               <div className="flex items-baseline gap-1">
                 <span className="text-plm-fg-muted">P/N:</span>
