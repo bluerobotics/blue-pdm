@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 # A superseded push to a pull request has nothing left to prove, so cancel it.
 # Pushes to main are never cancelled: every commit on main gets its own answer.
