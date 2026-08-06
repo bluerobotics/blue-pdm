@@ -23,6 +23,14 @@ export interface LoadedHandler {
   method: string
   path: string
   code: string
+  /**
+   * Declared in the manifest, not currently honoured. Reaching a handler
+   * without a credential means deciding which org it belongs to from the
+   * request, and the only mechanism for that was a plain `X-Org-Id` header,
+   * which let any caller pick any org. Kept because the manifest contract
+   * documents it and a safe design (an unguessable per-installation URL)
+   * would use it.
+   */
   public: boolean
   rateLimit: number
   manifest: ExtensionManifest
@@ -116,6 +124,13 @@ export class ExtensionLoader {
       if (!handlerCode) {
         log.warn(`[ExtensionLoader] Missing handler code for ${extension_id}:${route.handler}`)
         continue
+      }
+
+      if (route.public) {
+        log.warn(
+          `[ExtensionLoader] ${extension_id}:${route.method} ${route.path} is declared public, but public routes are not reachable without authentication. ` +
+            'Serving one means resolving the org without a credential, which there is no safe way to do yet. Callers must send a token.',
+        )
       }
 
       const loadedHandler: LoadedHandler = {
@@ -231,18 +246,48 @@ export class ExtensionLoader {
 // LOADER CACHE
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/**
+ * How many organizations' handler sets stay resident.
+ *
+ * Each entry holds every enabled extension's manifest and handler source for
+ * one org, so the cache is a memory cost that grows with the number of distinct
+ * orgs a process has served - unbounded over the lifetime of a server that is
+ * never restarted. Evicting the least recently used org costs that org one
+ * database read on its next request.
+ */
+const MAX_CACHED_LOADERS = 100
+
+/**
+ * Least-recently-used first: a Map iterates in insertion order, so re-inserting
+ * on every read makes the first key the coldest entry.
+ */
 const loaderCache: Map<string, ExtensionLoader> = new Map()
 
 /**
  * Get or create an extension loader for an organization.
+ *
+ * `orgId` must come from an authenticated user. A caller who can choose it can
+ * choose which org's extensions are read, and could otherwise grow this cache
+ * without limit.
  */
 export function getLoader(supabase: SupabaseClient, orgId: string): ExtensionLoader {
-  let loader = loaderCache.get(orgId)
+  const cached = loaderCache.get(orgId)
 
-  if (!loader) {
-    loader = new ExtensionLoader(supabase, orgId)
-    loaderCache.set(orgId, loader)
+  if (cached) {
+    loaderCache.delete(orgId)
+    loaderCache.set(orgId, cached)
+    return cached
   }
+
+  if (loaderCache.size >= MAX_CACHED_LOADERS) {
+    const coldest = loaderCache.keys().next()
+    if (!coldest.done) {
+      loaderCache.delete(coldest.value)
+    }
+  }
+
+  const loader = new ExtensionLoader(supabase, orgId)
+  loaderCache.set(orgId, loader)
 
   return loader
 }

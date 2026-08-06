@@ -36,11 +36,17 @@ export interface RouterOptions {
 /**
  * Route an extension request to its handler.
  *
+ * The caller must already have authenticated the request: `orgId` has to be the
+ * organization of `user`, never a value taken from the request. Everything this
+ * function reaches - the installed-extension rows, the handler source, the
+ * sandbox and its side effects - is scoped by `orgId` alone, so an org id that
+ * the caller could choose would be a cross-tenant read and a blind write.
+ *
  * @param request - Fastify request
  * @param reply - Fastify reply
- * @param supabase - Supabase client
- * @param orgId - Organization ID
- * @param user - Authenticated user (null for public endpoints)
+ * @param supabase - Supabase client scoped to the authenticated user
+ * @param orgId - Organization of the authenticated user
+ * @param user - Authenticated user
  * @param options - Router options
  */
 export async function routeExtensionRequest(
@@ -48,7 +54,7 @@ export async function routeExtensionRequest(
   reply: FastifyReply,
   supabase: SupabaseClient,
   orgId: string,
-  user: ExtensionUserContext | null,
+  user: ExtensionUserContext,
   options: RouterOptions = {},
 ): Promise<void> {
   const startTime = Date.now()
@@ -74,12 +80,6 @@ export async function routeExtensionRequest(
 
   if (!handler) {
     sendError(reply, 404, 'NOT_FOUND', `No handler found for ${request.method} /extensions/${extensionId}/${handlerPath}`)
-    return
-  }
-
-  // Check authentication for non-public endpoints
-  if (!handler.public && !user) {
-    sendError(reply, 401, 'UNAUTHORIZED', 'Authentication required for this endpoint')
     return
   }
 
@@ -132,7 +132,7 @@ async function executeHandler(
   request: FastifyRequest,
   supabase: SupabaseClient,
   orgId: string,
-  user: ExtensionUserContext | null,
+  user: ExtensionUserContext,
   options: RouterOptions,
 ): Promise<SandboxResult> {
   // Build request context
@@ -186,50 +186,41 @@ async function executeHandler(
 /**
  * Create a Fastify route handler for extension requests.
  *
- * @param authenticate - Authentication function
+ * Register it behind `preHandler: fastify.authenticate`, exactly like every
+ * other protected route. This handler deliberately does not call `authenticate`
+ * itself. It used to, inside a `try`/`catch`, and that was the bug: the guard
+ * both sends a 401 and throws, the `catch` swallowed the throw, and the rest of
+ * this function then ran on a request that had already been refused - reading
+ * the org from a caller-supplied `X-Org-Id` header and querying with an
+ * anon-key client. Nothing returned to the caller, so the only visible trace
+ * was a "Promise errored, but reply.sent = true" line in the log.
+ *
+ * As a `preHandler` the guard's throw aborts the lifecycle before Fastify ever
+ * reaches the handler, so "refused" and "did not run" are the same event rather
+ * than two things that have to agree.
+ *
  * @param options - Router options
  */
-export function createExtensionRouteHandler(
-  authenticate: (request: FastifyRequest, reply: FastifyReply) => Promise<void>,
-  options: RouterOptions = {},
-) {
+export function createExtensionRouteHandler(options: RouterOptions = {}) {
   return async function extensionRouteHandler(
     request: FastifyRequest,
     reply: FastifyReply,
   ): Promise<void> {
-    // Try to authenticate (may be optional for public endpoints)
-    let user: ExtensionUserContext | null = null
-
-    try {
-      await authenticate(request, reply)
-
-      if (request.user) {
-        user = {
-          id: request.user.id,
-          email: request.user.email,
-          orgId: request.user.org_id!,
-          role: request.user.role,
-        }
-      }
-    } catch {
-      // Authentication failed - will be handled by route if required
-    }
-
-    if (!request.user && !user) {
-      // No authenticated user - check if this is a public endpoint
-      // The router will handle auth check for non-public endpoints
-    }
-
-    const orgId = user?.orgId ?? (request.headers['x-org-id'] as string)
-
-    if (!orgId) {
-      sendError(reply, 400, 'BAD_REQUEST', 'Organization ID required')
+    // Unreachable behind the authenticate preHandler. Kept because everything
+    // below is scoped by the org id alone, so this is the assumption that has
+    // to hold rather than one that is merely expected to.
+    if (!request.user?.org_id || !request.supabase) {
+      sendError(reply, 401, 'UNAUTHORIZED', 'Authentication required')
       return
     }
 
-    const supabase =
-      request.supabase ?? (await import('../infrastructure/supabase.js')).createSupabaseClient()
+    const user: ExtensionUserContext = {
+      id: request.user.id,
+      email: request.user.email,
+      orgId: request.user.org_id,
+      role: request.user.role,
+    }
 
-    await routeExtensionRequest(request, reply, supabase, orgId, user, options)
+    await routeExtensionRequest(request, reply, request.supabase, user.orgId, user, options)
   }
 }

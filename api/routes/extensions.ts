@@ -387,12 +387,15 @@ const extensionRoutes: FastifyPluginAsync = async (fastify) => {
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
-   * Route all requests to extension handlers
+   * Route all requests to extension handlers.
    *
-   * Supports both authenticated and public endpoints.
-   * Public endpoints require explicit declaration in the extension manifest.
+   * Authentication is a preHandler, as it is on every other protected route, so
+   * a refused request never reaches the handler. A handler declared `public` in
+   * its manifest is therefore not reachable without a token either; see
+   * `docs/extensions/contributions.md` and the note in `loader.ts` for why that
+   * is currently the case.
    */
-  const extensionHandler = createExtensionRouteHandler(fastify.authenticate)
+  const extensionHandler = createExtensionRouteHandler()
 
   // Register catch-all route for extension handlers
   fastify.route({
@@ -401,6 +404,7 @@ const extensionRoutes: FastifyPluginAsync = async (fastify) => {
     schema: {
       description: 'Extension handler endpoint',
       tags: ['Extensions'],
+      security: [{ bearerAuth: [] }],
       params: {
         type: 'object',
         properties: {
@@ -409,6 +413,7 @@ const extensionRoutes: FastifyPluginAsync = async (fastify) => {
         },
       },
     },
+    preHandler: fastify.authenticate,
     handler: extensionHandler,
   })
 
@@ -419,6 +424,7 @@ const extensionRoutes: FastifyPluginAsync = async (fastify) => {
     schema: {
       description: 'Extension handler endpoint (root)',
       tags: ['Extensions'],
+      security: [{ bearerAuth: [] }],
       params: {
         type: 'object',
         properties: {
@@ -426,6 +432,7 @@ const extensionRoutes: FastifyPluginAsync = async (fastify) => {
         },
       },
     },
+    preHandler: fastify.authenticate,
     handler: extensionHandler,
   })
 }

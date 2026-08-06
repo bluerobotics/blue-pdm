@@ -409,7 +409,16 @@ Routes are mounted at `/extensions/{extensionId}/`:
 
 ### Public Endpoints
 
-Public endpoints don't require authentication. Use for webhooks:
+> **Not currently reachable.** `public` is accepted and recorded, but every
+> extension endpoint requires a token today, so a caller without one is refused
+> before the handler runs. Serving a handler to an anonymous caller means
+> deciding which organization it belongs to without a credential, and the only
+> mechanism for that was an `X-Org-Id` request header — which let any caller
+> name any organization. Until an unguessable per-installation URL replaces it,
+> do not ship a webhook receiver or OAuth callback that depends on this. The
+> server logs a warning naming any route declared this way.
+
+Public endpoints are intended to skip authentication. Use for webhooks:
 
 ```json
 {

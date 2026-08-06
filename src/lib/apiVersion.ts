@@ -14,6 +14,7 @@
  * - Version 2.2.0: Customer sync pulls only what changed in Odoo since the last run
  * - Version 2.3.0: Customer sync credits orders to the company, not the contact
  * - Version 2.4.0: File state endpoints run through the workflow engine
+ * - Version 2.5.0: Extension endpoints require authentication; rate limiting answers 429
  *
  * When making API changes:
  * 1. Increment version in api/package.json
@@ -25,7 +26,7 @@ import { usePDMStore } from '../stores/pdmStore'
 
 // The API version this app version expects
 // Uses semver: MAJOR.MINOR.PATCH
-export const EXPECTED_API_VERSION = '2.4.0'
+export const EXPECTED_API_VERSION = '2.5.0'
 
 // Minimum API version that will still work (for soft warnings vs hard errors)
 // Breaking changes should bump the major version and update this
@@ -43,6 +44,8 @@ export const API_VERSION_DESCRIPTIONS: Record<string, string> = {
     'Customer sync credits an order to the company behind the contact who placed it, and no longer drops orders whose contact Odoo does not flag as a customer',
   '2.4.0':
     'Release, obsolete and metadata state changes run through the workflow engine, so they honour role, checkout and approval-gate rules instead of writing the state column directly',
+  '2.5.0':
+    'Extension handler endpoints require a token and take the organization from it rather than from an X-Org-Id header, and a rate-limited request is answered with 429 RATE_LIMIT_EXCEEDED instead of 500',
 }
 
 export interface ApiVersionCheckResult {

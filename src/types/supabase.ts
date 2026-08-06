@@ -7354,6 +7354,10 @@ export type Database = {
         }
         Returns: Json
       }
+      consume_share_link: {
+        Args: { p_token: string }
+        Returns: boolean
+      }
       create_default_workflow: {
         Args: { p_created_by: string; p_org_id: string }
         Returns: string

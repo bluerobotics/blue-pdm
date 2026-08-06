@@ -1,14 +1,27 @@
 # Render Blueprint for BluePLM API
 # https://render.com/docs/blueprint-spec
+#
+# Keep the build and start commands in step with api/Dockerfile and
+# api/railway.json. All three deploy the same thing and have to agree:
+# install from api/'s own lockfile, compile ahead of time, run the emitted
+# JavaScript. Nothing is fetched from the npm registry when the service starts.
 
 services:
   - type: web
     name: blueplm-api
     runtime: node
-    buildCommand: npm install
-    startCommand: npx tsx api/server.ts
+    # api/ is a separate deployable with its own package.json and lockfile. A
+    # root `npm install` does not install it, so the API's dependencies have to
+    # be installed with --prefix api or the service starts with nothing to run.
+    buildCommand: npm ci --prefix api && npm run build --prefix api
+    # --enable-source-maps makes stack traces point at the TypeScript sources.
+    startCommand: node --enable-source-maps api/dist/server.js
     healthCheckPath: /health
     envVars:
+      - key: NODE_VERSION
+        # Match the Dockerfile and CI rather than inheriting whatever default
+        # the platform happens to have when the service is created.
+        value: "22"
       - key: SUPABASE_URL
         sync: false # User must set this
       - key: SUPABASE_KEY
@@ -28,4 +41,3 @@ services:
         value: "100"
       - key: NODE_ENV
         value: production
-

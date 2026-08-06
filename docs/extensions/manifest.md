@@ -573,7 +573,7 @@ Server-side HTTP endpoints.
 | `method` | `"GET" \| "POST" \| "PUT" \| "PATCH" \| "DELETE"` | ✓ | HTTP method |
 | `path` | `string` | ✓ | Route path (relative to `/extensions/{id}/`) |
 | `handler` | `string` | ✓ | Handler file path |
-| `public` | `boolean` | | No auth required (admin approval needed) |
+| `public` | `boolean` | | No auth required (admin approval needed). **Not honoured yet** — see [Public Endpoints](./contributions.md#public-endpoints) |
 | `rateLimit` | `number` | | Requests per minute (overrides default) |
 
 **Final URLs:**
