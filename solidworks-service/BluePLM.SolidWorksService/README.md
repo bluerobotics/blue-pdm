@@ -57,7 +57,7 @@ A standalone service that provides SolidWorks file operations for the BluePLM El
 ### Build Steps
 
 ```bash
-cd solidworks-addin
+cd solidworks-service
 
 # Build the service
 dotnet build BluePLM.SolidWorksService/BluePLM.SolidWorksService.csproj -c Release

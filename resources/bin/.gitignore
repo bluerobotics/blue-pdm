@@ -10,6 +10,13 @@ darwin/restic
 # Linux
 linux/restic
 
+# SolidWorks service build output, dropped here by "npm run build-sw-service".
+# The script copies every .exe/.dll/.config out of the Release folder, so match on extension
+# rather than on today's six filenames. .gitkeep stays tracked.
+win32/*.exe
+win32/*.dll
+win32/*.config
+
 # Temporary files
 *.zip
 *.bz2

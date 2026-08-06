@@ -20,7 +20,7 @@ const { execSync } = require('child_process')
 const fs = require('fs')
 const path = require('path')
 
-const PROJECT_PATH = 'solidworks-addin/BluePLM.SolidWorksService'
+const PROJECT_PATH = 'solidworks-service/BluePLM.SolidWorksService'
 const OUTPUT_DIR = 'resources/bin/win32'
 
 console.log('🔧 Building SolidWorks Service...\n')
