@@ -2,6 +2,9 @@
   "compilerOptions": {
     "composite": true,
     "skipLibCheck": true,
+    // Electron 39 bundles Node 22, so the main process runs modern JS.
+    // Without this, tsc defaults to ES5 and floods the output with downlevel-iteration noise.
+    "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
     "allowSyntheticDefaultImports": true,

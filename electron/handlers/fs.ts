@@ -307,9 +307,12 @@ async function hashFileAsync(filePath: string): Promise<{ hash: string; size: nu
     const stream = fs.createReadStream(filePath, { highWaterMark: 64 * 1024 }) // 64KB chunks
     let size = 0
 
-    stream.on('data', (chunk: Buffer) => {
-      size += chunk.length
-      hash.update(chunk)
+    stream.on('data', (chunk: string | Buffer) => {
+      // No encoding is set on the stream, so chunks are always Buffers at runtime,
+      // but the stream signature also allows strings.
+      const buffer = typeof chunk === 'string' ? Buffer.from(chunk) : chunk
+      size += buffer.length
+      hash.update(buffer)
     })
 
     stream.on('end', () => {
@@ -1999,13 +2002,14 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
     const results: Array<{ path: string; success: boolean; error?: string }> = []
 
     // Check if any path is within working directory
+    const watchedRoot = workingDirectory
     const needsWatcherPause =
-      workingDirectory &&
+      !!watchedRoot &&
       paths.some(
         (targetPath) =>
-          targetPath === workingDirectory ||
-          workingDirectory.startsWith(targetPath) ||
-          targetPath.startsWith(workingDirectory),
+          targetPath === watchedRoot ||
+          watchedRoot.startsWith(targetPath) ||
+          targetPath.startsWith(watchedRoot),
       )
 
     // Stop watcher ONCE for the entire batch
@@ -2159,13 +2163,14 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
     const results: Array<{ path: string; success: boolean; error?: string }> = []
 
     // Check if any path is within working directory
+    const watchedRoot = workingDirectory
     const needsWatcherPause =
-      workingDirectory &&
+      !!watchedRoot &&
       paths.some(
         (targetPath) =>
-          targetPath === workingDirectory ||
-          workingDirectory.startsWith(targetPath) ||
-          targetPath.startsWith(workingDirectory),
+          targetPath === watchedRoot ||
+          watchedRoot.startsWith(targetPath) ||
+          targetPath.startsWith(watchedRoot),
       )
 
     // Stop watcher ONCE for the entire batch
@@ -2989,7 +2994,7 @@ ipcMain.handle('fs:get-file-hash', async (_, filePath: string, algorithm?: strin
 
       return new Promise<{ success: boolean; hash: string; algorithm: string; error?: string }>(
         (resolve) => {
-          stream.on('data', (chunk: Buffer) => {
+          stream.on('data', (chunk: string | Buffer) => {
             fileHash.update(chunk)
           })
           stream.on('end', () => {

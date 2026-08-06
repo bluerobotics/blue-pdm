@@ -118,9 +118,11 @@ export class ExtensionLoader {
         extension: loadedExtension,
       }
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+
       // Update state to error
       loadedExtension.state = 'error'
-      loadedExtension.error = error
+      loadedExtension.error = message
 
       // Cleanup
       this.sandboxManager.terminateSandbox(extensionId)
@@ -130,7 +132,7 @@ export class ExtensionLoader {
 
       return {
         success: false,
-        error,
+        error: message,
       }
     }
   }
@@ -191,17 +193,19 @@ export class ExtensionLoader {
         extension: loadedExtension,
       }
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+
       this.watchdog.operationEnd(extensionId)
       this.watchdog.reportError(extensionId)
 
       loadedExtension.state = 'error'
-      loadedExtension.error = error
+      loadedExtension.error = message
 
       hostLog.error('[Loader]', `Failed to activate extension ${extensionId}`, error)
 
       return {
         success: false,
-        error,
+        error: message,
       }
     }
   }

@@ -1051,7 +1051,7 @@ export function registerExtensionHostHandlers(
 
         if (!response.ok) {
           if (response.status === 404) {
-            throw new Error(`Extension not found: ${extensionId}`)
+            throw new Error(`Extension not found: ${manifestId ?? downloadId}`)
           }
           throw new Error(`Download failed: ${response.status} ${response.statusText}`)
         }
@@ -1162,7 +1162,9 @@ export function registerExtensionHostHandlers(
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        deps?.logError(`Failed to install extension: ${extensionId}`, { error: message })
+        deps?.logError(`Failed to install extension: ${manifestId ?? downloadId}`, {
+          error: message,
+        })
         return { success: false, error: message }
       }
     },
