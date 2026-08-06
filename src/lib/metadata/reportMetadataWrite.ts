@@ -1,73 +1,123 @@
 /**
  * What happens to a datacard edit once the file write it triggered comes back.
  *
- * The impure counterpart to `pendingEdits.ts`: that module decides, this one applies the decision
- * to the store and tells the user. Both write paths - the details panel and the configuration
- * saver - go through it so there is one rule about when an edit is taken back, rather than two
- * that drift.
+ * The impure counterpart to `writeState.ts`: that module decides what a set of outcomes means, this
+ * one records them against the file and tells the user. Every write path goes through it, so there
+ * is one rule about how an outcome is recorded rather than several that drift.
  *
- * Why an edit is taken back at all, when discarding a user's typing is normally the worse bug:
- * `pendingMetadata` is now the only record that the edit was made, and check-in promotes whatever
- * it finds pending into the database. A value left behind by a write that never reached the file
- * would arrive in the database at the next check-in looking exactly like one the file had
- * accepted. Until a pending value can carry its own write state, the choice is between losing the
- * keystroke - loudly, with the toast below saying so - and silently shipping a divergence that
- * nothing in the app can see afterwards.
+ * For one release this function reverted the edit when nothing reached the file. That was the only
+ * defence available: `pendingMetadata` was the sole record that the edit existed and check-in
+ * promoted whatever it found there, so a value left behind by a failed write would arrive in the
+ * database looking exactly like one the file had accepted. Throwing away the keystroke was chosen
+ * over shipping a silent divergence, and the choice was documented as a compromise rather than a
+ * design.
+ *
+ * It is no longer necessary. The value stays, the addresses that did not reach the file are marked,
+ * and check-in reads the marks. Nothing here deletes a value the user typed.
  */
 
 import { t } from '@/lib/i18n'
 import { log } from '@/lib/logger'
 import { usePDMStore } from '@/stores/pdmStore'
-import type { PendingMetadataRollback } from '@/stores/types'
+import type { PendingMetadataEdit } from '@/stores/types'
 
-import { shouldRevertPendingMetadata, type MetadataWriteOutcome } from './pendingEdits'
+import type { MetadataWriteOutcome } from './pendingEdits'
+import type { VerifiedAddress } from './verifyWrite'
+import { listWriteAddresses, type MetadataWriteState } from './writeState'
 
-/** Numbers for the partial-write message, which names how much of the write landed. */
-export interface MetadataWriteCounts {
-  saved: number
-  failed: number
+/** What one settled write is being reported. */
+export interface MetadataWriteReport {
+  outcome: MetadataWriteOutcome
+  /** Per-address verdicts. Empty when the write was never issued. */
+  addresses: readonly VerifiedAddress[]
 }
 
 /**
- * Settle one metadata write: undo the pending edit if nothing reached the file, and report what
- * happened either way.
+ * A report for a write that was never issued, covering every address the edit touched.
  *
- * `landed` and `not-applicable` leave the edit pending on purpose - it is still owed to the
- * database and check-in is what delivers it.
+ * `unattempted` rather than `failed` because nothing was written and we know it: the remedy is to
+ * start the service and retry, and telling the user their file might have changed would be false.
+ */
+export function unattemptedWrite(
+  edit: PendingMetadataEdit,
+  reason: string,
+): MetadataWriteReport {
+  return {
+    outcome: 'unattempted',
+    addresses: listWriteAddresses(edit.pending).map((address) => ({
+      address,
+      state: 'unattempted' as MetadataWriteState,
+      reason,
+    })),
+  }
+}
+
+/**
+ * Record one write's per-address verdicts and say what happened.
+ *
+ * The edit stays pending in every case, including outright failure - it is still the user's value
+ * and still owed to the database. What changes is the mark it carries, which is what stops check-in
+ * from promoting an unconfirmed value as though the file had taken it.
  */
 export function reportMetadataWrite(
-  rollback: PendingMetadataRollback,
-  outcome: MetadataWriteOutcome,
-  counts?: MetadataWriteCounts,
+  edit: PendingMetadataEdit,
+  report: MetadataWriteReport,
 ): void {
-  const { addToast, revertPendingMetadata } = usePDMStore.getState()
+  const { addToast, recordMetadataWriteStates } = usePDMStore.getState()
 
-  if (shouldRevertPendingMetadata(outcome)) {
-    log.warn('[MetadataWrite]', 'Write did not reach the file; reverting the pending edit', {
-      path: rollback.path,
-      fields: rollback.fields,
-      outcome,
-    })
-    revertPendingMetadata(rollback)
-    addToast(
-      'error',
-      outcome === 'unattempted'
-        ? t('source.metadataWrite.serviceOffline')
-        : t('source.metadataWrite.failed'),
+  if (report.addresses.length > 0) {
+    recordMetadataWriteStates(
+      edit.path,
+      report.addresses.map((entry) => ({
+        address: entry.address,
+        state: entry.state,
+        reason: entry.reason,
+      })),
     )
-    return
   }
 
-  if (outcome === 'partial') {
-    addToast(
-      'warning',
-      t('source.metadataWrite.partial', {
-        saved: counts?.saved ?? 0,
-        failed: counts?.failed ?? 0,
-      }),
-    )
-    return
-  }
+  const verified = report.addresses.filter((entry) => entry.state === 'verified').length
+  const total = report.addresses.length
 
-  if (outcome === 'landed') addToast('success', t('source.metadataWrite.saved'))
+  switch (report.outcome) {
+    case 'verified':
+      addToast('success', t('source.metadataWrite.saved'))
+      return
+
+    case 'unverified':
+      log.warn('[MetadataWrite]', 'Write could not be confirmed against the file', {
+        path: edit.path,
+        addresses: total,
+      })
+      addToast('warning', t('source.metadataWrite.unverified'))
+      return
+
+    case 'partial':
+      log.warn('[MetadataWrite]', 'Write landed in some scopes and not others', {
+        path: edit.path,
+        verified,
+        total,
+      })
+      addToast('warning', t('source.metadataWrite.partial', { saved: verified, total }))
+      return
+
+    case 'unattempted':
+      log.warn('[MetadataWrite]', 'Write could not be issued; the edit is kept and marked', {
+        path: edit.path,
+        fields: edit.fields,
+      })
+      addToast('error', t('source.metadataWrite.serviceOffline'))
+      return
+
+    case 'failed':
+      log.warn('[MetadataWrite]', 'Write did not reach the file; the edit is kept and marked', {
+        path: edit.path,
+        fields: edit.fields,
+      })
+      addToast('error', t('source.metadataWrite.failed'))
+      return
+
+    case 'not-applicable':
+      return
+  }
 }

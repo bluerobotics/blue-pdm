@@ -15,6 +15,7 @@ import { useFilePaneContext, useFilePaneHandlers } from '../../../context'
 import { usePDMStore } from '@/stores/pdmStore'
 import { getNextSerialNumber, previewNextSerialNumber } from '@/lib/serialization'
 import { resolvePartNumber, resolvedText } from '@/lib/metadata/overlay'
+import { MetadataWriteStateMarker } from '@/components/MetadataWriteStateMarker'
 import { useCellSlowHighlight } from '../../../hooks/useCellSlowHighlight'
 import { CopyHighlightInput } from './CopyHighlightInput'
 import type { CellRendererBaseProps } from './types'
@@ -30,6 +31,7 @@ export function ItemNumberCell({ file }: CellRendererBaseProps): React.ReactNode
     handleCancelCellEdit,
     handleStartCellEdit,
     saveConfigsToSWFile,
+    savingConfigsToSW,
   } = useFilePaneHandlers()
 
   // Store selectors for organization, toast, pending metadata, and drawing lockout
@@ -172,7 +174,7 @@ export function ItemNumberCell({ file }: CellRendererBaseProps): React.ReactNode
       }
 
       // Update pending metadata in store
-      const rollback = updatePendingMetadata(file.path, { part_number: serial })
+      const edit = updatePendingMetadata(file.path, { part_number: serial })
 
       // Now start the save operation (this is what takes time)
       setIsGenerating(true)
@@ -184,7 +186,7 @@ export function ItemNumberCell({ file }: CellRendererBaseProps): React.ReactNode
           ...file,
           pendingMetadata: { ...file.pendingMetadata, part_number: serial },
         }
-        await saveConfigsToSWFile(updatedFile, rollback)
+        await saveConfigsToSWFile(updatedFile, edit)
       } else {
         addToast('success', `Generated: ${serial}`)
       }
@@ -350,6 +352,13 @@ export function ItemNumberCell({ file }: CellRendererBaseProps): React.ReactNode
           className={`text-sm flex items-center gap-1 ${!hasValue || !canEditItemNumber ? 'text-plm-fg-muted' : ''} ${!canEditItemNumber ? 'select-text' : ''}`}
         >
           {displayValue}
+          {/* A value that is not in the file, kept and labelled rather than discarded. */}
+          <MetadataWriteStateMarker
+            file={file}
+            field="part_number"
+            isWriting={savingConfigsToSW.has(file.path)}
+            onRetry={saveConfigsToSWFile}
+          />
           {isDrawingLocked && (
             <span
               className="inline-flex items-center gap-0.5 text-plm-fg-muted/50 flex-shrink-0"

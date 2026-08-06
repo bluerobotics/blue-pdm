@@ -507,15 +507,13 @@ export const en: TranslationDict = {
       unverified: 'Written, but the file could not be read back to confirm it',
       saved: 'Saved metadata to file',
       retry: 'Write to file',
-      // The marker on an edited field, and the sentence explaining it.
-      state: {
-        pending: 'Not written to the file yet',
-        writing: 'Writing to the file…',
-        verified: 'Confirmed in the file',
-        unverified: 'Written, but not confirmed in the file',
-        failed: 'Not in the file — the write was refused',
-        unattempted: 'Not in the file — the SolidWorks service was unavailable',
-      },
+      // What the marker on an edited field means, one message per write state.
+      statePending: 'Not written to the file yet',
+      stateWriting: 'Writing to the file…',
+      stateVerified: 'Confirmed in the file',
+      stateUnverified: 'Written, but not confirmed in the file',
+      stateFailed: 'Not in the file — the write was refused',
+      stateUnattempted: 'Not in the file — the SolidWorks service was unavailable',
       promotedUnverified:
         'This value is in the database but was never confirmed in the file — the file may still hold the old one',
       affectedConfigurations: 'Configurations affected: {{names}}',

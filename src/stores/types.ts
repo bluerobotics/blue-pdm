@@ -22,6 +22,12 @@ import type { OperationLogSlice } from './slices/operationLogSlice'
 import type { NewAnnotationData } from '../features/source/details/components/PdfAnnotationViewer'
 import type { FileAnnotation, ECO, Supplier } from '../types/database'
 import type { SolidWorksServiceStatus } from '../types/solidworks'
+import type {
+  MetadataWriteAddress,
+  MetadataWriteState,
+  MetadataWriteStateRecord,
+  WriteStateDetail,
+} from '../lib/metadata/writeState'
 
 // ============================================================================
 // Type Aliases — UI enums & discriminated unions
@@ -190,22 +196,20 @@ export interface PendingMetadata {
   config_descriptions?: Record<string, string>
 }
 
-// What it takes to undo one pending edit, captured before the edit is recorded.
+// One recorded edit, identified so the write it triggers can report back per field.
 //
-// A pending value is the only record that an edit was ever made - nothing copies it into pdmData
-// any more - and check-in promotes whatever it finds pending. So a write that never reached the
-// file has to be able to take its value back out again, or the database receives it at the next
-// check-in as though the file had accepted it.
-export interface PendingMetadataRollback {
+// This used to carry the previous pending set as well, so a failed write could take the edit out
+// again. It no longer does: an edit that failed to reach the file keeps its value and is marked
+// through metadataWriteState instead, because throwing away what the user typed is the data loss
+// the whole change exists to prevent. What survives is the address list, which is exactly what the
+// write needs in order to say which fields landed.
+export interface PendingMetadataEdit {
   path: string
-  // Only the fields this edit touched. Earlier edits that did reach the file are still owed to the
-  // server and must survive an unrelated failure.
+  // Only the fields this edit touched. A write reports on these and leaves earlier edits alone.
   fields: (keyof PendingMetadata)[]
-  // The whole pending set as it stood before the edit; a field missing from it was not pending.
-  previous: PendingMetadata | undefined
-  // Restored only when the revert leaves nothing pending, since 'modified' would then be a leftover
-  // of the attempt rather than a fact about the file.
-  previousDiffStatus: DiffStatus | undefined
+  // The pending set as it stood after the edit, so a write can be issued from it without another
+  // store read racing a later keystroke.
+  pending: PendingMetadata
 }
 
 // Local file info from filesystem
@@ -227,6 +231,10 @@ export interface LocalFile {
   localHash?: string
   // Pending metadata changes (saved locally, synced on check-in)
   pendingMetadata?: PendingMetadata
+  // Whether each edited field is actually in the SolidWorks file - see lib/metadata/writeState.
+  // Separate from pendingMetadata because it outlives it: check-in clears the pending value once it
+  // reaches the database but must keep the record of what it could not confirm against the file.
+  metadataWriteState?: MetadataWriteStateRecord
   // Local active version (set after rollback, before check-in)
   // This tracks which version's content is currently in the local file
   localActiveVersion?: number
@@ -955,6 +963,12 @@ export interface FilesSlice {
   expandedFolders: Set<string>
   currentFolder: string
   persistedPendingMetadata: Record<string, PendingMetadata>
+  /**
+   * Per-field write state, keyed by full path, surviving a restart alongside the pending values it
+   * describes. Local-only: it records this machine's attempt to write its own working copy, which
+   * is meaningless to any other machine and is why it is not a column on `files`.
+   */
+  persistedMetadataWriteState: Record<string, MetadataWriteStateRecord>
   persistedCopySource: Record<string, { sourceFileId: string; version: number }>
   sortColumn: string
   sortDirection: 'asc' | 'desc'
@@ -1013,9 +1027,28 @@ export interface FilesSlice {
   updateFilesInStore: (updates: Array<{ path: string; updates: Partial<LocalFile> }>) => void
   removeFilesFromStore: (paths: string[]) => void
   addFilesToStore: (files: LocalFile[]) => void
-  // Returns what it takes to undo the edit, for callers that follow it with a file write.
-  updatePendingMetadata: (path: string, metadata: PendingMetadata) => PendingMetadataRollback
-  revertPendingMetadata: (rollback: PendingMetadataRollback) => void
+  // Returns the edit's address list, for callers that follow it with a file write. The edited
+  // fields are marked 'pending' - edited, nothing attempted - as part of the same update.
+  updatePendingMetadata: (path: string, metadata: PendingMetadata) => PendingMetadataEdit
+  /** Move a set of addresses into one write state. */
+  recordMetadataWriteState: (
+    path: string,
+    addresses: readonly MetadataWriteAddress[],
+    state: MetadataWriteState,
+    detail?: WriteStateDetail,
+  ) => void
+  /** Apply a per-address outcome map, which is what a read-back produces. */
+  recordMetadataWriteStates: (
+    path: string,
+    outcomes: ReadonlyArray<{
+      address: MetadataWriteAddress
+      state: MetadataWriteState
+      reason?: string
+    }>,
+    detail?: WriteStateDetail,
+  ) => void
+  /** Forget the write state for these addresses, or for the whole file when none are given. */
+  clearMetadataWriteState: (path: string, addresses?: readonly MetadataWriteAddress[]) => void
   clearPendingMetadata: (path: string) => void
   clearPendingConfigMetadata: (path: string) => void
   clearPersistedPendingMetadataForPaths: (paths: string[]) => void

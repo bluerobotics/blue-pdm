@@ -15,6 +15,7 @@
 import { ArrowLeft, FileText } from 'lucide-react'
 import { usePDMStore } from '@/stores/pdmStore'
 import { resolveRevision, resolvedText } from '@/lib/metadata/overlay'
+import { MetadataWriteStateMarker } from '@/components/MetadataWriteStateMarker'
 import { useFilePaneContext, useFilePaneHandlers } from '../../../context'
 import type { CellRendererBaseProps } from './types'
 
@@ -23,8 +24,14 @@ export function RevisionCell({ file }: CellRendererBaseProps): React.ReactNode {
   const { editingCell, editValue, setEditValue, inlineEditInputRef } = useFilePaneContext()
 
   // Handlers from FilePaneHandlersContext
-  const { isFileEditable, handleSaveCellEdit, handleCancelCellEdit, handleStartCellEdit } =
-    useFilePaneHandlers()
+  const {
+    isFileEditable,
+    handleSaveCellEdit,
+    handleCancelCellEdit,
+    handleStartCellEdit,
+    saveConfigsToSWFile,
+    savingConfigsToSW,
+  } = useFilePaneHandlers()
 
   // Drawing lockout setting (per-user)
   const lockDrawingRevision = usePDMStore((s) => s.lockDrawingRevision)
@@ -108,6 +115,13 @@ export function RevisionCell({ file }: CellRendererBaseProps): React.ReactNode {
       title={getTooltip()}
     >
       {displayValue}
+      {/* A revision that is not in the file, kept and labelled rather than discarded. */}
+      <MetadataWriteStateMarker
+        file={file}
+        field="revision"
+        isWriting={savingConfigsToSW.has(file.path)}
+        onRetry={saveConfigsToSWFile}
+      />
       {isDrawingLocked && (
         <span
           className="inline-flex items-center gap-0.5 text-plm-fg-muted/50 flex-shrink-0"

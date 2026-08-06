@@ -18,7 +18,11 @@ import {
   resolvedText,
 } from '@/lib/metadata/overlay'
 import { reportMetadataWrite } from '@/lib/metadata/reportMetadataWrite'
-import type { PendingMetadataRollback } from '@/stores/types'
+import { writeMetadataWithVerification } from '@/lib/metadata/writeMetadataToFile'
+import { buildMetadataWritePlan } from '@/lib/metadata/writePlan'
+import { MetadataWriteStateMarker } from '@/components/MetadataWriteStateMarker'
+import { listWriteAddresses } from '@/lib/metadata/writeState'
+import type { PendingMetadataEdit } from '@/stores/types'
 import { WhereUsedTab, SWPropertiesTab } from '@/features/integrations/solidworks'
 import { SWDatacardPanel } from '@/features/integrations/solidworks'
 import { InspectionTab } from '@/features/integrations/solidworks'
@@ -313,11 +317,11 @@ export function DetailsPanel() {
     async (
       targetFile: LocalFile,
       updates: { part_number?: string | null; description?: string | null; revision?: string },
-      rollback: PendingMetadataRollback,
+      edit: PendingMetadataEdit,
     ) => {
       const ext = targetFile.extension?.toLowerCase() || ''
       // Not a SolidWorks document: there is no file write, and the pending edit is the only record
-      // of it until check-in promotes it. Nothing to undo.
+      // of it until check-in promotes it.
       if (!['.sldprt', '.sldasm', '.slddrw'].includes(ext)) return
 
       const watcherKey = targetFile.relativePath
@@ -328,27 +332,29 @@ export function DetailsPanel() {
         addToast('info', 'Starting SolidWorks — the first edit can take up to a minute…')
       }, 1500)
       try {
-        const props: Record<string, string> = {}
-
-        // The values about to be written: this edit, then the overlay for the fields it leaves alone
+        // The fields this edit touched, laid over what the file should hold for the rest. Built by
+        // the shared planner rather than here: presence decides, not truthiness, so a field cleared
+        // to nothing is written as an empty property instead of being dropped from the request. This
+        // panel used to build the properties itself and return early when they all came out empty,
+        // which made a full clear the one edit that could never reach the file.
         const resolved = resolveFileMetadata(targetFile)
-        const partNumber = updates.part_number ?? resolvedText(resolved.partNumber)
-        const description = updates.description ?? resolvedText(resolved.description)
-        const revision = updates.revision ?? resolvedText(resolved.revision)
+        const [group] = buildMetadataWritePlan({
+          pending: updates,
+          committed: {
+            partNumber: resolvedText(resolved.partNumber),
+            description: resolvedText(resolved.description),
+            revision: resolvedText(resolved.revision),
+          },
+          configurations: [],
+          serialization: null,
+        })
 
-        if (partNumber) props['Number'] = partNumber
-        if (description) props['Description'] = description
-        if (revision) props['Revision'] = revision
-
-        // Clearing every field leaves nothing to write, and this path has never emitted the empty
-        // values that would delete the properties. The edit stays pending and reaches the database
-        // at check-in; the file keeps its old values. Left alone here - undoing the edit would make
-        // the field unclearable from this panel, which is worse than the divergence.
-        if (Object.keys(props).length === 0) return
+        if (!group || group.intents.length === 0) return
+        const props = group.properties
 
         // Check if file is open in SolidWorks
         const isOpenResult = await window.electronAPI?.solidworks?.isDocumentOpen?.(targetFile.path)
-        const isOpenInSW = isOpenResult?.success && isOpenResult.data?.isOpen
+        const isOpenInSW = !!(isOpenResult?.success && isOpenResult.data?.isOpen)
 
         // Suppress the FileWatcher for this path while SW mutates SLDPRT bytes. Otherwise
         // the watcher's debounced reload races against our post-write hash refresh and can
@@ -356,88 +362,55 @@ export function DetailsPanel() {
         usePDMStore.getState().addExpectedFileChanges([watcherKey])
         watcherSuppressed = true
 
-        let result: { success: boolean; error?: string } | undefined
+        const result = await writeMetadataWithVerification({
+          path: targetFile.path,
+          groups: [group],
+          useLiveApi: isOpenInSW,
+        })
 
-        if (isOpenInSW) {
-          // Use live SolidWorks API - keeps file open in SW
-          result = await window.electronAPI?.solidworks?.setDocumentProperties?.(
-            targetFile.path,
-            props,
-          )
+        reportMetadataWrite(edit, result)
 
-          // Also write to config-level if needed (for PRP in drawings)
-          if (result?.success && ext !== '.slddrw') {
-            const propsResult = await window.electronAPI?.solidworks?.getProperties?.(
-              targetFile.path,
-            )
-            if (propsResult?.success && propsResult.data) {
-              const data = propsResult.data as {
-                configurationProperties?: Record<string, Record<string, string>>
-                configurations?: string[]
-              }
-              const configProps = data.configurationProperties
-              const configs = data.configurations || []
-              const activeConfig =
-                configs.find((c) => c.toLowerCase() === 'default') ||
-                configs.find((c) => c.toLowerCase() === 'standard') ||
-                configs[0]
+        const landed = result.addresses.some(
+          (entry) => entry.state === 'verified' || entry.state === 'unverified',
+        )
 
-              if (activeConfig && configProps) {
-                const existingConfigProps = configProps[activeConfig] || {}
-                const missingProps: Record<string, string> = {}
-                for (const [key, value] of Object.entries(props)) {
-                  if (
-                    !existingConfigProps[key] ||
-                    existingConfigProps[key].trim() === '' ||
-                    existingConfigProps[key].startsWith('$')
-                  ) {
-                    missingProps[key] = value
-                  }
+        if (landed) {
+          // Mirror the file-scope values into the active configuration so $PRP references in
+          // drawings resolve. Uses the verification read-back rather than a second read: this panel
+          // read the document here anyway, so confirming the write costs it nothing. Left
+          // unverified deliberately - these are copies of values whose own addresses are confirmed
+          // above, and a second read-back to check the copies would double the cost of every edit.
+          //
+          // A configuration that already holds its own value keeps it, on a clear as much as on a
+          // set: a per-configuration description has its own address and its own editor, and
+          // clearing the file-level one is not a request to wipe 68 of them.
+          if (ext !== '.slddrw' && result.document) {
+            const configs = result.document.configurations
+            const activeConfig =
+              configs.find((c) => c.toLowerCase() === 'default') ||
+              configs.find((c) => c.toLowerCase() === 'standard') ||
+              configs[0]
+
+            if (activeConfig) {
+              const existingConfigProps = result.document.configurationProperties[activeConfig] || {}
+              const missingProps: Record<string, string> = {}
+              for (const [key, value] of Object.entries(props)) {
+                if (
+                  !existingConfigProps[key] ||
+                  existingConfigProps[key].trim() === '' ||
+                  existingConfigProps[key].startsWith('$')
+                ) {
+                  missingProps[key] = value
                 }
-                if (Object.keys(missingProps).length > 0) {
+              }
+              if (Object.keys(missingProps).length > 0) {
+                if (isOpenInSW) {
                   await window.electronAPI?.solidworks?.setDocumentProperties?.(
                     targetFile.path,
                     missingProps,
                     activeConfig,
                   )
-                }
-              }
-            }
-          }
-        } else {
-          // Use Document Manager (faster, but requires file not open)
-          result = await window.electronAPI?.solidworks?.setProperties(targetFile.path, props)
-
-          // ALSO write to default configuration for PRP resolution in drawings
-          if (result?.success && ext !== '.slddrw') {
-            const propsResult = await window.electronAPI?.solidworks?.getProperties?.(
-              targetFile.path,
-            )
-            if (propsResult?.success && propsResult.data) {
-              const data = propsResult.data as {
-                configurationProperties?: Record<string, Record<string, string>>
-                configurations?: string[]
-              }
-              const configProps = data.configurationProperties
-              const configs = data.configurations || []
-              const activeConfig =
-                configs.find((c) => c.toLowerCase() === 'default') ||
-                configs.find((c) => c.toLowerCase() === 'standard') ||
-                configs[0]
-
-              if (activeConfig && configProps) {
-                const existingConfigProps = configProps[activeConfig] || {}
-                const missingProps: Record<string, string> = {}
-                for (const [key, value] of Object.entries(props)) {
-                  if (
-                    !existingConfigProps[key] ||
-                    existingConfigProps[key].trim() === '' ||
-                    existingConfigProps[key].startsWith('$')
-                  ) {
-                    missingProps[key] = value
-                  }
-                }
-                if (Object.keys(missingProps).length > 0) {
+                } else {
                   await window.electronAPI?.solidworks?.setProperties(
                     targetFile.path,
                     missingProps,
@@ -447,10 +420,7 @@ export function DetailsPanel() {
               }
             }
           }
-        }
 
-        if (result?.success) {
-          reportMetadataWrite(rollback, 'landed')
           // Mark as recently modified to protect from LoadFiles overwrite
           if (targetFile.pdmData?.id) {
             usePDMStore.getState().markFileAsRecentlyModified(targetFile.pdmData.id)
@@ -490,15 +460,21 @@ export function DetailsPanel() {
             localHash: freshHash,
             localVersion: undefined,
           })
-        } else {
-          reportMetadataWrite(rollback, 'failed')
         }
       } catch (error) {
         log.error('[DetailsPanel]', 'Metadata write threw', {
           path: targetFile.path,
           error: String(error),
         })
-        reportMetadataWrite(rollback, 'failed')
+        // The typed value stays; the fields it touched are marked as not in the file.
+        reportMetadataWrite(edit, {
+          outcome: 'failed',
+          addresses: listWriteAddresses(edit.pending).map((address) => ({
+            address,
+            state: 'failed' as const,
+            reason: error instanceof Error ? error.message : String(error),
+          })),
+        })
       } finally {
         clearTimeout(slowWriteTimer)
         // Delay clearing watcher suppression so the debounced FileWatcher event
@@ -565,14 +541,14 @@ export function DetailsPanel() {
     }
 
     // Update pending metadata in store
-    const rollback = updatePendingMetadata(file.path, pendingUpdates)
+    const edit = updatePendingMetadata(file.path, pendingUpdates)
 
     // Clear edit state first so UI is responsive
     setEditingField(null)
     setEditValue('')
 
     // Auto-save to SolidWorks file
-    await saveMetadataToSWFile(file, pendingUpdates, rollback)
+    await saveMetadataToSWFile(file, pendingUpdates, edit)
   }
 
   // Handle generating a serial number for item number - auto-saves immediately
@@ -602,13 +578,13 @@ export function DetailsPanel() {
 
       // Update pending metadata
       const pendingUpdates = { part_number: serial }
-      const rollback = updatePendingMetadata(file.path, pendingUpdates)
+      const edit = updatePendingMetadata(file.path, pendingUpdates)
 
       // Now start the save operation (this is what takes time)
       setIsGeneratingSerial(true)
 
       // Auto-save to SolidWorks file
-      await saveMetadataToSWFile(file, pendingUpdates, rollback)
+      await saveMetadataToSWFile(file, pendingUpdates, edit)
 
       // Exit edit mode after successful save
       setEditingField(null)
@@ -857,6 +833,22 @@ export function DetailsPanel() {
                       ) : (
                         // File properties (non-SW files)
                         <>
+                          {/* Values the user typed that are not in the file, kept and labelled with
+                              a retry rather than discarded. */}
+                          <MetadataWriteStateMarker
+                            file={file}
+                            onRetry={(target, retry) => {
+                              void saveMetadataToSWFile(
+                                target,
+                                {
+                                  part_number: retry.pending.part_number,
+                                  description: retry.pending.description,
+                                  revision: retry.pending.revision ?? undefined,
+                                },
+                                retry,
+                              )
+                            }}
+                          />
                           <EditablePropertyItem
                             icon={<Tag size={14} />}
                             label={t('fileBrowser.itemNumber')}

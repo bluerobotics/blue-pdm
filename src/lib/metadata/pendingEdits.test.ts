@@ -1,12 +1,14 @@
 /**
- * Cover for what removing the `pdmData` copy changed.
+ * Cover for what removing the `pdmData` copy changed, and for what replaced the revert.
  *
  * `updatePendingMetadata` used to write the edited fields into `pdmData` as well as into
- * `pendingMetadata`. Two things followed from that and both are gone: an edit read back as a value
- * the server had confirmed, and there was nothing to undo when the write it was made for failed -
- * the copy stayed regardless. `pendingMetadata` is now the only record of the edit, and check-in
- * promotes whatever it finds there, so the two cases worth pinning are a failure leaving no
- * residue and a success leaving the edit alone until check-in delivers it.
+ * `pendingMetadata`, so an edit read back as a value the server had confirmed. That copy is gone.
+ *
+ * Its removal came with a revert: because `pendingMetadata` became the only record of the edit and
+ * check-in promoted whatever it found there, a failed write took the edit back out rather than let
+ * the database receive a value the file had refused. That is gone too - the value is kept and marked
+ * instead, which `writeState.test.ts` covers. What remains here is the fold of an edit into the
+ * pending set, and the guarantee that nothing copies a pending value into the committed one.
  */
 
 import { readFileSync } from 'node:fs'
@@ -15,12 +17,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import { resolvePartNumber, resolvedText } from './overlay'
-import {
-  applyPendingEdit,
-  hasPendingMetadata,
-  revertPendingEdit,
-  shouldRevertPendingMetadata,
-} from './pendingEdits'
+import { applyPendingEdit, hasPendingMetadata } from './pendingEdits'
 import type { PDMFile } from '@/types/pdm'
 
 const PATH = 'C:\\vault\\ORING-BUNA-70A.SLDPRT'
@@ -34,112 +31,55 @@ function committed(partNumber: string | null): PDMFile {
   } as PDMFile
 }
 
-describe('a write that never reached the file leaves no residue', () => {
-  it('takes the edit back out, leaving the file with nothing pending', () => {
-    const { pending, rollback } = applyPendingEdit(PATH, undefined, { part_number: 'PN-NEW' }, undefined)
+describe('folding an edit into the pending set', () => {
+  it('records the value and names the field the write must report on', () => {
+    const { pending, edit } = applyPendingEdit(PATH, undefined, { part_number: 'PN-NEW' })
 
     expect(pending.part_number).toBe('PN-NEW')
-    expect(revertPendingEdit(pending, rollback)).toBeUndefined()
+    expect(edit.fields).toEqual(['part_number'])
+    expect(edit.path).toBe(PATH)
   })
 
-  it('restores the value the field held before the edit, not just any value', () => {
-    const first = applyPendingEdit(PATH, undefined, { part_number: 'PN-ONE' }, undefined)
-    const second = applyPendingEdit(PATH, first.pending, { part_number: 'PN-TWO' }, 'modified')
-
-    const restored = revertPendingEdit(second.pending, second.rollback)
-
-    expect(restored?.part_number).toBe('PN-ONE')
-  })
-
-  it('leaves alone the earlier edits a later failure has nothing to do with', () => {
-    // The description write landed and is still owed to the database. Reverting the renumber
-    // must not take it with it, or check-in stops delivering a value the file already holds.
-    const description = applyPendingEdit(PATH, undefined, { description: 'New title' }, undefined)
-    const renumber = applyPendingEdit(PATH, description.pending, { part_number: 'PN-NEW' }, 'modified')
-
-    const restored = revertPendingEdit(renumber.pending, renumber.rollback)
-
-    expect(restored?.description).toBe('New title')
-    expect(restored?.part_number).toBeUndefined()
-  })
-
-  it('undoes a clear as thoroughly as it undoes a value', () => {
-    // A pending `null` is a deliberate clear, which is a different intention from never having
-    // been set - and the one the old `||` overlays kept getting wrong.
-    const { pending, rollback } = applyPendingEdit(PATH, undefined, { part_number: null }, undefined)
+  it('keeps a clear as a clear, not as an absence', () => {
+    // A pending `null` is a deliberate clear, which is a different intention from never having been
+    // set - and the one the old `||` overlays kept getting wrong.
+    const { pending } = applyPendingEdit(PATH, undefined, { part_number: null })
 
     expect(pending.part_number).toBeNull()
-    expect(revertPendingEdit(pending, rollback)).toBeUndefined()
+    expect('part_number' in pending).toBe(true)
   })
 
-  it('puts a configuration map back to the configurations it named before', () => {
-    const first = applyPendingEdit(PATH, undefined, { config_tabs: { 'AS568-014': '014' } }, undefined)
-    const second = applyPendingEdit(PATH, first.pending, { config_tabs: { 'AS568-015': '015' } }, 'modified')
+  it('leaves earlier edits alone, because they are still owed to the database', () => {
+    const description = applyPendingEdit(PATH, undefined, { description: 'New title' })
+    const renumber = applyPendingEdit(PATH, description.pending, { part_number: 'PN-NEW' })
 
-    expect(Object.keys(second.pending.config_tabs ?? {})).toEqual(['AS568-014', 'AS568-015'])
-
-    const restored = revertPendingEdit(second.pending, second.rollback)
-
-    expect(restored?.config_tabs).toEqual({ 'AS568-014': '014' })
+    expect(renumber.pending.description).toBe('New title')
+    expect(renumber.pending.part_number).toBe('PN-NEW')
+    expect(renumber.edit.fields).toEqual(['part_number'])
   })
 
-  it('carries the diff status the file had before the edit, so nothing is left looking modified', () => {
-    const { rollback } = applyPendingEdit(PATH, undefined, { part_number: 'PN-NEW' }, undefined)
+  it('merges configuration maps rather than replacing them', () => {
+    const first = applyPendingEdit(PATH, undefined, { config_tabs: { 'AS568-014': '014' } })
+    const second = applyPendingEdit(PATH, first.pending, { config_tabs: { 'AS568-015': '015' } })
 
-    expect(rollback.previousDiffStatus).toBeUndefined()
-    expect(rollback.fields).toEqual(['part_number'])
+    expect(second.pending.config_tabs).toEqual({ 'AS568-014': '014', 'AS568-015': '015' })
   })
 
-  it('does nothing when the edit recorded nothing', () => {
-    const pending = { part_number: 'PN-NEW' }
+  it('carries the whole pending set on the edit, so the write does not have to read it again', () => {
+    const first = applyPendingEdit(PATH, undefined, { description: 'New title' })
+    const second = applyPendingEdit(PATH, first.pending, { part_number: 'PN-NEW' })
 
-    expect(
-      revertPendingEdit(pending, {
-        path: PATH,
-        fields: [],
-        previous: undefined,
-        previousDiffStatus: undefined,
-      }),
-    ).toBe(pending)
-  })
-})
-
-describe('a pending edit survives until the write is confirmed', () => {
-  it('keeps the edit when the write landed, because the database has not had it yet', () => {
-    expect(shouldRevertPendingMetadata('landed')).toBe(false)
-  })
-
-  it('keeps the edit when only some configurations took it', () => {
-    // The value is in the file for the ones that did. Dropping it would guarantee the divergence
-    // rather than prevent it.
-    expect(shouldRevertPendingMetadata('partial')).toBe(false)
-  })
-
-  it('keeps the edit on files that have no property write at all', () => {
-    expect(shouldRevertPendingMetadata('not-applicable')).toBe(false)
-  })
-
-  it('takes the edit back only when nothing reached the file', () => {
-    expect(shouldRevertPendingMetadata('failed')).toBe(true)
-    expect(shouldRevertPendingMetadata('unattempted')).toBe(true)
+    expect(second.edit.pending).toEqual(second.pending)
   })
 
   it('shows the edit without the server row having changed', () => {
     // The point of the removal: the row still says what the server said, and the edit is visible
     // anyway because readers overlay it.
     const row = committed('PN-OLD')
-    const { pending } = applyPendingEdit(PATH, undefined, { part_number: 'PN-NEW' }, undefined)
+    const { pending } = applyPendingEdit(PATH, undefined, { part_number: 'PN-NEW' })
 
     expect(resolvedText(resolvePartNumber({ pendingMetadata: pending, pdmData: row }))).toBe('PN-NEW')
     expect(row.part_number).toBe('PN-OLD')
-  })
-
-  it('falls back to the server row once the edit is taken back', () => {
-    const row = committed('PN-OLD')
-    const { pending, rollback } = applyPendingEdit(PATH, undefined, { part_number: 'PN-NEW' }, undefined)
-    const restored = revertPendingEdit(pending, rollback)
-
-    expect(resolvedText(resolvePartNumber({ pendingMetadata: restored, pdmData: row }))).toBe('PN-OLD')
   })
 })
 
@@ -212,5 +152,21 @@ describe('nothing writes a pending value back into pdmData', () => {
 
     expect(source.length).toBeGreaterThan(1000)
     expect(COPIES_PENDING_INTO_COMMITTED.test(source)).toBe(false)
+  })
+})
+
+describe('no write path can revert a typed value any more', () => {
+  const SOURCE_ROOT = join(__dirname, '..', '..')
+
+  it.each([
+    join('lib', 'metadata', 'pendingEdits.ts'),
+    join('lib', 'metadata', 'reportMetadataWrite.ts'),
+    join('stores', 'slices', 'filesSlice.ts'),
+  ])('has no revert machinery left in %s', (relativePath) => {
+    const source = readFileSync(join(SOURCE_ROOT, relativePath), 'utf8')
+
+    // The names are gone, not merely unused: a failed write keeps the value and marks it, and
+    // leaving a reachable revert would let a future caller quietly choose the old behaviour.
+    expect(source).not.toMatch(/revertPendingEdit|revertPendingMetadata|shouldRevertPendingMetadata/)
   })
 })

@@ -10,6 +10,7 @@ import { useFilePaneContext, useFilePaneHandlers } from '../../../context'
 import { usePDMStore } from '@/stores/pdmStore'
 import { validateTabInput, getTabPlaceholder, getTabValidationOptions } from '@/lib/tabValidation'
 import { resolveTabNumber, resolvedText } from '@/lib/metadata/overlay'
+import { MetadataWriteStateMarker } from '@/components/MetadataWriteStateMarker'
 import type { CellRendererBaseProps } from './types'
 
 export function TabNumberCell({ file }: CellRendererBaseProps): React.ReactNode {
@@ -23,6 +24,7 @@ export function TabNumberCell({ file }: CellRendererBaseProps): React.ReactNode 
     handleCancelCellEdit,
     handleStartCellEdit,
     saveConfigsToSWFile,
+    savingConfigsToSW,
     canHaveConfigs,
   } = useFilePaneHandlers()
 
@@ -61,7 +63,7 @@ export function TabNumberCell({ file }: CellRendererBaseProps): React.ReactNode 
             if (e.key === 'Enter') {
               // Update pending metadata with validated value
               const validated = validateTabInput(editValue, tabValidationOptions)
-              const rollback = updatePendingMetadata(file.path, { tab_number: validated || null })
+              const edit = updatePendingMetadata(file.path, { tab_number: validated || null })
               handleSaveCellEdit()
               // Auto-save to SW file
               const ext = file.extension?.toLowerCase() || ''
@@ -70,7 +72,7 @@ export function TabNumberCell({ file }: CellRendererBaseProps): React.ReactNode 
                   ...file,
                   pendingMetadata: { ...file.pendingMetadata, tab_number: validated || null },
                 }
-                saveConfigsToSWFile(updatedFile, rollback)
+                saveConfigsToSWFile(updatedFile, edit)
               }
             } else if (e.key === 'Escape') {
               handleCancelCellEdit()
@@ -80,7 +82,7 @@ export function TabNumberCell({ file }: CellRendererBaseProps): React.ReactNode 
           onBlur={() => {
             // Update pending metadata on blur with validated value
             const validated = validateTabInput(editValue, tabValidationOptions)
-            const rollback = updatePendingMetadata(file.path, { tab_number: validated || null })
+            const edit = updatePendingMetadata(file.path, { tab_number: validated || null })
             handleSaveCellEdit()
             // Auto-save to SW file
             const ext = file.extension?.toLowerCase() || ''
@@ -89,7 +91,7 @@ export function TabNumberCell({ file }: CellRendererBaseProps): React.ReactNode 
                 ...file,
                 pendingMetadata: { ...file.pendingMetadata, tab_number: validated || null },
               }
-              saveConfigsToSWFile(updatedFile, rollback)
+              saveConfigsToSWFile(updatedFile, edit)
             }
           }}
           onClick={(e) => e.stopPropagation()}
@@ -131,8 +133,16 @@ export function TabNumberCell({ file }: CellRendererBaseProps): React.ReactNode 
             : 'Sign in to edit'
       }
     >
-      <span className={`flex-1 ${!displayValue || !canEditTab ? 'text-plm-fg-muted' : ''}`}>
+      <span
+        className={`flex-1 flex items-center gap-1 ${!displayValue || !canEditTab ? 'text-plm-fg-muted' : ''}`}
+      >
         {displayValue || '-'}
+        <MetadataWriteStateMarker
+          file={file}
+          field="tab_number"
+          isWriting={savingConfigsToSW.has(file.path)}
+          onRetry={saveConfigsToSWFile}
+        />
       </span>
     </div>
   )

@@ -36,7 +36,7 @@ import {
   combineBaseAndTab,
   normalizeTabNumber,
 } from '@/lib/serialization'
-import { sanitizeTabNumber, getTabValidationOptions } from '@/lib/tabValidation'
+import { getTabValidationOptions } from '@/lib/tabValidation'
 import {
   resolveConfigurationDescription,
   resolveConfigurationDescriptions,
@@ -53,11 +53,8 @@ import {
   getDrawingsForFileConfig,
 } from '@/lib/supabase/files/queries'
 import { reportMetadataWrite, unattemptedWrite } from '@/lib/metadata/reportMetadataWrite'
-import {
-  writeMetadataWithVerification,
-  type MetadataWriteGroup,
-} from '@/lib/metadata/writeMetadataToFile'
-import type { MetadataWriteIntent } from '@/lib/metadata/verifyWrite'
+import { writeMetadataWithVerification } from '@/lib/metadata/writeMetadataToFile'
+import { buildMetadataWritePlan } from '@/lib/metadata/writePlan'
 import { listWriteAddresses } from '@/lib/metadata/writeState'
 import type { PendingMetadataEdit } from '@/stores/types'
 import { log } from '@/lib/logger'
@@ -689,183 +686,38 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
         // (organization is not in the useCallback dependency array for this function)
         const org = usePDMStore.getState().organization
         const serSettings = org?.id ? await getSerializationSettings(org.id) : null
-        const tabValidationOptions = getTabValidationOptions(serSettings)
-
-        // Get current values (pending or existing)
-        // Distinguish "intentionally edited/cleared" (pending key present, possibly null) from
-        // "not edited" (pending key absent). A cleared field is null and must NOT fall back to the
-        // old value, otherwise the deletion is silently resurrected ("bounce back").
-        const itemNumberEdited = pm.part_number !== undefined
-        const descriptionEdited = pm.description !== undefined
-        const revisionEdited = pm.revision !== undefined
-        const baseNumber = itemNumberEdited ? pm.part_number ?? '' : file.pdmData?.part_number ?? ''
-        const baseDesc = descriptionEdited ? pm.description ?? '' : file.pdmData?.description ?? ''
-        const revision = revisionEdited ? pm.revision ?? '' : file.pdmData?.revision ?? ''
-        const fileTabNumber = sanitizeTabNumber(pm.tab_number, tabValidationOptions) // Sanitize based on settings
-
-        // Every scope's properties and what they are meant to establish there, collected before
-        // anything is sent so the write and its read-back are one operation rather than a series.
-        const groups: MetadataWriteGroup[] = []
 
         // Get current user for DrawnBy property
         const currentUser = usePDMStore.getState().user
         const drawnBy = currentUser?.full_name || currentUser?.email || ''
         const dateStr = new Date().toISOString().split('T')[0] // YYYY-MM-DD
 
-        if (configs.length > 0) {
-          // Multi-config file: save to each changed config
-          const changedConfigNames = new Set([
-            ...Object.keys(pendingTabs),
-            ...Object.keys(pendingDescs),
-          ])
+        const itemNumberEdited = pm.part_number !== undefined
+        const baseNumber = itemNumberEdited ? (pm.part_number ?? '') : (file.pdmData?.part_number ?? '')
 
-          // If base metadata changed, we need to update all configs (they may reference the base number)
-          if (hasBaseChanges && configs.length > 0) {
-            // Just update the first/active config for base properties
-            const activeConfig = configs.find((c) => c.isActive) || configs[0]
-            changedConfigNames.add(activeConfig.name)
-          }
-
-          const baseConfigName = (configs.find((c) => c.isActive) || configs[0])?.name
-
-          for (const config of configs.filter((c) => changedConfigNames.has(c.name))) {
-            const props: Record<string, string> = {}
-            const intents: MetadataWriteIntent[] = []
-            // A file-scope field on a multi-configuration part is written into the configuration
-            // SolidWorks resolves it from, so its read-back has to look there too.
-            const verifyIn = { configuration: config.name }
-
-            // Build full part number (base + tab) with sanitized tab number
-            const configTabEdited = pendingTabs[config.name] !== undefined
-            const rawConfigTab = pendingTabs[config.name] ?? config.tabNumber ?? ''
-            const configTab = sanitizeTabNumber(rawConfigTab, tabValidationOptions) // Secondary protection: filter based on settings
-            if (baseNumber) {
-              // Use combineBaseAndTab for proper separator from settings, fallback to dash
-              props['Number'] = configTab
-                ? serSettings?.tab_enabled
-                  ? combineBaseAndTab(baseNumber, configTab, serSettings)
-                  : `${baseNumber}-${configTab}`
-                : baseNumber
-              props['Base Item Number'] = baseNumber // Always write base separately
-            } else if (itemNumberEdited) {
-              // The item number was cleared. The properties stay in the file holding nothing: a
-              // title block linked with $PRP: renders blank against an empty property and can break
-              // against a missing one.
-              props['Number'] = ''
-              props['Base Item Number'] = ''
-            }
-
-            // Emitted when cleared as well as when set, so clearing a tab empties the property
-            // rather than leaving the old tab behind. Untouched configurations with no tab keep
-            // having no property rather than gaining an empty one. Outside the base-number branch
-            // because a configuration tab is worth writing even on a file with no part number.
-            if (configTab || configTabEdited) props['Tab Number'] = configTab
-
-            if (configTabEdited) {
-              intents.push({
-                address: { scope: 'configuration', field: 'config_tab', configuration: config.name },
-                expected: configTab,
-              })
-            }
-            if (itemNumberEdited && config.name === baseConfigName) {
-              intents.push({
-                address: { scope: 'file', field: 'part_number' },
-                expected: baseNumber,
-                verifyIn,
-              })
-            }
-
-            // Description - use config-specific override if edited, otherwise base.
-            // Only fall back to the existing config.description when neither the config nor the
-            // base description was edited, so a cleared description is not resurrected.
-            const configDescEdited = pendingDescs[config.name] !== undefined
-            const configDesc = configDescEdited
-              ? pendingDescs[config.name] ?? ''
-              : descriptionEdited
-                ? baseDesc
-                : config.description ?? baseDesc
-            // Emit Description even when cleared, so the property stays in the file holding nothing
-            if (configDescEdited || descriptionEdited || configDesc) props['Description'] = configDesc
-
-            if (configDescEdited) {
-              intents.push({
-                address: {
-                  scope: 'configuration',
-                  field: 'config_description',
-                  configuration: config.name,
-                },
-                expected: configDesc,
-              })
-            } else if (descriptionEdited && config.name === baseConfigName) {
-              intents.push({
-                address: { scope: 'file', field: 'description' },
-                expected: configDesc,
-                verifyIn,
-              })
-            }
-
-            if (revisionEdited || revision) props['Revision'] = revision
-            if (revisionEdited && config.name === baseConfigName) {
-              intents.push({
-                address: { scope: 'file', field: 'revision' },
-                expected: revision,
-                verifyIn,
-              })
-            }
-
-            // PDM parity properties - always write Date and DrawnBy
-            props['Date'] = dateStr
-            if (drawnBy) props['DrawnBy'] = drawnBy
-
-            groups.push({ configuration: config.name, properties: props, intents })
-          }
-        } else {
-          // Single config or no configs loaded - save file-level properties
-          const props: Record<string, string> = {}
-          const intents: MetadataWriteIntent[] = []
-
-          // Build full part number (base + file-level tab) with sanitized tab number
-          // fileTabNumber is already sanitized above
-          if (baseNumber) {
-            // Use combineBaseAndTab for proper separator from settings, fallback to dash
-            props['Number'] = fileTabNumber
-              ? serSettings?.tab_enabled
-                ? combineBaseAndTab(baseNumber, fileTabNumber, serSettings)
-                : `${baseNumber}-${fileTabNumber}`
-              : baseNumber
-            props['Base Item Number'] = baseNumber
-          } else if (itemNumberEdited) {
-            // Cleared, not deleted: the properties stay in the file holding nothing, so a title
-            // block linked with $PRP: renders blank instead of breaking on a missing property.
-            props['Number'] = ''
-            props['Base Item Number'] = ''
-          }
-          if (itemNumberEdited) {
-            intents.push({ address: { scope: 'file', field: 'part_number' }, expected: baseNumber })
-          }
-
-          if (fileTabNumber || pm.tab_number !== undefined) props['Tab Number'] = fileTabNumber
-          if (pm.tab_number !== undefined) {
-            intents.push({ address: { scope: 'file', field: 'tab_number' }, expected: fileTabNumber })
-          }
-
-          // Emit Description even when cleared, so the property stays in the file holding nothing
-          if (descriptionEdited || baseDesc) props['Description'] = baseDesc
-          if (descriptionEdited) {
-            intents.push({ address: { scope: 'file', field: 'description' }, expected: baseDesc })
-          }
-
-          if (revisionEdited || revision) props['Revision'] = revision
-          if (revisionEdited) {
-            intents.push({ address: { scope: 'file', field: 'revision' }, expected: revision })
-          }
-
-          // PDM parity properties - always write Date and DrawnBy
-          props['Date'] = dateStr
-          if (drawnBy) props['DrawnBy'] = drawnBy
-
-          groups.push({ properties: props, intents })
-        }
+        // Every scope's properties and what they are meant to establish there, built before anything
+        // is sent so the write and its read-back are one operation rather than a series. The mapping
+        // from a field to its property names lives in buildMetadataWritePlan, which check-in shares:
+        // two copies of "part_number means Number plus Base Item Number, and Number carries the tab"
+        // drift, and check-in writing something subtly different from the datacard is the exact bug
+        // this phase exists to remove.
+        const groups = buildMetadataWritePlan({
+          pending: pm,
+          committed: {
+            partNumber: file.pdmData?.part_number,
+            description: file.pdmData?.description,
+            revision: file.pdmData?.revision,
+          },
+          configurations: configs,
+          serialization: serSettings
+            ? {
+                tabEnabled: !!serSettings.tab_enabled,
+                settings: serSettings,
+                validation: getTabValidationOptions(serSettings),
+              }
+            : null,
+          parity: { date: dateStr, drawnBy },
+        })
 
         const result = await writeMetadataWithVerification({
           path: file.path,

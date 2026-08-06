@@ -36,6 +36,7 @@ import {
 import type { LocalFile } from '../../../stores/pdmStore'
 import { usePDMStore } from '../../../stores/pdmStore'
 import { resolveRevision, resolvedText } from '@/lib/metadata/overlay'
+import { settleMetadataForCheckin } from '@/lib/metadata/checkinMetadata'
 import { log } from '@/lib/logger'
 import { isRetryableError, getBackoffDelay, sleep } from '../../network'
 import { FileOperationTracker } from '../../fileOperationTracker'
@@ -951,6 +952,25 @@ export const checkinCommand: Command<CheckinParams> = {
         // ========================================
         const hasPendingMetadata = !!file.pendingMetadata
 
+        // Get the pending values into the file before the database takes them.
+        //
+        // Check-in used to promote whatever it found pending on the assumption that the datacard had
+        // already written it. When that write had failed, the database silently accepted a value the
+        // file did not have. This writes what is still owed, reads it back, and returns the record of
+        // anything it could not confirm - which travels with the file update below rather than being
+        // thrown away with the pending value. Decision D4: check-in may be slower for files that were
+        // actually edited.
+        //
+        // Before the hash, deliberately: this write changes the document, so hashing first would
+        // record a hash the file no longer has and the fast path would compare against it.
+        const metadataSettleStart = performance.now()
+        const swStatus = usePDMStore.getState().integrations.solidworks.status
+        const metadataSettlement = await settleMetadataForCheckin(file, {
+          organizationId: orgId,
+          serviceAvailable: swStatus === 'online' || swStatus === 'partial',
+        })
+        recordSubstepTiming('settleMetadata', performance.now() - metadataSettleStart)
+
         // CRITICAL: Always compute fresh hash - cached localHash may be stale
         // This fixes a bug where files modified in SolidWorks were not detected
         // because the file watcher preserves old hashes for performance.
@@ -1073,6 +1093,10 @@ export const checkinCommand: Command<CheckinParams> = {
                 diffStatus: fastPathDriftHash ? ('modified' as const) : undefined,
                 localActiveVersion: undefined,
                 pendingMetadata: undefined,
+                // The value is now the database's. What could not be confirmed against the file
+                // keeps its mark, which is why this is set rather than left alone: the pending
+                // value's disappearance must not take the record of doubt with it.
+                metadataWriteState: metadataSettlement.writeState,
                 pendingVersionNotes: undefined,
                 pendingCheckinNote: undefined,
               },
@@ -1326,6 +1350,10 @@ export const checkinCommand: Command<CheckinParams> = {
                 diffStatus: uploadDriftHash ? ('modified' as const) : undefined,
                 localActiveVersion: undefined,
                 pendingMetadata: undefined,
+                // The value is now the database's. What could not be confirmed against the file
+                // keeps its mark, which is why this is set rather than left alone: the pending
+                // value's disappearance must not take the record of doubt with it.
+                metadataWriteState: metadataSettlement.writeState,
                 pendingVersionNotes: undefined,
                 pendingCheckinNote: undefined,
               },
@@ -1494,6 +1522,10 @@ export const checkinCommand: Command<CheckinParams> = {
                 diffStatus: metaDriftHash ? ('modified' as const) : undefined,
                 localActiveVersion: undefined,
                 pendingMetadata: undefined,
+                // The value is now the database's. What could not be confirmed against the file
+                // keeps its mark, which is why this is set rather than left alone: the pending
+                // value's disappearance must not take the record of doubt with it.
+                metadataWriteState: metadataSettlement.writeState,
                 pendingVersionNotes: undefined,
                 pendingCheckinNote: undefined,
               },

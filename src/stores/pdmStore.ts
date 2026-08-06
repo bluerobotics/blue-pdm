@@ -28,6 +28,7 @@ import type {
   CardViewFieldConfig,
   SidebarView,
 } from './types'
+import type { MetadataWriteStateRecord } from '../lib/metadata/writeState'
 import { CURRENT_STORE_VERSION, runMigrations, getPersistedVersion } from './migrations'
 
 /**
@@ -206,6 +207,7 @@ export const usePDMStore = create<PDMStoreState>()(
         ignorePatterns: state.ignorePatterns,
         stagedCheckins: state.stagedCheckins,
         persistedPendingMetadata: state.persistedPendingMetadata,
+        persistedMetadataWriteState: state.persistedMetadataWriteState,
         persistedCopySource: state.persistedCopySource,
 
         // ═══════════════════════════════════════════════════════════════
@@ -462,6 +464,12 @@ export const usePDMStore = create<PDMStoreState>()(
           // Restore persisted pending metadata
           persistedPendingMetadata:
             (persisted.persistedPendingMetadata as Record<string, PendingMetadata>) || {},
+          // Restore which of those values are known to be in their files. Kept alongside rather
+          // than inside the pending map because it outlives it - check-in clears a promoted value
+          // and keeps the record of what it could not confirm.
+          persistedMetadataWriteState:
+            (persisted.persistedMetadataWriteState as Record<string, MetadataWriteStateRecord>) ||
+            {},
           // Restore persisted copy source info (for version history preservation on paste)
           persistedCopySource:
             (persisted.persistedCopySource as Record<

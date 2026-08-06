@@ -1,40 +1,43 @@
 /**
- * Recording a datacard edit as pending, and undoing it when the write it was made for never landed.
+ * Recording a datacard edit as pending.
  *
  * `updatePendingMetadata` used to copy the edited fields into `pdmData` as well, so the edit read
- * back as though the server already held it. That made two separate things impossible: telling a
- * requested value apart from a confirmed one, and undoing a request that turned out not to be
- * granted. The copy is gone; this module is the other half of its removal.
+ * back as though the server already held it. That made it impossible to tell a requested value apart
+ * from a confirmed one. The copy is gone; this module is the other half of its removal.
  *
- * An edit therefore has to be reversible, because `pendingMetadata` is now the only place the
- * attempted value exists and check-in promotes whatever it finds there. A value left behind by a
- * write that failed would reach the database at the next check-in as though the file had accepted
- * it - which is the divergence this whole phase is about, arrived at by a different route.
+ * For one release the removal came with a price. `pendingMetadata` was the only place the attempted
+ * value existed and check-in promoted whatever it found there, so a value left behind by a failed
+ * write would reach the database as though the file had accepted it. The only defence available then
+ * was to revert the edit, which threw away what the user had typed - data loss chosen over
+ * divergence because nothing could express "this value is real but it is not in the file".
  *
- * Reverting is scoped to the fields the write actually attempted. A blanket clear would also throw
- * away edits from earlier saves that did land in the file but have not been checked in yet, and
- * those are the ones the database is still waiting for.
+ * `writeState.ts` expresses exactly that, so the revert is gone: an edit is now recorded once, kept,
+ * and marked. What remains here is the fold of an edit into the pending set and the question of
+ * whether anything is still owed to the server.
  *
  * Pure: no I/O, no store access, no React. The slice supplies the current state and applies what
  * comes back.
  */
 
-import type { DiffStatus, PendingMetadata, PendingMetadataRollback } from '@/stores/types'
+import type { PendingMetadata, PendingMetadataEdit } from '@/stores/types'
 
-/** The fields a rollback can name. */
+/** The fields an edit can name. */
 export type PendingMetadataField = keyof PendingMetadata
 
 /**
- * What a metadata write did, at the granularity the callers can honestly report today.
+ * What a metadata write did, per the write path's own reckoning.
  *
- * There is no `verified` here: nothing reads the file back yet, so `landed` means the service said
- * it wrote and nothing has checked. Naming the states anyway keeps the two call sites from each
- * inventing a rule, and gives read-back verification somewhere to attach when it arrives.
+ * `verified` and `unverified` are separate because a read-back that confirms the value is a
+ * different fact from a service call that returned without error, and the plan is explicit that no
+ * layer may collapse them. `partial` says the outcome differs between configurations and the
+ * per-address record is the only place the detail lives.
  */
 export type MetadataWriteOutcome =
-  /** Every scope the write attempted reported success. */
-  | 'landed'
-  /** Some scopes wrote and some did not, so the value is in the file and must stay pending. */
+  /** Written and read back, and the file agrees. */
+  | 'verified'
+  /** The service reported success but the value could not be read back to confirm it. */
+  | 'unverified'
+  /** Outcomes differ across the addresses the write attempted; consult the per-address record. */
   | 'partial'
   /** Nothing was written, and the service said so. */
   | 'failed'
@@ -43,27 +46,15 @@ export type MetadataWriteOutcome =
   /** This file has no property write at all; `pendingMetadata` is the only record of the edit. */
   | 'not-applicable'
 
-/**
- * Whether the edit should be taken back out of `pendingMetadata`.
- *
- * Only when nothing reached the file. A partial write leaves the value in some configurations, so
- * dropping it would guarantee the divergence rather than prevent it, and `not-applicable` covers
- * the files - anything that is not a SolidWorks document - whose pending edit is meant to go
- * straight to the database at check-in.
- */
-export function shouldRevertPendingMetadata(outcome: MetadataWriteOutcome): boolean {
-  return outcome === 'failed' || outcome === 'unattempted'
-}
-
-/** The edited pending set, plus what it takes to put things back. */
+/** The edited pending set, plus the token a caller passes to the write it is about to issue. */
 export interface PendingEdit {
   pending: PendingMetadata
-  rollback: PendingMetadataRollback
+  edit: PendingMetadataEdit
 }
 
-/** A rollback that restores nothing, for the paths that record no edit. */
-export function noPendingEdit(path: string): PendingMetadataRollback {
-  return { path, fields: [], previous: undefined, previousDiffStatus: undefined }
+/** An edit token that names nothing, for the paths that record no edit. */
+export function noPendingEdit(path: string): PendingMetadataEdit {
+  return { path, fields: [], pending: {} }
 }
 
 function mergeConfigEdit(
@@ -86,7 +77,6 @@ export function applyPendingEdit(
   path: string,
   existing: PendingMetadata | undefined,
   edit: PendingMetadata,
-  previousDiffStatus: DiffStatus | undefined,
 ): PendingEdit {
   const base = existing ?? {}
 
@@ -99,23 +89,31 @@ export function applyPendingEdit(
 
   return {
     pending,
-    rollback: {
+    edit: {
       path,
       fields: Object.keys(edit) as PendingMetadataField[],
-      previous: existing,
-      previousDiffStatus,
+      pending,
     },
   }
 }
 
-function restoreField<K extends PendingMetadataField>(
-  target: PendingMetadata,
-  field: K,
-  previous: PendingMetadata | undefined,
-): void {
-  const value = previous?.[field]
-  if (value === undefined) delete target[field]
-  else target[field] = value
+/**
+ * An edit token for retrying a write that never landed, naming everything still pending.
+ *
+ * A retry is not a new edit - nothing about the value changes - but the write path needs a token to
+ * report against, and it has to cover every field, since the point of a retry is that the user does
+ * not have to remember which of them failed.
+ */
+export function retryEdit(
+  path: string,
+  pending: PendingMetadata | undefined,
+): PendingMetadataEdit {
+  const set = pending ?? {}
+  return {
+    path,
+    fields: (Object.keys(set) as PendingMetadataField[]).filter((field) => set[field] !== undefined),
+    pending: set,
+  }
 }
 
 /** Whether anything is still owed to the server. An empty configuration map owes nothing. */
@@ -127,22 +125,4 @@ export function hasPendingMetadata(pending: PendingMetadata | undefined): boolea
     if (value !== null && typeof value === 'object') return Object.keys(value).length > 0
     return true
   })
-}
-
-/**
- * Put the fields a failed write attempted back to what they were, and leave the rest alone.
- *
- * Returns `undefined` when nothing is left pending, which is the signal that the file is no longer
- * waiting on a check-in and its diff status should go back to whatever the rollback recorded.
- */
-export function revertPendingEdit(
-  current: PendingMetadata | undefined,
-  rollback: PendingMetadataRollback,
-): PendingMetadata | undefined {
-  if (rollback.fields.length === 0) return current
-
-  const restored: PendingMetadata = { ...(current ?? {}) }
-  for (const field of rollback.fields) restoreField(restored, field, rollback.previous)
-
-  return hasPendingMetadata(restored) ? restored : undefined
 }

@@ -12,6 +12,7 @@ import { useState } from 'react'
 import { ArrowLeft, Box } from 'lucide-react'
 import { usePDMStore } from '@/stores/pdmStore'
 import { resolveDescription, resolvedText } from '@/lib/metadata/overlay'
+import { MetadataWriteStateMarker } from '@/components/MetadataWriteStateMarker'
 import { useFilePaneContext, useFilePaneHandlers } from '../../../context'
 import { useCellSlowHighlight } from '../../../hooks/useCellSlowHighlight'
 import { CopyHighlightInput } from './CopyHighlightInput'
@@ -22,8 +23,14 @@ export function DescriptionCell({ file }: CellRendererBaseProps): React.ReactNod
   const { editingCell, editValue, setEditValue, inlineEditInputRef } = useFilePaneContext()
 
   // Handlers from FilePaneHandlersContext
-  const { isFileEditable, handleSaveCellEdit, handleCancelCellEdit, handleStartCellEdit } =
-    useFilePaneHandlers()
+  const {
+    isFileEditable,
+    handleSaveCellEdit,
+    handleCancelCellEdit,
+    handleStartCellEdit,
+    saveConfigsToSWFile,
+    savingConfigsToSW,
+  } = useFilePaneHandlers()
 
   // Drawing lockout setting
   const lockDrawingDescription = usePDMStore((s) => s.lockDrawingDescription)
@@ -104,6 +111,14 @@ export function DescriptionCell({ file }: CellRendererBaseProps): React.ReactNod
       title={getTooltip()}
     >
       <span className="truncate">{displayValue}</span>
+      {/* A description - the file's or a configuration's - that is not in the file, kept and
+          labelled rather than discarded. */}
+      <MetadataWriteStateMarker
+        file={file}
+        field="description"
+        isWriting={savingConfigsToSW.has(file.path)}
+        onRetry={saveConfigsToSWFile}
+      />
       {isDrawingLocked && (
         <span
           className="inline-flex items-center gap-0.5 text-plm-fg-muted/50 flex-shrink-0"

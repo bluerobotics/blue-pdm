@@ -4,7 +4,8 @@ import { usePDMStore } from '@/stores/pdmStore'
 import { executeCommand } from '@/lib/commands'
 import { resolveFileMetadata, resolveTabNumber, resolvedText } from '@/lib/metadata/overlay'
 import { reportMetadataWrite } from '@/lib/metadata/reportMetadataWrite'
-import type { PendingMetadataRollback } from '@/stores/types'
+import { listWriteAddresses } from '@/lib/metadata/writeState'
+import type { PendingMetadataEdit } from '@/stores/types'
 import { log } from '@/lib/logger'
 
 // SolidWorks file extensions that support custom properties
@@ -47,11 +48,11 @@ export interface FileEditHandlersDeps {
   updatePendingMetadata: (
     path: string,
     updates: { part_number?: string | null; description?: string | null; revision?: string },
-  ) => PendingMetadataRollback
+  ) => PendingMetadataEdit
   onRefresh: (silent?: boolean) => void
 
   // Auto-save to SolidWorks file
-  saveConfigsToSWFile: (file: LocalFile, rollback: PendingMetadataRollback) => Promise<void>
+  saveConfigsToSWFile: (file: LocalFile, edit: PendingMetadataEdit) => Promise<void>
 }
 
 export interface UseFileEditHandlersReturn {
@@ -398,7 +399,7 @@ export function useFileEditHandlers(deps: FileEditHandlersDeps): UseFileEditHand
       }
 
       // Update pending metadata in store
-      const rollback = updatePendingMetadata(file.path, pendingUpdates)
+      const edit = updatePendingMetadata(file.path, pendingUpdates)
 
       // Clear edit state first so UI is responsive
       setEditingCell(null)
@@ -419,15 +420,22 @@ export function useFileEditHandlers(deps: FileEditHandlersDeps): UseFileEditHand
             ...file,
             pendingMetadata: { ...file.pendingMetadata, ...pendingUpdates },
           }
-          await saveConfigsToSWFile(updatedFile, rollback)
+          await saveConfigsToSWFile(updatedFile, edit)
         } catch (error) {
-          // saveConfigsToSWFile already reverts and reports what it caught; anything reaching here
-          // escaped it, so the edit is still recorded and has to be taken back the same way.
+          // saveConfigsToSWFile reports what it caught; anything reaching here escaped it, so the
+          // edit's fields are still unmarked and would otherwise look confirmed.
           log.error('[FileEdit]', 'Failed to save inline edit to SW file', {
             error: error,
             path: file.path,
           })
-          reportMetadataWrite(rollback, 'failed')
+          reportMetadataWrite(edit, {
+            outcome: 'failed',
+            addresses: listWriteAddresses(edit.pending).map((address) => ({
+              address,
+              state: 'failed' as const,
+              reason: error instanceof Error ? error.message : String(error),
+            })),
+          })
         }
       } else {
         log.info('[FileEdit]', 'Skipping SW save - not a SolidWorks file', { ext, path: file.path })

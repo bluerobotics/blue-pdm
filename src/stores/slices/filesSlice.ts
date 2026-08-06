@@ -26,7 +26,17 @@ import { log } from '@/lib/logger'
 import { isPathHidden, readHiddenFolderPaths } from '@/lib/hiddenFolders'
 import { dropCommittedPendingMetadata } from '@/lib/pendingMetadata'
 import { resolveDescription, resolvePartNumber } from '@/lib/metadata/overlay'
-import { applyPendingEdit, noPendingEdit, revertPendingEdit } from '@/lib/metadata/pendingEdits'
+import { applyPendingEdit, noPendingEdit } from '@/lib/metadata/pendingEdits'
+import {
+  applyWriteState,
+  applyWriteStates,
+  clearWriteState,
+  isEmptyRecord,
+  listRecordedAddresses,
+  listWriteAddresses,
+  rehydrateWriteState,
+  type MetadataWriteStateRecord,
+} from '@/lib/metadata/writeState'
 import { logExplorer } from '@/lib/userActionLogger'
 import { bumpFileMutationEpoch } from '@/lib/fileMutationEpoch'
 import { applyFileUpdates } from '../fileUpdates'
@@ -111,6 +121,34 @@ function flushProcessingSync(
   doProcessingFlush(get, set)
 }
 
+/**
+ * Put a recomputed write-state record on the file and in the persisted map together.
+ *
+ * The two must move as one: a marker on the file that is not persisted disappears at the next
+ * restart and leaves the value looking clean, and a persisted marker with no file to sit on is
+ * restored onto a file the user never sees marked.
+ */
+function applyRecordedWriteState(
+  state: PDMStoreState,
+  path: string,
+  compute: (previous: MetadataWriteStateRecord | undefined) => MetadataWriteStateRecord | undefined,
+): Partial<PDMStoreState> {
+  const previous =
+    state.files.find((f) => f.path === path)?.metadataWriteState ??
+    state.persistedMetadataWriteState[path]
+  const computed = compute(previous)
+  const next = computed && !isEmptyRecord(computed) ? computed : undefined
+
+  const persisted = { ...state.persistedMetadataWriteState }
+  if (next) persisted[path] = next
+  else delete persisted[path]
+
+  return {
+    files: state.files.map((f) => (f.path === path ? { ...f, metadataWriteState: next } : f)),
+    persistedMetadataWriteState: persisted,
+  }
+}
+
 export const createFilesSlice: StateCreator<
   PDMStoreState,
   [['zustand/persist', unknown]],
@@ -126,6 +164,7 @@ export const createFilesSlice: StateCreator<
   expandedFolders: new Set<string>(),
   currentFolder: '',
   persistedPendingMetadata: {},
+  persistedMetadataWriteState: {},
   persistedCopySource: {},
   sortColumn: 'name',
   sortDirection: 'asc',
@@ -220,7 +259,7 @@ export const createFilesSlice: StateCreator<
       })
     }
 
-    const { persistedCopySource } = get()
+    const { persistedCopySource, persistedMetadataWriteState } = get()
 
     // Pending entries that turned out to match the server are dropped rather than
     // restored. Left in place they would mark the file modified on every load with
@@ -229,6 +268,14 @@ export const createFilesSlice: StateCreator<
 
     const filesWithRestoredMetadata = deduped.map((f) => {
       let restored = f
+      // Write state is restored whether or not there is still a pending value, because check-in
+      // clears the value once it reaches the database and leaves behind the record of what it could
+      // not confirm against the file. 'writing' becomes 'unverified': a write in flight when the
+      // app closed had its outcome seen by nobody.
+      const persistedWriteState = rehydrateWriteState(persistedMetadataWriteState[f.path])
+      if (persistedWriteState) {
+        restored = { ...restored, metadataWriteState: persistedWriteState }
+      }
       const persisted = persistedPendingMetadata[f.path]
       if (persisted) {
         const stillPending = dropCommittedPendingMetadata(persisted, f.pdmData)
@@ -302,7 +349,24 @@ export const createFilesSlice: StateCreator<
       // find matching keys case-insensitively
       let newPersistedPendingMetadata = state.persistedPendingMetadata
       let newPersistedCopySource = state.persistedCopySource
+      let newPersistedWriteState = state.persistedMetadataWriteState
       for (const [lowerPath, fileUpdates] of updateMap) {
+        // Write state follows the update rather than being cleared by it: check-in comes through
+        // here to clear a promoted value while keeping the record of what it could not confirm, so
+        // an explicit record must be persisted, not dropped.
+        if ('metadataWriteState' in fileUpdates) {
+          const matchingKey =
+            Object.keys(newPersistedWriteState).find((k) => k.toLowerCase() === lowerPath) ??
+            newFiles.find((f) => f.path.toLowerCase() === lowerPath)?.path
+          if (matchingKey) {
+            if (newPersistedWriteState === state.persistedMetadataWriteState) {
+              newPersistedWriteState = { ...state.persistedMetadataWriteState }
+            }
+            const record = fileUpdates.metadataWriteState
+            if (record && !isEmptyRecord(record)) newPersistedWriteState[matchingKey] = record
+            else delete newPersistedWriteState[matchingKey]
+          }
+        }
         // Only clear persistedPendingMetadata when the update EXPLICITLY includes pendingMetadata.
         // Using 'in' check prevents unrelated updates (e.g. pdmData-only) from clearing metadata.
         if ('pendingMetadata' in fileUpdates && fileUpdates.pendingMetadata === undefined) {
@@ -336,7 +400,8 @@ export const createFilesSlice: StateCreator<
 
       const persistedUnchanged =
         newPersistedPendingMetadata === state.persistedPendingMetadata &&
-        newPersistedCopySource === state.persistedCopySource
+        newPersistedCopySource === state.persistedCopySource &&
+        newPersistedWriteState === state.persistedMetadataWriteState
 
       // A write that changes nothing must not replace the files array, or every
       // downstream memo recomputes over the whole vault for no reason.
@@ -352,6 +417,7 @@ export const createFilesSlice: StateCreator<
         files: newFiles,
         persistedPendingMetadata: newPersistedPendingMetadata,
         persistedCopySource: newPersistedCopySource,
+        persistedMetadataWriteState: newPersistedWriteState,
       }
     })
   },
@@ -603,79 +669,90 @@ export const createFilesSlice: StateCreator<
     }
 
     // The edit is recorded as pending and nowhere else. Copying it into pdmData as well - which
-    // this action used to do - makes an unverified value read back as one the server confirmed,
-    // and leaves nothing to undo when the write it was made for fails. Readers overlay pending
-    // over committed through src/lib/metadata/overlay.ts instead.
+    // this action used to do - makes an unverified value read back as one the server confirmed.
+    // Readers overlay pending over committed through src/lib/metadata/overlay.ts instead.
     const existingPending = file?.pendingMetadata ?? state.persistedPendingMetadata[path]
-    const { pending, rollback } = applyPendingEdit(path, existingPending, metadata, file?.diffStatus)
+    const { pending, edit } = applyPendingEdit(path, existingPending, metadata)
+
+    // The edited addresses start at 'pending' - edited, nothing attempted. Marking them here rather
+    // than in the writer means a field is never in the state of having no state: if the write is
+    // never issued at all, the edit still shows as unsaved rather than as confirmed.
+    const editedAddresses = listWriteAddresses(metadata)
 
     log.debug('[filesSlice]', 'updatePendingMetadata: newPending', pending as Record<string, unknown>)
 
-    set((state) => ({
-      files: state.files.map((f) =>
-        f.path === path
-          ? {
-              ...f,
-              pendingMetadata: pending,
-              // Mark as modified if it has pdmData (synced file)
-              diffStatus: f.pdmData ? 'modified' : f.diffStatus,
-            }
-          : f,
-      ),
-      // Also persist for app restart survival
-      persistedPendingMetadata: {
-        ...state.persistedPendingMetadata,
-        [path]: pending,
-      },
-    }))
-
-    return rollback
-  },
-
-  revertPendingMetadata: (rollback) => {
-    if (rollback.fields.length === 0) return
-
     set((state) => {
-      const file = state.files.find((f) => f.path === rollback.path)
-      const current = file?.pendingMetadata ?? state.persistedPendingMetadata[rollback.path]
-      const restored = revertPendingEdit(current, rollback)
-
-      log.info('[filesSlice]', 'revertPendingMetadata', {
-        path: rollback.path,
-        fields: rollback.fields,
-        stillPending: restored ? Object.keys(restored) : [],
-      })
-
-      const persistedPendingMetadata = { ...state.persistedPendingMetadata }
-      if (restored) persistedPendingMetadata[rollback.path] = restored
-      else delete persistedPendingMetadata[rollback.path]
+      const previousState =
+        state.files.find((f) => f.path === path)?.metadataWriteState ??
+        state.persistedMetadataWriteState[path]
+      const writeState = applyWriteState(previousState, editedAddresses, 'pending')
 
       return {
         files: state.files.map((f) =>
-          f.path === rollback.path
+          f.path === path
             ? {
                 ...f,
-                pendingMetadata: restored,
-                // Nothing pending means 'modified' was a leftover of the attempt, not a fact.
-                diffStatus: restored ? f.diffStatus : rollback.previousDiffStatus,
+                pendingMetadata: pending,
+                metadataWriteState: writeState,
+                // Mark as modified if it has pdmData (synced file)
+                diffStatus: f.pdmData ? 'modified' : f.diffStatus,
               }
             : f,
         ),
-        persistedPendingMetadata,
+        // Also persist for app restart survival
+        persistedPendingMetadata: {
+          ...state.persistedPendingMetadata,
+          [path]: pending,
+        },
+        persistedMetadataWriteState: {
+          ...state.persistedMetadataWriteState,
+          [path]: writeState,
+        },
       }
     })
+
+    return edit
+  },
+
+  recordMetadataWriteState: (path, addresses, writeState, detail) => {
+    if (addresses.length === 0) return
+    set((state) => applyRecordedWriteState(state, path, (previous) =>
+      applyWriteState(previous, addresses, writeState, detail),
+    ))
+  },
+
+  recordMetadataWriteStates: (path, outcomes, detail) => {
+    if (outcomes.length === 0) return
+    set((state) => applyRecordedWriteState(state, path, (previous) =>
+      applyWriteStates(previous, outcomes, detail),
+    ))
+  },
+
+  clearMetadataWriteState: (path, addresses) => {
+    set((state) => applyRecordedWriteState(state, path, (previous) =>
+      addresses ? clearWriteState(previous, addresses) : undefined,
+    ))
   },
 
   clearPendingMetadata: (path) => {
     set((state) => {
       // Destructure to exclude `path` key, using _ for intentionally discarded value
       const { [path]: _, ...remainingPersisted } = state.persistedPendingMetadata
+      // The write state describes the pending value. With the value discarded there is nothing left
+      // for a marker to be about, and a stale 'failed' would offer a retry of an edit that no longer
+      // exists. Check-in does not come through here - it clears its own state deliberately.
+      const { [path]: _writeState, ...remainingWriteState } = state.persistedMetadataWriteState
 
       log.info('[filesSlice]', 'clearPendingMetadata', { path })
 
       return {
-        files: state.files.map((f) => (f.path === path ? { ...f, pendingMetadata: undefined } : f)),
+        files: state.files.map((f) =>
+          f.path === path
+            ? { ...f, pendingMetadata: undefined, metadataWriteState: undefined }
+            : f,
+        ),
         persistedPendingMetadata: remainingPersisted,
+        persistedMetadataWriteState: remainingWriteState,
       }
     })
   },
@@ -723,11 +800,26 @@ export const createFilesSlice: StateCreator<
         }
       }
 
+      // The configuration-scope markers go with the configuration values they describe; file-scope
+      // ones stay, since those edits are untouched here.
+      const existingWriteState =
+        file?.metadataWriteState ?? state.persistedMetadataWriteState[path]
+      const configAddresses = listRecordedAddresses(existingWriteState).filter(
+        (address) => address.scope === 'configuration',
+      )
+      const newWriteState = clearWriteState(existingWriteState, configAddresses)
+      const newPersistedWriteState = { ...state.persistedMetadataWriteState }
+      if (newWriteState && !isEmptyRecord(newWriteState)) newPersistedWriteState[path] = newWriteState
+      else delete newPersistedWriteState[path]
+
       return {
         files: state.files.map((f) =>
-          f.path === path ? { ...f, pendingMetadata: newPending } : f,
+          f.path === path
+            ? { ...f, pendingMetadata: newPending, metadataWriteState: newWriteState }
+            : f,
         ),
         persistedPendingMetadata: newPersistedMetadata,
+        persistedMetadataWriteState: newPersistedWriteState,
       }
     })
   },
@@ -739,7 +831,20 @@ export const createFilesSlice: StateCreator<
       const newPersisted = Object.fromEntries(
         Object.entries(state.persistedPendingMetadata).filter(([p]) => !pathSet.has(p)),
       )
-      return { persistedPendingMetadata: newPersisted }
+      // Checkout, discard and delete all replace or remove the working copy, so every marker about
+      // the old one is void.
+      const newPersistedWriteState = Object.fromEntries(
+        Object.entries(state.persistedMetadataWriteState).filter(([p]) => !pathSet.has(p)),
+      )
+      return {
+        persistedPendingMetadata: newPersisted,
+        persistedMetadataWriteState: newPersistedWriteState,
+        files: state.files.map((f) =>
+          pathSet.has(f.path) && f.metadataWriteState
+            ? { ...f, metadataWriteState: undefined }
+            : f,
+        ),
+      }
     })
   },
 
@@ -1290,22 +1395,13 @@ export const createFilesSlice: StateCreator<
     set((state) => ({
       files: state.files.map((f) => {
         if (f.pdmData?.id === fileId) {
-          // Defense-in-depth: Preserve pending metadata fields even if realtime tries to overwrite
-          // This prevents stale realtime events from reverting local edits
-          const preservedFields = f.pendingMetadata
-            ? {
-                part_number:
-                  f.pendingMetadata.part_number !== undefined
-                    ? f.pdmData.part_number
-                    : pdmData.part_number,
-                description:
-                  f.pendingMetadata.description !== undefined
-                    ? f.pdmData.description
-                    : pdmData.description,
-                revision:
-                  f.pendingMetadata.revision !== undefined ? f.pdmData.revision : pdmData.revision,
-              }
-            : {}
+          // This used to hold back the server's value for any field with a pending edit, to stop a
+          // realtime event reverting what the user had typed. That defence belonged to the era when
+          // the edit was copied into pdmData and the two were indistinguishable. Now the edit lives
+          // only in pendingMetadata and every reader overlays it, so the row can hold what the server
+          // actually says - which it must, because dropCommittedPendingMetadata decides whether an
+          // edit is still owed by comparing it against this row. Holding an older true value there
+          // kept edits pending after the database had already accepted them.
 
           // Preserve checked_out_user if not explicitly provided in the update
           // Realtime events don't include joined user info, so we preserve existing data
@@ -1319,7 +1415,6 @@ export const createFilesSlice: StateCreator<
           const updatedPdmData = {
             ...f.pdmData,
             ...pdmData,
-            ...preservedFields,
             ...(preserveUserInfo ? { checked_out_user: existingUserInfo } : {}),
           } as PDMFile
 
@@ -1360,9 +1455,18 @@ export const createFilesSlice: StateCreator<
             newDiffStatus = 'cloud'
           }
 
+          // An edit the row now agrees with is no longer owed to anyone. With the row holding the
+          // server's own value again this comparison is finally meaningful: while the fresh value was
+          // withheld, a pending edit that had already been accepted stayed pending forever, keeping
+          // the file marked modified with nothing to check in.
+          const stillPending = f.pendingMetadata
+            ? dropCommittedPendingMetadata(f.pendingMetadata, updatedPdmData)
+            : undefined
+
           return {
             ...f,
             pdmData: updatedPdmData,
+            pendingMetadata: stillPending,
             diffStatus: newDiffStatus,
           }
         }
