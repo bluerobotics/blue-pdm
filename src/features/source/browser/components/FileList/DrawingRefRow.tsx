@@ -1,6 +1,16 @@
 import React, { memo } from 'react'
-import { FileBox, Layers, FilePen, File, ChevronRight, ChevronDown } from 'lucide-react'
+import {
+  FileBox,
+  Layers,
+  FilePen,
+  File,
+  ChevronRight,
+  ChevronDown,
+  AlertTriangle,
+  RotateCw,
+} from 'lucide-react'
 import type { DrawingRefItem } from '@/stores/types'
+import { t } from '@/lib/i18n'
 
 export interface DrawingRefRowProps {
   /** The drawing reference item to display */
@@ -51,6 +61,7 @@ function areDrawingRefRowPropsEqual(
 ): boolean {
   // Compare item identity and key display properties
   if (prevProps.item.id !== nextProps.item.id) return false
+  if (prevProps.item.unresolved !== nextProps.item.unresolved) return false
   if (prevProps.item.file_name !== nextProps.item.file_name) return false
   if (prevProps.item.file_type !== nextProps.item.file_type) return false
   if (prevProps.item.part_number !== nextProps.item.part_number) return false
@@ -91,6 +102,58 @@ function areDrawingRefRowPropsEqual(
 }
 
 /**
+ * Stands in for the reference list of a drawing whose references could not be read.
+ *
+ * Every headless tier declined, so the honest answer is "unknown", not "none". The retry is allowed
+ * to escalate as far as opening the drawing in SolidWorks, which is why it is behind a click.
+ */
+function UnresolvedDrawingRefRow({
+  indentPx,
+  rowHeight,
+  visibleColumns,
+  onRetry,
+}: {
+  indentPx: number
+  rowHeight: number
+  visibleColumns: { id: string; width: number }[]
+  onRetry: (e: React.MouseEvent) => void
+}) {
+  return (
+    <tr className="drawing-ref-row" style={{ height: rowHeight }}>
+      {visibleColumns.map((column) => (
+        <td key={column.id} style={{ width: column.width }}>
+          {column.id === 'name' ? (
+            <div
+              className="flex items-center gap-1.5"
+              style={{ minHeight: rowHeight - 8, paddingLeft: `${indentPx}px` }}
+            >
+              <span className="text-plm-fg-dim text-[10px]">├</span>
+              <AlertTriangle size={12} className="text-amber-400 flex-shrink-0" />
+              <span className="truncate text-xs text-plm-fg-muted">
+                {t('drawingRefs.unresolved', 'References could not be read')}
+              </span>
+              <button
+                className="flex items-center gap-1 flex-shrink-0 text-[10px] px-1 py-0.5 rounded bg-plm-bg-light text-plm-fg-dim hover:text-plm-fg"
+                onClick={onRetry}
+                title={t(
+                  'drawingRefs.retryHint',
+                  'Read again, opening the drawing in SolidWorks if needed',
+                )}
+              >
+                <RotateCw size={10} />
+                {t('drawingRefs.retry', 'Retry')}
+              </button>
+            </div>
+          ) : (
+            <span className="text-plm-fg-dim/50 text-[10px]">—</span>
+          )}
+        </td>
+      ))}
+    </tr>
+  )
+}
+
+/**
  * Displays a referenced part/assembly under a drawing file row.
  * Shown when a user expands a `.slddrw` file to reveal which models
  * (parts and assemblies) the drawing references.
@@ -111,6 +174,17 @@ export const DrawingRefRow = memo(function DrawingRefRow({
   // Calculate indentation: base indent + depth + offset for nesting directly under file row
   const indentPx = 24 + depth * 16 + 16
   const hasConfigs = item.configurations && item.configurations.length > 0
+
+  if (item.unresolved) {
+    return (
+      <UnresolvedDrawingRefRow
+        indentPx={indentPx}
+        rowHeight={rowHeight}
+        visibleColumns={visibleColumns}
+        onRetry={onToggleExpand}
+      />
+    )
+  }
 
   return (
     <tr

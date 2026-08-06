@@ -51,14 +51,22 @@ import {
   getContainsByConfiguration,
   type ConfigBomItem,
   getDrawingsForFileConfig,
-  getReferencesForDrawing,
 } from '@/lib/supabase/files/queries'
-import type { DrawingRefItem } from '@/stores/types'
-import { reportMetadataWrite } from '@/lib/metadata/reportMetadataWrite'
-import type { PendingMetadataRollback } from '@/stores/types'
+import { reportMetadataWrite, unattemptedWrite } from '@/lib/metadata/reportMetadataWrite'
+import {
+  writeMetadataWithVerification,
+  type MetadataWriteGroup,
+} from '@/lib/metadata/writeMetadataToFile'
+import type { MetadataWriteIntent } from '@/lib/metadata/verifyWrite'
+import { listWriteAddresses } from '@/lib/metadata/writeState'
+import type { PendingMetadataEdit } from '@/stores/types'
 import { log } from '@/lib/logger'
+import { t } from '@/lib/i18n'
 import { beginWatcherSuppression } from '@/lib/fileWatcherSuppression'
 import { refreshLocalFileFacts } from '@/lib/refreshLocalFileFacts'
+
+import { findLocalFileByPath } from '../utils/localFileLookup'
+import { loadDrawingReferences, unresolvedDrawingRefRows } from './loadDrawingReferences'
 
 /**
  * If a SolidWorks write is still pending after this long, it almost certainly
@@ -100,36 +108,6 @@ interface SWBomItem {
   properties: Record<string, string>
   /** True if the referenced file doesn't exist on disk (broken reference) */
   isBroken?: boolean
-}
-
-/**
- * Find a local file matching the given component path.
- * Tries exact match first, then falls back to filename match within the vault.
- */
-function findLocalFileByPath(componentPath: string, files: LocalFile[]): LocalFile | undefined {
-  const normalizedPath = componentPath.toLowerCase().replace(/\//g, '\\')
-  const componentFileName = componentPath.split(/[\\/]/).pop()?.toLowerCase() || ''
-
-  // Try exact path match first
-  let match = files.find((f) => f.path.toLowerCase() === normalizedPath)
-
-  // Try matching by path ending (handles different vault roots)
-  if (!match) {
-    match = files.find((f) => {
-      const fPath = f.path.toLowerCase()
-      return fPath.endsWith(normalizedPath) || normalizedPath.endsWith(fPath)
-    })
-  }
-
-  // Try matching by filename only (last resort)
-  if (!match && componentFileName) {
-    match = files.find((f) => {
-      const fName = f.path.split(/[\\/]/).pop()?.toLowerCase() || ''
-      return fName === componentFileName
-    })
-  }
-
-  return match
 }
 
 /**
@@ -180,86 +158,6 @@ function transformSwBomToConfigBomItems(
       configuration: configName,
       in_database: inDatabase,
       is_broken: item.isBroken,
-    }
-  })
-}
-
-// SW reference shape from the SW service (from getReferences return type in electron.d.ts)
-interface SWReference {
-  path: string
-  fileName: string
-  exists: boolean
-  fileType: string // 'Part', 'Assembly', 'Drawing', etc.
-  configuration?: string // Referenced configuration (drawings only, from view.ReferencedConfiguration)
-  configurations?: string[] // All referenced configurations when C# service groups by model
-}
-
-/**
- * Transform SolidWorks getReferences() response to DrawingRefItem[] format.
- * Used when expanding a .slddrw file to show which parts/assemblies it references.
- * Enriches items with metadata from local vault files when available.
- */
-function transformSwRefsToDrawingRefItems(
-  swRefs: SWReference[],
-  localFiles: LocalFile[],
-): DrawingRefItem[] {
-  return swRefs.map((ref, index) => {
-    // Determine file type from SW fileType or extension
-    let fileType: DrawingRefItem['file_type'] = 'other'
-    const swType = ref.fileType?.toLowerCase()
-    if (swType === 'part') fileType = 'part'
-    else if (swType === 'assembly') fileType = 'assembly'
-    else if (swType === 'drawing') fileType = 'drawing'
-    else {
-      // Fallback to extension check
-      const ext = ref.fileName?.toLowerCase().split('.').pop()
-      if (ext === 'sldprt') fileType = 'part'
-      else if (ext === 'sldasm') fileType = 'assembly'
-      else if (ext === 'slddrw') fileType = 'drawing'
-    }
-
-    // Try to find matching local file to get metadata
-    const localFile = findLocalFileByPath(ref.path, localFiles)
-
-    const partNumber = localFile ? resolvePartNumber(localFile).value : null
-    const description = localFile ? resolveDescription(localFile).value : null
-    const revision = localFile?.pdmData?.revision || null
-    const state = localFile?.pdmData?.workflow_state?.name || null
-    const inDatabase = !!localFile?.pdmData?.id
-
-    // Per-config metadata (for drawing-ref-config rows)
-    const configTabs = localFile ? resolveConfigurationTabs(localFile) : undefined
-    const configDescriptions = localFile ? resolveConfigurationDescriptions(localFile) : undefined
-    const configurationRevisions = (localFile?.pdmData?.configuration_revisions || undefined) as
-      | Record<string, string>
-      | undefined
-
-    // Build configurations array from SW API response
-    // Prefer the grouped `configurations` array; fall back to single `configuration`
-    const configs =
-      ref.configurations && ref.configurations.length > 0
-        ? ref.configurations
-        : ref.configuration
-          ? [ref.configuration]
-          : undefined
-
-    return {
-      id: localFile?.pdmData?.id || `local-ref-${index}-${ref.path}`,
-      file_id: localFile?.pdmData?.id || '',
-      file_name: ref.fileName,
-      // Use vault-relative path from local file for navigation; fall back to SW absolute path
-      file_path: localFile?.relativePath || ref.path,
-      file_type: fileType,
-      part_number: partNumber,
-      description: description,
-      revision: revision,
-      state: state,
-      configuration: configs?.[0] ?? null,
-      configurations: configs,
-      config_tabs: configTabs,
-      config_descriptions: configDescriptions,
-      configuration_revisions: configurationRevisions,
-      in_database: inDatabase,
     }
   })
 }
@@ -316,13 +214,13 @@ export interface UseConfigHandlersReturn {
   /** Check if file is an assembly (can show BOM under configs) */
   isAssembly: (file: LocalFile) => boolean
   /**
-   * Writes the file's pending metadata into the SolidWorks document.
+   * Writes the file's pending metadata into the SolidWorks document and confirms it landed.
    *
-   * `rollback` comes from the `updatePendingMetadata` call that recorded the edit. When nothing
-   * reaches the file the edit is taken back out, so that check-in cannot promote a value the file
-   * refused. It is required rather than optional so a new caller cannot quietly skip it.
+   * `edit` comes from the `updatePendingMetadata` call that recorded the edit. The value is kept
+   * whatever the outcome; what the outcome decides is the mark each field carries, which is what
+   * check-in reads. Required rather than optional so a new caller cannot quietly skip it.
    */
-  saveConfigsToSWFile: (file: LocalFile, rollback: PendingMetadataRollback) => Promise<void>
+  saveConfigsToSWFile: (file: LocalFile, edit: PendingMetadataEdit) => Promise<void>
   hasPendingMetadataChanges: (file: LocalFile) => boolean
   getSelectedConfigsForFile: (filePath: string) => string[]
   toggleFileConfigExpansion: (file: LocalFile) => Promise<void>
@@ -332,6 +230,13 @@ export interface UseConfigHandlersReturn {
   canHaveDrawingRefs: (file: LocalFile) => boolean
   /** Toggle drawing reference expansion for a .slddrw file */
   toggleDrawingRefExpansion: (file: LocalFile) => Promise<void>
+  /**
+   * Read a drawing's references again after every tier declined.
+   *
+   * Driven by the retry on the unresolved row, and the one reference read in the app permitted to
+   * open the document in SolidWorks, because the user just asked for it.
+   */
+  retryDrawingRefs: (file: LocalFile) => Promise<void>
   /** Toggle config-level drawing expansion (which drawings reference this config) */
   toggleConfigDrawingExpansion: (file: LocalFile, configName: string) => Promise<void>
 }
@@ -438,7 +343,7 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
 
       // Update pending metadata (for persistence across app restart)
       const existingTabs = file.pendingMetadata?.config_tabs || {}
-      usePDMStore.getState().updatePendingMetadata(filePath, {
+      const edit = usePDMStore.getState().updatePendingMetadata(filePath, {
         config_tabs: { ...existingTabs, [configName]: upperValue },
       })
 
@@ -473,15 +378,28 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
         if (drawnBy) props['DrawnBy'] = drawnBy
 
         const result = await withSlowWriteFeedback(
-          () => window.electronAPI?.solidworks?.setProperties(filePath, props, configName),
+          () =>
+            writeMetadataWithVerification({
+              path: filePath,
+              groups: [
+                {
+                  configuration: configName,
+                  properties: props,
+                  intents: [
+                    {
+                      address: { scope: 'configuration', field: 'config_tab', configuration: configName },
+                      expected: upperValue,
+                    },
+                  ],
+                },
+              ],
+            }),
           addToast,
         )
-        if (result?.success) {
-          addToast('success', `Saved tab number to ${configName}`)
+        reportMetadataWrite(edit, result)
+        if (result.outcome === 'verified' || result.outcome === 'unverified') {
           // The watcher-driven reload is suppressed, so refresh disk facts here.
           await refreshLocalFileFacts(file)
-        } else {
-          addToast('error', `Failed to save tab number: ${result?.error || 'Unknown error'}`)
         }
       } catch (error) {
         log.error('[ConfigHandlers]', 'Failed to write config tab to SW file', {
@@ -489,7 +407,17 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
           configName,
           error: error,
         })
-        addToast('error', 'Failed to save tab number to file')
+        // The value stays in the store, marked as not in the file, with a retry on the row.
+        reportMetadataWrite(edit, {
+          outcome: 'failed',
+          addresses: [
+            {
+              address: { scope: 'configuration', field: 'config_tab', configuration: configName },
+              state: 'failed',
+              reason: error instanceof Error ? error.message : String(error),
+            },
+          ],
+        })
       } finally {
         releaseWatcher()
       }
@@ -529,7 +457,7 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
 
       // Update pending metadata (for persistence across app restart)
       const existingDescs = file.pendingMetadata?.config_descriptions || {}
-      usePDMStore.getState().updatePendingMetadata(filePath, {
+      const edit = usePDMStore.getState().updatePendingMetadata(filePath, {
         config_descriptions: { ...existingDescs, [configName]: value },
       })
 
@@ -574,15 +502,32 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
         if (drawnBy) props['DrawnBy'] = drawnBy
 
         const result = await withSlowWriteFeedback(
-          () => window.electronAPI?.solidworks?.setProperties(filePath, props, configName),
+          () =>
+            writeMetadataWithVerification({
+              path: filePath,
+              groups: [
+                {
+                  configuration: configName,
+                  properties: props,
+                  intents: [
+                    {
+                      address: {
+                        scope: 'configuration',
+                        field: 'config_description',
+                        configuration: configName,
+                      },
+                      expected: value,
+                    },
+                  ],
+                },
+              ],
+            }),
           addToast,
         )
-        if (result?.success) {
-          addToast('success', `Saved description to ${configName}`)
+        reportMetadataWrite(edit, result)
+        if (result.outcome === 'verified' || result.outcome === 'unverified') {
           // The watcher-driven reload is suppressed, so refresh disk facts here.
           await refreshLocalFileFacts(file)
-        } else {
-          addToast('error', `Failed to save description: ${result?.error || 'Unknown error'}`)
         }
       } catch (error) {
         log.error('[ConfigHandlers]', 'Failed to write config description to SW file', {
@@ -590,7 +535,21 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
           configName,
           error: error,
         })
-        addToast('error', 'Failed to save description to file')
+        // The value stays in the store, marked as not in the file, with a retry on the row.
+        reportMetadataWrite(edit, {
+          outcome: 'failed',
+          addresses: [
+            {
+              address: {
+                scope: 'configuration',
+                field: 'config_description',
+                configuration: configName,
+              },
+              state: 'failed',
+              reason: error instanceof Error ? error.message : String(error),
+            },
+          ],
+        })
       } finally {
         releaseWatcher()
       }
@@ -644,12 +603,13 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
 
   // Save ALL pending metadata to SolidWorks file (base + config metadata)
   const saveConfigsToSWFile = useCallback(
-    async (file: LocalFile, rollback: PendingMetadataRollback) => {
+    async (file: LocalFile, edit: PendingMetadataEdit) => {
       const swStatus = usePDMStore.getState().integrations.solidworks.status
       if (swStatus !== 'online' && swStatus !== 'partial') {
-        // The write cannot even be attempted, so the edit has nowhere to land but the database at
-        // the next check-in - which is exactly the divergence to avoid. Take it back.
-        reportMetadataWrite(rollback, 'unattempted')
+        // The write cannot be attempted at all. The value stays - it is the user's - and every
+        // address it touches is marked as not in the file, so check-in knows not to promote it as
+        // confirmed and the row offers a retry.
+        reportMetadataWrite(edit, unattemptedWrite(edit, 'the SolidWorks service was not running'))
         return
       }
 
@@ -695,9 +655,6 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
           return
         }
 
-        let successCount = 0
-        let failedCount = 0
-
         // Check if the file is open in SolidWorks - if so, use the live SW API (setDocumentProperties)
         // which writes directly via COM and bypasses Document Manager. This is more reliable for
         // STEP-imported parts that have forced/system properties the DM API can't write to.
@@ -709,7 +666,9 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
           // If check fails, fall through to DM-first path
         }
 
-        // Helper: write properties using the appropriate API based on whether file is open in SW
+        // Helper: write properties using the appropriate API based on whether file is open in SW.
+        // Only the base-number propagation below still uses it directly; the user's own edit goes
+        // through writeMetadataWithVerification so it is read back and confirmed.
         const writeProps = async (
           filePath: string,
           props: Record<string, string>,
@@ -738,10 +697,15 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
         // old value, otherwise the deletion is silently resurrected ("bounce back").
         const itemNumberEdited = pm.part_number !== undefined
         const descriptionEdited = pm.description !== undefined
+        const revisionEdited = pm.revision !== undefined
         const baseNumber = itemNumberEdited ? pm.part_number ?? '' : file.pdmData?.part_number ?? ''
         const baseDesc = descriptionEdited ? pm.description ?? '' : file.pdmData?.description ?? ''
-        const revision = pm.revision ?? file.pdmData?.revision ?? ''
+        const revision = revisionEdited ? pm.revision ?? '' : file.pdmData?.revision ?? ''
         const fileTabNumber = sanitizeTabNumber(pm.tab_number, tabValidationOptions) // Sanitize based on settings
+
+        // Every scope's properties and what they are meant to establish there, collected before
+        // anything is sent so the write and its read-back are one operation rather than a series.
+        const groups: MetadataWriteGroup[] = []
 
         // Get current user for DrawnBy property
         const currentUser = usePDMStore.getState().user
@@ -762,10 +726,17 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
             changedConfigNames.add(activeConfig.name)
           }
 
+          const baseConfigName = (configs.find((c) => c.isActive) || configs[0])?.name
+
           for (const config of configs.filter((c) => changedConfigNames.has(c.name))) {
             const props: Record<string, string> = {}
+            const intents: MetadataWriteIntent[] = []
+            // A file-scope field on a multi-configuration part is written into the configuration
+            // SolidWorks resolves it from, so its read-back has to look there too.
+            const verifyIn = { configuration: config.name }
 
             // Build full part number (base + tab) with sanitized tab number
+            const configTabEdited = pendingTabs[config.name] !== undefined
             const rawConfigTab = pendingTabs[config.name] ?? config.tabNumber ?? ''
             const configTab = sanitizeTabNumber(rawConfigTab, tabValidationOptions) // Secondary protection: filter based on settings
             if (baseNumber) {
@@ -776,11 +747,32 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
                   : `${baseNumber}-${configTab}`
                 : baseNumber
               props['Base Item Number'] = baseNumber // Always write base separately
-              if (configTab) props['Tab Number'] = configTab
             } else if (itemNumberEdited) {
-              // Item number was intentionally cleared - emit empty so the backend deletes it
+              // The item number was cleared. The properties stay in the file holding nothing: a
+              // title block linked with $PRP: renders blank against an empty property and can break
+              // against a missing one.
               props['Number'] = ''
               props['Base Item Number'] = ''
+            }
+
+            // Emitted when cleared as well as when set, so clearing a tab empties the property
+            // rather than leaving the old tab behind. Untouched configurations with no tab keep
+            // having no property rather than gaining an empty one. Outside the base-number branch
+            // because a configuration tab is worth writing even on a file with no part number.
+            if (configTab || configTabEdited) props['Tab Number'] = configTab
+
+            if (configTabEdited) {
+              intents.push({
+                address: { scope: 'configuration', field: 'config_tab', configuration: config.name },
+                expected: configTab,
+              })
+            }
+            if (itemNumberEdited && config.name === baseConfigName) {
+              intents.push({
+                address: { scope: 'file', field: 'part_number' },
+                expected: baseNumber,
+                verifyIn,
+              })
             }
 
             // Description - use config-specific override if edited, otherwise base.
@@ -792,37 +784,45 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
               : descriptionEdited
                 ? baseDesc
                 : config.description ?? baseDesc
-            // Emit Description even when empty (cleared) so the backend can delete it
+            // Emit Description even when cleared, so the property stays in the file holding nothing
             if (configDescEdited || descriptionEdited || configDesc) props['Description'] = configDesc
 
-            if (revision) props['Revision'] = revision
+            if (configDescEdited) {
+              intents.push({
+                address: {
+                  scope: 'configuration',
+                  field: 'config_description',
+                  configuration: config.name,
+                },
+                expected: configDesc,
+              })
+            } else if (descriptionEdited && config.name === baseConfigName) {
+              intents.push({
+                address: { scope: 'file', field: 'description' },
+                expected: configDesc,
+                verifyIn,
+              })
+            }
+
+            if (revisionEdited || revision) props['Revision'] = revision
+            if (revisionEdited && config.name === baseConfigName) {
+              intents.push({
+                address: { scope: 'file', field: 'revision' },
+                expected: revision,
+                verifyIn,
+              })
+            }
 
             // PDM parity properties - always write Date and DrawnBy
             props['Date'] = dateStr
             if (drawnBy) props['DrawnBy'] = drawnBy
 
-            if (Object.keys(props).length === 0) continue
-
-            try {
-              const result = await writeProps(file.path, props, config.name)
-              if (result?.success) {
-                successCount++
-              } else {
-                failedCount++
-                log.error('[ConfigHandlers]', `Failed to write to config ${config.name}`, {
-                  error: result?.error,
-                })
-              }
-            } catch (error) {
-              failedCount++
-              log.error('[ConfigHandlers]', `Exception writing to config ${config.name}`, {
-                error: error,
-              })
-            }
+            groups.push({ configuration: config.name, properties: props, intents })
           }
         } else {
           // Single config or no configs loaded - save file-level properties
           const props: Record<string, string> = {}
+          const intents: MetadataWriteIntent[] = []
 
           // Build full part number (base + file-level tab) with sanitized tab number
           // fileTabNumber is already sanitized above
@@ -834,116 +834,106 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
                 : `${baseNumber}-${fileTabNumber}`
               : baseNumber
             props['Base Item Number'] = baseNumber
-            if (fileTabNumber) props['Tab Number'] = fileTabNumber
           } else if (itemNumberEdited) {
-            // Item number was intentionally cleared - emit empty so the backend deletes it
+            // Cleared, not deleted: the properties stay in the file holding nothing, so a title
+            // block linked with $PRP: renders blank instead of breaking on a missing property.
             props['Number'] = ''
             props['Base Item Number'] = ''
           }
-          // Emit Description even when empty (cleared) so the backend can delete it
+          if (itemNumberEdited) {
+            intents.push({ address: { scope: 'file', field: 'part_number' }, expected: baseNumber })
+          }
+
+          if (fileTabNumber || pm.tab_number !== undefined) props['Tab Number'] = fileTabNumber
+          if (pm.tab_number !== undefined) {
+            intents.push({ address: { scope: 'file', field: 'tab_number' }, expected: fileTabNumber })
+          }
+
+          // Emit Description even when cleared, so the property stays in the file holding nothing
           if (descriptionEdited || baseDesc) props['Description'] = baseDesc
-          if (revision) props['Revision'] = revision
+          if (descriptionEdited) {
+            intents.push({ address: { scope: 'file', field: 'description' }, expected: baseDesc })
+          }
+
+          if (revisionEdited || revision) props['Revision'] = revision
+          if (revisionEdited) {
+            intents.push({ address: { scope: 'file', field: 'revision' }, expected: revision })
+          }
 
           // PDM parity properties - always write Date and DrawnBy
           props['Date'] = dateStr
           if (drawnBy) props['DrawnBy'] = drawnBy
 
-          if (Object.keys(props).length > 0) {
+          groups.push({ properties: props, intents })
+        }
+
+        const result = await writeMetadataWithVerification({
+          path: file.path,
+          groups,
+          useLiveApi: isOpenInSW,
+        })
+
+        // The value stays pending whatever happened; the per-address marks record which parts of it
+        // the file actually took, and check-in reads those rather than assuming.
+        reportMetadataWrite(edit, result)
+
+        const anythingWritten = result.addresses.some(
+          (entry) => entry.state === 'verified' || entry.state === 'unverified',
+        )
+
+        if (anythingWritten) {
+          // After a successful file-level write, propagate the base number to ALL configs so
+          // drawings that reference specific configs get the updated base number. Only when the
+          // base/item number was actually edited in THIS save: a description-only edit leaves the
+          // base unchanged, so the getConfigurations + per-config write fan-out is pure waste.
+          // Not verified, and deliberately so - these are derived copies of a value whose own
+          // address is verified above, and reading back once per config would cost more than the
+          // whole edit.
+          if (itemNumberEdited && baseNumber && configs.length === 0) {
             try {
-              const result = await writeProps(file.path, props)
-              if (result?.success) {
-                successCount++
+              const configResult = await window.electronAPI?.solidworks?.getConfigurations(file.path)
+              const allConfigs = configResult?.data?.configurations || []
 
-                // After successful file-level write, propagate base number to ALL configs
-                // This ensures drawings that reference specific configs get the updated base number.
-                // Only run when the base/item number was actually edited in THIS save
-                // (itemNumberEdited). A description-only edit leaves the base number unchanged, so
-                // the ~13x getConfigurations + per-config write fan-out is pure waste and is skipped.
-                if (itemNumberEdited && baseNumber) {
+              if (allConfigs.length > 0) {
+                log.info('[ConfigHandlers]', 'Propagating base number to all configs', {
+                  baseNumber,
+                  configCount: allConfigs.length,
+                  configNames: allConfigs.map((c) => c.name),
+                })
+
+                for (const config of allConfigs) {
                   try {
-                    // Fetch all configurations from the file (includes properties for each config)
-                    const configResult = await window.electronAPI?.solidworks?.getConfigurations(
-                      file.path,
+                    // Normalize tab number to strip leading separators (e.g., "-500" -> "500").
+                    // Some SW templates store tab with leading dash which causes double-dash.
+                    const rawTab = config.properties?.['Tab Number'] || ''
+                    const existingTab = normalizeTabNumber(
+                      rawTab,
+                      serSettings?.tab_separator || '-',
                     )
-                    const allConfigs = configResult?.data?.configurations || []
 
-                    if (allConfigs.length > 0) {
-                      log.info('[ConfigHandlers]', 'Propagating base number to all configs', {
-                        baseNumber,
-                        configCount: allConfigs.length,
-                        configNames: allConfigs.map((c) => c.name),
-                      })
-
-                      // For each config, update Base Item Number and recalculate Number
-                      for (const config of allConfigs) {
-                        try {
-                          // Extract config name string and get existing tab from config.properties
-                          const configName = config.name
-                          // Normalize tab number to strip leading separators (e.g., "-500" -> "500")
-                          // Some SW templates store tab with leading dash which causes double-dash in Number
-                          const rawTab = config.properties?.['Tab Number'] || ''
-                          const existingTab = normalizeTabNumber(
-                            rawTab,
-                            serSettings?.tab_separator || '-',
-                          )
-
-                          // Build updated properties
-                          const configProps: Record<string, string> = {
-                            'Base Item Number': baseNumber,
-                            Number: existingTab
-                              ? serSettings?.tab_enabled
-                                ? combineBaseAndTab(baseNumber, existingTab, serSettings)
-                                : `${baseNumber}-${existingTab}`
-                              : baseNumber,
-                          }
-
-                          log.debug('[ConfigHandlers]', `Updating config ${configName}`, {
-                            configName,
-                            rawTab,
-                            existingTab,
-                            newNumber: configProps['Number'],
-                          })
-
-                          await writeProps(file.path, configProps, configName)
-                        } catch (configErr) {
-                          log.warn('[ConfigHandlers]', `Failed to update config ${config.name}`, {
-                            error: configErr,
-                          })
-                        }
-                      }
+                    const configProps: Record<string, string> = {
+                      'Base Item Number': baseNumber,
+                      Number: existingTab
+                        ? serSettings?.tab_enabled
+                          ? combineBaseAndTab(baseNumber, existingTab, serSettings)
+                          : `${baseNumber}-${existingTab}`
+                        : baseNumber,
                     }
-                  } catch (propagateErr) {
-                    log.warn(
-                      '[ConfigHandlers]',
-                      'Failed to propagate base to configs (non-fatal)',
-                      { error: propagateErr },
-                    )
+
+                    await writeProps(file.path, configProps, config.name)
+                  } catch (configErr) {
+                    log.warn('[ConfigHandlers]', `Failed to update config ${config.name}`, {
+                      error: configErr,
+                    })
                   }
                 }
-              } else {
-                failedCount++
-                log.error('[ConfigHandlers]', 'Failed to write file-level properties', {
-                  error: result?.error,
-                })
               }
-            } catch (error) {
-              failedCount++
-              log.error('[ConfigHandlers]', 'Exception writing file-level properties', {
-                error: error,
+            } catch (propagateErr) {
+              log.warn('[ConfigHandlers]', 'Failed to propagate base to configs (non-fatal)', {
+                error: propagateErr,
               })
             }
           }
-        }
-
-        if (successCount > 0) {
-          // A partial write keeps the edit pending on purpose: the value is in the file for the
-          // configurations that took it, so removing it would guarantee the divergence instead of
-          // preventing it. Until the write can be verified per configuration this is the honest
-          // half-answer, and the toast says which half.
-          reportMetadataWrite(rollback, failedCount > 0 ? 'partial' : 'landed', {
-            saved: successCount,
-            failed: failedCount,
-          })
 
           // Mark that we just saved - prevents accidental reload from clearing our changes
           justSavedConfigs.current.add(file.path)
@@ -967,12 +957,17 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
           // supplied: content hash (checkin takes a fast path on a stale hash and
           // skips the version increment) plus size/mtime, which drive diff status.
           await refreshLocalFileFacts(file)
-        } else if (failedCount > 0) {
-          reportMetadataWrite(rollback, 'failed')
         }
       } catch (error) {
         log.error('[ConfigHandlers]', 'Failed to save to SW', { error: error })
-        reportMetadataWrite(rollback, 'failed')
+        reportMetadataWrite(edit, {
+          outcome: 'failed',
+          addresses: listWriteAddresses(edit.pending).map((address) => ({
+            address,
+            state: 'failed' as const,
+            reason: error instanceof Error ? error.message : String(error),
+          })),
+        })
       } finally {
         // Remove processing marker so file watcher can resume normal operation
         usePDMStore.getState().removeProcessingFolder(file.relativePath)
@@ -1497,6 +1492,66 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
     return ext === '.slddrw'
   }, [])
 
+  /**
+   * Read a drawing's references and put the resulting rows in the store.
+   *
+   * An unresolved read stores a placeholder row rather than an empty list, so the expanded drawing
+   * says the references could not be read instead of claiming it has none.
+   */
+  const readDrawingRefsIntoStore = useCallback(
+    async (file: LocalFile): Promise<'loaded' | 'unresolved' | 'failed'> => {
+      addLoadingDrawingRef(file.path)
+      try {
+        const load = await loadDrawingReferences(file, files)
+
+        if (load.status === 'loaded') {
+          setDrawingRefData(file.path, load.items)
+          log.debug('[ConfigHandlers]', 'Loaded drawing references', {
+            filePath: file.path,
+            itemCount: load.items.length,
+          })
+          return 'loaded'
+        }
+
+        if (load.status === 'unresolved') {
+          setDrawingRefData(file.path, unresolvedDrawingRefRows(file))
+          return 'unresolved'
+        }
+
+        log.error('[ConfigHandlers]', 'Failed to load drawing references', {
+          error: load.error,
+          filePath: file.path,
+        })
+        const errorLower = load.error.toLowerCase()
+        if (errorLower.includes('com_inaccessible')) {
+          addToast(
+            'warning',
+            'SolidWorks is running but not accessible. Try restarting SolidWorks or running both apps with the same permissions.',
+          )
+        } else if (
+          errorLower.includes('not running') ||
+          errorLower.includes('not_running') ||
+          errorLower.includes('service')
+        ) {
+          addToast('info', 'Start SolidWorks to load drawing references')
+        } else {
+          addToast('error', 'Failed to load drawing references')
+        }
+        return 'failed'
+      } catch (error) {
+        log.error('[ConfigHandlers]', 'Exception loading drawing references', {
+          error,
+          filePath: file.path,
+        })
+        addToast('error', 'Failed to load drawing references')
+        return 'failed'
+      } finally {
+        removeLoadingDrawingRef(file.path)
+      }
+    },
+    [files, setDrawingRefData, addLoadingDrawingRef, removeLoadingDrawingRef, addToast],
+  )
+
   // Toggle drawing reference expansion for a .slddrw file (shows referenced models)
   // Follows the exact pattern of toggleConfigBomExpansion
   const toggleDrawingRefExpansion = useCallback(
@@ -1511,109 +1566,30 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
       toggleDrawingRefExpansionStore(file.path)
 
       if (!drawingRefData.has(file.path)) {
-        addLoadingDrawingRef(file.path)
-        try {
-          log.debug('[ConfigHandlers]', 'Loading drawing references from SolidWorks', {
-            path: file.path,
-          })
-
-          const result = await window.electronAPI?.solidworks?.getReferences(file.path)
-
-          if (result?.success && result.data?.references) {
-            let items = transformSwRefsToDrawingRefItems(result.data.references, files)
-
-            // Enrich with configuration data from the database (if drawing is synced)
-            // Only enriches items that don't already have configs from the SW API
-            const drawingFileId = file.pdmData?.id
-            if (drawingFileId) {
-              try {
-                const { configsByPath } = await getReferencesForDrawing(drawingFileId)
-                if (configsByPath.size > 0) {
-                  items = items.map((item) => {
-                    // Skip items that already have configs from the SW API
-                    if (item.configurations && item.configurations.length > 0) return item
-
-                    // Match by file_path (relative vault path) or by file_name as fallback
-                    const configs =
-                      configsByPath.get(item.file_path) ||
-                      Array.from(configsByPath.entries()).find(([dbPath]) => {
-                        const dbName = dbPath.split(/[\\/]/).pop()?.toLowerCase()
-                        return dbName === item.file_name.toLowerCase()
-                      })?.[1]
-
-                    if (configs && configs.length > 0) {
-                      return {
-                        ...item,
-                        configuration: configs[0],
-                        configurations: configs,
-                      }
-                    }
-                    return item
-                  })
-                  log.debug('[ConfigHandlers]', 'Enriched drawing refs with DB config data', {
-                    filePath: file.path,
-                    enrichedCount: items.filter(
-                      (i) => i.configurations && i.configurations.length > 0,
-                    ).length,
-                  })
-                }
-              } catch (dbErr) {
-                // Non-fatal: config data is a nice-to-have enrichment
-                log.debug('[ConfigHandlers]', 'Could not enrich drawing refs with DB config data', {
-                  error: dbErr,
-                })
-              }
-            }
-
-            setDrawingRefData(file.path, items)
-            log.debug('[ConfigHandlers]', 'Loaded drawing references', {
-              filePath: file.path,
-              itemCount: items.length,
-              enrichedCount: items.filter((i) => i.in_database || i.part_number).length,
-            })
-          } else {
-            const errorMsg = result?.error || 'Failed to load references from SolidWorks'
-            log.error('[ConfigHandlers]', 'Failed to load drawing references', {
-              error: errorMsg,
-              filePath: file.path,
-            })
-            const errorLower = errorMsg.toLowerCase()
-            if (errorLower.includes('com_inaccessible')) {
-              addToast(
-                'warning',
-                'SolidWorks is running but not accessible. Try restarting SolidWorks or running both apps with the same permissions.',
-              )
-            } else if (
-              errorLower.includes('not running') ||
-              errorLower.includes('not_running') ||
-              errorLower.includes('service')
-            ) {
-              addToast('info', 'Start SolidWorks to load drawing references')
-            } else {
-              addToast('error', 'Failed to load drawing references')
-            }
-          }
-        } catch (error) {
-          log.error('[ConfigHandlers]', 'Exception loading drawing references', {
-            error: error,
-            filePath: file.path,
-          })
-          addToast('error', 'Failed to load drawing references')
-        } finally {
-          removeLoadingDrawingRef(file.path)
-        }
+        await readDrawingRefsIntoStore(file)
       }
     },
-    [
-      expandedDrawingRefs,
-      drawingRefData,
-      toggleDrawingRefExpansionStore,
-      setDrawingRefData,
-      addLoadingDrawingRef,
-      removeLoadingDrawingRef,
-      addToast,
-      files,
-    ],
+    [expandedDrawingRefs, drawingRefData, toggleDrawingRefExpansionStore, readDrawingRefsIntoStore],
+  )
+
+  /**
+   * Read a drawing's references again after every tier declined the first time.
+   *
+   * Driven by the retry on the unresolved row. It runs the same foreground read, which may open the
+   * drawing in SolidWorks — acceptable because the user just asked for it, and the only path in the
+   * app where that is true.
+   */
+  const retryDrawingRefs = useCallback(
+    async (file: LocalFile) => {
+      const outcome = await readDrawingRefsIntoStore(file)
+      if (outcome === 'unresolved') {
+        addToast(
+          'warning',
+          t('drawingRefs.retryFailed', 'Still could not read this drawing’s references'),
+        )
+      }
+    },
+    [readDrawingRefsIntoStore, addToast],
   )
 
   // Toggle config-level drawing expansion (which drawings reference this part/assembly config)
@@ -1696,6 +1672,7 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
     toggleConfigBomExpansion,
     canHaveDrawingRefs,
     toggleDrawingRefExpansion,
+    retryDrawingRefs,
     toggleConfigDrawingExpansion,
   }
 }

@@ -38,6 +38,7 @@ import {
   combineBaseAndTab,
 } from '@/lib/serialization'
 import { getSwReferencesCached } from '@/lib/solidworks'
+import type { SWServiceReference } from '@/lib/solidworks/types'
 import { getContains } from '@/lib/supabase'
 import { getParentDir } from '@/lib/utils'
 import type { PendingMetadata } from '@/stores/types'
@@ -126,12 +127,7 @@ export interface MetadataRefreshSummary {
  * Result type for getDrawingReferences
  */
 interface DrawingReferencesResult {
-  references: Array<{
-    path: string
-    fileName: string
-    exists: boolean
-    fileType: string
-  }> | null
+  references: SWServiceReference[] | null
   /** True if the error was specifically that SLDWORKS.EXE is not running */
   solidworksNotRunning?: boolean
   /** True if SolidWorks is running but COM is inaccessible (permissions mismatch) */
@@ -157,14 +153,7 @@ async function getDrawingReferences(fullPath: string): Promise<DrawingReferences
     if (!result?.success || !result.data?.references) {
       return { references: null }
     }
-    return {
-      references: result.data.references as Array<{
-        path: string
-        fileName: string
-        exists: boolean
-        fileType: string
-      }>,
-    }
+    return { references: result.data.references }
   } catch {
     return { references: null }
   }
@@ -415,6 +404,31 @@ function isParentAuthoritative(metadata: ExtractedMetadata): boolean {
  * `file` is optional so callers without a store record can still read a drawing; it only
  * unlocks the reference-database step of parent inference.
  */
+/**
+ * Pick the parent model configuration a drawing's metadata should be inherited from.
+ *
+ * Only the configuration the drawing's views actually reference is acceptable. There used to be a
+ * "default", then "standard", then first-configuration fallback here; on the o-ring fixture none of
+ * the 68 configurations is called either, so all 11 of its drawings landed on the first one — `XXX`,
+ * a template whose part number is literally `BR-100635-XXX`. Every drawing inherited placeholder
+ * values and looked like a successful sync.
+ *
+ * `ISwDMView.ReferencedConfiguration` now supplies the real answer headlessly, so a guess is no
+ * longer a lesser evil. When it is missing or names a configuration the parent does not have, this
+ * returns undefined and the caller inherits file-level properties only.
+ */
+function selectParentConfiguration(
+  parentConfigProps: Record<string, Record<string, string>>,
+  referencedConfiguration: string | undefined,
+): string | undefined {
+  if (!referencedConfiguration) return undefined
+
+  const configNames = Object.keys(parentConfigProps)
+  if (configNames.includes(referencedConfiguration)) return referencedConfiguration
+
+  return configNames.find((k) => k.toLowerCase() === referencedConfiguration.toLowerCase())
+}
+
 async function pullDrawingMetadata(
   fullPath: string,
   file?: LocalFile,
@@ -463,7 +477,7 @@ async function pullDrawingMetadata(
   if (drawingRefs && drawingRefs.length > 0) {
     const parentRef = drawingRefs[0]
 
-    const refConfig = (parentRef as { configuration?: string }).configuration
+    const refConfig = parentRef.configuration
     logSync('info', 'Drawing reference with configuration', {
       drawingPath: fullPath,
       parentPath: parentRef.path,
@@ -580,56 +594,16 @@ async function pullDrawingMetadata(
 
         const parentAllProps = { ...parentData.fileProperties }
         if (parentConfigProps) {
-          const parentConfigNames = Object.keys(parentConfigProps)
+          const parentPreferredConfig = selectParentConfiguration(parentConfigProps, refConfig)
 
-          // #region agent log - FIX: Use configuration from drawing view reference, not heuristic
-          // The parentRef.configuration tells us exactly which config the drawing view is showing
-          // This is the ROOT CAUSE fix - we were picking "default" or first config instead of
-          // the actual configuration referenced by the drawing view (e.g., "T500X")
-          const refConfig = (parentRef as { configuration?: string }).configuration
-
-          let parentPreferredConfig: string | undefined
-          let selectionReason: string
-
-          if (refConfig && parentConfigNames.includes(refConfig)) {
-            // Use the exact configuration from the drawing view reference
-            parentPreferredConfig = refConfig
-            selectionReason = `from drawing view reference: "${refConfig}"`
-          } else if (
-            refConfig &&
-            parentConfigNames.some((k) => k.toLowerCase() === refConfig.toLowerCase())
-          ) {
-            // Case-insensitive match
-            parentPreferredConfig = parentConfigNames.find(
-              (k) => k.toLowerCase() === refConfig.toLowerCase(),
-            )
-            selectionReason = `from drawing view reference (case-insensitive): "${refConfig}" -> "${parentPreferredConfig}"`
-          } else {
-            // Fallback to old heuristic only if no config from reference
-            parentPreferredConfig =
-              parentConfigNames.find((k) => k.toLowerCase() === 'default') ||
-              parentConfigNames.find((k) => k.toLowerCase() === 'standard') ||
-              parentConfigNames[0]
-            selectionReason = refConfig
-              ? `fallback - ref config "${refConfig}" not found in [${parentConfigNames.join(', ')}]`
-              : parentConfigNames.find((k) => k.toLowerCase() === 'default')
-                ? 'fallback to "default"'
-                : parentConfigNames.find((k) => k.toLowerCase() === 'standard')
-                  ? 'fallback to "standard"'
-                  : 'fallback to first config'
-          }
-
-          logSync('info', 'Parent config selection', {
-            parentModelPath: parentFullPath,
-            availableConfigs: parentConfigNames,
-            refConfigFromDrawing: refConfig || '(not provided)',
-            selectedConfig: parentPreferredConfig,
-            selectionReason,
-          })
-          // #endregion
-
-          if (parentPreferredConfig && parentConfigProps[parentPreferredConfig]) {
+          if (parentPreferredConfig) {
             Object.assign(parentAllProps, parentConfigProps[parentPreferredConfig])
+          } else {
+            logSync('warn', 'Drawing views name no usable parent configuration', {
+              parentModelPath: parentFullPath,
+              referencedConfiguration: refConfig || '(not provided)',
+              availableConfigs: Object.keys(parentConfigProps),
+            })
           }
         }
 
@@ -691,18 +665,11 @@ async function pullDrawingMetadata(
       | undefined
 
     if (parentResult?.success && parentData) {
+      // Inference found the parent by name, so nothing names a configuration. File-level
+      // properties are all this path can honestly claim; guessing one of the parent's
+      // configurations here is the same mistake in a place where there is no drawing view to
+      // correct it.
       const parentAllProps = { ...parentData.fileProperties }
-      const parentConfigProps = parentData.configurationProperties
-      if (parentConfigProps) {
-        const parentConfigNames = Object.keys(parentConfigProps)
-        const preferredConfig =
-          parentConfigNames.find((k) => k.toLowerCase() === 'default') ||
-          parentConfigNames.find((k) => k.toLowerCase() === 'standard') ||
-          parentConfigNames[0]
-        if (preferredConfig && parentConfigProps[preferredConfig]) {
-          Object.assign(parentAllProps, parentConfigProps[preferredConfig])
-        }
-      }
 
       const parentMetadata = extractMetadataFromProperties(parentAllProps)
 

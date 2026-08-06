@@ -605,6 +605,7 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
     toggleConfigBomExpansion,
     canHaveDrawingRefs,
     toggleDrawingRefExpansion,
+    retryDrawingRefs,
     toggleConfigDrawingExpansion,
   } = useConfigHandlers({
     files,
@@ -1498,15 +1499,20 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
     [toggleConfigDrawingExpansion],
   )
 
-  // Handler for toggling config children under a drawing ref row
+  // Handler for the chevron on a drawing ref row, which the unresolved placeholder reuses as its
+  // retry: that row has no configurations to expand, only a read to attempt again.
   const toggleDrawingRefFileExpansion = usePDMStore((s) => s.toggleDrawingRefFileExpansion)
   const handleDrawingRefFileToggle = useCallback(
     (e: React.MouseEvent, file: LocalFile, item: import('@/stores/types').DrawingRefItem) => {
       e.stopPropagation()
+      if (item.unresolved) {
+        void retryDrawingRefs(file)
+        return
+      }
       const key = `${file.path}::${item.file_path}`
       toggleDrawingRefFileExpansion(key)
     },
-    [toggleDrawingRefFileExpansion],
+    [toggleDrawingRefFileExpansion, retryDrawingRefs],
   )
 
   // Handler for clicking on a config drawing row - navigate to the drawing file, select it, and scroll into view

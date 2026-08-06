@@ -184,6 +184,14 @@ export const en: TranslationDict = {
     failedWithCode: 'Failed to connect to Supabase with provided code',
   },
 
+  // Drawing references shown when a .slddrw row is expanded
+  drawingRefs: {
+    unresolved: 'References could not be read',
+    retry: 'Retry',
+    retryHint: 'Read again, opening the drawing in SolidWorks if needed',
+    retryFailed: 'Still could not read this drawing’s references',
+  },
+
   // Settings
   settings: {
     title: 'Settings',
@@ -487,14 +495,30 @@ export const en: TranslationDict = {
       unpushedWarnLeave:
         'You have inspection changes that have not been pushed to the SOLIDWORKS drawing. Leave anyway?',
     },
-    // Writing datacard edits into the SolidWorks file. A failed write takes the edit back out of
-    // the pending set, so the messages have to say that rather than just report the failure.
+    // Writing datacard edits into the SolidWorks file. A write that does not reach the file keeps
+    // the user's value and marks it, so these messages say where the value stands rather than
+    // announcing that it was thrown away.
     metadataWrite: {
-      failed: 'Could not write the metadata to the file — your edit was not kept',
+      failed: 'Your edit is saved here but is not in the file yet — retry to write it',
       serviceOffline:
-        'Start the SolidWorks service to edit metadata on SolidWorks files — your edit was not kept',
-      partial: 'Saved {{saved}} configuration(s), {{failed}} failed — the edit is still pending',
+        'Your edit is saved here. Start the SolidWorks service to write it into the file',
+      partial:
+        'Wrote {{saved}} of {{total}} — the rest is kept here and marked as not in the file',
+      unverified: 'Written, but the file could not be read back to confirm it',
       saved: 'Saved metadata to file',
+      retry: 'Write to file',
+      // The marker on an edited field, and the sentence explaining it.
+      state: {
+        pending: 'Not written to the file yet',
+        writing: 'Writing to the file…',
+        verified: 'Confirmed in the file',
+        unverified: 'Written, but not confirmed in the file',
+        failed: 'Not in the file — the write was refused',
+        unattempted: 'Not in the file — the SolidWorks service was unavailable',
+      },
+      promotedUnverified:
+        'This value is in the database but was never confirmed in the file — the file may still hold the old one',
+      affectedConfigurations: 'Configurations affected: {{names}}',
     },
     details: {
       dragToReorder: 'Drag to reorder or move to right panel',
