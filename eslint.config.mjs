@@ -5,7 +5,9 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import prettier from 'eslint-config-prettier'
 
 export default tseslint.config(
-  { ignores: ['dist/**', 'dist-electron/**', 'release/**', 'docs/**', 'native/**', 'cli/**', 'solidworks-service/**', 'node_modules/**'] },
+  // `scripts/**` joins `cli/**` here for the same reason: plain Node developer scripts, run
+  // directly rather than bundled, so the browser globals this config assumes do not apply.
+  { ignores: ['dist/**', 'dist-electron/**', 'release/**', 'docs/**', 'native/**', 'cli/**', 'scripts/**', 'solidworks-service/**', 'node_modules/**'] },
 
   js.configs.recommended,
   ...tseslint.configs.recommended,

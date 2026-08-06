@@ -923,6 +923,62 @@ export const en: TranslationDict = {
     automaticDescription: 'Use whichever version Windows registered as the default',
   },
 
+  // Read-only divergence scanner (`scan-divergence`)
+  divergence: {
+    heading: 'Divergence scan - database versus SolidWorks files',
+    scanned: '{{compared}} files compared of {{fetched}} rows ({{duration}}s)',
+    cancelled: 'The scan was cancelled; the numbers below are partial.',
+    notRead: '{{missing}} rows had no local file, {{unreadable}} could not be read.',
+    wipeHeading: '1. Configuration maps the database no longer describes',
+    wipeSummary:
+      '{{files}} of {{multi}} multi-configuration files record fewer configurations than the file has ({{pct}}). {{entries}} configuration entries are missing in total.',
+    unrecoverableHeading: '2. Values held by neither side - UNRECOVERABLE',
+    unrecoverableNone: '  None found.',
+    unrecoverableSummary:
+      '  {{count}} values are absent from the database and absent from the file. These cannot be repaired from anything this scan can see.',
+    unrecoverableCaveat:
+      '  Counted only where the same file records configuration metadata for other configurations, which is evidence a value was authored here. A configuration that legitimately never had one is reported as no-evidence instead ({{count}} of those).',
+    recoverableHeading: '3. Values the file still holds - recoverable',
+    recoverableSummary:
+      '  {{count}} values are missing from the database and present in the file.',
+    disagreeingHeading: '4. Values the two sides disagree about',
+    disagreeingSummary: '  {{count}} values differ between the two.',
+    fieldHeading: '5. Divergence per field',
+    timingHeading: '6. Cost of one read-back cycle',
+    integrity:
+      'Byte-identity: {{hashed}} files hashed before and after the read, {{breaches}} changed.',
+    andMore: '  ...and {{count}} more (see the report file)',
+    field: {
+      partNumber: 'part number',
+      description: 'description',
+      revision: 'revision',
+      configTab: 'configuration tab',
+      configDescription: 'configuration description',
+    },
+    scope: {
+      file: 'file',
+      configuration: 'config',
+    },
+    starting: 'Scanning read-only. Nothing is written to the vault or the database.',
+    startedAsync: 'Scan started: {{id}}',
+    running: 'Scan {{id}} is running ({{seconds}}s): {{progress}}',
+    finished: 'Scan {{id}} {{state}}.',
+    noRun: 'No scan has been run in this session.',
+    alreadyRunning: 'A scan is already running. Use "scan-divergence status".',
+    nothingToCancel: 'No scan is running.',
+    cancelRequested: 'Cancelling after the file in flight.',
+    failed: 'Scan failed: {{reason}}',
+    artifact: 'Report written to {{path}}',
+    artifactFailed: 'The report file could not be written: {{reason}}',
+    noOrganization: 'Not signed in to an organization.',
+    noVault: 'No vault is connected.',
+    timingUsage: 'Usage: scan-divergence timing <relative-path>',
+    timingRunning: 'Reading {{path}} {{count}} times...',
+    timingResult:
+      '{{path}}: {{configs}} configurations, median {{median}}ms (min {{min}}ms, max {{max}}ms) per open-and-read-all-scopes cycle',
+    timingFailed: 'Could not read {{path}}: {{reason}}',
+  },
+
   // Context menu translations
   contextMenu: {
     assembly: {

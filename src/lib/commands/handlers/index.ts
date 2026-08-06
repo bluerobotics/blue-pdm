@@ -20,6 +20,7 @@ import './collaboration'
 import './assert'
 import './testCommands'
 import './restore'
+import './scanDivergence'
 
 // PDM command handlers (used via executor, not self-registered)
 // These are imported when needed by the parser for PDM operations
