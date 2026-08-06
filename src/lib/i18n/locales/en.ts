@@ -965,19 +965,35 @@ export const en: TranslationDict = {
     wipeHeading: '1. Configuration maps the database no longer describes',
     wipeSummary:
       '{{files}} of {{multi}} multi-configuration files record fewer configurations than the file has ({{pct}}). {{entries}} configuration entries are missing in total.',
+    wipeExcluded:
+      '  {{count}} files with configurations carry no configuration map on the row at all and are left out of the count above - the database never described their configurations, so nothing was lost from one.',
+    mapEmptied: 'the map is present and holds nothing',
     unrecoverableHeading: '2. Values held by neither side - UNRECOVERABLE',
     unrecoverableNone: '  None found.',
     unrecoverableSummary:
       '  {{count}} values are absent from the database and absent from the file. These cannot be repaired from anything this scan can see.',
     unrecoverableCaveat:
-      '  Counted only where the same file records configuration metadata for other configurations, which is evidence a value was authored here. A configuration that legitimately never had one is reported as no-evidence instead ({{count}} of those).',
+      '  Counted only where the row carries the reserved configuration map at all, which is evidence the row once described this file - including a map that now holds nothing, which is what a wipe of every configuration leaves behind. A file whose row has no such map is reported as no-evidence instead ({{count}} values of those).',
     recoverableHeading: '3. Values the file still holds - recoverable',
     recoverableSummary:
-      '  {{count}} values are missing from the database and present in the file.',
-    disagreeingHeading: '4. Values the two sides disagree about',
+      '  {{count}} values are missing from the database, present in the file under the key BluePLM itself writes, and on a file the database demonstrably once recorded. Those three together are what makes writing them back a repair rather than a guess.',
+    unattributedHeading:
+      '4. Values the file holds that the database never recorded - NEEDS A DECISION',
+    unattributedNone: '  None found.',
+    unattributedSummary:
+      '  {{count}} values are in the file and absent from the database, with nothing to show the database ever held them. They are not repairs: adopting one writes a value BluePLM never owned.',
+    unattributedReason: {
+      neverHeld:
+        'the row has no configuration map at all, or the column was never filled in - the value in the file came from somewhere other than BluePLM',
+      notOwned:
+        'the field belongs to something other than this row - a drawing copies its part number and description from its parent model',
+      notTranscribable:
+        'the file holds a value, but not under a key BluePLM writes, so there is nothing that can be copied across without guessing what it means',
+    },
+    disagreeingHeading: '5. Values the two sides disagree about',
     disagreeingSummary: '  {{count}} values differ between the two.',
-    fieldHeading: '5. Divergence per field',
-    timingHeading: '6. Cost of one read-back cycle',
+    fieldHeading: '6. Divergence per field',
+    timingHeading: '7. Cost of one read-back cycle',
     integrity:
       'Byte-identity: {{hashed}} files hashed before and after the read, {{breaches}} changed.',
     andMore: '  ...and {{count}} more (see the report file)',

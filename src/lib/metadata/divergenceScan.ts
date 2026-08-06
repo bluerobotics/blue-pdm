@@ -30,6 +30,7 @@ import {
   compareOwnedMetadata,
   readDatabaseMetadata,
   summarizeDivergence,
+  type ComparedFileType,
   type DivergenceSummary,
   type FileDivergence,
   type FileRowMetadata,
@@ -39,8 +40,17 @@ import {
 // Constants
 // ============================================
 
-/** Bumped whenever the artifact's shape changes, so a later repair phase can refuse a stale one. */
-export const DIVERGENCE_REPORT_SCHEMA_VERSION = 1
+/**
+ * Bumped whenever the artifact's shape changes, so a later repair phase can refuse a stale one.
+ *
+ * 2 - every comparison carries `databaseRepairValue`, the value a repair phase may actually
+ * write, which is not always what the document reads as; `recoverability` gained `unattributed`
+ * for values the file holds and the database has no claim to; the configuration-map coverage
+ * records whether the reserved map exists as well as how many entries it has. A version 1 report
+ * classified some of those values as `recoverable`, so acting on one would write values BluePLM
+ * never owned.
+ */
+export const DIVERGENCE_REPORT_SCHEMA_VERSION = 2
 
 /** Supabase caps a single response; rows are pulled in pages of this size. */
 const ROW_PAGE_SIZE = 1000
@@ -192,7 +202,7 @@ function extensionOf(row: ScanRow): string {
   return dot === -1 ? '' : row.file_name.slice(dot).toLowerCase()
 }
 
-function fileTypeOf(extension: string): string {
+function fileTypeOf(extension: string): ComparedFileType {
   if (extension === '.sldprt') return 'part'
   if (extension === '.sldasm') return 'assembly'
   if (extension === DRAWING_EXTENSION) return 'drawing'

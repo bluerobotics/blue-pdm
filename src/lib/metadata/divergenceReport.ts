@@ -12,7 +12,7 @@
 import { t } from '@/lib/i18n'
 
 import type { DivergenceReport } from './divergenceScan'
-import type { DivergenceSummary, OwnedField } from './divergence'
+import type { DivergenceSummary, OwnedField, UnattributedReason } from './divergence'
 
 /** Longest lists printed in the summary; the artifact always carries the complete set. */
 const MAX_LISTED = 20
@@ -29,6 +29,17 @@ function fieldLabel(field: OwnedField): string {
       return t('divergence.field.configTab', 'configuration tab')
     case 'config_description':
       return t('divergence.field.configDescription', 'configuration description')
+  }
+}
+
+function unattributedReasonLabel(reason: UnattributedReason): string {
+  switch (reason) {
+    case 'database-never-held-it':
+      return t('divergence.unattributedReason.neverHeld')
+    case 'not-database-owned':
+      return t('divergence.unattributedReason.notOwned')
+    case 'no-transcribable-value':
+      return t('divergence.unattributedReason.notTranscribable')
   }
 }
 
@@ -54,11 +65,51 @@ function fieldTallyLines(summary: DivergenceSummary): string[] {
 }
 
 /**
+ * Every value the file holds that the database has no claim to, grouped by why.
+ *
+ * Grouped rather than listed flat because the three reasons need different handling and the
+ * commonest of them - a document carrying a `Description` on a file that never used BluePLM's
+ * configuration descriptions - is not a finding about BluePLM at all and would otherwise bury
+ * the two that are.
+ */
+function unattributedLines(summary: DivergenceSummary): string[] {
+  const lines: string[] = []
+
+  if (summary.unattributedValues === 0) {
+    lines.push(t('divergence.unattributedNone', '  None found.'))
+    return lines
+  }
+
+  lines.push(t('divergence.unattributedSummary', { count: summary.unattributedValues }))
+
+  const byReason = new Map<UnattributedReason, number>()
+  for (const value of summary.unattributed) {
+    byReason.set(value.reason, (byReason.get(value.reason) ?? 0) + 1)
+  }
+  for (const [reason, count] of byReason) {
+    lines.push(`  ${count}: ${unattributedReasonLabel(reason)}`)
+  }
+
+  for (const value of summary.unattributed.slice(0, MAX_LISTED)) {
+    const where = value.configuration ? ` [${value.configuration}]` : ''
+    lines.push(
+      `  ${value.relativePath}${where} ${fieldLabel(value.field)}: file "${value.fileValue ?? ''}"`,
+    )
+  }
+  if (summary.unattributed.length > MAX_LISTED) {
+    lines.push(t('divergence.andMore', { count: summary.unattributed.length - MAX_LISTED }))
+  }
+
+  return lines
+}
+
+/**
  * Render the summary a person reads.
  *
  * Ordered by what the plan says matters: the extent of the configuration-map wipe first, then the
- * values that cannot be recovered from anywhere, then the ones that can, then the conflicts, then
- * the per-field breakdown, then the read-back cost phase 4 is designed around.
+ * values that cannot be recovered from anywhere, then the ones that can, then the ones that look
+ * like they can and cannot, then the conflicts, then the per-field breakdown, then the read-back
+ * cost phase 4 is designed around.
  */
 export function formatDivergenceReport(report: DivergenceReport): string[] {
   const { summary, counts } = report
@@ -96,10 +147,17 @@ export function formatDivergenceReport(report: DivergenceReport): string[] {
       entries: summary.totalMissingConfigurationEntries,
     }),
   )
+  if (summary.filesWithNoConfigMap > 0) {
+    lines.push(t('divergence.wipeExcluded', { count: summary.filesWithNoConfigMap }))
+  }
   for (const entry of summary.truncatedConfigMaps.slice(0, MAX_LISTED)) {
+    const emptied =
+      entry.tabMapEmptied || entry.descriptionMapEmptied
+        ? ` - ${t('divergence.mapEmptied', 'the map is present and holds nothing')}`
+        : ''
     lines.push(
       `  ${entry.relativePath}: ${entry.fileConfigurationCount} configurations in the file, ` +
-        `${entry.databaseTabKeyCount} recorded, ${entry.missingTabCount} missing`,
+        `${entry.databaseTabKeyCount} recorded, ${entry.missingTabCount} missing${emptied}`,
     )
   }
   if (summary.truncatedConfigMaps.length > MAX_LISTED) {
@@ -137,7 +195,16 @@ export function formatDivergenceReport(report: DivergenceReport): string[] {
   )
 
   lines.push('')
-  lines.push(t('divergence.disagreeingHeading', '4. Values the two sides disagree about'))
+  lines.push(
+    t(
+      'divergence.unattributedHeading',
+      '4. Values the file holds that the database never recorded - NEEDS A DECISION',
+    ),
+  )
+  lines.push(...unattributedLines(summary))
+
+  lines.push('')
+  lines.push(t('divergence.disagreeingHeading', '5. Values the two sides disagree about'))
   lines.push(
     t('divergence.disagreeingSummary', { count: summary.disagreeingValues }),
   )
@@ -155,12 +222,12 @@ export function formatDivergenceReport(report: DivergenceReport): string[] {
   }
 
   lines.push('')
-  lines.push(t('divergence.fieldHeading', '5. Divergence per field'))
+  lines.push(t('divergence.fieldHeading', '6. Divergence per field'))
   lines.push(...fieldTallyLines(summary))
 
   if (report.readBackTimings.length > 0) {
     lines.push('')
-    lines.push(t('divergence.timingHeading', '6. Cost of one read-back cycle'))
+    lines.push(t('divergence.timingHeading', '7. Cost of one read-back cycle'))
     for (const timing of report.readBackTimings) {
       lines.push(
         `  ${timing.relativePath} (${timing.configurationCount} configurations): ` +
