@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 
 import { matchesSerialFormat } from '@/lib/serialization'
 import type { SerializationSettings } from '@/lib/serialization'
-import { resolvePartNumber } from '@/lib/metadata/overlay'
+import { resolveDescription, resolvePartNumber, resolveRevision } from '@/lib/metadata/overlay'
 import type { LocalFile } from '@/stores/types'
 import type { PDMFile } from '@/types/pdm'
 import {
@@ -165,8 +165,11 @@ export function useItems(
       })[0]
       const primaryPdm = primary?.pdmData
 
+      // Through the overlay, like the item number these files were grouped by: a renumbered file
+      // already appears under its new number, so showing it beside the description and revision it
+      // had before the edit would make one row disagree with itself.
       const description =
-        pdmFiles.find((p) => p.description && p.description.trim())?.description ?? null
+        groupFiles.map((f) => resolveDescription(f).value).find((value) => value?.trim()) ?? null
 
       const fileTypes = Array.from(
         new Set(pdmFiles.map((p) => p.file_type)),
@@ -189,7 +192,7 @@ export function useItems(
       rows.push({
         itemNumber,
         description,
-        revision: primaryPdm?.revision ?? null,
+        revision: primary ? resolveRevision(primary).value : null,
         workflowStateName: stage.name,
         workflowStateColor: stage.color,
         fileTypes,

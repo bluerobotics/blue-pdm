@@ -1034,6 +1034,8 @@ export const en: TranslationDict = {
       'Only part of the file was written: {{failed}} properties across {{total}} configurations did not take the change',
     configurationsUnwritten:
       'File-level properties were written, but the configurations were not: {{reason}}',
+    fieldsUnwritten:
+      'Only part of the file was written: {{failed}} of {{total}} fields did not reach the file',
     writeRefused: 'the write was refused',
   },
 

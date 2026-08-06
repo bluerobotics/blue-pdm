@@ -1,0 +1,361 @@
+/**
+ * PUSH: writing BluePLM's metadata into a SolidWorks document, and confirming it landed.
+ *
+ * Split out of `syncMetadata.ts` and migrated onto the shared write path. This half used to be the
+ * last metadata writer in the app with its own property construction and its own idea of what a
+ * successful write was: it built the properties inline, read the two configuration maps straight
+ * off `pendingMetadata` - which stripped the tab from every configuration of any file nobody had
+ * edited this session - filtered empty values out so a cleared field kept its old value, and took
+ * the service's reply as proof. It recorded no write state at all, so the datacard could not say
+ * which fields had reached the file.
+ *
+ * Now `syncMetadataPlan.ts` decides what to write, `writeMetadataWithVerification` writes it and
+ * reads the document back, and the per-address verdicts are recorded against the file exactly as
+ * the datacard's own saves are.
+ *
+ * ## What verification costs here
+ *
+ * One `setProperties` call per scope, where the old code sent every configuration in a single
+ * `setPropertiesBatch`. On the 68-configuration fixture that is 68 opens instead of one - roughly
+ * four seconds against one, measured against the service's own logs. Sync Metadata is an explicit,
+ * progress-tracked command over a selection the user made, so it can afford it, and the batch API
+ * cannot report which configuration refused a property in a form the read-back can check.
+ * `writeMetadataWithVerification` taking a batch of groups in one service call would remove the
+ * difference; that is a change to a module this file only calls.
+ */
+
+import { t } from '@/lib/i18n'
+import { resolveFileMetadata, resolvedText } from '@/lib/metadata/overlay'
+import { writeMetadataWithVerification } from '@/lib/metadata/writeMetadataToFile'
+import type { PlanSerialization } from '@/lib/metadata/writePlan'
+import type { VerifiedAddress } from '@/lib/metadata/verifyWrite'
+import { getSerializationSettings } from '@/lib/serialization'
+import { getTabValidationOptions } from '@/lib/tabValidation'
+import { usePDMStore } from '@/stores/pdmStore'
+
+import type { LocalFile } from '../types'
+
+import { WATCHER_SUPPRESSION_MS, logSync, type ExtractedMetadata } from './syncMetadataCommon'
+import { buildPartAssemblyPushPlan, type PushConfiguration } from './syncMetadataPlan'
+import { deriveBaseNumber, readConfigurationTab } from './syncMetadataProperties'
+
+export interface PushResult {
+  success: boolean
+  error?: string
+}
+
+/**
+ * The document's configurations, with the tab each one currently holds.
+ *
+ * Read before anything is written, because the plan needs them: a configuration BluePLM has no tab
+ * for keeps its own rather than being emptied. A read that fails is reported rather than treated as
+ * "no configurations", which would silently downgrade the write to the document bag alone.
+ */
+async function readConfigurations(
+  fullPath: string,
+  separator: string,
+): Promise<{ configurations: PushConfiguration[]; error?: string }> {
+  try {
+    const result = await window.electronAPI?.solidworks?.getConfigurations(fullPath)
+    const configurations = result?.data?.configurations
+    if (!configurations) return { configurations: [] }
+
+    return {
+      configurations: configurations.map((configuration) => ({
+        name: configuration.name,
+        isActive: configuration.isActive,
+        tabNumber: readConfigurationTab(configuration.properties, separator),
+      })),
+    }
+  } catch (error) {
+    return {
+      configurations: [],
+      error: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
+
+/** The sentence the user sees when the document did not take everything it was sent. */
+function describeUnwritten(
+  addresses: readonly VerifiedAddress[],
+  configurationCount: number,
+): string {
+  const failed = addresses.filter((entry) => entry.state === 'failed')
+  const configurations = new Set(
+    failed
+      .filter((entry) => entry.address.scope === 'configuration')
+      .map((entry) => (entry.address as { configuration: string }).configuration),
+  )
+
+  if (configurations.size > 0) {
+    return t('metadataWrite.configurationsFailed', {
+      failed: configurations.size,
+      total: configurationCount,
+    })
+  }
+
+  return t('metadataWrite.fieldsUnwritten', {
+    failed: failed.length,
+    total: addresses.length,
+  })
+}
+
+/**
+ * Refresh localHash to match the new disk content.
+ *
+ * localVersion is intentionally left untouched: it tracks which downloaded/checked-in version's
+ * content the file started from, not the user's local edits. After this, the load-time merge can
+ * correctly classify the file as 'modified'.
+ */
+async function refreshHashAfterWrite(file: LocalFile, fullPath: string): Promise<void> {
+  try {
+    const hashResult = await window.electronAPI?.hashFile(fullPath)
+    if (hashResult?.success && hashResult.hash) {
+      usePDMStore.getState().updateFileInStore(file.path, { localHash: hashResult.hash })
+      logSync('debug', 'localHash refreshed after PUSH', {
+        fullPath,
+        hashPrefix: hashResult.hash.slice(0, 8),
+      })
+      return
+    }
+    logSync('warn', 'Failed to rehash after PUSH; clearing stale localHash', {
+      fullPath,
+      error: hashResult?.error,
+    })
+  } catch (error) {
+    logSync('warn', 'Exception rehashing after PUSH; clearing stale localHash', {
+      fullPath,
+      error: String(error),
+    })
+  }
+  // Clearing is safer than leaving the pre-write hash that no longer matches disk.
+  usePDMStore.getState().updateFileInStore(file.path, { localHash: undefined })
+}
+
+/**
+ * PUSH: Write metadata from BluePLM into a part/assembly file.
+ *
+ * BluePLM is the source of truth for part/assembly metadata, so this writes everything it holds
+ * into the document bag and into every configuration - see `syncMetadataPlan.ts` for what "holds"
+ * means and why it is not the same as "is not empty".
+ */
+export async function pushPartAssemblyMetadata(
+  file: LocalFile,
+  fullPath: string,
+): Promise<PushResult> {
+  logSync('debug', 'PUSH: Writing metadata to part/assembly', { fullPath })
+
+  const store = usePDMStore.getState()
+  const orgId = store.organization?.id
+  let serSettings: Awaited<ReturnType<typeof getSerializationSettings>> | null = null
+  if (orgId) {
+    try {
+      serSettings = await getSerializationSettings(orgId)
+    } catch {
+      logSync('warn', 'Failed to get serialization settings, using defaults', { fullPath })
+    }
+  }
+
+  const serialization: PlanSerialization | null = serSettings
+    ? {
+        tabEnabled: !!serSettings.tab_enabled,
+        settings: serSettings,
+        validation: getTabValidationOptions(serSettings),
+      }
+    : null
+
+  const currentUser = store.user
+  const parity = {
+    date: new Date().toISOString().split('T')[0],
+    drawnBy: currentUser?.full_name || currentUser?.email || '',
+  }
+
+  const { configurations, error: configurationError } = await readConfigurations(
+    fullPath,
+    serSettings?.tab_separator || '-',
+  )
+
+  const groups = buildPartAssemblyPushPlan({ file, configurations, serialization, parity })
+  if (groups.length === 0) {
+    logSync('debug', 'No metadata to write', { fullPath })
+    return { success: true }
+  }
+
+  const resolved = resolveFileMetadata(file)
+  logSync('info', 'Writing BluePLM metadata into the document', {
+    fullPath,
+    baseNumber: resolvedText(resolved.partNumber),
+    description: resolvedText(resolved.description).substring(0, 50),
+    revision: resolvedText(resolved.revision),
+    configurationCount: configurations.length,
+  })
+
+  // Suppress the FileWatcher for this path while we mutate SLDPRT bytes via SW. Without this, the
+  // watcher will fire mid-write and trigger a vault reload that races against our post-write hash
+  // refresh. Cleared after a delay to cover the watcher's debounce window.
+  const watcherKey = file.relativePath
+  store.addExpectedFileChanges([watcherKey])
+
+  let diskMutated = false
+  try {
+    const result = await writeMetadataWithVerification({ path: fullPath, groups })
+
+    // The per-address verdicts are what the datacard marks and what check-in reads, so they are
+    // recorded whatever the outcome. Recorded rather than reported: this command runs over a
+    // selection and finishes with one summary, so a toast per file would bury it.
+    if (result.addresses.length > 0) {
+      usePDMStore.getState().recordMetadataWriteStates(
+        file.path,
+        result.addresses.map((entry) => ({
+          address: entry.address,
+          state: entry.state,
+          reason: entry.reason,
+        })),
+      )
+    }
+
+    diskMutated = result.addresses.some((entry) => entry.state !== 'unattempted')
+
+    if (configurationError) {
+      logSync('error', 'Could not read the configurations to write them', {
+        fullPath,
+        error: configurationError,
+      })
+      return {
+        success: false,
+        error: t('metadataWrite.configurationsUnwritten', { reason: configurationError }),
+      }
+    }
+
+    if (result.outcome === 'unverified') {
+      // The write was issued and the document could not be read back. That is not a failure - the
+      // value may well be there - but it is not the proof this path exists to produce either.
+      logSync('warn', 'PUSH complete but could not be confirmed against the file', { fullPath })
+      return { success: true }
+    }
+
+    if (result.outcome === 'failed' || result.outcome === 'partial') {
+      logSync('error', 'PUSH did not reach every scope it was sent to', {
+        fullPath,
+        addresses: result.addresses.length,
+        failed: result.addresses.filter((entry) => entry.state === 'failed').length,
+      })
+      return { success: false, error: describeUnwritten(result.addresses, configurations.length) }
+    }
+
+    logSync('info', 'PUSH complete - confirmed in the file', {
+      fullPath,
+      configurationCount: configurations.length,
+      addresses: result.addresses.length,
+    })
+    return { success: true }
+  } catch (error) {
+    logSync('error', 'PUSH threw', { fullPath, error: String(error) })
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  } finally {
+    if (diskMutated) await refreshHashAfterWrite(file, fullPath)
+
+    // Delay clearing the watcher suppression so the debounced FileWatcher event
+    // fired by our SW write is filtered out, not the next legitimate user edit.
+    setTimeout(() => {
+      usePDMStore.getState().clearExpectedFileChanges([watcherKey])
+    }, WATCHER_SUPPRESSION_MS)
+  }
+}
+
+/**
+ * PUSH: write parent-inherited metadata into a drawing's own custom properties.
+ *
+ * Drawings take their item number and description from the referenced model, but nothing used to
+ * write those values back into the drawing file. A drawing copied from another item therefore kept
+ * the source item's `Number` on disk indefinitely, and it was unreachable from the UI because
+ * `lockDrawingItemNumber` makes the cell read-only. PDF export reads these properties directly and
+ * prefers them over BluePLM's value, so a drifted drawing yields both a misnamed PDF and a wrong
+ * title block.
+ *
+ * The properties are the parent's own, verbatim, rather than rebuilt from the base and tab through
+ * the shared planner: the parent's `Number` is whatever that document holds, and recomposing it
+ * from this organisation's separator settings would quietly rewrite a number that came from
+ * somewhere else. What the shared path does supply is the proof - the write is read back and each
+ * field is marked, so a drawing that refused the correction stops reporting as corrected.
+ *
+ * Revision is deliberately never written - the drawing's own revision table is authoritative, which
+ * is why `pullDrawingMetadata` keeps it and the exporter refuses the PDM revision fallback for
+ * drawings.
+ */
+export async function pushDrawingMetadata(
+  file: LocalFile,
+  fullPath: string,
+  metadata: ExtractedMetadata,
+): Promise<PushResult> {
+  const properties: Record<string, string> = {}
+  const intents = []
+
+  if (metadata.partNumber) {
+    properties['Number'] = metadata.partNumber
+    properties['Base Item Number'] = deriveBaseNumber(metadata.partNumber, metadata.tabNumber)
+    intents.push({
+      address: { scope: 'file', field: 'part_number' } as const,
+      expected: metadata.partNumber,
+    })
+  }
+  if (metadata.description) {
+    properties['Description'] = metadata.description
+    intents.push({
+      address: { scope: 'file', field: 'description' } as const,
+      expected: metadata.description,
+    })
+  }
+
+  if (intents.length === 0) return { success: true }
+
+  logSync('info', 'Writing inherited properties to drawing', {
+    fullPath,
+    parentModelPath: metadata.parentModelPath,
+    from: { partNumber: metadata.ownPartNumber, description: metadata.ownDescription },
+    to: { partNumber: metadata.partNumber, description: metadata.description },
+  })
+
+  // Suppress the FileWatcher while we mutate SLDDRW bytes, otherwise it fires mid-write
+  // and triggers a vault reload that races the post-write hash refresh below.
+  const store = usePDMStore.getState()
+  const watcherKey = file.relativePath
+  store.addExpectedFileChanges([watcherKey])
+
+  let diskMutated = false
+  try {
+    // File-level only: drawings have sheets rather than configurations, and both the
+    // exporter and pullDrawingMetadata read the drawing's file-level properties.
+    const result = await writeMetadataWithVerification({
+      path: fullPath,
+      groups: [{ properties, intents }],
+    })
+
+    if (result.addresses.length > 0) {
+      usePDMStore.getState().recordMetadataWriteStates(
+        file.path,
+        result.addresses.map((entry) => ({
+          address: entry.address,
+          state: entry.state,
+          reason: entry.reason,
+        })),
+      )
+    }
+
+    diskMutated = result.addresses.some((entry) => entry.state !== 'unattempted')
+
+    if (result.outcome === 'failed' || result.outcome === 'partial') {
+      return { success: false, error: describeUnwritten(result.addresses, 0) }
+    }
+
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  } finally {
+    if (diskMutated) await refreshHashAfterWrite(file, fullPath)
+
+    setTimeout(() => {
+      usePDMStore.getState().clearExpectedFileChanges([watcherKey])
+    }, WATCHER_SUPPRESSION_MS)
+  }
+}

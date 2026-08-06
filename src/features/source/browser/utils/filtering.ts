@@ -2,7 +2,7 @@
  * File filtering utilities for the file browser
  */
 import { isPathHidden, type HiddenFolderPaths } from '@/lib/hiddenFolders'
-import { resolveDescription, resolvePartNumber } from '@/lib/metadata/overlay'
+import { resolveDescription, resolvePartNumber, resolveRevision } from '@/lib/metadata/overlay'
 import type { LocalFile } from '@/stores/pdmStore'
 
 export interface FileFilter {
@@ -73,8 +73,9 @@ export function getSearchScore(file: LocalFile, query: string): number {
   }
 
   // Priority 5: Other metadata matches
+  if (resolveRevision(file).value?.toLowerCase().includes(q)) score = Math.max(score, 200)
+
   if (file.pdmData) {
-    if (file.pdmData.revision?.toLowerCase().includes(q)) score = Math.max(score, 200)
     const customProps = file.pdmData.custom_properties as Record<string, unknown> | null
     if (
       typeof customProps?.['material'] === 'string' &&

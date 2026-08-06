@@ -18,6 +18,7 @@ import {
   resolveConfigurationTabs,
   resolveDescription,
   resolvePartNumber,
+  resolveRevision,
 } from '@/lib/metadata/overlay'
 import { REFERENCES_UNRESOLVED } from '@/lib/solidworks/types'
 import type { SWServiceReference } from '@/lib/solidworks/types'
@@ -152,7 +153,7 @@ function transformSwRefsToDrawingRefItems(
       file_type: classifyFileType(ref),
       part_number: localFile ? resolvePartNumber(localFile).value : null,
       description: localFile ? resolveDescription(localFile).value : null,
-      revision: localFile?.pdmData?.revision || null,
+      revision: localFile ? resolveRevision(localFile).value : null,
       state: localFile?.pdmData?.workflow_state?.name || null,
       configuration: configs?.[0] ?? null,
       configurations: configs,

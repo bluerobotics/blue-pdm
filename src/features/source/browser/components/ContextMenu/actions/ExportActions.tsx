@@ -22,6 +22,7 @@ import {
   resolveConfigurationTabs,
   resolveDescription,
   resolvePartNumber,
+  resolveRevision,
   resolvedText,
 } from '@/lib/metadata/overlay'
 import { log } from '@/lib/logger'
@@ -148,7 +149,7 @@ export function ExportActions({
         // Build PDM metadata for export filename pattern.
         const baseNumber = resolvedText(resolvePartNumber(file))
         const description = resolvedText(resolveDescription(file))
-        const revision = (file.pdmData?.revision || '').trim()
+        const revision = resolvedText(resolveRevision(file)).trim()
 
         // Get tab number for the default config
         const configTabs = resolveConfigurationTabs(file)
@@ -385,7 +386,7 @@ export function ExportActions({
           `${i}/${drawingFiles.length}`,
         )
 
-        const drawingRevision = (drawing.pdmData?.revision || '').trim()
+        const drawingRevision = resolvedText(resolveRevision(drawing)).trim()
         const drawingPartNumber = resolvedText(resolvePartNumber(drawing))
         const drawingDescription = resolvedText(resolveDescription(drawing))
         const drawingDir = drawing.path.replace(/[\\/][^\\/]+$/, '')
