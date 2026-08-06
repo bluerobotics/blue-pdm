@@ -1007,6 +1007,8 @@ export const en: TranslationDict = {
       file: 'file',
       configuration: 'config',
     },
+    serviceCommandMissing:
+      'The SOLIDWORKS service does not have the "{{action}}" command. Rebuild the service and start it again.',
     starting: 'Scanning read-only. Nothing is written to the vault or the database.',
     startedAsync: 'Scan started: {{id}}',
     running: 'Scan {{id}} is running ({{seconds}}s): {{progress}}',

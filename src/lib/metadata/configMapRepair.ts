@@ -43,11 +43,13 @@
  */
 
 import {
+  configurationScopeProperties,
   CONFIG_DESCRIPTIONS_KEY,
   CONFIG_SCOPE_SPECS,
   CONFIG_TABS_KEY,
   readCanonicalProperty,
   type ConfigScopeField,
+  type FileMetadata,
 } from './divergence'
 
 // ============================================
@@ -132,14 +134,16 @@ export interface ConfigMapShapeRow {
   updatedAt: string | null
 }
 
-/** One document as the read-only Document Manager census measured it. */
-export interface CensusDocument {
+/**
+ * One document as the read-only Document Manager census measured it.
+ *
+ * A `FileMetadata` plus where it lives, rather than a restatement of the same three fields, so
+ * that the scope and resolved views in `divergence.ts` apply to it by declaration.
+ */
+export interface CensusDocument extends FileMetadata {
   /** Path relative to the vault root, backslash-separated, as the row stores it. */
   relativePath: string
   absolutePath: string
-  configurations: readonly string[]
-  fileProperties: Readonly<Record<string, string>>
-  configurationProperties: Readonly<Record<string, Readonly<Record<string, string>>>>
 }
 
 /** The two judgement calls, plus the usual narrowing. Both default to the conservative side. */
@@ -416,7 +420,9 @@ function planMap(
       continue
     }
 
-    const own = document.configurationProperties[configuration] ?? {}
+    // The scope view, never the resolved one: filling a configuration's entry from a value that
+    // is only showing through from file level would record an inheritance as an owned value.
+    const own = configurationScopeProperties(document, configuration)
     const candidate = candidateFor(map, own)
 
     if (candidate === null) {

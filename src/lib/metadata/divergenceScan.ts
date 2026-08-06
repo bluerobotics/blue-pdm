@@ -29,6 +29,7 @@
  */
 
 import { getSupabaseClient } from '@/lib/supabase/client'
+import { t } from '@/lib/i18n'
 import { log } from '@/lib/logger'
 import { UNKNOWN_ACTION } from '@/lib/solidworks/types'
 
@@ -148,7 +149,7 @@ export interface DivergenceScanOptions {
  */
 export class SwServiceCommandMissingError extends Error {
   constructor(action: string) {
-    super(`The SolidWorks service does not have the "${action}" command. Rebuild it.`)
+    super(t('divergence.serviceCommandMissing', { action }))
     this.name = 'SwServiceCommandMissingError'
   }
 }
