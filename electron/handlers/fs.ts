@@ -12,7 +12,7 @@ import crypto from 'crypto'
 import { pipeline } from 'stream/promises'
 import { exec } from 'child_process'
 import { promisify } from 'util'
-import { recordSolidWorksFileOpen, findLockingProcessViaService } from './solidworks'
+import { findLockingProcessViaService } from './solidworks'
 import { createVaultWatcher, type VaultWatcher, type WatcherScanCache } from './fsWatcher'
 import type { LocalFileInfo } from '../types'
 
@@ -2870,12 +2870,6 @@ export function registerFsHandlers(window: BrowserWindow, deps: FsHandlerDepende
 
   ipcMain.handle('fs:open-file', async (_, filePath: string) => {
     try {
-      // Check if this is a SolidWorks file - if so, start grace period for orphan cleanup
-      const ext = path.extname(filePath).toLowerCase()
-      if (['.sldprt', '.sldasm', '.slddrw'].includes(ext)) {
-        recordSolidWorksFileOpen()
-      }
-
       const error = await shell.openPath(filePath)
       if (error) {
         logError(`[Main] Failed to open file: ${filePath}`, { error })

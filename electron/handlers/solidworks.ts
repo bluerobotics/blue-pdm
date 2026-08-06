@@ -27,6 +27,25 @@ import {
   type SwParsedError,
 } from './solidworksErrors'
 import type { ExtractedImage, ThumbnailTier } from './thumbnails/types'
+import { classifySwProcess, planSwClose, type SwProcessVerdict } from './swProcess/classify'
+import {
+  abandonSwProcess,
+  forgetSwProcess,
+  getSwOwnershipRecord,
+  hasSwReapCandidates,
+  initSwOwnershipStore,
+  listSwOwnershipRecords,
+  noteSwCloseRequest,
+  recordSwLaunch,
+  releaseAllSwProcesses,
+  releaseSwProcess,
+} from './swProcess/ownership'
+import {
+  querySwProcesses,
+  querySwProcessStartTime,
+  requestSwProcessClose,
+} from './swProcess/query'
+import type { LiveSwProcess, SwProcessQuerySource } from './swProcess/types'
 
 // ============================================
 // Configuration Constants
@@ -74,6 +93,14 @@ const SYNTHESIZED_BUSY_GRACE_MS = 5_000
 // ============================================
 
 let mainWindow: BrowserWindow | null = null
+
+/**
+ * Who asked for a reference read.
+ *
+ * Duplicated from `src/lib/solidworks/types.ts` because the main process compiles separately from
+ * the renderer and the two share no module graph. The service parses the same two strings.
+ */
+export type SwReferenceOrigin = 'foreground' | 'background'
 
 // External log function references
 let log: (message: string, data?: unknown) => void = console.log
@@ -151,7 +178,22 @@ const INTERACTIVE_ACTIONS = new Set([
   'getReferences',
 ])
 
-function getCommandPriority(action: string): number {
+/**
+ * Actions whose priority depends on who asked rather than on what they do.
+ *
+ * A reference read the user triggered by expanding a drawing is interactive; the same read
+ * triggered by the file watcher is not, and 88 of them at interactive priority is what pushed the
+ * previews and property reads of whatever the user clicked next to the back of the queue.
+ */
+const ORIGIN_SENSITIVE_ACTIONS = new Set(['getReferences'])
+
+function getCommandPriority(command: Record<string, unknown>): number {
+  const action = command.action as string
+
+  if (ORIGIN_SENSITIVE_ACTIONS.has(action)) {
+    return command.origin === 'foreground' ? PRIORITY_INTERACTIVE : PRIORITY_BULK
+  }
+
   if (INTERACTIVE_ACTIONS.has(action)) return PRIORITY_INTERACTIVE
   if (PREVIEW_ACTIONS.has(action)) return PRIORITY_PREVIEW
   return PRIORITY_BULK
@@ -227,46 +269,40 @@ let pendingStatusPing: Promise<SwServiceResult> | null = null
 let swWarmupInProgress = false
 
 // ============================================
-// Orphaned Process Watchdog State
+// Leaked SolidWorks Instance Watchdog State
 // ============================================
 
-/** Interval for checking orphaned processes (ms) */
-const ORPHAN_CHECK_INTERVAL_MS = 5000 // 5 seconds - tasklist is very lightweight
+/**
+ * Interval between checks for leaked SolidWorks instances (ms).
+ *
+ * A cycle costs nothing while BluePLM holds no instance of its own: with no
+ * outstanding ownership record there is nothing that could be reaped, so the
+ * watchdog does not enumerate processes at all.
+ */
+const ORPHAN_CHECK_INTERVAL_MS = 5000
 
-/** Timer for periodic orphan cleanup */
+/** Timer for periodic cleanup of leaked instances */
 let orphanWatchdogTimer: ReturnType<typeof setInterval> | null = null
 
-/**
- * Counter for active Document Manager operations (getBom, getReferences).
- * When > 0, the watchdog skips orphan cleanup because the DM API may have
- * spawned a SolidWorks process with __wgldummywindowfodder window title.
- *
- * After the DM operation completes, the counter decrements and orphaned
- * processes from previous runs will be cleaned up on the next watchdog cycle.
- */
-let activeDmOperations = 0
+/** File the durable ownership registry lives in, under the app's userData. */
+const SW_OWNERSHIP_FILE = 'sw-owned-processes.json'
 
-/** Actions that use Document Manager API and may spawn background SW processes */
-const DM_OPERATIONS = new Set(['getBom', 'getReferences'])
+let swOwnershipStoreReady = false
 
 /**
- * PIDs of SolidWorks instances the service launched for us. A headless launch
- * keeps the __wglDummyWindowFodder window title for its whole life, which is the
- * watchdog's zombie criterion, so without this the watchdog kills the instance
- * an export is actively using.
+ * Loads the ownership registry once per app run, before anything can be
+ * recorded or reaped. Called from every entry point that could reach either.
  */
-const swOwnedPids = new Set<number>()
+function ensureSwOwnershipStore(): void {
+  if (swOwnershipStoreReady) return
+  swOwnershipStoreReady = true
 
-/**
- * How long orphan cleanup stays suspended after the service reports it is
- * launching SolidWorks. Covers CreateInstance (tens of seconds) plus the 60s
- * StartupProcessCompleted wait, i.e. the window where SLDWORKS.exe exists but
- * its PID has not been reported yet.
- */
-const SW_LAUNCH_GRACE_MS = 120_000
-
-/** Timestamp of the service's most recent "launching SolidWorks" notice, if still within the grace window. */
-let swLaunchStartedAt: number | null = null
+  initSwOwnershipStore({
+    filePath: path.join(app.getPath('userData'), SW_OWNERSHIP_FILE),
+    isProcessAlive: checkProcessExists,
+    log,
+  })
+}
 
 /** Markers the service writes to stderr to hand us ownership of a SolidWorks process. */
 const SW_LAUNCH_MARKER = '[SW-API] LAUNCHING_SW'
@@ -278,44 +314,47 @@ const SW_RELEASED_PID_PATTERN = /\[SW-API\] RELEASED_PID=(\d+)/
  */
 function trackSwProcessOwnership(stderr: string): void {
   if (stderr.includes(SW_LAUNCH_MARKER)) {
-    swLaunchStartedAt = Date.now()
-    log('[SolidWorks] Service is launching SolidWorks - orphan cleanup suspended')
+    log('[SolidWorks] Service is launching a SolidWorks instance')
   }
 
   const launched = stderr.match(SW_LAUNCHED_PID_PATTERN)
   if (launched) {
-    const pid = parseInt(launched[1], 10)
-    swOwnedPids.add(pid)
-    swLaunchStartedAt = null
-    log(`[SolidWorks] Now owns SolidWorks PID ${pid} - exempt from orphan cleanup`)
+    void claimLaunchedSwProcess(parseInt(launched[1], 10))
   }
 
   const released = stderr.match(SW_RELEASED_PID_PATTERN)
   if (released) {
     const pid = parseInt(released[1], 10)
-    swOwnedPids.delete(pid)
-    log(`[SolidWorks] Released SolidWorks PID ${pid}`)
+    releaseSwProcess(pid)
+    log(`[SolidWorks] Service released SolidWorks PID ${pid} - now eligible for cleanup`)
   }
-}
-
-/** True while the service is starting a SolidWorks instance we do not know the PID of yet. */
-function isSwLaunchInProgress(): boolean {
-  if (swLaunchStartedAt === null) return false
-
-  if (Date.now() - swLaunchStartedAt > SW_LAUNCH_GRACE_MS) {
-    swLaunchStartedAt = null
-    return false
-  }
-
-  return true
 }
 
 /**
- * Placeholder for future use - records when a SolidWorks file was opened.
- * Currently not used since we only kill definitive zombie processes.
+ * Pins ownership of a SolidWorks instance the service just launched.
+ *
+ * The start time is read immediately because it is what keeps the claim honest
+ * across a PID recycle. When Windows will not report it the record is still
+ * written, but it can never be matched again, so that instance will be left
+ * running rather than acted on from a PID alone.
  */
-export function recordSolidWorksFileOpen(): void {
-  // No-op for now - we only kill __wgldummywindowfodder which is always safe
+async function claimLaunchedSwProcess(pid: number): Promise<void> {
+  ensureSwOwnershipStore()
+
+  const startedAt = await querySwProcessStartTime(pid)
+  const record = recordSwLaunch(pid, startedAt)
+
+  log(`[SolidWorks] Now owns SolidWorks PID ${pid}`, {
+    startedAt: startedAt === null ? 'unknown' : new Date(startedAt).toISOString(),
+    identifiable: startedAt !== null,
+    sessionId: record.sessionId,
+  })
+
+  if (startedAt === null) {
+    logWarn(
+      `[SolidWorks] Could not read the start time of PID ${pid}. It can no longer be told apart from a recycled PID, so cleanup will leave it running.`,
+    )
+  }
 }
 
 interface LockingProcessInfo {
@@ -376,285 +415,258 @@ function checkProcessExists(pid: number): boolean {
   }
 }
 
-/**
- * Finds all running SLDWORKS.exe processes on the system.
- * Uses Windows tasklist command to enumerate processes.
- * @returns Array of process info objects with PID and name
- */
-function findSolidWorksProcesses(): { pid: number; name: string; windowTitle: string }[] {
-  if (process.platform !== 'win32') {
-    return []
-  }
+function describeInstant(timestamp: number | null): string {
+  return timestamp === null ? 'unknown' : new Date(timestamp).toISOString()
+}
 
-  try {
-    // Use tasklist with verbose output to get window titles
-    // This helps distinguish between active SolidWorks with documents open vs orphaned
-    const output = execSync('tasklist /V /FI "IMAGENAME eq SLDWORKS.exe" /FO CSV /NH', {
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 5000,
+/**
+ * Drops ownership records whose process is gone, so the registry cannot keep
+ * pointing at a PID that Windows has since handed to something else.
+ *
+ * A record is only dropped on positive evidence: either the PID is absent from
+ * a successful enumeration, or the live process with that PID demonstrably
+ * started at a different time.
+ */
+function forgetVanishedSwProcesses(live: LiveSwProcess[]): void {
+  const byPid = new Map(live.map((proc) => [proc.pid, proc]))
+
+  for (const record of listSwOwnershipRecords()) {
+    const match = byPid.get(record.pid)
+    const recycled =
+      match !== undefined &&
+      record.startedAt !== null &&
+      match.startedAt !== null &&
+      match.startedAt !== record.startedAt
+
+    if (match !== undefined && !recycled) continue
+
+    forgetSwProcess(record.pid)
+    log(`[SolidWorks] Dropped ownership record for PID ${record.pid}`, {
+      reason: recycled ? 'pid-recycled' : 'process-exited',
+      recordedStartedAt: describeInstant(record.startedAt),
+      observedStartedAt: match ? describeInstant(match.startedAt) : 'not-running',
     })
-
-    const processes: { pid: number; name: string; windowTitle: string }[] = []
-
-    // Parse CSV output: "Image Name","PID","Session Name","Session#","Mem Usage","Status","User Name","CPU Time","Window Title"
-    const lines = output
-      .trim()
-      .split('\n')
-      .filter((line) => line.includes('SLDWORKS.exe'))
-
-    for (const line of lines) {
-      try {
-        // Parse CSV - handle quoted fields
-        const fields = line.match(/(".*?"|[^",\s]+)(?=\s*,|\s*$)/g)
-        if (fields && fields.length >= 2) {
-          const name = fields[0].replace(/"/g, '')
-          const pid = parseInt(fields[1].replace(/"/g, ''), 10)
-          // Window title is the last field
-          const windowTitle = fields.length >= 9 ? fields[8].replace(/"/g, '') : 'N/A'
-
-          if (!isNaN(pid)) {
-            processes.push({ pid, name, windowTitle })
-          }
-        }
-      } catch {
-        // Skip malformed lines
-      }
-    }
-
-    return processes
-  } catch (error) {
-    // tasklist may fail if no matching processes (returns error)
-    const errStr = String(error)
-    if (!errStr.includes('No tasks are running')) {
-      log('[SolidWorks] Error finding SLDWORKS processes: ' + errStr)
-    }
-    return []
   }
 }
 
-/**
- * Determines if a SolidWorks process is orphaned (zombie state).
- * Only kills processes with the OpenGL dummy window - this is the definitive zombie indicator.
- * Other states like "N/A" or empty are too risky as they can occur during normal loading.
- * Instances we launched ourselves are never orphaned: they run hidden, so they
- * carry the same dummy window title for their entire life.
- * @param proc - Process info from findSolidWorksProcesses
- * @returns true if the process is definitely a zombie
- */
-function isOrphanedProcess(proc: { pid: number; name: string; windowTitle: string }): boolean {
-  if (swOwnedPids.has(proc.pid)) {
-    return false
-  }
-
-  const title = proc.windowTitle.toLowerCase()
-  // Only the OpenGL dummy window is a definite zombie indicator
-  // Other states (N/A, empty, etc.) are too risky - can occur during normal loading
-  return title === '__wgldummywindowfodder'
-}
-
-/**
- * Drops ownership of PIDs that no longer exist, so a recycled PID can never
- * grant a stranger's process permanent immunity.
- */
-function pruneOwnedSwPids(livePids: number[]): void {
-  for (const pid of swOwnedPids) {
-    if (!livePids.includes(pid)) {
-      swOwnedPids.delete(pid)
-      log(`[SolidWorks] Owned SolidWorks PID ${pid} is gone - dropping ownership`)
-    }
-  }
-}
-
-/**
- * Kills orphaned SLDWORKS.exe processes.
- * Only kills processes that appear to be orphaned (no window/document open).
- * @param forceAll - If true, kill ALL SLDWORKS processes regardless of state
- * @returns Object with counts of processes found and killed
- */
-async function killOrphanedSolidWorksProcesses(forceAll: boolean = false): Promise<{
+interface SwReapResult {
+  /** True when process enumeration actually ran this cycle. */
+  scanned: boolean
+  /** SLDWORKS.exe processes seen. */
   found: number
-  orphaned: number
-  killed: number
+  /** Instances proven to be BluePLM's and no longer held. */
+  reapable: number
+  /** Close requests sent this cycle. */
+  closeRequested: number
+  /** Instances that refused to close and are being left alone. */
+  abandoned: number
   errors: string[]
-}> {
-  // Skip orphan cleanup while DM operations are in progress
-  // The DM API may spawn a __wgldummywindowfodder process that we shouldn't kill
-  // After DM operations complete, orphans from previous runs will be cleaned up next cycle
-  if (!forceAll && activeDmOperations > 0) {
-    log(
-      `[SolidWorks Watchdog] Skipping orphan check - ${activeDmOperations} DM operation(s) in progress`,
-    )
-    return { found: 0, orphaned: 0, killed: 0, errors: [] }
+}
+
+/**
+ * Asks SolidWorks instances that BluePLM launched, and no longer holds, to close.
+ *
+ * The criterion is provenance and nothing else: an instance is only ever touched
+ * when the durable ownership registry proves BluePLM started that exact process,
+ * matched on PID *and* start time. A process BluePLM did not start has no
+ * record, so no code path here can reach it — regardless of its window title,
+ * document state, or how long it has been idle.
+ *
+ * Nothing is forced. Instances BluePLM launches are visible and can be adopted
+ * by the user, so a refusal to close is treated as "someone may be working in
+ * it", not as a reason to escalate.
+ */
+async function reapLeakedSolidWorksProcesses(): Promise<SwReapResult> {
+  ensureSwOwnershipStore()
+
+  const result: SwReapResult = {
+    scanned: false,
+    found: 0,
+    reapable: 0,
+    closeRequested: 0,
+    abandoned: 0,
+    errors: [],
   }
 
-  // A launch in progress has already created SLDWORKS.exe but has not reported
-  // its PID yet, so nothing can be told apart from a zombie right now.
-  if (!forceAll && isSwLaunchInProgress()) {
-    log('[SolidWorks Watchdog] Skipping orphan check - SolidWorks launch in progress')
-    return { found: 0, orphaned: 0, killed: 0, errors: [] }
+  // Nothing of ours is outstanding, so there is nothing that could be reaped and
+  // no reason to form an opinion about anyone else's SolidWorks.
+  if (!hasSwReapCandidates()) return result
+
+  result.scanned = true
+
+  const { processes, source, degradedReason } = await querySwProcesses()
+  result.found = processes.length
+
+  log(`[SolidWorks Watchdog] Checking ${processes.length} SLDWORKS.exe process(es)`, {
+    querySource: source,
+    degradedReason,
+    ownershipRecords: listSwOwnershipRecords().length,
+  })
+
+  // An enumeration that failed outright proves nothing about what is running,
+  // so ownership records must survive it untouched.
+  if (source !== 'none') {
+    forgetVanishedSwProcesses(processes)
   }
 
-  log(`[SolidWorks] [SCAN] SCANNING FOR ${forceAll ? 'ALL' : 'ORPHANED'} SLDWORKS PROCESSES`)
-
-  const processes = findSolidWorksProcesses()
-  log(`[SolidWorks] Found ${processes.length} SLDWORKS.exe process(es)`)
-  pruneOwnedSwPids(processes.map((proc) => proc.pid))
-
-  const result = {
-    found: processes.length,
-    orphaned: 0,
-    killed: 0,
-    errors: [] as string[],
-  }
-
-  if (processes.length === 0) {
-    log('[SolidWorks] No SLDWORKS.exe processes found')
-    return result
-  }
+  const now = Date.now()
 
   for (const proc of processes) {
-    log(`[SolidWorks] Process: PID=${proc.pid}, Window="${proc.windowTitle}"`)
+    const record = getSwOwnershipRecord(proc.pid)
+    const classification = classifySwProcess(proc, record)
 
-    const shouldKill = forceAll || isOrphanedProcess(proc)
-    if (isOrphanedProcess(proc)) {
-      result.orphaned++
+    log(`[SolidWorks Watchdog] PID ${proc.pid}: ${classification.verdict}`, {
+      pid: proc.pid,
+      startedAt: describeInstant(proc.startedAt),
+      ageMs: proc.startedAt === null ? null : now - proc.startedAt,
+      windowTitle: proc.windowTitle,
+      querySource: source,
+      ownership: record
+        ? {
+            recordedStartedAt: describeInstant(record.startedAt),
+            recordedAt: describeInstant(record.recordedAt),
+            sessionId: record.sessionId,
+            inUse: record.inUse,
+            closeRequests: record.closeRequests,
+          }
+        : 'no-record',
+      reason: classification.reason,
+    })
+
+    if (!classification.reapable || !record) continue
+    result.reapable++
+
+    const plan = planSwClose(record, now)
+
+    if (plan.action === 'wait') {
+      log(`[SolidWorks Watchdog] ${plan.reason}`)
+      continue
     }
 
-    if (shouldKill) {
-      try {
-        log(`[SolidWorks] Killing PID ${proc.pid}...`)
-        execSync(`taskkill /PID ${proc.pid} /F`, {
-          encoding: 'utf8',
-          stdio: ['pipe', 'pipe', 'pipe'],
-          timeout: 10000,
-        })
-        result.killed++
-        swOwnedPids.delete(proc.pid)
-        log(`[SolidWorks] [OK] Killed PID ${proc.pid}`)
-      } catch (error) {
-        const errMsg = `Failed to kill PID ${proc.pid}: ${String(error)}`
-        logError(`[SolidWorks] [FAIL] ${errMsg}`)
-        result.errors.push(errMsg)
+    if (plan.action === 'abandon') {
+      result.abandoned++
+      if (record.abandonedAt === null) {
+        abandonSwProcess(proc.pid, now)
+        logWarn(`[SolidWorks Watchdog] ${plan.reason}`)
       }
-    } else if (swOwnedPids.has(proc.pid)) {
-      log(`[SolidWorks] Skipping PID ${proc.pid} (launched by us)`)
-    } else {
-      log(`[SolidWorks] Skipping PID ${proc.pid} (appears active with document open)`)
+      continue
+    }
+
+    try {
+      log(`[SolidWorks Watchdog] ${plan.reason}`)
+      await requestSwProcessClose(proc.pid)
+      noteSwCloseRequest(proc.pid, now)
+      result.closeRequested++
+    } catch (error) {
+      noteSwCloseRequest(proc.pid, now)
+      const message = `Close request for PID ${proc.pid} failed: ${String(error)}`
+      logWarn(`[SolidWorks Watchdog] ${message}`)
+      result.errors.push(message)
     }
   }
 
-  log(
-    `[SolidWorks] Cleanup complete: ${result.killed}/${result.orphaned} orphaned processes killed`,
-  )
   return result
 }
 
+interface SwProcessStatusEntry {
+  pid: number
+  windowTitle: string
+  startedAt: string
+  verdict: SwProcessVerdict
+  reason: string
+}
+
 /**
- * Gets the current status of SLDWORKS.exe processes on the system.
- * @returns Object with process counts and details
+ * Reports every SLDWORKS.exe with the verdict the watchdog would reach for it,
+ * so the same reasoning can be inspected without waiting for an incident.
  */
-function getSolidWorksProcessStatus(): {
+async function getSolidWorksProcessStatus(): Promise<{
   total: number
-  orphaned: number
-  active: number
-  processes: { pid: number; windowTitle: string; isOrphaned: boolean }[]
-} {
-  const processes = findSolidWorksProcesses()
-  const result = {
-    total: processes.length,
-    orphaned: 0,
-    active: 0,
-    processes: processes.map((p) => ({
-      pid: p.pid,
-      windowTitle: p.windowTitle,
-      isOrphaned: isOrphanedProcess(p),
-    })),
-  }
+  owned: number
+  reapable: number
+  querySource: SwProcessQuerySource
+  processes: SwProcessStatusEntry[]
+}> {
+  ensureSwOwnershipStore()
 
-  for (const proc of result.processes) {
-    if (proc.isOrphaned) {
-      result.orphaned++
-    } else {
-      result.active++
+  const { processes, source } = await querySwProcesses()
+
+  const entries: SwProcessStatusEntry[] = processes.map((proc) => {
+    const classification = classifySwProcess(proc, getSwOwnershipRecord(proc.pid))
+    return {
+      pid: proc.pid,
+      windowTitle: proc.windowTitle,
+      startedAt: describeInstant(proc.startedAt),
+      verdict: classification.verdict,
+      reason: classification.reason,
     }
-  }
+  })
 
-  return result
+  return {
+    total: entries.length,
+    owned: entries.filter((entry) => entry.verdict !== 'keep-unowned').length,
+    reapable: entries.filter((entry) => entry.verdict === 'reap').length,
+    querySource: source,
+    processes: entries,
+  }
 }
 
 // ============================================
-// Orphaned Process Watchdog
+// Leaked SolidWorks Instance Watchdog
 // ============================================
 
 /**
- * Starts the orphaned process watchdog.
- * Runs periodically while the SW service is active.
+ * Starts the watchdog that reaps SolidWorks instances BluePLM leaked.
+ *
+ * It runs for the life of the app rather than the life of the service: a
+ * service that died is exactly what strands an instance, so stopping the
+ * watchdog with the service would retire it at the moment it is needed.
  */
 function startOrphanWatchdog(): void {
-  if (orphanWatchdogTimer) {
-    log('[SolidWorks Watchdog] Already running')
-    return
-  }
+  if (orphanWatchdogTimer) return
 
-  log(
-    '[SolidWorks Watchdog] Starting orphaned process watchdog (interval: ' +
-      ORPHAN_CHECK_INTERVAL_MS +
-      'ms)',
-  )
+  ensureSwOwnershipStore()
+  log(`[SolidWorks Watchdog] Starting (interval: ${ORPHAN_CHECK_INTERVAL_MS}ms)`)
 
-  // Run immediately once
-  runOrphanCheck()
+  void runOrphanCheck()
 
-  // Then run periodically
   orphanWatchdogTimer = setInterval(() => {
-    runOrphanCheck()
+    void runOrphanCheck()
   }, ORPHAN_CHECK_INTERVAL_MS)
 }
 
 /**
- * Stops the orphaned process watchdog.
+ * Stops the watchdog.
  */
 function stopOrphanWatchdog(): void {
   if (orphanWatchdogTimer) {
-    log('[SolidWorks Watchdog] Stopping orphaned process watchdog')
+    log('[SolidWorks Watchdog] Stopping')
     clearInterval(orphanWatchdogTimer)
     orphanWatchdogTimer = null
   }
 }
 
 /**
- * Performs a single orphan check and cleanup.
- * Called periodically by the watchdog.
- * Only kills processes with __wgldummywindowfodder window - definitive zombie indicator.
+ * Performs a single cleanup pass. Called periodically by the watchdog.
  */
 async function runOrphanCheck(): Promise<void> {
   try {
-    const status = getSolidWorksProcessStatus()
+    const result = await reapLeakedSolidWorksProcesses()
 
-    if (status.orphaned === 0) {
-      // No orphans, nothing to do (don't log to avoid spam)
-      return
-    }
+    if (result.closeRequested > 0) {
+      log(
+        `[SolidWorks Watchdog] Asked ${result.closeRequested} leaked SolidWorks instance(s) to close`,
+      )
 
-    log(`[SolidWorks Watchdog] Detected ${status.orphaned} orphaned SLDWORKS.exe process(es)`)
-
-    // Kill orphaned processes
-    const result = await killOrphanedSolidWorksProcesses(false)
-
-    if (result.killed > 0) {
-      log(`[SolidWorks Watchdog] [OK] Cleaned up ${result.killed} orphaned process(es)`)
-
-      // Notify the renderer about the cleanup
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('solidworks:orphans-cleaned', {
-          killed: result.killed,
+          closed: result.closeRequested,
           timestamp: Date.now(),
         })
       }
     }
   } catch (error) {
-    logError(`[SolidWorks Watchdog] Error during orphan check: ${String(error)}`)
+    logError(`[SolidWorks Watchdog] Error during cleanup pass: ${String(error)}`)
   }
 }
 
@@ -702,9 +714,6 @@ function clearServiceState(reason: string, force: boolean = false): void {
     }
   }
 
-  // Stop the orphaned process watchdog since service is no longer running
-  stopOrphanWatchdog()
-
   logWarn(`[SolidWorks] [WARN] CLEARING SERVICE STATE: ${reason}`)
   log(`[SolidWorks] Pending requests to reject: ${swPendingRequests.size}`)
   log(`[SolidWorks] Queued commands to cancel: ${commandQueue.length}`)
@@ -722,10 +731,16 @@ function clearServiceState(reason: string, force: boolean = false): void {
   swPendingRequests.clear()
   recentlyTimedOutRequests.clear()
 
-  // The dead service can no longer own or release SolidWorks instances; anything
-  // it left behind is a genuine orphan again.
-  swOwnedPids.clear()
-  swLaunchStartedAt = null
+  // A dead service cannot be holding the instances it launched, so they become
+  // reap candidates. The watchdog keeps running to collect them: this is the
+  // leak it exists for.
+  const released = releaseAllSwProcesses()
+  if (released.length > 0) {
+    log(
+      `[SolidWorks] ${released.length} SolidWorks instance(s) launched by the service are now unheld`,
+      { pids: released.map((record) => record.pid) },
+    )
+  }
 
   // Clear queued commands
   for (const queued of commandQueue) {
@@ -778,20 +793,58 @@ function cancelQueuedPreviewsWhere(
   shouldCancel: (normalizedFilePath: string) => boolean,
   reason: string,
 ): number {
+  return cancelQueuedCommandsWhere(
+    (command) => command.action === 'getPreview' || command.action === 'getThumbnail',
+    shouldCancel,
+    reason,
+  )
+}
+
+/**
+ * Remove queued commands that match both predicates, resolving each caller with a cancellation
+ * rather than leaving it to time out.
+ */
+function cancelQueuedCommandsWhere(
+  matchesAction: (command: Record<string, unknown>) => boolean,
+  shouldCancel: (normalizedFilePath: string) => boolean,
+  reason: string,
+): number {
   let cancelledCount = 0
 
   for (let i = commandQueue.length - 1; i >= 0; i--) {
     const queued = commandQueue[i]
     const filePath = queued.command.filePath as string | undefined
-    const action = queued.command.action as string | undefined
 
-    if (!filePath || (action !== 'getPreview' && action !== 'getThumbnail')) continue
+    if (!filePath || !matchesAction(queued.command)) continue
 
     if (shouldCancel(normalizeForCompare(filePath))) {
       commandQueue.splice(i, 1)
       queued.resolve({ success: false, error: `Cancelled: ${reason}` })
       cancelledCount++
     }
+  }
+
+  return cancelledCount
+}
+
+/**
+ * Discard background reference reads still waiting in the queue.
+ *
+ * A watcher batch that supersedes the previous one has already made every read the previous batch
+ * queued stale. Draining them costs the user's SolidWorks queue for answers nobody will look at.
+ * Foreground reads are never cancelled: somebody is watching for those.
+ */
+function cancelQueuedBackgroundReferenceReads(reason: string): number {
+  const cancelledCount = cancelQueuedCommandsWhere(
+    (command) => command.action === 'getReferences' && command.origin !== 'foreground',
+    () => true,
+    reason,
+  )
+
+  if (cancelledCount > 0) {
+    log(
+      `[SolidWorks] Cancelled ${cancelledCount} queued background reference reads (${reason}); queue depth now ${commandQueue.length}`,
+    )
   }
 
   return cancelledCount
@@ -1385,7 +1438,6 @@ async function sendSWCommand(
   options?: { timeoutMs?: number; bypassQueue?: boolean },
 ): Promise<SwServiceResult> {
   const action = command.action as string
-  const isDmOperation = DM_OPERATIONS.has(action)
 
   if (!swServiceProcess?.stdin) {
     if (action !== 'ping') {
@@ -1394,24 +1446,11 @@ async function sendSWCommand(
     return { success: false, error: 'SolidWorks service not running. Start it first.' }
   }
 
-  // Track DM operations to prevent watchdog from killing their spawned processes
-  if (isDmOperation) {
-    activeDmOperations++
-    log(`[SolidWorks] DM operation ${action} started (active: ${activeDmOperations})`)
-  }
-
   // Ping commands bypass queue for immediate status checks
   const bypassQueue = options?.bypassQueue || command.action === 'ping'
 
   if (bypassQueue) {
-    try {
-      return await executeCommandDirect(command, options)
-    } finally {
-      if (isDmOperation) {
-        activeDmOperations--
-        log(`[SolidWorks] DM operation ${action} completed (active: ${activeDmOperations})`)
-      }
-    }
+    return executeCommandDirect(command, options)
   }
 
   // Queue the command and process
@@ -1430,21 +1469,12 @@ async function sendSWCommand(
       )
     }
 
-    // Wrap resolve to decrement DM counter when command completes
-    const wrappedResolve = (result: SwServiceResult) => {
-      if (isDmOperation) {
-        activeDmOperations--
-        log(`[SolidWorks] DM operation ${action} completed (active: ${activeDmOperations})`)
-      }
-      resolve(result)
-    }
-
     commandQueue.push({
       command,
       options,
-      resolve: wrappedResolve,
+      resolve,
       queuedAt: Date.now(),
-      priority: getCommandPriority(action),
+      priority: getCommandPriority(command),
     })
 
     // Trigger queue processing
@@ -1585,13 +1615,14 @@ async function startSWService(
   const startTime = Date.now()
   log('[SolidWorks] [START] START SERVICE REQUESTED')
   logServiceState('startSWService called')
+  ensureSwOwnershipStore()
 
-  // Optionally cleanup orphaned SLDWORKS.exe processes before starting
+  // Optionally reap SolidWorks instances a previous run leaked before starting
   if (cleanupOrphans) {
-    log('[SolidWorks] Checking for orphaned SLDWORKS.exe processes...')
-    const cleanupResult = await killOrphanedSolidWorksProcesses(false)
-    if (cleanupResult.killed > 0) {
-      log(`[SolidWorks] [OK] Cleaned up ${cleanupResult.killed} orphaned process(es)`)
+    log('[SolidWorks] Checking for SolidWorks instances BluePLM left behind...')
+    const cleanupResult = await reapLeakedSolidWorksProcesses()
+    if (cleanupResult.closeRequested > 0) {
+      log(`[SolidWorks] Asked ${cleanupResult.closeRequested} leaked instance(s) to close`)
     }
   }
 
@@ -1798,9 +1829,6 @@ async function stopSWService(): Promise<void> {
   log('[SolidWorks] 🛑 STOP SERVICE REQUESTED')
   log('[SolidWorks] =======================================')
   logServiceState('stopSWService called')
-
-  // Stop the orphaned process watchdog
-  stopOrphanWatchdog()
 
   if (!swServiceProcess) {
     log('[SolidWorks] No service process to stop')
@@ -2788,6 +2816,12 @@ export function registerSolidWorksHandlers(
   logError = deps.logError
   logWarn = deps.logWarn
 
+  // Instances a previous run leaked are only knowable from the durable registry,
+  // and only reapable while the watchdog is running, so both start with the app
+  // rather than with the service.
+  ensureSwOwnershipStore()
+  startOrphanWatchdog()
+
   // Thumbnail extraction
   ipcMain.handle('solidworks:extract-thumbnail', async (_, filePath: string) => {
     return extractSolidWorksThumbnail(filePath)
@@ -3110,18 +3144,18 @@ export function registerSolidWorksHandlers(
     }
   })
 
-  // Orphaned process management
+  // Leaked SolidWorks instance management
   ipcMain.handle('solidworks:get-process-status', async () => {
     log('[SolidWorks] IPC: get-process-status received')
-    const status = getSolidWorksProcessStatus()
+    const status = await getSolidWorksProcessStatus()
     return { success: true, data: status }
   })
 
-  ipcMain.handle('solidworks:kill-orphaned-processes', async (_, forceAll?: boolean) => {
-    log(`[SolidWorks] IPC: kill-orphaned-processes received (forceAll: ${forceAll})`)
-    const result = await killOrphanedSolidWorksProcesses(forceAll ?? false)
+  ipcMain.handle('solidworks:kill-orphaned-processes', async () => {
+    log('[SolidWorks] IPC: cleanup of leaked SolidWorks instances requested')
+    const result = await reapLeakedSolidWorksProcesses()
     return {
-      success: result.errors.length === 0 || result.killed > 0,
+      success: result.errors.length === 0,
       data: result,
     }
   })
@@ -3200,8 +3234,23 @@ export function registerSolidWorksHandlers(
     return sendSWCommand({ action: 'getConfigurations', filePath })
   })
 
-  ipcMain.handle('solidworks:get-references', async (_, filePath: string) => {
-    return sendSWCommand({ action: 'getReferences', filePath })
+  // origin decides both the queue priority and whether the service may open a window to answer.
+  // It defaults to background here as well as in the service, so a caller that omits it cannot
+  // put a SolidWorks window on the user's screen.
+  ipcMain.handle(
+    'solidworks:get-references',
+    async (_, filePath: string, origin?: SwReferenceOrigin) => {
+      return sendSWCommand({
+        action: 'getReferences',
+        filePath,
+        origin: origin === 'foreground' ? 'foreground' : 'background',
+      })
+    },
+  )
+
+  // Drop the previous watcher batch's queued reads when a new batch supersedes it.
+  ipcMain.handle('solidworks:cancel-background-references', async (_, reason?: string) => {
+    return { cancelledCount: cancelQueuedBackgroundReferenceReads(reason || 'superseded') }
   })
 
   // Pre-warm: launch a hidden SolidWorks instance in the background so the first
@@ -3774,8 +3823,12 @@ export async function cleanupSolidWorksService(): Promise<void> {
   log('[SolidWorks] =======================================')
   logServiceState('App quit cleanup')
 
-  // Stop the orphaned process watchdog
+  // Stop the watchdog
   stopOrphanWatchdog()
+
+  // Record that nothing is held any more, so the next run can reap whatever the
+  // service fails to close on its way out without having to infer it.
+  releaseAllSwProcesses()
 
   if (!swServiceProcess) {
     log('[SolidWorks] No service process to clean up')

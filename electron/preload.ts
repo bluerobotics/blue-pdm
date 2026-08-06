@@ -465,14 +465,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getServiceStatus: () => ipcRenderer.invoke('solidworks:service-status'),
     warmup: () => ipcRenderer.invoke('solidworks:warmup'),
 
-    // Orphaned process management
+    // Leaked SolidWorks instance management
     getProcessStatus: () => ipcRenderer.invoke('solidworks:get-process-status'),
-    killOrphanedProcesses: (forceAll?: boolean) =>
-      ipcRenderer.invoke('solidworks:kill-orphaned-processes', forceAll),
-    onOrphansCleaned: (callback: (event: { killed: number; timestamp: number }) => void) => {
+    killOrphanedProcesses: () => ipcRenderer.invoke('solidworks:kill-orphaned-processes'),
+    onOrphansCleaned: (callback: (event: { closed: number; timestamp: number }) => void) => {
       const handler = (
         _: Electron.IpcRendererEvent,
-        event: { killed: number; timestamp: number },
+        event: { closed: number; timestamp: number },
       ) => callback(event)
       ipcRenderer.on('solidworks:orphans-cleaned', handler)
       return () => ipcRenderer.removeListener('solidworks:orphans-cleaned', handler)
@@ -491,7 +490,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ) => ipcRenderer.invoke('solidworks:set-properties-batch', filePath, configProperties),
     getConfigurations: (filePath: string) =>
       ipcRenderer.invoke('solidworks:get-configurations', filePath),
-    getReferences: (filePath: string) => ipcRenderer.invoke('solidworks:get-references', filePath),
+    getReferences: (filePath: string, origin?: 'foreground' | 'background') =>
+      ipcRenderer.invoke('solidworks:get-references', filePath, origin),
+    cancelBackgroundReferences: (reason?: string) =>
+      ipcRenderer.invoke('solidworks:cancel-background-references', reason),
     getPreview: (filePath: string, configuration?: string) =>
       ipcRenderer.invoke('solidworks:get-preview', filePath, configuration),
     getMassProperties: (filePath: string, configuration?: string) =>
@@ -1370,22 +1372,36 @@ declare global {
         }>
         warmup: () => Promise<{ success: boolean; error?: string; data?: unknown }>
 
-        // Orphaned process management
+        // Leaked SolidWorks instance management
         getProcessStatus: () => Promise<{
           success: boolean
           data?: {
             total: number
-            orphaned: number
-            active: number
-            processes: Array<{ pid: number; windowTitle: string; isOrphaned: boolean }>
+            owned: number
+            reapable: number
+            querySource: string
+            processes: Array<{
+              pid: number
+              windowTitle: string
+              startedAt: string
+              verdict: string
+              reason: string
+            }>
           }
         }>
-        killOrphanedProcesses: (forceAll?: boolean) => Promise<{
+        killOrphanedProcesses: () => Promise<{
           success: boolean
-          data?: { found: number; orphaned: number; killed: number; errors: string[] }
+          data?: {
+            scanned: boolean
+            found: number
+            reapable: number
+            closeRequested: number
+            abandoned: number
+            errors: string[]
+          }
         }>
         onOrphansCleaned: (
-          callback: (event: { killed: number; timestamp: number }) => void,
+          callback: (event: { closed: number; timestamp: number }) => void,
         ) => () => void
 
         // Metadata operations
