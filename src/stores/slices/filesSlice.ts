@@ -34,12 +34,12 @@ import {
   isEmptyRecord,
   listRecordedAddresses,
   listWriteAddresses,
-  rehydrateWriteState,
   type MetadataWriteStateRecord,
 } from '@/lib/metadata/writeState'
 import { logExplorer } from '@/lib/userActionLogger'
 import { bumpFileMutationEpoch } from '@/lib/fileMutationEpoch'
 import { applyFileUpdates } from '../fileUpdates'
+import { migratePersistedPathKeys, type PathRename } from '../persistedPathKeys'
 
 // ============================================================================
 // Processing Operations Batching
@@ -146,6 +146,92 @@ function applyRecordedWriteState(
   return {
     files: state.files.map((f) => (f.path === path ? { ...f, metadataWriteState: next } : f)),
     persistedMetadataWriteState: persisted,
+  }
+}
+
+/**
+ * Apply a batch of file updates and bring the persisted path-keyed maps along with them.
+ *
+ * The persisted maps are keyed by path and the update is keyed by path, but they are not the same
+ * data: `pendingMetadata` cleared on a file has to be cleared in `persistedPendingMetadata` too, or
+ * the next load restores it and the file is modified again with nothing to check in. Returns the
+ * state unchanged when nothing moved, so a no-op write does not replace the files array and drag a
+ * whole-vault memo recompute along with it.
+ */
+function applyUpdatesAndReconcile(
+  state: PDMStoreState,
+  updateMap: Map<string, Partial<LocalFile>>,
+): PDMStoreState | Pick<
+  PDMStoreState,
+  'files' | 'persistedPendingMetadata' | 'persistedCopySource' | 'persistedMetadataWriteState'
+> {
+  const { files: newFiles, changed } = applyFileUpdates(state.files, updateMap)
+
+  // The persisted maps use the original paths, so every lookup here matches case-insensitively.
+  let newPersistedPendingMetadata = state.persistedPendingMetadata
+  let newPersistedCopySource = state.persistedCopySource
+  let newPersistedWriteState = state.persistedMetadataWriteState
+
+  for (const [lowerPath, fileUpdates] of updateMap) {
+    // Write state follows the update rather than being cleared by it: check-in comes through
+    // here to clear a promoted value while keeping the record of what it could not confirm, so
+    // an explicit record must be persisted, not dropped.
+    if ('metadataWriteState' in fileUpdates) {
+      const matchingKey =
+        Object.keys(newPersistedWriteState).find((k) => k.toLowerCase() === lowerPath) ??
+        newFiles.find((f) => f.path.toLowerCase() === lowerPath)?.path
+      if (matchingKey) {
+        if (newPersistedWriteState === state.persistedMetadataWriteState) {
+          newPersistedWriteState = { ...state.persistedMetadataWriteState }
+        }
+        const record = fileUpdates.metadataWriteState
+        if (record && !isEmptyRecord(record)) newPersistedWriteState[matchingKey] = record
+        else delete newPersistedWriteState[matchingKey]
+      }
+    }
+    // Only clear persistedPendingMetadata when the update EXPLICITLY includes pendingMetadata.
+    // Using 'in' check prevents unrelated updates (e.g. pdmData-only) from clearing metadata.
+    if ('pendingMetadata' in fileUpdates && fileUpdates.pendingMetadata === undefined) {
+      const matchingKey = Object.keys(newPersistedPendingMetadata).find(
+        (k) => k.toLowerCase() === lowerPath,
+      )
+      if (matchingKey) {
+        if (newPersistedPendingMetadata === state.persistedPendingMetadata) {
+          newPersistedPendingMetadata = { ...state.persistedPendingMetadata }
+        }
+        delete newPersistedPendingMetadata[matchingKey]
+      }
+    }
+    // Only clear persistedCopySource when the update EXPLICITLY includes copy fields.
+    if (
+      ('copiedFromFileId' in fileUpdates || 'copiedVersion' in fileUpdates) &&
+      fileUpdates.copiedFromFileId === undefined &&
+      fileUpdates.copiedVersion === undefined
+    ) {
+      const matchingKey = Object.keys(newPersistedCopySource).find(
+        (k) => k.toLowerCase() === lowerPath,
+      )
+      if (matchingKey) {
+        if (newPersistedCopySource === state.persistedCopySource) {
+          newPersistedCopySource = { ...state.persistedCopySource }
+        }
+        delete newPersistedCopySource[matchingKey]
+      }
+    }
+  }
+
+  const persistedUnchanged =
+    newPersistedPendingMetadata === state.persistedPendingMetadata &&
+    newPersistedCopySource === state.persistedCopySource &&
+    newPersistedWriteState === state.persistedMetadataWriteState
+
+  if (!changed && persistedUnchanged) return state
+
+  return {
+    files: newFiles,
+    persistedPendingMetadata: newPersistedPendingMetadata,
+    persistedCopySource: newPersistedCopySource,
+    persistedMetadataWriteState: newPersistedWriteState,
   }
 }
 
@@ -270,9 +356,8 @@ export const createFilesSlice: StateCreator<
       let restored = f
       // Write state is restored whether or not there is still a pending value, because check-in
       // clears the value once it reaches the database and leaves behind the record of what it could
-      // not confirm against the file. 'writing' becomes 'unverified': a write in flight when the
-      // app closed had its outcome seen by nobody.
-      const persistedWriteState = rehydrateWriteState(persistedMetadataWriteState[f.path])
+      // not confirm against the file.
+      const persistedWriteState = persistedMetadataWriteState[f.path]
       if (persistedWriteState) {
         restored = { ...restored, metadataWriteState: persistedWriteState }
       }
@@ -325,12 +410,11 @@ export const createFilesSlice: StateCreator<
   setServerFiles: (serverFiles) => set({ serverFiles }),
   setServerFolderPaths: (serverFolderPaths) => set({ serverFolderPaths }),
 
+  // One file is a batch of one, reconciled the same way. It used not to be: the singular action
+  // applied the file update and left the persisted maps alone, so the same call with the same
+  // argument did different things depending on which spelling the caller reached for.
   updateFileInStore: (path, updates) => {
-    const updateMap = new Map([[path.toLowerCase(), updates]])
-    set((state) => {
-      const { files, changed } = applyFileUpdates(state.files, updateMap)
-      return changed ? { files } : state
-    })
+    set((state) => applyUpdatesAndReconcile(state, new Map([[path.toLowerCase(), updates]])))
   },
 
   // Batch update multiple files in a single state change (avoids N re-renders)
@@ -341,71 +425,8 @@ export const createFilesSlice: StateCreator<
     const updateMap = new Map(updates.map((u) => [u.path.toLowerCase(), u.updates]))
 
     set((state) => {
-      const { files: newFiles, changed } = applyFileUpdates(state.files, updateMap)
-
-      // Clear persistedPendingMetadata for files where pendingMetadata is being cleared
-      // This prevents LoadFiles from restoring stale pending metadata after check-in
-      // Note: persistedPendingMetadata uses original paths (not lowercase), so we need to
-      // find matching keys case-insensitively
-      let newPersistedPendingMetadata = state.persistedPendingMetadata
-      let newPersistedCopySource = state.persistedCopySource
-      let newPersistedWriteState = state.persistedMetadataWriteState
-      for (const [lowerPath, fileUpdates] of updateMap) {
-        // Write state follows the update rather than being cleared by it: check-in comes through
-        // here to clear a promoted value while keeping the record of what it could not confirm, so
-        // an explicit record must be persisted, not dropped.
-        if ('metadataWriteState' in fileUpdates) {
-          const matchingKey =
-            Object.keys(newPersistedWriteState).find((k) => k.toLowerCase() === lowerPath) ??
-            newFiles.find((f) => f.path.toLowerCase() === lowerPath)?.path
-          if (matchingKey) {
-            if (newPersistedWriteState === state.persistedMetadataWriteState) {
-              newPersistedWriteState = { ...state.persistedMetadataWriteState }
-            }
-            const record = fileUpdates.metadataWriteState
-            if (record && !isEmptyRecord(record)) newPersistedWriteState[matchingKey] = record
-            else delete newPersistedWriteState[matchingKey]
-          }
-        }
-        // Only clear persistedPendingMetadata when the update EXPLICITLY includes pendingMetadata.
-        // Using 'in' check prevents unrelated updates (e.g. pdmData-only) from clearing metadata.
-        if ('pendingMetadata' in fileUpdates && fileUpdates.pendingMetadata === undefined) {
-          const matchingKey = Object.keys(newPersistedPendingMetadata).find(
-            (k) => k.toLowerCase() === lowerPath,
-          )
-          if (matchingKey) {
-            if (newPersistedPendingMetadata === state.persistedPendingMetadata) {
-              newPersistedPendingMetadata = { ...state.persistedPendingMetadata }
-            }
-            delete newPersistedPendingMetadata[matchingKey]
-          }
-        }
-        // Only clear persistedCopySource when the update EXPLICITLY includes copy fields.
-        if (
-          ('copiedFromFileId' in fileUpdates || 'copiedVersion' in fileUpdates) &&
-          fileUpdates.copiedFromFileId === undefined &&
-          fileUpdates.copiedVersion === undefined
-        ) {
-          const matchingKey = Object.keys(newPersistedCopySource).find(
-            (k) => k.toLowerCase() === lowerPath,
-          )
-          if (matchingKey) {
-            if (newPersistedCopySource === state.persistedCopySource) {
-              newPersistedCopySource = { ...state.persistedCopySource }
-            }
-            delete newPersistedCopySource[matchingKey]
-          }
-        }
-      }
-
-      const persistedUnchanged =
-        newPersistedPendingMetadata === state.persistedPendingMetadata &&
-        newPersistedCopySource === state.persistedCopySource &&
-        newPersistedWriteState === state.persistedMetadataWriteState
-
-      // A write that changes nothing must not replace the files array, or every
-      // downstream memo recomputes over the whole vault for no reason.
-      if (!changed && persistedUnchanged) return state
+      const next = applyUpdatesAndReconcile(state, updateMap)
+      if (next === state) return state
 
       window.electronAPI?.log('info', '[Store] updateFilesInStore APPLIED', {
         updateCount: updates.length,
@@ -413,12 +434,7 @@ export const createFilesSlice: StateCreator<
         timestamp: Date.now(),
       })
 
-      return {
-        files: newFiles,
-        persistedPendingMetadata: newPersistedPendingMetadata,
-        persistedCopySource: newPersistedCopySource,
-        persistedMetadataWriteState: newPersistedWriteState,
-      }
+      return next
     })
   },
 
@@ -1048,37 +1064,7 @@ export const createFilesSlice: StateCreator<
 
     // Migrate path-keyed state so pending metadata, configurations, etc. survive renames
     const state = get()
-    const migratePathKey = <V>(record: Record<string, V>): Record<string, V> => {
-      const result = { ...record }
-      if (isDirectory) {
-        const oldPrefix = oldPath.toLowerCase()
-        const sep = oldPath.includes('\\') ? '\\' : '/'
-        for (const key of Object.keys(result)) {
-          if (key.toLowerCase() === oldPrefix || key.toLowerCase().startsWith(oldPrefix + sep)) {
-            const newKey = newPath + key.slice(oldPath.length)
-            result[newKey] = result[key]
-            delete result[key]
-          }
-        }
-      } else if (oldPath.toLowerCase() in Object.keys(record).map((k) => k.toLowerCase())) {
-        const existingKey = Object.keys(record).find(
-          (k) => k.toLowerCase() === oldPath.toLowerCase(),
-        )
-        if (existingKey) {
-          result[newPath] = result[existingKey]
-          delete result[existingKey]
-        }
-      } else {
-        const existingKey = Object.keys(record).find(
-          (k) => k.toLowerCase() === oldPath.toLowerCase(),
-        )
-        if (existingKey) {
-          result[newPath] = result[existingKey]
-          delete result[existingKey]
-        }
-      }
-      return result
-    }
+    const pathRename: PathRename = { oldPath, newPath, isDirectory: isDirectory === true }
 
     const migrateMap = <V>(map: Map<string, V>): Map<string, V> => {
       const newMap = new Map(map)
@@ -1166,8 +1152,9 @@ export const createFilesSlice: StateCreator<
       files: updatedFiles,
       serverFiles: updatedServerFiles,
       selectedFiles: updatedSelectedFiles,
-      persistedPendingMetadata: migratePathKey(state.persistedPendingMetadata),
-      persistedCopySource: migratePathKey(state.persistedCopySource as Record<string, any>) as any, // TODO: type this
+      // Every persisted path-keyed map moves together, derived from one registry so a new map
+      // cannot be added without this path taking it - see src/stores/persistedPathKeys.ts.
+      ...migratePersistedPathKeys(state, pathRename),
       processingOperations: migrateMap(state.processingOperations),
       fileConfigurations: migrateMap(state.fileConfigurations),
       drawingRefData: migrateMap(state.drawingRefData),

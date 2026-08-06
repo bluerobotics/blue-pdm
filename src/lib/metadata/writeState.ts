@@ -23,7 +23,8 @@
  * confirmed against its file is `property_fingerprint` / `property_verified_at` - phase 5 of
  * `.cursor/plans/metadata-source-of-truth.plan.md` - which is a different fact with a different
  * lifetime. It is persisted to local storage beside `persistedPendingMetadata`, because a mark that
- * vanished when the app restarted would leave the value looking clean.
+ * vanished when the app restarted would leave the value looking clean. Both are path-keyed and both
+ * are declared in `src/stores/persistedPathKeys.ts`, which is what carries them across a rename.
  *
  * Pure: no I/O, no store access, no React.
  */
@@ -46,15 +47,30 @@ import type { PendingMetadata } from '@/stores/types'
  *   *something* may have been written and cannot be confirmed. Collapsing them would tell a user
  *   whose service is off that their file might have changed.
  *
- * `writing` is transient. It is never restored from storage as itself - see `rehydrateWriteState`.
+ * Every one of these is a conclusion. "A write is happening right now" is not a conclusion and is
+ * not in this union - see `MetadataWriteDisplayState`.
  */
 export type MetadataWriteState =
   | 'pending'
-  | 'writing'
   | 'verified'
   | 'unverified'
   | 'failed'
   | 'unattempted'
+
+/**
+ * What a marker can show, which is every recorded state plus the one that is never recorded.
+ *
+ * `writing` is a property of a running write, not of the file: the caller that issued it knows it
+ * is in flight and nobody else needs to, so it is passed to the marker and never stored. It was in
+ * the recorded union for one release with no production path that produced it, and the module
+ * claimed on that basis that a write interrupted by a crash would come back as `unverified` rather
+ * than as `pending`. It never did, and it should not: `pending` means the address still owes the
+ * file a write, so an interrupted write is re-issued and confirmed at the next save or check-in,
+ * which settles the question. `unverified` is excluded from retry by design, so recording it would
+ * have turned a self-healing case into a permanent mark on a value the database went on to take.
+ * Keeping `writing` out of `MetadataWriteState` makes storing it a type error rather than a note.
+ */
+export type MetadataWriteDisplayState = MetadataWriteState | 'writing'
 
 /** The pending fields that live at file scope. */
 export type MetadataScalarField = 'part_number' | 'description' | 'revision' | 'tab_number'
@@ -80,6 +96,12 @@ export interface FieldWriteState {
   /**
    * True once the value reached the database while still unconfirmed in the file. Set by check-in,
    * which promotes either way and must leave a record of what it could not confirm.
+   *
+   * Unlike `state`, `reason` and `at`, this is not a property of the latest attempt. It is a fact
+   * about the world - the database took this value and the file may not have it - and it stays true
+   * however many times the write is retried. So it carries across transitions rather than being
+   * rebuilt from the transition's own detail, and it is dropped only by the one event that makes it
+   * false: the address reaching `verified`, at which point the file demonstrably does have it.
    */
   promoted?: boolean
 }
@@ -102,7 +124,7 @@ export interface MetadataWriteStateRecord {
  * along" ordering: `verified` is last because it is the state that needs no marker at all, not
  * because it is the least advanced.
  */
-const SEVERITY: readonly MetadataWriteState[] = [
+const SEVERITY: readonly MetadataWriteDisplayState[] = [
   'failed',
   'unattempted',
   'unverified',
@@ -111,7 +133,8 @@ const SEVERITY: readonly MetadataWriteState[] = [
   'verified',
 ]
 
-function severityOf(state: MetadataWriteState): number {
+/** Ordered over the display states, since choosing one marker is the only thing it is for. */
+function severityOf(state: MetadataWriteDisplayState): number {
   return SEVERITY.indexOf(state)
 }
 
@@ -222,10 +245,25 @@ export interface WriteStateDetail {
   at?: string
 }
 
-function withDetail(state: MetadataWriteState, detail?: WriteStateDetail): FieldWriteState {
+/**
+ * The entry one transition produces, given what the address said before it.
+ *
+ * Everything in a `FieldWriteState` describes the latest attempt except `promoted`, which describes
+ * the database. Check-in leaves `{state: 'failed', promoted: true}`; the user edits the field again
+ * and the address goes back to `pending`; the database still holds the value it took. Rebuilding
+ * the entry from the transition's own detail dropped the flag there, and if the retry also failed
+ * `hasPromotedUnconfirmed` said no while the answer was still yes.
+ */
+function withDetail(
+  state: MetadataWriteState,
+  previous: FieldWriteState | undefined,
+  detail?: WriteStateDetail,
+): FieldWriteState {
   const entry: FieldWriteState = { state, at: detail?.at ?? new Date().toISOString() }
   if (detail?.reason) entry.reason = detail.reason
-  if (detail?.promoted) entry.promoted = true
+  if (!isConfirmed(state) && (detail?.promoted === true || previous?.promoted === true)) {
+    entry.promoted = true
+  }
   return entry
 }
 
@@ -251,7 +289,7 @@ export function applyWriteState(
   }
 
   for (const address of addresses) {
-    const entry = withDetail(state, detail)
+    const entry = withDetail(state, readWriteState(record, address), detail)
     if (address.scope === 'file') {
       next.fields![address.field] = entry
     } else if (address.field === 'config_tab') {
@@ -332,28 +370,6 @@ export function isEmptyRecord(record: MetadataWriteStateRecord | undefined): boo
   return listRecordedAddresses(record).length === 0
 }
 
-/**
- * What a record restored from local storage means.
- *
- * `writing` recorded at shutdown describes a write whose outcome nobody ever saw, which is the
- * definition of `unverified`. Restoring it as `writing` would show a spinner that never resolves,
- * and restoring it as `pending` would claim the file was untouched.
- */
-export function rehydrateWriteState(
-  record: MetadataWriteStateRecord | undefined,
-): MetadataWriteStateRecord | undefined {
-  if (!record) return undefined
-
-  const stale = listRecordedAddresses(record).filter(
-    (address) => readWriteState(record, address)?.state === 'writing',
-  )
-  if (stale.length === 0) return record
-
-  return applyWriteState(record, stale, 'unverified', {
-    reason: 'the app closed before the write could be confirmed',
-  })
-}
-
 // ============================================
 // Summary
 // ============================================
@@ -373,7 +389,6 @@ export interface WriteStateSummary {
 
 const ZERO_COUNTS: Record<MetadataWriteState, number> = {
   pending: 0,
-  writing: 0,
   verified: 0,
   unverified: 0,
   failed: 0,

@@ -32,6 +32,16 @@ export type ConfigurationMapPayload = {
  * Anything that is not an object of scalars is treated as absent rather than coerced: the map is
  * written by this application, and a shape it does not recognise is not something it should try to
  * merge into.
+ *
+ * A numeric entry is the one thing that is coerced. `merge_custom_properties` on the server merges
+ * `jsonb` entry by entry and leaves a number a number, so a row can hold `{"Default": 14}` while
+ * this reads `{"Default": "14"}`, and the next check-in writes the string back - a one-way
+ * normalisation towards the `Record<string, string>` the column is documented to hold. Dropping the
+ * entry instead would be worse: `buildConfigurationMapPayload` sends the whole map so that a client
+ * this new stays safe against a database old enough to replace it wholesale, and a key missing from
+ * that payload is a configuration losing its tab. `divergence.ts` coerces identically, so the two
+ * readers on this side always agree; the disagreement is with the SQL, and closing it there is the
+ * only way to make the round trip exact.
  */
 export function readConfigurationMap(
   customProperties: unknown,

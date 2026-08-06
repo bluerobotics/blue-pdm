@@ -22,13 +22,12 @@ import type {
   Tab,
   ConnectedVault,
   StagedCheckin,
-  PendingMetadata,
   ThemeMode,
   Language,
   CardViewFieldConfig,
   SidebarView,
 } from './types'
-import type { MetadataWriteStateRecord } from '../lib/metadata/writeState'
+import { pickPersistedPathKeys, restorePersistedPathKeys } from './persistedPathKeys'
 import { CURRENT_STORE_VERSION, runMigrations, getPersistedVersion } from './migrations'
 
 /**
@@ -206,9 +205,9 @@ export const usePDMStore = create<PDMStoreState>()(
         autoDiscardOrphanedFiles: state.autoDiscardOrphanedFiles,
         ignorePatterns: state.ignorePatterns,
         stagedCheckins: state.stagedCheckins,
-        persistedPendingMetadata: state.persistedPendingMetadata,
-        persistedMetadataWriteState: state.persistedMetadataWriteState,
-        persistedCopySource: state.persistedCopySource,
+        // Every map keyed by a file's absolute path, from the one registry the rename migration
+        // also derives from - see src/stores/persistedPathKeys.ts.
+        ...pickPersistedPathKeys(state),
 
         // ═══════════════════════════════════════════════════════════════
         // User Preferences
@@ -461,21 +460,11 @@ export const usePDMStore = create<PDMStoreState>()(
           }),
           // Ensure ignorePatterns has a default
           ignorePatterns: (persisted.ignorePatterns as Record<string, string[]>) || {},
-          // Restore persisted pending metadata
-          persistedPendingMetadata:
-            (persisted.persistedPendingMetadata as Record<string, PendingMetadata>) || {},
-          // Restore which of those values are known to be in their files. Kept alongside rather
-          // than inside the pending map because it outlives it - check-in clears a promoted value
-          // and keeps the record of what it could not confirm.
-          persistedMetadataWriteState:
-            (persisted.persistedMetadataWriteState as Record<string, MetadataWriteStateRecord>) ||
-            {},
-          // Restore persisted copy source info (for version history preservation on paste)
-          persistedCopySource:
-            (persisted.persistedCopySource as Record<
-              string,
-              { sourceFileId: string; version: number }
-            >) || {},
+          // Restore the pending metadata, the record of which of those values are known to be in
+          // their files, and the copy source that preserves version history on paste. All keyed by
+          // absolute path and all restored from the one registry, so a map added to it is persisted
+          // and restored without a second declaration here.
+          ...restorePersistedPathKeys(persisted),
           // Staged check-ins (offline mode)
           stagedCheckins: (persisted.stagedCheckins as StagedCheckin[]) || [],
           // Terminal settings

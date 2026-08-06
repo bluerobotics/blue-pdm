@@ -33,11 +33,11 @@ import {
   scopeRecordToGroup,
   summarizeWriteState,
   type MetadataFieldGroup,
-  type MetadataWriteState,
+  type MetadataWriteDisplayState,
 } from '@/lib/metadata/writeState'
 import type { LocalFile } from '@/stores/types'
 
-const STATE_MESSAGE: Record<MetadataWriteState, string> = {
+const STATE_MESSAGE: Record<MetadataWriteDisplayState, string> = {
   pending: 'source.metadataWrite.statePending',
   writing: 'source.metadataWrite.stateWriting',
   verified: 'source.metadataWrite.stateVerified',
@@ -47,7 +47,7 @@ const STATE_MESSAGE: Record<MetadataWriteState, string> = {
 }
 
 /** Red for "definitely not in the file", amber for "nobody knows", muted for "not yet". */
-const STATE_CLASS: Record<MetadataWriteState, string> = {
+const STATE_CLASS: Record<MetadataWriteDisplayState, string> = {
   pending: 'text-plm-fg-muted',
   writing: 'text-plm-fg-muted',
   verified: 'text-plm-fg-muted',
@@ -62,7 +62,12 @@ export interface MetadataWriteStateMarkerProps {
   field?: MetadataFieldGroup
   /** Runs the write again for everything still pending on this file. */
   onRetry?: (file: LocalFile, edit: ReturnType<typeof retryEdit>) => void
-  /** True while a write for this file is in flight. */
+  /**
+   * True while a write for this file is in flight.
+   *
+   * The one state that is never recorded: it belongs to the caller that issued the write and to
+   * nobody after it finishes, so it arrives as a prop rather than out of `file.metadataWriteState`.
+   */
   isWriting?: boolean
 }
 

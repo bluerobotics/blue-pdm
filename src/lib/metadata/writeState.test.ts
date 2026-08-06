@@ -20,7 +20,6 @@ import {
   listWriteAddresses,
   needsWrite,
   readWriteState,
-  rehydrateWriteState,
   resolveFileWriteState,
   scopePendingToGroup,
   scopeRecordToGroup,
@@ -326,29 +325,87 @@ describe('narrowing a record to one datacard column', () => {
 })
 
 describe('coming back after a restart', () => {
-  it('turns a write that was in flight into an unconfirmed one', () => {
-    // Nobody ever saw the outcome. A spinner would never resolve, and `pending` would claim the file
-    // was untouched.
-    const record: MetadataWriteStateRecord = {
-      fields: { part_number: { state: 'writing', at: AT } },
-    }
+  // This used to claim that a write interrupted by a crash came back as `unverified`. Nothing ever
+  // recorded `writing`, so nothing ever did, and the test proved it only by building the state by
+  // hand. `writing` is now outside the recorded union, so the record a crash leaves behind is the
+  // one the edit started with.
 
-    const rehydrated = rehydrateWriteState(record)
+  it('brings an interrupted write back owing the file a write, so it is re-issued', () => {
+    // `updatePendingMetadata` marks the edited address `pending` before any write is issued, and a
+    // crash mid-write leaves exactly that. `pending` still owes the file a write, so the next save
+    // or check-in re-issues it and reads the file back, which settles the question that the crash
+    // left open. Recording anything a retry skips would leave it open forever.
+    const record = applyWriteState(undefined, [partNumber], 'pending', { at: AT })
 
-    expect(readWriteState(rehydrated, partNumber)?.state).toBe('unverified')
-    expect(readWriteState(rehydrated, partNumber)?.reason).toContain('closed')
+    expect(readWriteState(record, partNumber)?.state).toBe('pending')
+    expect(needsWrite('pending')).toBe(true)
   })
 
-  it('leaves every settled state exactly as it was', () => {
-    const record = applyWriteStates(
+  it('cannot hold an in-flight marker, because that is not a conclusion about the file', () => {
+    // @ts-expect-error 'writing' is a display state and is deliberately not recordable.
+    const rejected: MetadataWriteStateRecord = { fields: { part_number: { state: 'writing', at: AT } } }
+    expect(rejected).toBeDefined()
+  })
+})
+
+describe('the promoted mark outlives the attempt that set it', () => {
+  // Check-in promotes a value it could not confirm and stamps `promoted`, which is a statement
+  // about the database rather than about the write. Every transition builds a fresh entry, so the
+  // flag used to be dropped the moment the user touched the field again - and if the retry failed
+  // too, nothing was left saying the database held something the file might not.
+
+  it('keeps the mark when the user edits the field again and the retry fails', () => {
+    const afterCheckin = applyWriteState(undefined, [partNumber], 'failed', {
+      at: AT,
+      promoted: true,
+    })
+    const afterEdit = applyWriteState(afterCheckin, [partNumber], 'pending', { at: AT })
+    const afterRetry = applyWriteState(afterEdit, [partNumber], 'failed', {
+      at: AT,
+      reason: 'the property is read-only in this document',
+    })
+
+    expect(readWriteState(afterEdit, partNumber)?.promoted).toBe(true)
+    expect(readWriteState(afterRetry, partNumber)?.promoted).toBe(true)
+    expect(summarizeWriteState(afterRetry).hasPromotedUnconfirmed).toBe(true)
+  })
+
+  it('drops it the moment the file is confirmed to hold the value', () => {
+    const afterCheckin = applyWriteState(undefined, [partNumber], 'unverified', {
+      at: AT,
+      promoted: true,
+    })
+    const confirmed = applyWriteState(afterCheckin, [partNumber], 'verified', { at: AT })
+
+    expect(readWriteState(confirmed, partNumber)?.promoted).toBeUndefined()
+    expect(summarizeWriteState(confirmed).hasPromotedUnconfirmed).toBe(false)
+  })
+
+  it('carries it through a batch of per-address outcomes, not just a single transition', () => {
+    const promoted = applyWriteStates(
       undefined,
       [
-        { address: partNumber, state: 'failed', reason: 'refused' },
+        { address: partNumber, state: 'failed' },
+        { address: tab014, state: 'unverified' },
+      ],
+      { at: AT, promoted: true },
+    )
+    const rewritten = applyWriteStates(
+      promoted,
+      [
+        { address: partNumber, state: 'failed', reason: 'refused again' },
         { address: tab014, state: 'verified' },
       ],
       { at: AT },
     )
 
-    expect(rehydrateWriteState(record)).toBe(record)
+    expect(readWriteState(rewritten, partNumber)?.promoted).toBe(true)
+    expect(readWriteState(rewritten, tab014)?.promoted).toBeUndefined()
+  })
+
+  it('leaves an address nobody promoted unmarked', () => {
+    const record = applyWriteState(undefined, [partNumber], 'failed', { at: AT })
+
+    expect(readWriteState(record, partNumber)?.promoted).toBeUndefined()
   })
 })

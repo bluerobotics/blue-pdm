@@ -10,7 +10,12 @@
 
 import { describe, expect, it } from 'vitest'
 
-import type { FileMetadata } from './divergence'
+import {
+  compareOwnedMetadata,
+  configurationScopeProperties,
+  resolvedConfigurationProperties,
+  type FileMetadata,
+} from './divergence'
 import { failedWrite, unverifiedWrite, verifyWrite, type MetadataWriteIntent } from './verifyWrite'
 
 function document(
@@ -174,6 +179,133 @@ describe('a partial write across configurations', () => {
     )
 
     expect(outcomes[0].state).toBe('verified')
+  })
+})
+
+describe('a configuration is judged on its own bag, not on the document underneath it', () => {
+  // `scopeProperties` used to spread the file bag underneath the configuration's as a fallback,
+  // on the argument that it matched how the configuration loader reads a value for display. What a
+  // reader resolves and what a write established are different questions, and the fallback got
+  // both of these wrong.
+
+  it('does not verify a base write off a stale file-level Base Item Number', () => {
+    // The write plan sends the part number into the configuration's bag on a multi-configuration
+    // document, so an empty configuration bag means nothing landed - however familiar the string
+    // sitting at file level from some earlier release looks. This reported `verified`, the one
+    // state a retry skips and check-in forgets, while the configuration's composite `Number`
+    // was never written and the title block stayed wrong.
+    const outcomes = verifyWrite(
+      [
+        {
+          address: { scope: 'file', field: 'part_number' },
+          expected: 'PN-100',
+          verifyIn: { configuration: 'Default' },
+        },
+        {
+          address: { scope: 'configuration', field: 'config_tab', configuration: 'Default' },
+          expected: '014',
+        },
+      ],
+      document({ 'Base Item Number': 'PN-100' }, { Default: {} }),
+    )
+
+    expect(outcomes.map((outcome) => outcome.state)).toEqual(['failed', 'failed'])
+    expect(outcomes[0].reason).toContain('no value')
+  })
+
+  it('verifies a per-configuration clear on a document that keeps a file-level value', () => {
+    // Clearing one configuration's description means "fall back to the file's", so the file-level
+    // value surviving is the point rather than the failure. Read through the fallback it looked
+    // like a value that refused to go, which failed permanently: every check-in re-issued the
+    // write, paid for the read-back, failed again and promoted the value unconfirmed.
+    const outcomes = verifyWrite(
+      [
+        {
+          address: {
+            scope: 'configuration',
+            field: 'config_description',
+            configuration: 'Default',
+          },
+          expected: '',
+        },
+      ],
+      document({ Description: 'A file-level description' }, { Default: {} }),
+    )
+
+    expect(outcomes[0].state).toBe('verified')
+  })
+
+  it('verifies that clear the same way once the service writes empty properties instead of deleting', () => {
+    // `.cursor/plans/service-empty-property-write.plan.md` changes the shape the service leaves
+    // behind, not the value. Both shapes have to read the same or the plan would silently change
+    // what verification means.
+    const outcomes = verifyWrite(
+      [
+        {
+          address: {
+            scope: 'configuration',
+            field: 'config_description',
+            configuration: 'Default',
+          },
+          expected: '',
+        },
+      ],
+      document({ Description: 'A file-level description' }, { Default: { Description: '' } }),
+    )
+
+    expect(outcomes[0].state).toBe('verified')
+  })
+})
+
+describe('the scanner and the verifier mean the same thing by "configuration scope"', () => {
+  // They disagreed: the scanner read `configurationProperties[name]` and the verifier read that
+  // over the file bag, so the same document could be reported as diverged by one and confirmed by
+  // the other. `divergence.ts` owns the definition now and both take it from there.
+
+  const readBack = document({ Description: 'A file-level description' }, { Default: {} })
+
+  it('agrees the configuration holds nothing', () => {
+    expect(configurationScopeProperties(readBack, 'Default')).toEqual({})
+
+    const [outcome] = verifyWrite(
+      [
+        {
+          address: {
+            scope: 'configuration',
+            field: 'config_description',
+            configuration: 'Default',
+          },
+          expected: 'A file-level description',
+        },
+      ],
+      readBack,
+    )
+    expect(outcome.state).toBe('failed')
+
+    const [, comparison] = compareOwnedMetadata(
+      { fileId: 'f', relativePath: 'ring.sldprt', fileName: 'ring.sldprt', fileType: 'part' },
+      {
+        partNumber: null,
+        description: null,
+        revision: null,
+        configTabs: {},
+        configDescriptions: { Default: 'A file-level description' },
+        hasConfigTabsKey: false,
+        hasConfigDescriptionsKey: true,
+      },
+      readBack,
+    ).fieldComparisons.filter((entry) => entry.scope === 'configuration')
+
+    expect(comparison.field).toBe('config_description')
+    expect(comparison.fileValue).toBeNull()
+  })
+
+  it('keeps the resolved view available for display, under a name nobody will confuse', () => {
+    // What SolidWorks shows for the configuration, and what the browser's configuration loader
+    // reads. Correct for display, wrong for deciding whether a write landed.
+    expect(resolvedConfigurationProperties(readBack, 'Default')).toEqual({
+      Description: 'A file-level description',
+    })
   })
 })
 

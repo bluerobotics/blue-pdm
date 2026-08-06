@@ -555,6 +555,44 @@ export interface FileIdentity {
   fileType: ComparedFileType
 }
 
+/**
+ * What one configuration of a document actually holds.
+ *
+ * This is the definition of configuration scope for every comparison in the app - the scanner's and
+ * the write verifier's alike - and it is deliberately literal: a configuration's bag, and nothing
+ * underneath it. A configuration-scope write goes to that bag, so that bag is the only evidence
+ * that it landed. Nothing else can distinguish "the configuration took the value" from "the
+ * configuration is empty and the document happens to hold the same string at file level", and those
+ * two are the difference between a title block that reads `PN-100-014` and one that reads `PN-100`.
+ *
+ * Not to be confused with `resolvedConfigurationProperties`, which is what a *reader* sees.
+ */
+export function configurationScopeProperties(
+  file: FileMetadata,
+  configuration: string,
+): Readonly<Record<string, string>> {
+  return file.configurationProperties[configuration] ?? {}
+}
+
+/**
+ * What a reader looking at one configuration sees, file properties showing through underneath.
+ *
+ * SolidWorks resolves a property in a configuration's context by taking the configuration's own
+ * value and falling back to the document's, and so does everything in BluePLM that displays a
+ * configuration: the browser's configuration loader, the properties tab, the export naming. So this
+ * is the correct view for *display* and the correct answer to "what value will the user see".
+ *
+ * It is the wrong view for deciding whether a write landed, because the fallback is exactly what a
+ * failed configuration write leaves visible. The two views are named apart so that the next person
+ * to need one is made to choose.
+ */
+export function resolvedConfigurationProperties(
+  file: FileMetadata,
+  configuration: string,
+): Readonly<Record<string, string>> {
+  return { ...file.fileProperties, ...configurationScopeProperties(file, configuration) }
+}
+
 /** A map entry describes a configuration only when it holds something readable. */
 function describes(map: Readonly<Record<string, string>>, configuration: string): boolean {
   return normalizeValue(map[configuration]) !== null
@@ -652,7 +690,7 @@ export function compareOwnedMetadata(
   }
 
   for (const configuration of file.configurations) {
-    const properties = file.configurationProperties[configuration] ?? {}
+    const properties = configurationScopeProperties(file, configuration)
 
     for (const spec of CONFIG_SCOPE_SPECS) {
       const databaseValue =

@@ -47,6 +47,7 @@ import type { FileMetadata } from './divergence'
 import type { MetadataWriteOutcome } from './pendingEdits'
 import {
   failedWrite,
+  unattemptedWrite,
   unverifiedWrite,
   verifyWrite,
   type MetadataWriteIntent,
@@ -179,7 +180,23 @@ export async function writeMetadataWithVerification(
   const rejected: VerifiedAddress[] = []
 
   for (const group of request.groups) {
-    if (Object.keys(group.properties).length === 0) continue
+    if (Object.keys(group.properties).length === 0) {
+      // A group with intents and nothing to send cannot establish them, and skipping it silently
+      // would leave those addresses in `allIntents` - which is what decides this is not a no-op -
+      // and out of `addresses`, so nothing would record a verdict for them at all. There is no
+      // plan that emits this shape today; saying so out loud is what keeps it that way.
+      if (group.intents.length > 0) {
+        log.warn('[MetadataWrite]', 'A write group named addresses but carried no properties', {
+          path: request.path,
+          configuration: group.configuration ?? '(file scope)',
+          intents: group.intents.length,
+        })
+        rejected.push(
+          ...unattemptedWrite(group.intents, 'the write plan produced no properties to send'),
+        )
+      }
+      continue
+    }
     const result = await writeGroup(request.path, group, request.useLiveApi === true)
     if (result.ok) accepted.push(...group.intents)
     else rejected.push(...failedWrite(group.intents, result.error ?? 'the write failed'))

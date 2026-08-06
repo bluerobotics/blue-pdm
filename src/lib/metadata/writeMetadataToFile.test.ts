@@ -209,6 +209,50 @@ describe('a write that landed in some scopes and not others', () => {
   })
 })
 
+describe('a group that names addresses but carries no properties', () => {
+  // The group was skipped, so its intents counted towards "this write has something to do" and
+  // reached neither the accepted nor the rejected list. Nothing recorded a verdict for them and
+  // nothing reported them: the addresses simply vanished between the plan and the outcome. No plan
+  // emits this shape, which is exactly why it would have gone unnoticed.
+
+  it('records them unattempted rather than dropping them', async () => {
+    install({ fileProperties: {} })
+
+    const result = await writeMetadataWithVerification({
+      path: PATH,
+      groups: [
+        {
+          properties: {},
+          intents: [{ address: { scope: 'file', field: 'revision' }, expected: 'B' }],
+        },
+      ],
+    })
+
+    expect(result.addresses).toHaveLength(1)
+    expect(result.addresses[0].state).toBe('unattempted')
+    expect(result.outcome).toBe('unattempted')
+    expect(service.setProperties).not.toHaveBeenCalled()
+  })
+
+  it('says nothing about a group with neither properties nor intents', async () => {
+    install({ fileProperties: { Number: 'BR-202020' } })
+
+    const result = await writeMetadataWithVerification({
+      path: PATH,
+      groups: [
+        { configuration: 'Empty', properties: {}, intents: [] },
+        {
+          properties: { Number: 'BR-202020' },
+          intents: [{ address: { scope: 'file', field: 'part_number' }, expected: 'BR-202020' }],
+        },
+      ],
+    })
+
+    expect(result.addresses).toHaveLength(1)
+    expect(result.outcome).toBe('verified')
+  })
+})
+
 describe('rounding many verdicts into one outcome', () => {
   const at = (state: VerifiedAddress['state']): VerifiedAddress => ({
     address: { scope: 'file', field: 'part_number' },

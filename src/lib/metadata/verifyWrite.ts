@@ -16,7 +16,9 @@
  *
  * The comparison is by value, under the same read priority the rest of the app uses - `divergence.ts`
  * owns those key lists and this module borrows them rather than restating them, so a document whose
- * part number lives in `Base Item Number` verifies here exactly as it reads everywhere else.
+ * part number lives in `Base Item Number` verifies here exactly as it reads everywhere else. It
+ * borrows the scope definition from there too: a configuration holds what its own property bag
+ * holds, with nothing showing through from the document underneath. See `scopeProperties`.
  *
  * An intended empty value is the interesting case. `normalizeValue` maps both "" and a missing key
  * to `null`, so a cleared field verifies whether the property is present-and-empty or absent
@@ -28,7 +30,10 @@
  * Verifying by value keeps this module honest about what it can see - the value the app will read
  * next time is correct either way - and `.cursor/plans/service-empty-property-write.plan.md`
  * specifies the change that makes the shape right. Once it lands, a cleared field that reads as
- * absent is still verified; what changes is that it stops happening.
+ * absent is still verified; what changes is that it stops happening. Either way the answer is the
+ * same only because the read is scoped: a cleared configuration description reads as absent from
+ * that configuration whether the service deleted the property or wrote it empty, and a file-level
+ * `Description` that the user still wants showing through is not mistaken for a survivor.
  *
  * Pure: no I/O, no store access, no React.
  */
@@ -36,6 +41,7 @@
 import {
   CONFIG_SCOPE_SPECS,
   FILE_SCOPE_SPECS,
+  configurationScopeProperties,
   isPropertyReference,
   normalizeValue,
   type FileMetadata,
@@ -120,15 +126,29 @@ function acceptedValues(
 }
 
 /**
- * The properties that decide a configuration-scope value.
+ * The properties a write is judged against: the bag it was written to, and only that bag.
  *
- * Configuration properties over file properties, which is how the configuration loader reads them
- * and therefore what the app will see next time it looks. Verifying against a stricter view would
- * fail writes the app then reads back correctly.
+ * This used to spread `fileProperties` underneath a configuration's bag, on the argument that the
+ * configuration loader reads them that way and so the resolved value a user sees would be right.
+ * The resolved value is a different question from whether the write landed, and conflating them
+ * broke verification in both directions.
+ *
+ * A file-scope field on a multi-configuration document is written *into* a configuration's bag - see
+ * `MetadataWriteIntent.verifyIn` - so a stale file-level `Base Item Number` left over from an
+ * earlier release would satisfy an intent whose configuration write had written nothing at all. That
+ * reported `verified`, the one state a retry skips and check-in forgets, while the configuration's
+ * composite `Number` was never set and the title block was wrong. In the other direction, clearing
+ * one configuration's description on a document that also has a file-level `Description` read the
+ * file-level value as a survivor and reported `failed` forever: every check-in re-issued the write,
+ * paid for the read-back, failed again and promoted the value unconfirmed.
+ *
+ * `divergence.ts` owns the definition and the scanner uses the same one, so the two can no longer
+ * disagree about what a configuration holds. `resolvedConfigurationProperties` is the display view
+ * and lives beside it, named apart.
  */
 function scopeProperties(file: FileMetadata, scope: VerifyScope): Readonly<Record<string, string>> {
   if (scope === 'file') return file.fileProperties
-  return { ...file.fileProperties, ...(file.configurationProperties[scope.configuration] ?? {}) }
+  return configurationScopeProperties(file, scope.configuration)
 }
 
 /** Where an intent's value should be read from: its own instruction, else its address. */
@@ -221,4 +241,18 @@ export function failedWrite(
   reason: string,
 ): VerifiedAddress[] {
   return intents.map((intent) => ({ address: intent.address, state: 'failed', reason }))
+}
+
+/**
+ * The verdict when no write was issued for these intents at all.
+ *
+ * `failed` would be a claim about the document that nobody made; `unattempted` says the file was
+ * never touched, which is the whole reason the two states are separate. It still owes the file a
+ * write, so a retry picks it up.
+ */
+export function unattemptedWrite(
+  intents: readonly MetadataWriteIntent[],
+  reason: string,
+): VerifiedAddress[] {
+  return intents.map((intent) => ({ address: intent.address, state: 'unattempted', reason }))
 }
