@@ -17,6 +17,7 @@
     "test:watch": "vitest",
     "test:sw-service": "dotnet test solidworks-service/BluePLM.SolidWorksService.sln -c Release",
     "scan:divergence": "node scripts/scan-divergence.js",
+    "repair:config-maps": "tsx scripts/repair-config-maps.ts",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write \"src/**/*.{ts,tsx}\" \"api/**/*.ts\" \"electron/**/*.ts\"",
