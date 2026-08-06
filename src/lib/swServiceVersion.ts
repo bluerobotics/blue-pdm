@@ -69,6 +69,13 @@
  *                   headlessly; and take an origin so a background read is answered without
  *                   SolidWorks or not at all, escalating through GetDocumentDependencies2 before
  *                   anything may open a document
+ * - Version 1.17.1: Close the fail-open cases in RegressionFixtureGuard, which decides whether the
+ *                   --dm-probe diagnostic may write to a file. It never checked whether the fixture
+ *                   root itself was a junction, it accepted a \\?\ path whose ".." Windows does not
+ *                   collapse, and it resolved a relative path against the working directory, so the
+ *                   same input could be judged either way. It now requires an absolute, already
+ *                   canonical path, compares component by component, and refuses a reparse point
+ *                   anywhere between the volume root and the file
  *
  * When making service changes:
  * 1. Increment SERVICE_VERSION in Program.cs
@@ -78,7 +85,7 @@
 
 // The SolidWorks service version this app version expects
 // Uses semver: MAJOR.MINOR.PATCH
-export const EXPECTED_SW_SERVICE_VERSION = '1.17.0'
+export const EXPECTED_SW_SERVICE_VERSION = '1.17.1'
 
 // Minimum service version that will still work (for soft warnings vs hard errors)
 // Breaking changes should bump the major version and update this
@@ -123,6 +130,8 @@ export const SW_SERVICE_VERSION_DESCRIPTIONS: Record<string, string> = {
     'A property write that SolidWorks refuses is now reported as a failure on every path, not just the Document Manager one, and writing to a part with many configurations is a single pass over the file instead of one open-and-save per configuration',
   '1.17.0':
     'Drawing references are read without opening SolidWorks, including which configuration each view shows, and a file whose references genuinely cannot be read now says so instead of looking like a file with none. Reads triggered by the file watcher never open a SolidWorks window; only a read you asked for can',
+  '1.17.1':
+    'The built-in diagnostic that writes to a test file can no longer be tricked into writing somewhere else. It used to be fooled by a shortcut standing in for the test folder, by a path spelled in a form Windows does not tidy up, and by a path relative to wherever the service happened to be started from. It now refuses anything it cannot prove sits inside the test folder, and says which rule the path broke',
 }
 
 export interface SwServiceVersionCheckResult {

@@ -35,7 +35,7 @@ namespace BluePLM.SolidWorksService
         /// Service version - bump this when making changes that affect functionality.
         /// The app checks this version and warns if there's a mismatch.
         /// </summary>
-        private const string SERVICE_VERSION = "1.17.0";
+        private const string SERVICE_VERSION = "1.17.1";
 
         /// <summary>
         /// JSON settings for all stdout responses. EscapeNonAscii forces every non-ASCII character
@@ -147,6 +147,20 @@ namespace BluePLM.SolidWorksService
             // which creates SolidWorks-facing objects the probe deliberately avoids.
             if (probeFilePath != null)
             {
+                // RegressionFixtureGuard judges absolute, already-canonical paths only, and will not
+                // resolve a relative one: a guard whose verdict changes with the working directory is
+                // not a guard. Turning what the operator typed into such a path belongs here, at the
+                // edge, where the working directory is a legitimate part of the request.
+                try
+                {
+                    probeFilePath = Path.GetFullPath(probeFilePath);
+                }
+                catch (Exception error)
+                {
+                    Console.Error.WriteLine($"--dm-probe: '{probeFilePath}' is not a usable path ({error.Message})");
+                    return 1;
+                }
+
                 return DmWriteProbe.Run(new ProbeOptions
                 {
                     FilePath = probeFilePath,
