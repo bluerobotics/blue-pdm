@@ -20,8 +20,12 @@
  *   name to the registry stops the build until the migration handles it.
  * - `pickPersistedPathKeys` and `restorePersistedPathKeys` are what the persist middleware writes
  *   and reads, so a registered map is persisted and restored without a second declaration.
- * - `persistedPathKeys.test.ts` fails if the slice declares a `persisted*` map the registry does
- *   not name, so the registry cannot fall behind the state either.
+ * - `REGISTRY_COVERS_EVERY_PATH_KEYED_MAP` fails the build if the state declares a `persisted*` map
+ *   keyed by string that the registry does not name, so the registry cannot fall behind the state
+ *   either. That direction used to be a regular expression over `types.ts`, which required two
+ *   spaces of indentation, a name of letters only, a literal colon and the literal word `Record` -
+ *   so an optional `?`, an inline index signature, a type alias, a digit in the name, or a
+ *   declaration in any other slice file all went past it. A type cannot be spelled around.
  *
  * Pure: no store access, no React.
  */
@@ -45,6 +49,48 @@ export type PersistedPathKeyedMap = (typeof PERSISTED_PATH_KEYED_MAPS)[number]
 
 /** The slice of store state the registry covers. */
 export type PersistedPathKeyedState = Pick<PDMStoreState, PersistedPathKeyedMap>
+
+/**
+ * Every `persisted*` key of a state whose value is keyed by an arbitrary string.
+ *
+ * `string extends keyof V` is the whole test, and it is a question about the type rather than
+ * about how the type was written: `Record<string, V>`, an inline `{ [path: string]: V }` and any
+ * alias of either all answer yes, because all three have `string` for their `keyof`. A value with
+ * named properties does not, and neither does a number, a `Map` or a `Set` - which is why the
+ * in-memory path-keyed caches are correctly not the registry's business. `-?` strips the
+ * optionality so an optional map is judged on the type it holds rather than on `undefined`.
+ */
+export type PathKeyedPersistedMapKeys<S> = {
+  [K in Extract<keyof S, `persisted${string}`>]-?: string extends keyof NonNullable<S[K]>
+    ? K
+    : never
+}[Extract<keyof S, `persisted${string}`>]
+
+/** The path-keyed persisted maps the registry does not name. Empty is the only valid answer. */
+export type UnregisteredPathKeyedMaps<S> = Exclude<
+  PathKeyedPersistedMapKeys<S>,
+  PersistedPathKeyedMap
+>
+
+/**
+ * `true` when the registry covers the state, and otherwise a type nothing can be assigned to,
+ * carrying the offending keys so the compiler names them.
+ */
+export type RegistryCoversState<S> = [UnregisteredPathKeyedMaps<S>] extends [never]
+  ? true
+  : {
+      readonly 'add this to PERSISTED_PATH_KEYED_MAPS and to the rename': UnregisteredPathKeyedMaps<S>
+    }
+
+/**
+ * The other half of the derivation, and the half that used to be a test.
+ *
+ * `migratePersistedPathKeys` returns `Pick<PDMStoreState, PersistedPathKeyedMap>`, so a name added
+ * to the registry stops the build until the rename carries it. This stops the build the other way:
+ * add a path-keyed `persisted*` map anywhere in the state and it fails here, naming the key, until
+ * the registry names it too.
+ */
+export const REGISTRY_COVERS_EVERY_PATH_KEYED_MAP: RegistryCoversState<PDMStoreState> = true
 
 /** A path change to apply to every registered map. */
 export interface PathRename {

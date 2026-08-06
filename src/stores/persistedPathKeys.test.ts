@@ -14,9 +14,9 @@
  * fall behind the state it is supposed to describe.
  */
 
-import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+import ts from 'typescript'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
@@ -145,21 +145,188 @@ describe('the store applies the migration on a real rename', () => {
   })
 })
 
+// ============================================
+// The registry against the state it describes
+// ============================================
+
+/**
+ * One state shape, and what `UnregisteredPathKeyedMaps` must say about it.
+ *
+ * These are compiled, not pattern-matched. The check they exercise is
+ * `REGISTRY_COVERS_EVERY_PATH_KEYED_MAP`, a type-level assertion that fails the build rather than
+ * a test, so what is demonstrated here is the same operator the build uses, applied to shapes the
+ * real state does not contain. The list is written to be read as a list of things a scan of the
+ * source text got wrong: the first five all passed the regex this replaces.
+ */
+interface RegistryProbe {
+  name: string
+  /** Extra declarations above the probe slice, for shapes that need a second name. */
+  preamble?: string
+  /** The property the probe slice declares. */
+  declares?: string
+  /** The state to check. Defaults to the probe slice on its own. */
+  state?: string
+  /** The keys the operator must report as unregistered. */
+  unregistered: readonly string[]
+}
+
+const REGISTRY_PROBES: readonly RegistryProbe[] = [
+  {
+    name: 'a plain Record - the one spelling the source scan did catch',
+    declares: 'persistedProbeObvious: Record<string, string>',
+    unregistered: ['persistedProbeObvious'],
+  },
+  {
+    name: 'an optional map, where the `?` used to break the scan apart from the `:`',
+    declares: 'persistedProbeOptional?: Record<string, string>',
+    unregistered: ['persistedProbeOptional'],
+  },
+  {
+    name: 'an inline index signature rather than the word Record',
+    declares: 'persistedProbeIndexSignature: { [path: string]: string }',
+    unregistered: ['persistedProbeIndexSignature'],
+  },
+  {
+    name: 'a type alias, which says nothing about its own shape',
+    preamble: 'type ProbePathMap = Record<string, { at: string }>',
+    declares: 'persistedProbeAlias: ProbePathMap',
+    unregistered: ['persistedProbeAlias'],
+  },
+  {
+    name: 'a digit in the name, which the alpha-only scan stopped reading at',
+    declares: 'persistedProbe2: Record<string, string>',
+    unregistered: ['persistedProbe2'],
+  },
+  {
+    name: 'a map declared in another slice file entirely, invisible to a scan of one file',
+    state: 'PDMStoreState & ProbeOtherSlice',
+    unregistered: ['persistedProbeOtherFile'],
+  },
+  {
+    name: 'two at once, both named',
+    declares:
+      'persistedProbeFirst: Record<string, string>; persistedProbeSecond?: Record<string, number>',
+    unregistered: ['persistedProbeFirst', 'persistedProbeSecond'],
+  },
+  {
+    name: 'passes a registered map however it is spelled',
+    preamble: 'type ProbePathMap = Record<string, { part_number?: string }>',
+    declares: 'persistedPendingMetadata?: ProbePathMap',
+    unregistered: [],
+  },
+  {
+    name: 'passes a persisted value that is not keyed by path, which the registry is not for',
+    declares: 'persistedSidebarWidth: number',
+    unregistered: [],
+  },
+  {
+    name: 'passes a path-keyed map that is not persisted, and so is not named `persisted*`',
+    declares: 'fileConfigurationsByPath: Record<string, string>',
+    unregistered: [],
+  },
+  {
+    name: 'passes the real store state, which is the assertion the build makes',
+    state: 'PDMStoreState',
+    unregistered: [],
+  },
+]
+
+// The probes live beside this file rather than in a directory of their own: they are never written
+// to disk, and module resolution will not look inside a directory the file system does not have.
+const OTHER_SLICE_PATH = posixPath(join(__dirname, 'registryProbe.otherSlice.ts'))
+const OTHER_SLICE_SOURCE = `
+export interface ProbeOtherSlice {
+  persistedProbeOtherFile: Record<string, string>
+}
+`
+
+function posixPath(value: string): string {
+  return value.replace(/\\/g, '/')
+}
+
+function probePath(index: number): string {
+  return posixPath(join(__dirname, `registryProbe.${index}.ts`))
+}
+
+function probeSource(probe: RegistryProbe): string {
+  return [
+    `import type { UnregisteredPathKeyedMaps } from '@/stores/persistedPathKeys'`,
+    `import type { PDMStoreState } from '@/stores/types'`,
+    `import type { ProbeOtherSlice } from './registryProbe.otherSlice'`,
+    probe.preamble ?? '',
+    `interface ProbeState { ${probe.declares ?? ''} }`,
+    `export declare const unregistered: UnregisteredPathKeyedMaps<${probe.state ?? 'ProbeState'}>`,
+  ].join('\n')
+}
+
+/**
+ * A program over the probes, resolving `@/` against the real tsconfig so they see the real state.
+ *
+ * The unused-name checks are off because a probe imports every name the table might need and uses
+ * one of them; everything else the project asks for stays on, and each probe's diagnostics are
+ * asserted empty so a probe cannot rot into one that compiles to nothing.
+ */
+function probeProgram(files: ReadonlyMap<string, string>): ts.Program {
+  const projectRoot = join(__dirname, '..', '..')
+  const { config } = ts.readConfigFile(join(projectRoot, 'tsconfig.json'), ts.sys.readFile)
+  const parsed = ts.parseJsonConfigFileContent(config, ts.sys, projectRoot)
+  const options: ts.CompilerOptions = {
+    ...parsed.options,
+    noUnusedLocals: false,
+    noUnusedParameters: false,
+    noEmit: true,
+  }
+
+  const host = ts.createCompilerHost(options, true)
+  const readFile = host.readFile.bind(host)
+  const fileExists = host.fileExists.bind(host)
+  const getSourceFile = host.getSourceFile.bind(host)
+  host.readFile = (name) => files.get(posixPath(name)) ?? readFile(name)
+  host.fileExists = (name) => files.has(posixPath(name)) || fileExists(name)
+  host.getSourceFile = (name, languageVersion, onError, shouldCreate) => {
+    const text = files.get(posixPath(name))
+    if (text === undefined) return getSourceFile(name, languageVersion, onError, shouldCreate)
+    return ts.createSourceFile(name, text, languageVersion, true)
+  }
+
+  return ts.createProgram([...files.keys()], options, host)
+}
+
+/** The string literals the probe's `unregistered` declaration resolved to. */
+function unregisteredKeys(checker: ts.TypeChecker, source: ts.SourceFile): string[] {
+  const statement = source.statements.find(ts.isVariableStatement)
+  const declaration = statement?.declarationList.declarations[0]
+  if (!declaration) throw new Error(`probe ${source.fileName} declared nothing to read`)
+
+  const type = checker.getTypeAtLocation(declaration.name)
+  const parts = type.isUnion() ? type.types : [type]
+  return parts
+    .filter((part): part is ts.StringLiteralType => part.isStringLiteral())
+    .map((part) => part.value)
+    .sort()
+}
+
 describe('the registry cannot fall behind the state it describes', () => {
-  // The type system enforces the other direction: `migratePersistedPathKeys` and the two
-  // persistence helpers return `Pick<PDMStoreState, PersistedPathKeyedMap>`, so a name added to the
-  // registry stops the build until every one of them handles it. This is the direction the compiler
-  // cannot see - a `persisted*` map declared on the slice and never registered.
+  const files = new Map<string, string>([[OTHER_SLICE_PATH, OTHER_SLICE_SOURCE]])
+  REGISTRY_PROBES.forEach((probe, index) => files.set(probePath(index), probeSource(probe)))
 
-  it('names every path-keyed persisted map the files slice declares', () => {
-    const types = readFileSync(join(__dirname, 'types.ts'), 'utf8')
-    const declared = [...types.matchAll(/^\s{2}(persisted[A-Za-z]*)\s*:\s*Record</gm)].map(
-      (match) => match[1],
-    )
+  const program = probeProgram(files)
+  const checker = program.getTypeChecker()
 
-    expect(declared.length).toBeGreaterThan(0)
-    expect([...declared].sort()).toEqual([...PERSISTED_PATH_KEYED_MAPS].sort())
-  })
+  it.each(REGISTRY_PROBES.map((probe, index) => ({ ...probe, index })))(
+    'catches: $name',
+    ({ index, unregistered }) => {
+      const source = program.getSourceFile(probePath(index))
+      if (!source) throw new Error(`probe ${index} never reached the program`)
+
+      expect(
+        program
+          .getSemanticDiagnostics(source)
+          .map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, ' ')),
+      ).toEqual([])
+      expect(unregisteredKeys(checker, source)).toEqual([...unregistered].sort())
+    },
+  )
 
   it('leaves no map behind in the rename, whatever the registry grows to hold', () => {
     const migrated = migratePersistedPathKeys(seeded(OLD_PATH), {
