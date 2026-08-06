@@ -35,7 +35,30 @@ namespace BluePLM.SolidWorksService
         /// Service version - bump this when making changes that affect functionality.
         /// The app checks this version and warns if there's a mismatch.
         /// </summary>
-        private const string SERVICE_VERSION = "1.20.0";
+        private const string SERVICE_VERSION = "1.21.0";
+
+        /// <summary>
+        /// Error code returned for an action this build does not implement. The app matches on this
+        /// string exactly, so renaming the constant alone is not enough.
+        /// </summary>
+        public const string UnknownActionCode = "UNKNOWN_ACTION";
+
+        /// <summary>
+        /// Answer for an action this build does not implement, naming the action.
+        ///
+        /// A caller asking for a command added after the running service was built otherwise gets
+        /// a failure indistinguishable from one the file caused, and it gets it once per file.
+        /// </summary>
+        public static CommandResult UnknownAction(string? action)
+        {
+            return new CommandResult
+            {
+                Success = false,
+                Error = $"Unknown action: {action}",
+                ErrorCode = UnknownActionCode,
+                Data = new { action, serviceVersion = SERVICE_VERSION }
+            };
+        }
 
         /// <summary>
         /// JSON settings for all stdout responses. EscapeNonAscii forces every non-ASCII character
@@ -348,6 +371,7 @@ namespace BluePLM.SolidWorksService
                     
                     "getBom" => GetBomFast(filePath, command),
                     "getProperties" => GetPropertiesFast(filePath, command),
+                    "getPropertiesDocumentManager" => GetPropertiesDocumentManagerOnly(filePath, command),
                     "getConfigurations" => GetConfigurationsFast(filePath),
                     "getReferences" => GetReferencesFast(filePath, ReadReferenceOrigin(command)),
                     "getPreview" => GetPreviewFast(filePath, command["configuration"]?.ToString()),
@@ -481,7 +505,12 @@ namespace BluePLM.SolidWorksService
                     "resetComConnection" => ResetComConnection(),
                     "quit" => Quit(),
                     
-                    _ => new CommandResult { Success = false, Error = $"Unknown action: {action}" }
+                    // A command this build does not have is a different fact from a command that
+                    // ran and failed, and the app has to be able to tell them apart: on an older
+                    // service the first file of a vault-wide read failed while the version check
+                    // still reported the service current, so the diagnostic pointed at the files.
+                    // The action is named because a version gate can drift and this cannot.
+                    _ => UnknownAction(action)
                 };
 
                 // Set requestId on result for response correlation
@@ -630,6 +659,40 @@ namespace BluePLM.SolidWorksService
             }
             
             // Always return DM result - no fallback to slow SW API!
+            return result;
+        }
+
+        /// <summary>
+        /// Read custom properties through Document Manager and through nothing else.
+        ///
+        /// GetPropertiesFast asks IsFileOpenInSolidWorks first and, when the answer is yes, reads
+        /// through the running SolidWorks session. That is the right trade for a foreground read of
+        /// the one document the user is looking at. It is the wrong trade for a bulk audit, which
+        /// would push thousands of COM round-trips through the session somebody is working in.
+        ///
+        /// This entry point exists for readers that must not touch that session at any cost. It
+        /// resolves to DocumentManagerAPI.GetCustomProperties, whose OpenDocument passes
+        /// readOnly: true, so neither the session nor the file on disk is altered. Callers are
+        /// expected to leave documents SolidWorks currently holds out of their scope, because
+        /// pointing Document Manager at one can make SolidWorks close it.
+        /// </summary>
+        static CommandResult GetPropertiesDocumentManagerOnly(string? filePath, JObject command)
+        {
+            if (_dmApi == null)
+            {
+                Console.Error.WriteLine($"[Service] Document Manager API not created for: {Path.GetFileName(filePath)}");
+                return new CommandResult
+                {
+                    Success = false,
+                    Error = "Document Manager not available. Configure DM license in Settings -> Integrations -> SOLIDWORKS."
+                };
+            }
+
+            var result = _dmApi.GetCustomProperties(filePath, command["configuration"]?.ToString());
+            if (!result.Success)
+            {
+                Console.Error.WriteLine($"[Service] DM-only read failed: {result.Error}");
+            }
             return result;
         }
 

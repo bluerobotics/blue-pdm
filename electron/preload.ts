@@ -482,6 +482,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('solidworks:get-bom', filePath, options),
     getProperties: (filePath: string, configuration?: string) =>
       ipcRenderer.invoke('solidworks:get-properties', filePath, configuration),
+    // Reads only through Document Manager, never through a running SolidWorks session.
+    getPropertiesDocumentManager: (filePath: string, configuration?: string) =>
+      ipcRenderer.invoke('solidworks:get-properties-document-manager', filePath, configuration),
     setProperties: (filePath: string, properties: Record<string, string>, configuration?: string) =>
       ipcRenderer.invoke('solidworks:set-properties', filePath, properties, configuration),
     setPropertiesBatch: (
@@ -1442,6 +1445,20 @@ declare global {
             configurations: string[]
           }
           error?: string
+        }>
+        getPropertiesDocumentManager: (
+          filePath: string,
+          configuration?: string,
+        ) => Promise<{
+          success: boolean
+          data?: {
+            filePath: string
+            fileProperties: Record<string, string>
+            configurationProperties: Record<string, Record<string, string>>
+            configurations: string[]
+          }
+          error?: string
+          errorCode?: string
         }>
         setProperties: (
           filePath: string,

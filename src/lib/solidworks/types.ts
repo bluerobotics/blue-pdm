@@ -69,6 +69,16 @@ export type SwReferenceOrigin = 'foreground' | 'background'
 export const REFERENCES_UNRESOLVED = 'REFERENCES_UNRESOLVED'
 
 /**
+ * The service's `errorCode` for an action the running build does not implement.
+ *
+ * The app can be newer than the service on a machine, and when it is, a command added after that
+ * service was built fails on every call. Without this code those failures are indistinguishable
+ * from files that could not be read, which is how a stale service came to look like a damaged
+ * vault. A version check answers the same question earlier but can drift; this cannot.
+ */
+export const UNKNOWN_ACTION = 'UNKNOWN_ACTION'
+
+/**
  * Reference from SolidWorks service representing a component in an assembly.
  */
 export interface SWServiceReference {

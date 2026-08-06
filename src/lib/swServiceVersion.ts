@@ -94,6 +94,15 @@
  *                   nothing outside the service can: a stale value equal to the intended one reads
  *                   exactly like one the write put there. The app now refuses to confirm any scope
  *                   in a batch reporting a shortfall, which on this service is never
+ * - Version 1.21.0: Add getPropertiesDocumentManager, which resolves straight to
+ *                   DocumentManagerAPI.GetCustomProperties with no IsFileOpenInSolidWorks probe,
+ *                   so a bulk reader cannot route thousands of COM round-trips through the
+ *                   session the user is working in. getProperties keeps the probe: it is the
+ *                   right trade for the one document on screen and the wrong one for a
+ *                   vault-wide walk, which is expected to skip documents SolidWorks holds
+ *                   rather than open them by either route. An unrecognised action now carries
+ *                   errorCode UNKNOWN_ACTION alongside the prose, so a caller can tell a
+ *                   command this service does not have from a command that failed
  *
  * When making service changes:
  * 1. Increment SERVICE_VERSION in Program.cs
@@ -103,7 +112,7 @@
 
 // The SolidWorks service version this app version expects
 // Uses semver: MAJOR.MINOR.PATCH
-export const EXPECTED_SW_SERVICE_VERSION = '1.20.0'
+export const EXPECTED_SW_SERVICE_VERSION = '1.21.0'
 
 // Minimum service version that will still work (for soft warnings vs hard errors)
 // Breaking changes should bump the major version and update this
@@ -156,7 +165,18 @@ export const SW_SERVICE_VERSION_DESCRIPTIONS: Record<string, string> = {
     'Clearing a metadata field now empties the custom property in the file instead of removing it, so a title block or note linked to that property keeps showing blank rather than breaking or falling back to the old value. The service also reports a property that exists and is empty, which it used to hide, so BluePLM can tell a field you cleared from one that was never filled in. Removing a property outright is still possible, but a caller now has to ask for it explicitly',
   '1.20.0':
     'When BluePLM writes several configurations at once, the service now names any configuration it could not write instead of only saying how many it got to. BluePLM could previously tell that one had been missed but not which, so it had no honest way to mark the file - and a configuration that still happened to hold the right value could be reported as written when it had not been touched. Those configurations are now marked as unconfirmed and retried rather than quietly accepted',
+  '1.21.0':
+    'Auditing a whole vault for metadata that has drifted no longer goes anywhere near the SOLIDWORKS you have open. The audit reads each file with the standalone library instead of through your session, so a walk over several thousand documents cannot slow your window down or close something you were working on. The service also says plainly when BluePLM asks it for a command it does not have, rather than reporting it as a file that could not be read - which is what made an out-of-date service look like a vault full of broken files',
 }
+
+/**
+ * First service version that answers `getPropertiesDocumentManager`.
+ *
+ * A feature added in a particular service version cannot gate on
+ * `EXPECTED_SW_SERVICE_VERSION`: that moves with every later release, so the gate would start
+ * refusing services that have the command perfectly well.
+ */
+export const SW_SERVICE_VERSION_DOCUMENT_MANAGER_READ = '1.21.0'
 
 export interface SwServiceVersionCheckResult {
   status: 'current' | 'outdated' | 'ahead' | 'incompatible' | 'unknown'
@@ -194,6 +214,26 @@ function compareVersions(a: string, b: string): number {
   if (vA.patch !== vB.patch) return vA.patch < vB.patch ? -1 : 1
 
   return 0
+}
+
+/**
+ * The one "this service is too old to use" answer, so every caller that reports staleness reports
+ * it in the same words. `requiredVersion` differs between the app-wide floor and a single
+ * feature's floor; nothing else does.
+ */
+function rebuildRequired(
+  serviceVersion: string,
+  requiredVersion: string,
+): SwServiceVersionCheckResult {
+  return {
+    status: 'incompatible',
+    serviceVersion,
+    expectedVersion: EXPECTED_SW_SERVICE_VERSION,
+    message: 'Service rebuild required',
+    details:
+      `The SolidWorks service (v${serviceVersion}) is too old for this app. ` +
+      `Required: v${requiredVersion}+. Rebuild the service in solidworks-service/ folder.`,
+  }
 }
 
 /**
@@ -242,15 +282,7 @@ export function checkSwServiceCompatibility(
 
   // Service is too old - might cause errors
   if (minComparison < 0) {
-    return {
-      status: 'incompatible',
-      serviceVersion,
-      expectedVersion: EXPECTED_SW_SERVICE_VERSION,
-      message: 'Service rebuild required',
-      details:
-        `The SolidWorks service (v${serviceVersion}) is too old for this app. ` +
-        `Required: v${MINIMUM_COMPATIBLE_SW_SERVICE_VERSION}+. Rebuild the service in solidworks-service/ folder.`,
-    }
+    return rebuildRequired(serviceVersion, MINIMUM_COMPATIBLE_SW_SERVICE_VERSION)
   }
 
   // Older but still compatible (soft warning)
@@ -263,6 +295,30 @@ export function checkSwServiceCompatibility(
       `The SolidWorks service is on v${serviceVersion}, but v${EXPECTED_SW_SERVICE_VERSION} is available. ` +
       'Some new features may not work until you rebuild the service.',
   }
+}
+
+/**
+ * Check a running service against one feature's floor rather than the app's.
+ *
+ * `checkSwServiceCompatibility` answers "should this user rebuild at some point", and for a
+ * service one release behind it answers `outdated` - a soft warning. That is the right answer for
+ * the app as a whole and the wrong one for a feature whose only command the service does not have:
+ * the feature does not degrade, it fails on its first call while the diagnostic says the service
+ * is merely a little behind. A caller that cannot work without a command asks this instead, and
+ * gets the same `incompatible` / "Service rebuild required" answer the app-wide floor produces.
+ *
+ * A service that meets the floor falls through to the app-wide check, so a genuinely stale service
+ * that happens to have the command is still reported as stale.
+ */
+export function checkSwServiceFeature(
+  serviceVersion: string | null,
+  requiredVersion: string,
+): SwServiceVersionCheckResult {
+  if (!serviceVersion) return checkSwServiceCompatibility(null)
+  if (compareVersions(serviceVersion, requiredVersion) < 0) {
+    return rebuildRequired(serviceVersion, requiredVersion)
+  }
+  return checkSwServiceCompatibility(serviceVersion)
 }
 
 /**

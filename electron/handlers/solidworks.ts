@@ -14,9 +14,7 @@ import * as CFB from 'cfb'
 
 // Import error handling utilities from COM stability layer
 import {
-  SwErrorCode,
   parseServiceError,
-  isRetryableError,
   getOperationTimeout,
   shouldRetry,
   calculateRetryDelay,
@@ -24,7 +22,6 @@ import {
   createErrorNotification,
   DEFAULT_RETRY_CONFIG,
   type SwServiceResult,
-  type SwParsedError,
 } from './solidworksErrors'
 import type { ExtractedImage, ThumbnailTier } from './thumbnails/types'
 import { classifySwProcess, planSwClose, type SwProcessVerdict } from './swProcess/classify'
@@ -3296,6 +3293,15 @@ export function registerSolidWorksHandlers(
     },
   )
 
+  // Deliberately not in INTERACTIVE_ACTIONS: this is the bulk reader, and a vault-wide walk must
+  // queue behind whatever the person at the keyboard is doing.
+  ipcMain.handle(
+    'solidworks:get-properties-document-manager',
+    async (_, filePath: string, configuration?: string) => {
+      return sendSWCommand({ action: 'getPropertiesDocumentManager', filePath, configuration })
+    },
+  )
+
   ipcMain.handle(
     'solidworks:set-properties',
     async (_, filePath: string, properties: Record<string, string>, configuration?: string) => {
@@ -3843,6 +3849,7 @@ export function unregisterSolidWorksHandlers(): void {
     'sw:release-handles',
     'solidworks:get-bom',
     'solidworks:get-properties',
+    'solidworks:get-properties-document-manager',
     'solidworks:set-properties',
     'solidworks:set-properties-batch',
     'solidworks:get-configurations',

@@ -5,13 +5,13 @@ import {
   Loader2,
   RefreshCw,
   Database,
-  AlertTriangle,
   ChevronDown,
   Check,
   X,
 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useSolidWorksSettings } from '../hooks'
+import { SwServiceVersionNotice } from '@/components/shared'
 import { executeCommand } from '@/lib/commands'
 import { checkSwServiceCompatibility, EXPECTED_SW_SERVICE_VERSION } from '@/lib/swServiceVersion'
 
@@ -141,35 +141,7 @@ export function ServiceTab() {
           </div>
 
           {/* Version Mismatch Warning */}
-          {status.running &&
-            versionCheck &&
-            versionCheck.status !== 'current' &&
-            versionCheck.status !== 'ahead' && (
-              <div
-                className={`flex items-start gap-3 p-3 rounded-lg border ${
-                  versionCheck.status === 'incompatible'
-                    ? 'bg-red-500/10 border-red-500/30'
-                    : 'bg-yellow-500/10 border-yellow-500/30'
-                }`}
-              >
-                <AlertTriangle
-                  size={16}
-                  className={`mt-0.5 flex-shrink-0 ${
-                    versionCheck.status === 'incompatible' ? 'text-red-400' : 'text-yellow-400'
-                  }`}
-                />
-                <div className="flex-1">
-                  <div
-                    className={`text-sm font-medium ${
-                      versionCheck.status === 'incompatible' ? 'text-red-400' : 'text-yellow-400'
-                    }`}
-                  >
-                    {versionCheck.message}
-                  </div>
-                  <div className="text-xs text-plm-fg-muted mt-1">{versionCheck.details}</div>
-                </div>
-              </div>
-            )}
+          {versionCheck && <SwServiceVersionNotice check={versionCheck} />}
 
           {/* Detailed Status indicator */}
           <div className="flex items-center justify-between">

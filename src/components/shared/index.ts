@@ -50,6 +50,8 @@ export type {
 // Status & Info components
 export { OnlineUsersIndicator } from './OnlineUsers'
 export { SolidWorksStatusIndicator } from './SolidWorksStatusIndicator'
+export { SwServiceVersionNotice } from './SwServiceVersionNotice'
+export type { SwServiceVersionNoticeProps } from './SwServiceVersionNotice'
 export { ImpersonationBanner } from './ImpersonationBanner'
 export { LanguageSelector } from './LanguageSelector'
 

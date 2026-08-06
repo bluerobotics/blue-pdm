@@ -673,6 +673,32 @@ declare global {
           }
           error?: string
         }>
+        /**
+         * The same read, routed through Document Manager and nothing else.
+         *
+         * `getProperties` asks the service whether SolidWorks has the file open and reads through
+         * the live session when it does. That is right for the one document on screen and wrong
+         * for a bulk walk, which would drive thousands of COM calls through the session somebody
+         * is working in. Document Manager opens read-only.
+         *
+         * Added in service v1.21.0. An older service answers with
+         * `errorCode === 'UNKNOWN_ACTION'`, which callers must not record as a file they could
+         * not read.
+         */
+        getPropertiesDocumentManager: (
+          filePath: string,
+          configuration?: string,
+        ) => Promise<{
+          success: boolean
+          data?: {
+            filePath: string
+            fileProperties: Record<string, string>
+            configurationProperties: Record<string, Record<string, string>>
+            configurations: string[]
+          }
+          error?: string
+          errorCode?: string
+        }>
         setProperties: (
           filePath: string,
           properties: Record<string, string>,
