@@ -130,9 +130,53 @@ resolve the same way whether you run from source or from the build.
 | `API_HOST` | `0.0.0.0` | Host to bind to |
 | `RATE_LIMIT_MAX` | `100` | Max requests per window |
 | `RATE_LIMIT_WINDOW` | `60000` | Time window in ms (60s) |
-| `CORS_ORIGINS` | `*` | Allowed origins (comma-separated) |
+| `CORS_ORIGINS` | *(empty)* | Extra browser origins, comma-separated. See below |
+| `ENABLE_DOCS` | `true` | Serve the Swagger UI and OpenAPI document at `/docs` |
+| `NODE_ENV` | `production` | `development` turns on pretty logs and the Vite dev origin |
 
 You can also use `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` if you have them set for development.
+
+### Nothing here has to be set to be safe
+
+Every one of these defaults to the conservative answer, so a deployment that
+sets only the Supabase credentials is correctly configured:
+
+- **A `500` never returns the server's error message or stack trace.** It
+  returns `{"error":"INTERNAL_ERROR","message":"Internal server error","requestId":"…"}`.
+  The real error, with its stack, is in the server log under that same
+  `requestId`. This is not configurable — see [Error Responses](#error-responses).
+- **`NODE_ENV` defaults to `production`.** It used to default to `development`,
+  which meant a platform that did not set it got the developer's behaviour.
+  It now decides only log format and level, and whether the Vite dev server is
+  an allowed CORS origin. `npm run api` sets it to `development` for you.
+- **CORS denies by default, with one permanent exception: the desktop app.**
+
+### CORS and the desktop app
+
+The origin `null` is **always** allowed, in every environment, and
+`CORS_ORIGINS` adds to the allowlist rather than replacing it — so adding your
+ERP's domain cannot take Integrations, Customer Sync, Webhooks, the Suppliers
+view or the API health check offline.
+
+That entry exists for a packaged BluePLM build, which loads its renderer from a
+`file://` page. Measured on Electron 39, such a page is in fact not a CORS
+client at all: its `fetch()` sends no `Origin` header and reads responses from
+servers that send no CORS headers. The allowlist entry is therefore insurance
+rather than a live dependency — it means the app keeps working if the renderer
+ever moves to a custom scheme or Electron tightens `file://` to match the web.
+A `npm run dev` renderer is a different matter: it is served over http, sends a
+real `Origin`, and is subject to CORS normally, which is why
+`http://localhost:5173` is allowed when `NODE_ENV=development`.
+
+Most deployments never need `CORS_ORIGINS` at all. CORS is a browser mechanism:
+Odoo, SAP, a CI job and a Python script send no `Origin` header and are not
+subject to it. Set it only when a **browser** application other than BluePLM
+calls this API.
+
+`CORS_ORIGINS=*` is not honoured. It meant "any website may read this API's
+responses", it shipped in `render.yaml`, and it is now ignored with a warning
+in the startup log rather than refused outright, so an existing deployment
+picking up a new image keeps running instead of failing to start.
 
 ### Encryption key
 
@@ -175,6 +219,13 @@ The easiest way - no repo access needed. The API automatically detects the `PORT
 4. Add environment variables: `SUPABASE_URL`, `SUPABASE_KEY`, `SUPABASE_SERVICE_KEY`
 5. Deploy!
 
+> **Those three variables are the whole list.** The image sets no behaviour
+> switches of its own, and every default is the conservative one — see
+> [Nothing here has to be set to be safe](#nothing-here-has-to-be-set-to-be-safe).
+> `ENABLE_DOCS`, `CORS_ORIGINS` and `NODE_ENV` are set in the platform's own
+> environment if you want them, never baked into the image, so changing one is
+> a variable edit and a restart rather than a rebuild.
+
 **Fly.io:**
 ```bash
 fly launch --image ghcr.io/bluerobotics/blueplm-api:latest
@@ -205,7 +256,13 @@ railway init
 railway variables set SUPABASE_URL=https://xxx.supabase.co
 railway variables set SUPABASE_KEY=your-anon-key
 railway variables set SUPABASE_SERVICE_KEY=your-service-key
-railway variables set CORS_ORIGINS=https://your-erp.com,https://odoo.yourcompany.com
+
+# Optional. Only needed if a BROWSER app other than BluePLM calls this API —
+# an ERP talking to it server-to-server sends no Origin and does not need it.
+# railway variables set CORS_ORIGINS=https://your-browser-app.example
+#
+# Optional. Hides the Swagger UI at /docs, which is on by default.
+# railway variables set ENABLE_DOCS=false
 
 # Encrypts stored integration credentials. Generate once with:
 #   node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
@@ -284,7 +341,9 @@ fly deploy
 
 ### Production Checklist
 
-- [ ] Set `CORS_ORIGINS` to only allow your ERP/integration domains
+- [ ] Set `CORS_ORIGINS` **only** if a browser app other than BluePLM calls this
+      API — an ERP or script does not need it, and the desktop app is always allowed
+- [ ] Decide whether `/docs` should be public (`ENABLE_DOCS=false` hides it)
 - [ ] Configure rate limiting appropriately (`RATE_LIMIT_MAX`)
 - [ ] Set up monitoring/alerting on the `/health` endpoint
 - [ ] Enable HTTPS (most platforms do this automatically)
@@ -1047,6 +1106,27 @@ All errors return JSON in this format:
 }
 ```
 
+A **4xx** describes something the caller did, so its `message` says what to
+correct, in every environment.
+
+A **5xx** describes the server, and its message and stack trace would describe
+paths inside the container, dependency versions and the shape of the call that
+failed — none of which the caller can act on. So a 5xx is always exactly this:
+
+```json
+{
+  "error": "INTERNAL_ERROR",
+  "message": "Internal server error",
+  "requestId": "0f2c9a3e-6b41-4c9e-9d55-1a2b3c4d5e6f"
+}
+```
+
+There is no setting that turns the detail back on. The full error and its stack
+are in the server log against the same `requestId`, so quote that id when
+reporting a fault and the operator can find the exact line. Send your own
+`X-Request-Id` header and it will be used instead of a generated one, which
+lets you match a failure to a trace you already have.
+
 Common status codes:
 - `400` - Bad request (missing/invalid parameters)
 - `401` - Unauthorized (missing/invalid token)
@@ -1318,9 +1398,14 @@ The API uses [Pino](https://getpino.io/) for structured JSON logging:
     responseTime: 0.58
 ```
 
-For JSON output (production), remove the `pino-pretty` transport in
-`src/infrastructure/logging.ts`. Edit the TypeScript sources, never `api/dist` —
-that directory is regenerated by every build.
+That pretty-printed form is the development one. The default is `production`,
+which logs single-line JSON at `info` — set `NODE_ENV=development` for the
+above. Both the request logger and the standalone logger used by modules
+without a Fastify instance are built from the same configuration, so one
+process never emits two formats onto one stream.
+
+Unhandled errors are logged here in full, with their stack, under the
+`requestId` that the 5xx response returned to the caller.
 
 ## Troubleshooting
 

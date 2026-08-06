@@ -273,6 +273,31 @@ The REST API server is needed for sending invite emails and ERP integrations.
 The `SUPABASE_SERVICE_KEY` bypasses Row Level Security. Never expose it in client-side code.
 :::
 
+::: tip That is the whole list
+There is nothing else you have to set to get a safely configured API. The image
+bakes in no behaviour switches, and every default is the conservative one: a
+`500` returns only an error id and never the server's stack trace, and BluePLM
+itself is always allowed through CORS whatever else you configure.
+
+Earlier versions behaved differently. `NODE_ENV` defaulted to `development`,
+and because neither Railway nor Render sets it for a prebuilt image, an API
+deployed by following these steps returned full stack traces to anyone who
+asked. **If you deployed before BluePLM 3.25.0, pull the current image** —
+`ghcr.io/bluerobotics/blueplm-api:latest`, then redeploy. You do not need to
+add a variable to fix it, and you should not add `NODE_ENV=development`.
+:::
+
+### Optional Variables
+
+Set these in the same place as the three above — the platform's own environment
+settings — so that changing your mind later is a variable edit and a restart.
+
+| Variable | Default | What it does |
+|----------|---------|--------------|
+| `ENABLE_DOCS` | `true` | Serves browsable API documentation at `<your-api-url>/docs`. Set to `false` to keep your API's shape off the public internet. It affects nothing but the documentation page. |
+| `CORS_ORIGINS` | *(empty)* | Extra **browser** origins allowed to call the API, comma-separated. You almost certainly do not need this: Odoo, scripts and other server-to-server callers are not subject to CORS, and BluePLM is always allowed. |
+| `NODE_ENV` | `production` | Leave it alone unless you are developing BluePLM itself. |
+
 ### Configure in BluePLM
 
 1. Go to **Settings → Integrations → REST API**

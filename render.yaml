@@ -35,9 +35,27 @@ services:
         # WARNING: once set, this value can never change. Every secret encrypted
         # with it becomes permanently unreadable if it does.
         sync: false
-      - key: CORS_ORIGINS
-        value: "*"
+      # CORS_ORIGINS is deliberately absent.
+      #
+      # It used to be "*", which really did let any website read this API's
+      # responses. It is not replaced by a narrower list because most
+      # deployments need no list at all: the desktop app is always allowed,
+      # and server-to-server callers such as Odoo send no Origin header and
+      # are not subject to CORS in the first place. Add it here only if a
+      # browser application other than BluePLM calls this API, as a
+      # comma-separated list of exact origins. Setting it adds to the
+      # allowlist and cannot lock the desktop app out.
       - key: RATE_LIMIT_MAX
         value: "100"
+      # Serves the Swagger UI and the OpenAPI document at /docs. On by default;
+      # set to "false" to keep the API's shape off the public internet. This is
+      # a documentation choice and affects nothing else - error responses never
+      # carry internals either way.
+      - key: ENABLE_DOCS
+        value: "true"
+      # Only decides developer conveniences now: log format and level, and
+      # whether the Vite dev server is an allowed origin. It is stated here
+      # rather than left to the default so that reading this file tells you
+      # what the service is running as.
       - key: NODE_ENV
         value: production

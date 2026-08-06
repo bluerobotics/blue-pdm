@@ -42,10 +42,18 @@ FROM node:22-alpine AS runtime
 ARG GIT_COMMIT_SHA
 ENV BUILD_COMMIT_SHA=${GIT_COMMIT_SHA}
 
-# NODE_ENV is deliberately not set here. It gates CORS (unset means permissive,
-# 'production' means deny unless CORS_ORIGINS is given) and the /docs UI, so
-# setting it would change how every existing deployment behaves. Whether this
-# image should default to production is a separate decision from dropping tsx.
+# No behaviour switch is baked into this image, deliberately.
+#
+# The defaults live in api/src/config/env.ts and are already the safe ones:
+# NODE_ENV defaults to 'production', 5xx responses never carry internals, and
+# the CORS allowlist always contains the desktop app. So an operator who sets
+# nothing gets a correctly configured service.
+#
+# Anything they do want to change - ENABLE_DOCS, CORS_ORIGINS, NODE_ENV - is set
+# in the deployment's own environment, where changing it back is a variable
+# edit and a restart. Fixing an ENV line here would mean a rebuild, a push and
+# a redeploy to undo, which is the wrong shape for a switch you might need to
+# flip while something is broken.
 
 WORKDIR /app
 

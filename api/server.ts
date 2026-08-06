@@ -52,12 +52,79 @@ const packageJsonPath = path.join(__dirname, 'package.json')
 const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'))
 const API_VERSION = packageJson.version || '0.0.0'
 
-// Parse CORS origins from env — require explicit config in production
-const CORS_ORIGINS = env.CORS_ORIGINS
-  ? env.CORS_ORIGINS.split(',').map((o) => o.trim())
-  : env.NODE_ENV === 'production'
-    ? false
-    : true
+/**
+ * The origin an opaque browser context sends, kept allowed for the desktop app.
+ *
+ * A packaged build loads its renderer with `loadFile`, so it is a `file://`
+ * page, and the expectation was that Chromium would give it the opaque origin
+ * `null` and enforce CORS on it like any other page. **Measured against
+ * Electron 39.2.7 on Windows, it does not.** A `file://` page's `fetch()`
+ * sends no `Origin` header at all, the response arrives with
+ * `response.type === 'basic'` rather than `'cors'`, and a server that returns
+ * no CORS headers whatsoever is read successfully. So the packaged app is not
+ * a CORS client of this API and does not currently need this entry - unlike a
+ * `npm run dev` renderer, which is served over http, does send an `Origin`,
+ * and is subject to CORS in the ordinary way.
+ *
+ * The entry stays anyway, because what it costs is nothing and what it buys is
+ * that "the desktop app works" stops depending on an undocumented Chromium
+ * behaviour holding. If the renderer ever moves to a custom scheme, or is
+ * served over http, or Electron tightens `file://` to match the web, the app
+ * keeps working instead of going dark for every user at once. It is also
+ * always in the allowlist even when `CORS_ORIGINS` names something else, so
+ * that adding an ERP's domain can never be the thing that switches the product
+ * off.
+ *
+ * Allowing `null` is normally worth arguing about, since a sandboxed iframe on
+ * any site can produce it. It costs little here: this API authenticates with a
+ * bearer token that such a frame has no way to obtain, and it reads no cookie,
+ * so there is no ambient credential to borrow and nothing to reach beyond the
+ * unauthenticated `/` and `/health`. If that ever changes - a session cookie,
+ * an IP allowlist, anything the browser attaches on its own - this constant
+ * has to be revisited with it, and at that point the measurement above says it
+ * can simply be deleted.
+ */
+const DESKTOP_APP_ORIGIN = 'null'
+
+/**
+ * Where `npm run dev` serves the renderer from.
+ *
+ * Unlike the packaged app, this one really is subject to CORS: a page on
+ * `http://localhost:5173` was observed being refused by a production-mode
+ * server and served by a development-mode one.
+ */
+const VITE_DEV_ORIGINS = ['http://localhost:5173', 'http://127.0.0.1:5173']
+
+/**
+ * `*` is not an origin, and it is not accepted as one.
+ *
+ * It shipped in `render.yaml`, so it is sitting in real deployments, and it
+ * really did mean "any website may read this API's responses". It is dropped
+ * with a warning rather than refused outright: we are the ones who put it
+ * there, and a container that exits on a value we shipped turns an unattended
+ * `:latest` pull into an outage. The warning names it, and the effective
+ * allowlist is logged either way.
+ */
+const CORS_WILDCARD = '*'
+
+function resolveCorsOrigins(): { origins: string[]; wildcardIgnored: boolean } {
+  const configured = (env.CORS_ORIGINS ?? '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+
+  const wildcardIgnored = configured.includes(CORS_WILDCARD)
+
+  const origins = [
+    DESKTOP_APP_ORIGIN,
+    ...configured.filter((origin) => origin !== CORS_WILDCARD),
+    ...(env.NODE_ENV === 'production' ? [] : VITE_DEV_ORIGINS),
+  ]
+
+  return { origins: [...new Set(origins)], wildcardIgnored }
+}
+
+const { origins: CORS_ORIGINS, wildcardIgnored: CORS_WILDCARD_IGNORED } = resolveCorsOrigins()
 
 const MS_PER_SECOND = 1000
 
@@ -170,6 +237,18 @@ export async function buildServer(): Promise<FastifyInstance> {
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
   })
 
+  if (CORS_WILDCARD_IGNORED) {
+    fastify.log.warn(
+      'CORS_ORIGINS contains "*", which allowed any website to read this API and has been ignored. ' +
+        'List the origins you need, or leave it unset - the desktop app does not need it.',
+    )
+  }
+
+  // A CORS failure looks like a network error in the browser and leaves no
+  // trace on the server, so the allowlist is stated at boot rather than
+  // reconstructed from the environment after someone reports a blank screen.
+  fastify.log.info({ corsOrigins: CORS_ORIGINS }, 'CORS allowlist')
+
   // Register Rate Limiting
   await fastify.register(rateLimit, {
     max: env.RATE_LIMIT_MAX,
@@ -217,7 +296,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     },
   })
 
-  if (env.NODE_ENV !== 'production') {
+  if (env.ENABLE_DOCS) {
     await fastify.register(swaggerUi, {
       routePrefix: '/docs',
       uiConfig: {
@@ -288,7 +367,11 @@ buildServer()
         process.exit(1)
       }
       fastify.log.info(`\n🚀 BluePLM API v${API_VERSION} running at ${address}`)
-      fastify.log.info(`📚 API Documentation: ${address}/docs\n`)
+      fastify.log.info(
+        env.ENABLE_DOCS
+          ? `📚 API Documentation: ${address}/docs\n`
+          : '📚 API Documentation disabled (ENABLE_DOCS=false)\n',
+      )
     })
   })
   .catch((error: unknown) => {

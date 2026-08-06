@@ -7,7 +7,8 @@
 import pino from 'pino'
 import type { FastifyLoggerOptions } from 'fastify'
 import type { LoggerOptions as PinoLoggerOptions } from 'pino'
-import type { env as envType } from '../config/env.js'
+
+import { env as validatedEnv, type Env } from '../config/env.js'
 
 type LogLevel = 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace'
 
@@ -19,7 +20,7 @@ export interface LoggerConfig {
 /**
  * Get default logger configuration based on environment
  */
-export function getLoggerConfig(env: typeof envType): LoggerConfig {
+export function getLoggerConfig(env: Env): LoggerConfig {
   const isDev = env.NODE_ENV === 'development'
   return {
     level: isDev ? 'debug' : 'info',
@@ -30,7 +31,7 @@ export function getLoggerConfig(env: typeof envType): LoggerConfig {
 /**
  * Create Fastify logger options
  */
-export function createLoggerOptions(env: typeof envType): FastifyLoggerOptions & PinoLoggerOptions {
+export function createLoggerOptions(env: Env): FastifyLoggerOptions & PinoLoggerOptions {
   const config = getLoggerConfig(env)
 
   if (config.prettyPrint) {
@@ -59,27 +60,11 @@ export function createLoggerOptions(env: typeof envType): FastifyLoggerOptions &
 
 /**
  * Standalone Pino logger for modules that don't have access to the Fastify instance.
- * Uses the same log level as the server based on NODE_ENV.
+ *
+ * Built from the same function and the same input as Fastify's own logger.
+ * These two used to read the environment separately - one the validated
+ * `env.NODE_ENV`, the other a raw `process.env.NODE_ENV` - and they disagreed
+ * whenever the variable was unset, so one stream carried pretty-printed debug
+ * lines and JSON info lines interleaved, and neither format could be parsed.
  */
-const isDev = process.env.NODE_ENV === 'development'
-
-export const log = pino({
-  level: isDev ? 'debug' : 'info',
-  ...(isDev
-    ? {
-        transport: {
-          target: 'pino-pretty',
-          options: {
-            translateTime: 'HH:MM:ss Z',
-            ignore: 'pid,hostname',
-            colorize: true,
-          },
-        },
-      }
-    : {
-        formatters: {
-          level: (label: string) => ({ level: label }),
-        },
-        timestamp: () => `,"time":"${new Date().toISOString()}"`,
-      }),
-})
+export const log = pino(createLoggerOptions(validatedEnv))

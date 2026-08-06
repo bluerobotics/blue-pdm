@@ -41,11 +41,15 @@ const healthRoutes: FastifyPluginAsync = async (fastify) => {
         },
       },
     },
+    // `docs` is a relative path rather than a URL built from the bind address,
+    // which on any deployment is `0.0.0.0` and points nowhere the caller can
+    // reach. It is omitted entirely when the docs are switched off, so this
+    // does not advertise a page that answers 404.
     async () => ({
       name: 'BluePLM REST API',
       version: API_VERSION,
       status: 'running',
-      docs: `http://${env.API_HOST}:${env.API_PORT}/docs`,
+      ...(env.ENABLE_DOCS ? { docs: '/docs' } : {}),
     }),
   )
 

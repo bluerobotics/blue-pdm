@@ -48,11 +48,21 @@ async function errorHandlerPlugin(fastify: FastifyInstance) {
 
     request.log.error({ err: error }, 'Unhandled error')
 
-    const isDev = process.env.NODE_ENV !== 'production'
+    // A 5xx describes the server, not the caller: absolute paths inside the
+    // container, dependency versions, the shape of the call that failed. None
+    // of it tells the caller anything they can act on, and all of it is worth
+    // having to someone probing the service, so it goes to the log and only to
+    // the log. This is not conditional on how the process was configured -
+    // deciding it per environment is what leaked it, since a deployment that
+    // set nothing got the developer's answer.
+    //
+    // What the caller gets instead is the request id, which is in the log line
+    // above. It is the one thing that turns "I got a 500" into a specific
+    // stack trace an operator can read, and it discloses nothing.
     return reply.status(statusCode).send({
       error: ErrorCode.INTERNAL_ERROR,
-      message: isDev ? error.message : 'Internal server error',
-      ...(isDev && { stack: error.stack }),
+      message: 'Internal server error',
+      ...(request.requestId ? { requestId: request.requestId } : {}),
     })
   })
 }
