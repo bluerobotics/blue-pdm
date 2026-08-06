@@ -2,10 +2,10 @@ import { getSupabaseClient } from './client'
 
 export interface ShareLinkOptions {
   expiresInDays?: number
-  maxDownloads?: number
-  requireAuth?: boolean
 }
 
+// Identifies the audit row below and nothing else. It is not the recipient's
+// credential and never appears in the URL they receive.
 function generateToken(length: number): string {
   const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
   let result = ''
@@ -16,7 +16,13 @@ function generateToken(length: number): string {
 }
 
 /**
- * Create a shareable link for a file - generates actual signed URL from Supabase Storage
+ * Create a shareable link for a file - generates a signed URL from Supabase Storage.
+ *
+ * The recipient's URL is the storage URL itself, so expiry is the only property
+ * BluePLM holds over it, and Storage is what enforces that. An issued link cannot
+ * be recalled, capped or restricted to signed-in users: each of those would require
+ * downloads to travel through a BluePLM-controlled endpoint, which is a deliberate
+ * non-goal. Controls that promised any of them are gone rather than left inert.
  */
 export async function createShareLink(
   orgId: string,
@@ -72,6 +78,10 @@ export async function createShareLink(
     expiresAt = date.toISOString()
   }
 
+  // An audit trail of who shared what and when. It gates nothing, so best-effort is
+  // the correct handling and not an oversight: the signed URL above is already valid,
+  // and refusing to hand it over because the record did not land would withhold a
+  // working link in order to protect a log entry.
   try {
     await client.from('file_share_links').insert({
       org_id: orgId,
@@ -79,11 +89,9 @@ export async function createShareLink(
       token,
       created_by: createdBy,
       expires_at: expiresAt,
-      max_downloads: options?.maxDownloads || null,
-      require_auth: options?.requireAuth || false,
     })
   } catch {
-    // Don't fail if we can't track it - the signed URL still works
+    // Intentionally ignored - see above.
   }
 
   return {
@@ -93,89 +101,5 @@ export async function createShareLink(
       expiresAt,
       downloadUrl: signedUrlData.signedUrl,
     },
-  }
-}
-
-/**
- * Get share links for a file
- */
-export async function getFileShareLinks(fileId: string): Promise<{ links: any[]; error?: string }> {
-  const client = getSupabaseClient()
-
-  const { data, error } = await client
-    .from('file_share_links')
-    .select(
-      `
-      *,
-      created_by_user:users!created_by(email, full_name)
-    `,
-    )
-    .eq('file_id', fileId)
-    .eq('is_active', true)
-    .order('created_at', { ascending: false })
-
-  if (error) {
-    return { links: [], error: error.message }
-  }
-
-  return { links: data || [] }
-}
-
-/**
- * Revoke/deactivate a share link
- */
-export async function revokeShareLink(
-  linkId: string,
-): Promise<{ success: boolean; error?: string }> {
-  const client = getSupabaseClient()
-
-  const { error } = await client
-    .from('file_share_links')
-    .update({ is_active: false })
-    .eq('id', linkId)
-
-  if (error) {
-    return { success: false, error: error.message }
-  }
-
-  return { success: true }
-}
-
-/**
- * Validate a share link token (for public access)
- */
-export async function validateShareLink(token: string): Promise<{
-  valid: boolean
-  fileId?: string
-  orgId?: string
-  requireAuth?: boolean
-  error?: string
-}> {
-  const client = getSupabaseClient()
-
-  const { data, error } = await client
-    .from('file_share_links')
-    .select('*')
-    .eq('token', token)
-    .eq('is_active', true)
-    .single()
-
-  if (error || !data) {
-    return { valid: false, error: 'Link not found or invalid' }
-  }
-
-  if (data.expires_at && new Date(data.expires_at) < new Date()) {
-    return { valid: false, error: 'Link has expired' }
-  }
-
-  if (data.max_downloads && (data.download_count ?? 0) >= data.max_downloads) {
-    return { valid: false, error: 'Download limit reached' }
-  }
-
-  return {
-    valid: true,
-    fileId: data.file_id,
-    orgId: data.org_id,
-    requireAuth: data.require_auth ?? undefined,
   }
 }

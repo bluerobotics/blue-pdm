@@ -162,7 +162,7 @@ export async function handleShare(
 ): Promise<void> {
   const path = parsed.args[0]
   if (!path) {
-    addOutput('error', 'Usage: share <file-path> [--days=N] [--max-downloads=N]')
+    addOutput('error', 'Usage: share <file-path> [--days=N]')
     return
   }
 
@@ -184,15 +184,11 @@ export async function handleShare(
   }
 
   const expiresInDays = parsed.flags['days'] ? parseInt(parsed.flags['days'] as string) : 7
-  const maxDownloads = parsed.flags['max-downloads']
-    ? parseInt(parsed.flags['max-downloads'] as string)
-    : undefined
 
   addOutput('info', 'Creating share link...')
 
   const { link, error } = await createShareLink(organization.id, file.pdmData.id, user.id, {
     expiresInDays,
-    maxDownloads,
   })
 
   if (link) {
@@ -202,9 +198,6 @@ export async function handleShare(
       'info',
       `Expires: ${link.expiresAt ? new Date(link.expiresAt).toLocaleDateString() : 'Never'}`,
     )
-    if (maxDownloads) {
-      addOutput('info', `Max downloads: ${maxDownloads}`)
-    }
   } else {
     addOutput('error', `Failed to create share link: ${error}`)
   }
@@ -486,7 +479,7 @@ registerTerminalCommand(
   {
     aliases: ['share', 'share-link'],
     description: 'Create a shareable download link',
-    usage: 'share <file-path> [--days=N] [--max-downloads=N]',
+    usage: 'share <file-path> [--days=N]',
     examples: ['share drawing.pdf', 'share part.sldprt --days=30'],
     category: 'pdm',
   },

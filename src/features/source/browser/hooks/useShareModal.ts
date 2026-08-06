@@ -10,13 +10,10 @@ export interface UseShareModalReturn {
   shareFile: LocalFile | null
   setShareFile: (file: LocalFile | null) => void
 
-  // Form state
+  // Form state. Expiry is the only property of an issued link BluePLM can hold,
+  // because the recipient is handed a Supabase Storage signed URL directly.
   shareExpiresInDays: number | null
   setShareExpiresInDays: (days: number | null) => void
-  shareMaxDownloads: number | null
-  setShareMaxDownloads: (max: number | null) => void
-  shareRequireAuth: boolean
-  setShareRequireAuth: (require: boolean) => void
 
   // Generated link state
   generatedShareLink: string | null
@@ -34,8 +31,6 @@ export function useShareModal(): UseShareModalReturn {
   const [showShareModal, setShowShareModal] = useState(false)
   const [shareFile, setShareFile] = useState<LocalFile | null>(null)
   const [shareExpiresInDays, setShareExpiresInDays] = useState<number | null>(7)
-  const [shareMaxDownloads, setShareMaxDownloads] = useState<number | null>(null)
-  const [shareRequireAuth, setShareRequireAuth] = useState(false)
   const [generatedShareLink, setGeneratedShareLink] = useState<string | null>(null)
   const [isCreatingShareLink, setIsCreatingShareLink] = useState(false)
   const [copiedLink, setCopiedLink] = useState(false)
@@ -47,10 +42,6 @@ export function useShareModal(): UseShareModalReturn {
     setShareFile,
     shareExpiresInDays,
     setShareExpiresInDays,
-    shareMaxDownloads,
-    setShareMaxDownloads,
-    shareRequireAuth,
-    setShareRequireAuth,
     generatedShareLink,
     setGeneratedShareLink,
     isCreatingShareLink,

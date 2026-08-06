@@ -209,12 +209,7 @@ export {
 // ============================================
 // Share Link exports
 // ============================================
-export {
-  createShareLink,
-  getFileShareLinks,
-  revokeShareLink,
-  validateShareLink,
-} from './shareLinks'
+export { createShareLink } from './shareLinks'
 
 export type { ShareLinkOptions } from './shareLinks'
 
