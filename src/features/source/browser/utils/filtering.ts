@@ -2,6 +2,7 @@
  * File filtering utilities for the file browser
  */
 import { isPathHidden, type HiddenFolderPaths } from '@/lib/hiddenFolders'
+import { resolveDescription, resolvePartNumber } from '@/lib/metadata/overlay'
 import type { LocalFile } from '@/stores/pdmStore'
 
 export interface FileFilter {
@@ -57,15 +58,12 @@ export function getSearchScore(file: LocalFile, query: string): number {
   }
 
   // Priority 2: Description matches
-  if (file.pdmData?.description) {
-    const descLower = file.pdmData.description.toLowerCase()
-    if (descLower.includes(q)) {
-      score = Math.max(score, 500)
-    }
+  if (resolveDescription(file).value?.toLowerCase().includes(q)) {
+    score = Math.max(score, 500)
   }
 
   // Priority 3: Part number matches
-  if (file.pdmData?.part_number?.toLowerCase().includes(q)) {
+  if (resolvePartNumber(file).value?.toLowerCase().includes(q)) {
     score = Math.max(score, 400)
   }
 

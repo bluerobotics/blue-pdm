@@ -4,6 +4,7 @@ import { log } from '@/lib/logger'
 import { usePDMStore } from '@/stores/pdmStore'
 import { useHiddenFolders } from '@/hooks/useHiddenFolders'
 import { isPathHidden } from '@/lib/hiddenFolders'
+import { resolveDescription, resolvePartNumber } from '@/lib/metadata/overlay'
 import { getSupabaseClient } from '@/lib/supabase'
 import { logSearch } from '@/lib/userActionLogger'
 
@@ -148,8 +149,8 @@ export function SearchView() {
         !isPathHidden(f.relativePath, enforcedHiddenPaths) &&
         (f.name.toLowerCase().includes(query) ||
           f.relativePath.toLowerCase().includes(query) ||
-          f.pdmData?.part_number?.toLowerCase().includes(query) ||
-          f.pdmData?.description?.toLowerCase().includes(query)),
+          resolvePartNumber(f).value?.toLowerCase().includes(query) ||
+          resolveDescription(f).value?.toLowerCase().includes(query)),
     )
   }, [localQuery, files, isECOQuery, enforcedHiddenPaths])
 

@@ -38,6 +38,16 @@ import {
 } from '@/lib/serialization'
 import { sanitizeTabNumber, getTabValidationOptions } from '@/lib/tabValidation'
 import {
+  resolveConfigurationDescription,
+  resolveConfigurationDescriptions,
+  resolveConfigurationTab,
+  resolveConfigurationTabs,
+  resolveDescription,
+  resolveMetadataField,
+  resolvePartNumber,
+  resolvedText,
+} from '@/lib/metadata/overlay'
+import {
   getContainsByConfiguration,
   type ConfigBomItem,
   getDrawingsForFileConfig,
@@ -147,17 +157,9 @@ function transformSwBomToConfigBomItems(
     // Try to find matching local file to get metadata
     const localFile = findLocalFileByPath(item.filePath, localFiles)
 
-    // Get metadata from local file (pendingMetadata takes priority over pdmData)
-    const partNumber =
-      item.partNumber ||
-      localFile?.pendingMetadata?.part_number ||
-      localFile?.pdmData?.part_number ||
-      null
-    const description =
-      item.description ||
-      localFile?.pendingMetadata?.description ||
-      localFile?.pdmData?.description ||
-      null
+    // The BOM row's own value wins; below it, the overlay decides
+    const partNumber = item.partNumber || (localFile ? resolvePartNumber(localFile).value : null)
+    const description = item.description || (localFile ? resolveDescription(localFile).value : null)
     const revision = item.revision || localFile?.pdmData?.revision || null
     const state = localFile?.pdmData?.workflow_state?.name || null
     const inDatabase = !!localFile?.pdmData?.id
@@ -217,27 +219,15 @@ function transformSwRefsToDrawingRefItems(
     // Try to find matching local file to get metadata
     const localFile = findLocalFileByPath(ref.path, localFiles)
 
-    // Get metadata from local file (pendingMetadata takes priority over pdmData)
-    const partNumber =
-      localFile?.pendingMetadata?.part_number || localFile?.pdmData?.part_number || null
-    const description =
-      localFile?.pendingMetadata?.description || localFile?.pdmData?.description || null
+    const partNumber = localFile ? resolvePartNumber(localFile).value : null
+    const description = localFile ? resolveDescription(localFile).value : null
     const revision = localFile?.pdmData?.revision || null
     const state = localFile?.pdmData?.workflow_state?.name || null
     const inDatabase = !!localFile?.pdmData?.id
 
     // Per-config metadata (for drawing-ref-config rows)
-    // Fall back to pdmData.custom_properties (same pattern used in toggleFileExpansion for direct config loading)
-    const configTabs =
-      localFile?.pendingMetadata?.config_tabs ||
-      ((localFile?.pdmData?.custom_properties as Record<string, unknown> | undefined)
-        ?._config_tabs as Record<string, string> | undefined) ||
-      undefined
-    const configDescriptions =
-      localFile?.pendingMetadata?.config_descriptions ||
-      ((localFile?.pdmData?.custom_properties as Record<string, unknown> | undefined)
-        ?._config_descriptions as Record<string, string> | undefined) ||
-      undefined
+    const configTabs = localFile ? resolveConfigurationTabs(localFile) : undefined
+    const configDescriptions = localFile ? resolveConfigurationDescriptions(localFile) : undefined
     const configurationRevisions = (localFile?.pdmData?.configuration_revisions || undefined) as
       | Record<string, string>
       | undefined
@@ -456,7 +446,7 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
         const drawnBy = currentUser?.full_name || currentUser?.email || ''
         const dateStr = new Date().toISOString().split('T')[0] // YYYY-MM-DD
 
-        const baseNumber = file.pendingMetadata?.part_number ?? file.pdmData?.part_number ?? ''
+        const baseNumber = resolvedText(resolvePartNumber(file))
         const props: Record<string, string> = { 'Tab Number': upperValue }
 
         // Build full part number using serialization settings
@@ -547,11 +537,15 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
         const drawnBy = currentUser?.full_name || currentUser?.email || ''
         const dateStr = new Date().toISOString().split('T')[0] // YYYY-MM-DD
 
-        const baseNumber = file.pendingMetadata?.part_number ?? file.pdmData?.part_number ?? ''
-        const configTab =
-          file.pendingMetadata?.config_tabs?.[configName] ??
-          fileConfigurations.get(filePath)?.find((c) => c.name === configName)?.tabNumber ??
-          ''
+        const baseNumber = resolvedText(resolvePartNumber(file))
+        // The loaded configuration's tab is a file-read value, so it stands in for the
+        // committed side here; a pending clear still has to win over it.
+        const configTab = resolvedText(
+          resolveMetadataField(
+            file.pendingMetadata?.config_tabs?.[configName],
+            fileConfigurations.get(filePath)?.find((c) => c.name === configName)?.tabNumber,
+          ),
+        )
 
         const props: Record<string, string> = { Description: value }
 
@@ -1079,19 +1073,21 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
       const firstConfigName = configsToExport[0]
       const firstConfig = configs.find((c) => c.name === firstConfigName)
 
-      // Tab number priority: pendingMetadata > config data from store
-      const pendingTabNumber = file?.pendingMetadata?.config_tabs?.[firstConfigName] || ''
-      const configTabNumber = firstConfig?.tabNumber || ''
-      const tabNumber = pendingTabNumber || configTabNumber
+      // Tab number priority: the overlay for this configuration > config data from store
+      const resolvedTab = file ? resolveConfigurationTab(file, firstConfigName) : null
+      const tabNumber = resolvedTab?.value || firstConfig?.tabNumber || ''
 
-      // Get config-specific description: pending metadata > config store > file-level fallback
-      const pendingConfigDesc = file?.pendingMetadata?.config_descriptions?.[firstConfigName] || ''
-      const configDescription = pendingConfigDesc || firstConfig?.description || ''
+      // Config-specific description: the overlay for this configuration > config store,
+      // then the file-level overlay as a fallback
+      const resolvedConfigDesc = file
+        ? resolveConfigurationDescription(file, firstConfigName)
+        : null
+      const configDescription = resolvedConfigDesc?.value || firstConfig?.description || ''
       const finalDescription =
-        configDescription || file?.pdmData?.description || file?.pendingMetadata?.description || ''
+        configDescription || (file ? resolvedText(resolveDescription(file)) : '')
 
       // Build full item number for configuration using serialization settings
-      const baseNumber = file?.pdmData?.part_number || file?.pendingMetadata?.part_number || ''
+      const baseNumber = file ? resolvedText(resolvePartNumber(file)) : ''
       let fullItemNumber = baseNumber
 
       if (tabNumber && organization?.id) {
@@ -1270,17 +1266,9 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
                 properties?: Record<string, string>
               }>
 
-              // Load pending metadata for tab numbers and descriptions
-              const pendingTabs =
-                file.pendingMetadata?.config_tabs ||
-                ((file.pdmData?.custom_properties as Record<string, unknown> | undefined)
-                  ?._config_tabs as Record<string, string> | undefined) ||
-                {}
-              const pendingDescs =
-                file.pendingMetadata?.config_descriptions ||
-                ((file.pdmData?.custom_properties as Record<string, unknown> | undefined)
-                  ?._config_descriptions as Record<string, string> | undefined) ||
-                {}
+              // Committed configuration maps with the user's edits overlaid on top
+              const pendingTabs = resolveConfigurationTabs(file)
+              const pendingDescs = resolveConfigurationDescriptions(file)
 
               // Also fetch properties from each config from the SW file
               const configsWithData = await Promise.all(

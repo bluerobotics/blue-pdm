@@ -11,6 +11,7 @@
 import { useState } from 'react'
 import { ArrowLeft, Box } from 'lucide-react'
 import { usePDMStore } from '@/stores/pdmStore'
+import { resolveDescription, resolvedText } from '@/lib/metadata/overlay'
 import { useFilePaneContext, useFilePaneHandlers } from '../../../context'
 import { useCellSlowHighlight } from '../../../hooks/useCellSlowHighlight'
 import { CopyHighlightInput } from './CopyHighlightInput'
@@ -63,11 +64,7 @@ export function DescriptionCell({ file }: CellRendererBaseProps): React.ReactNod
     )
   }
 
-  // Prioritize pendingMetadata over pdmData - pending edits should always show
-  const displayValue =
-    file.pendingMetadata?.description !== undefined
-      ? (file.pendingMetadata.description ?? '-')
-      : file.pdmData?.description || '-'
+  const displayValue = resolvedText(resolveDescription(file), '-')
   const hasValue = displayValue !== '-'
 
   // Read-only highlight mode for copying (only for non-editable cells with a value)

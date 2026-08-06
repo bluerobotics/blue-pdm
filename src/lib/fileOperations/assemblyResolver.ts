@@ -1,5 +1,6 @@
 import type { LocalFile } from '@/stores/pdmStore'
 import { getFile, getContainsRecursive, getDrawingsForFiles } from '@/lib/supabase/files/queries'
+import { resolvePartNumber, resolveRevision } from '@/lib/metadata/overlay'
 import { log } from '@/lib/logger'
 import type { BomTreeNode, LightweightFile } from '@/lib/supabase/files/queries'
 
@@ -396,8 +397,9 @@ export async function resolveAssociatedFiles(
               id: childId,
               file_name: swItem.fileName,
               file_path: swItem.filePath,
-              part_number: swItem.partNumber || localFile?.pdmData?.part_number || null,
-              revision: swItem.revision || localFile?.pdmData?.revision || null,
+              part_number:
+                swItem.partNumber || (localFile ? resolvePartNumber(localFile).value : null),
+              revision: swItem.revision || (localFile ? resolveRevision(localFile).value : null),
               state: localFile?.pdmData?.workflow_state?.name || null,
               depth: 1, // SW getBom returns flat list, not recursive
             })

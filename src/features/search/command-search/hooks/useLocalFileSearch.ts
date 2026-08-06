@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { usePDMStore, LocalFile } from '@/stores/pdmStore'
 import { useHiddenFolders } from '@/hooks/useHiddenFolders'
 import { isPathHidden } from '@/lib/hiddenFolders'
+import { resolveDescription, resolvePartNumber } from '@/lib/metadata/overlay'
 import type { SearchFilter, SearchScope } from '../types'
 
 /**
@@ -41,9 +42,9 @@ export function useLocalFileSearch(
           case 'folders':
             return file.isDirectory && file.name.toLowerCase().includes(term)
           case 'part-number':
-            return file.pdmData?.part_number?.toLowerCase().includes(term)
+            return resolvePartNumber(file).value?.toLowerCase().includes(term)
           case 'description':
-            return file.pdmData?.description?.toLowerCase().includes(term)
+            return resolveDescription(file).value?.toLowerCase().includes(term)
           case 'checked-out':
             return (
               file.pdmData?.checked_out_user?.full_name?.toLowerCase().includes(term) ||
@@ -58,15 +59,15 @@ export function useLocalFileSearch(
             // ECO search would need async lookup - for now match on file metadata
             return (
               file.name.toLowerCase().includes(term) ||
-              file.pdmData?.part_number?.toLowerCase().includes(term)
+              resolvePartNumber(file).value?.toLowerCase().includes(term)
             )
           case 'all':
           default:
             return (
               file.name.toLowerCase().includes(term) ||
               file.relativePath.toLowerCase().includes(term) ||
-              file.pdmData?.part_number?.toLowerCase().includes(term) ||
-              file.pdmData?.description?.toLowerCase().includes(term)
+              resolvePartNumber(file).value?.toLowerCase().includes(term) ||
+              resolveDescription(file).value?.toLowerCase().includes(term)
             )
         }
       })

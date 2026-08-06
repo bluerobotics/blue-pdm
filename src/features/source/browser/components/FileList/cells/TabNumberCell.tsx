@@ -9,6 +9,7 @@
 import { useFilePaneContext, useFilePaneHandlers } from '../../../context'
 import { usePDMStore } from '@/stores/pdmStore'
 import { validateTabInput, getTabPlaceholder, getTabValidationOptions } from '@/lib/tabValidation'
+import { resolveTabNumber, resolvedText } from '@/lib/metadata/overlay'
 import type { CellRendererBaseProps } from './types'
 
 export function TabNumberCell({ file }: CellRendererBaseProps): React.ReactNode {
@@ -46,8 +47,7 @@ export function TabNumberCell({ file }: CellRendererBaseProps): React.ReactNode 
   const canEditTab = isFileEditable(file)
   const isEditingTab = editingCell?.path === file.path && editingCell?.column === 'tabNumber'
 
-  // Prioritize pendingMetadata over any stored value
-  const displayValue = file.pendingMetadata?.tab_number ?? ''
+  const displayValue = resolvedText(resolveTabNumber(file))
 
   if (isEditingTab && canEditTab) {
     return (

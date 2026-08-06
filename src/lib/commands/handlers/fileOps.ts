@@ -31,6 +31,7 @@ import {
 } from '../../supabase'
 import { moveFileOnServer } from '../../supabase/files/move'
 import { getExtension } from '../../utils/path'
+import { resolveFileMetadata } from '@/lib/metadata/overlay'
 import { log } from '@/lib/logger'
 import { usePDMStore } from '@/stores/pdmStore'
 
@@ -118,21 +119,19 @@ function parseLockInfoForToast(lockInfo: string): { message: string; processName
 }
 
 /**
- * Helper to extract metadata from source file for copying.
- * Prioritizes pendingMetadata (local edits), falls back to pdmData (server data).
+ * Helper to extract metadata from source file for copying, through the shared overlay.
+ * A field the user cleared on the source copies across as cleared, not as the server's old value.
  */
 function extractMetadataForCopy(source: LocalFile): PendingMetadata | undefined {
-  const partNumber = source.pendingMetadata?.part_number ?? source.pdmData?.part_number
-  const description = source.pendingMetadata?.description ?? source.pdmData?.description
-  const revision = source.pendingMetadata?.revision ?? source.pdmData?.revision
+  const { partNumber, description, revision } = resolveFileMetadata(source)
 
   // Only return metadata if there's something to copy
-  if (!partNumber && !description && !revision) return undefined
+  if (!partNumber.value && !description.value && !revision.value) return undefined
 
   return {
-    part_number: partNumber ?? null,
-    description: description ?? null,
-    revision: revision,
+    part_number: partNumber.value,
+    description: description.value,
+    revision: revision.value ?? undefined,
   }
 }
 

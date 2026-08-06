@@ -35,6 +35,7 @@ import {
 } from '../../concurrency'
 import type { LocalFile } from '../../../stores/pdmStore'
 import { usePDMStore } from '../../../stores/pdmStore'
+import { resolveRevision, resolvedText } from '@/lib/metadata/overlay'
 import { log } from '@/lib/logger'
 import { isRetryableError, getBackoffDelay, sleep } from '../../network'
 import { FileOperationTracker } from '../../fileOperationTracker'
@@ -1901,8 +1902,7 @@ export const checkinCommand: Command<CheckinParams> = {
 
                 for (const drawing of drawingFiles) {
                   // Get the drawing's revision (from pending metadata if available, else from pdmData)
-                  const drawingRevision =
-                    drawing.pendingMetadata?.revision || drawing.pdmData?.revision || ''
+                  const drawingRevision = resolvedText(resolveRevision(drawing))
 
                   try {
                     const propResult = await propagateDrawingRevisionToConfigurations(

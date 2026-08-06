@@ -10,6 +10,13 @@ import { formatFileSize } from '@/lib/utils'
 import { DraggableTab, TabDropZone, PanelLocation } from '@/components/shared/DraggableTab'
 import { format } from 'date-fns'
 import { getNextSerialNumber } from '@/lib/serialization'
+import {
+  resolveDescription,
+  resolveFileMetadata,
+  resolvePartNumber,
+  resolveRevision,
+  resolvedText,
+} from '@/lib/metadata/overlay'
 import { WhereUsedTab, SWPropertiesTab } from '@/features/integrations/solidworks'
 import { SWDatacardPanel } from '@/features/integrations/solidworks'
 import { InspectionTab } from '@/features/integrations/solidworks'
@@ -279,17 +286,17 @@ export function DetailsPanel() {
     }
     // Unsynced files (no pdmData.id) are always editable - allows setting metadata before first sync
 
-    // Get the current value (check pendingMetadata first, then pdmData)
+    const resolved = resolveFileMetadata(file)
     let currentValue = ''
     switch (field) {
       case 'itemNumber':
-        currentValue = file.pendingMetadata?.part_number ?? file.pdmData?.part_number ?? ''
+        currentValue = resolvedText(resolved.partNumber)
         break
       case 'description':
-        currentValue = file.pendingMetadata?.description ?? file.pdmData?.description ?? ''
+        currentValue = resolvedText(resolved.description)
         break
       case 'revision':
-        currentValue = file.pendingMetadata?.revision ?? file.pdmData?.revision ?? ''
+        currentValue = resolvedText(resolved.revision)
         break
     }
 
@@ -318,22 +325,11 @@ export function DetailsPanel() {
       try {
         const props: Record<string, string> = {}
 
-        // Get final values (pending or existing)
-        const partNumber =
-          updates.part_number ??
-          targetFile.pendingMetadata?.part_number ??
-          targetFile.pdmData?.part_number ??
-          ''
-        const description =
-          updates.description ??
-          targetFile.pendingMetadata?.description ??
-          targetFile.pdmData?.description ??
-          ''
-        const revision =
-          updates.revision ??
-          targetFile.pendingMetadata?.revision ??
-          targetFile.pdmData?.revision ??
-          ''
+        // The values about to be written: this edit, then the overlay for the fields it leaves alone
+        const resolved = resolveFileMetadata(targetFile)
+        const partNumber = updates.part_number ?? resolvedText(resolved.partNumber)
+        const description = updates.description ?? resolvedText(resolved.description)
+        const revision = updates.revision ?? resolvedText(resolved.revision)
 
         if (partNumber) props['Number'] = partNumber
         if (description) props['Description'] = description
@@ -517,25 +513,17 @@ export function DetailsPanel() {
     const trimmedValue = editValue.trim()
 
     // Get current value to check if changed (consider pending metadata too)
+    const current = resolveFileMetadata(file)
     let currentValue = ''
     switch (editingField) {
       case 'itemNumber':
-        currentValue =
-          file.pendingMetadata?.part_number !== undefined
-            ? file.pendingMetadata.part_number || ''
-            : file.pdmData?.part_number || ''
+        currentValue = resolvedText(current.partNumber)
         break
       case 'description':
-        currentValue =
-          file.pendingMetadata?.description !== undefined
-            ? file.pendingMetadata.description || ''
-            : file.pdmData?.description || ''
+        currentValue = resolvedText(current.description)
         break
       case 'revision':
-        currentValue =
-          file.pendingMetadata?.revision !== undefined
-            ? file.pendingMetadata.revision
-            : file.pdmData?.revision || ''
+        currentValue = resolvedText(current.revision)
         break
     }
 
@@ -859,7 +847,7 @@ export function DetailsPanel() {
                           <EditablePropertyItem
                             icon={<Tag size={14} />}
                             label={t('fileBrowser.itemNumber')}
-                            value={file.pdmData?.part_number || '-'}
+                            value={resolvedText(resolvePartNumber(file), '-')}
                             isEditing={editingField === 'itemNumber'}
                             editValue={editValue}
                             isSaving={isSavingEdit}
@@ -875,7 +863,7 @@ export function DetailsPanel() {
                           <EditablePropertyItem
                             icon={<FileText size={14} />}
                             label={t('common.description')}
-                            value={file.pdmData?.description || '-'}
+                            value={resolvedText(resolveDescription(file), '-')}
                             isEditing={editingField === 'description'}
                             editValue={editValue}
                             isSaving={isSavingEdit}
@@ -889,7 +877,7 @@ export function DetailsPanel() {
                           <EditablePropertyItem
                             icon={<Hash size={14} />}
                             label={t('source.details.revision')}
-                            value={file.pdmData?.revision || '-'}
+                            value={resolvedText(resolveRevision(file), '-')}
                             isEditing={editingField === 'revision'}
                             editValue={editValue}
                             isSaving={isSavingEdit}

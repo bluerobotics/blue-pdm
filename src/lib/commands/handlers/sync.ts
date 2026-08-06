@@ -16,6 +16,7 @@ import { syncFile, upsertFileReferences } from '../../supabase'
 import type { SWReference } from '../../supabase/files/mutations'
 import { usePDMStore } from '../../../stores/pdmStore'
 import { processWithConcurrency, CONCURRENT_OPERATIONS } from '../../concurrency'
+import { resolveFileMetadata, resolveTabNumber } from '@/lib/metadata/overlay'
 import { log } from '@/lib/logger'
 import { FileOperationTracker } from '../../fileOperationTracker'
 import { addToSyncIndex } from '../../cache/localSyncIndex'
@@ -294,15 +295,15 @@ export const syncCommand: Command<SyncParams> = {
             return { success: false, error: errorDetail }
           }
 
-          // Use pending metadata from the UI (user pre-assigned values before sync)
-          // Fall back to pdmData values to preserve existing server data when pendingMetadata is missing
+          // Use the overlay: the user's pre-assigned values, then existing server data.
           // NOTE: Auto-extraction from SW files removed for performance
           // Users should use "Save to File" or enter metadata in datacard before syncing
+          const resolved = resolveFileMetadata(file)
           const metadata: SyncMetadata = {
-            partNumber: file.pendingMetadata?.part_number ?? file.pdmData?.part_number ?? null,
-            tabNumber: file.pendingMetadata?.tab_number ?? null,
-            description: file.pendingMetadata?.description ?? file.pdmData?.description ?? null,
-            revision: file.pendingMetadata?.revision ?? file.pdmData?.revision ?? null,
+            partNumber: resolved.partNumber.value,
+            tabNumber: resolveTabNumber(file).value,
+            description: resolved.description.value,
+            revision: resolved.revision.value,
             customProperties: undefined,
           }
 

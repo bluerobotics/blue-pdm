@@ -14,6 +14,7 @@
  */
 import { ArrowLeft, FileText } from 'lucide-react'
 import { usePDMStore } from '@/stores/pdmStore'
+import { resolveRevision, resolvedText } from '@/lib/metadata/overlay'
 import { useFilePaneContext, useFilePaneHandlers } from '../../../context'
 import type { CellRendererBaseProps } from './types'
 
@@ -74,13 +75,7 @@ export function RevisionCell({ file }: CellRendererBaseProps): React.ReactNode {
 
   // When model revision is controlled at config level, hide file-level display entirely.
   // Config-level rows (ConfigRow) read from configuration_revisions independently.
-  // For all other files, prioritize pendingMetadata over pdmData.
-  const rawRevision = isModelLocked
-    ? ''
-    : file.pendingMetadata?.revision !== undefined
-      ? file.pendingMetadata.revision
-      : file.pdmData?.revision || ''
-  const displayValue = rawRevision || '-'
+  const displayValue = isModelLocked ? '-' : resolvedText(resolveRevision(file), '-')
 
   // Determine appropriate tooltip message
   const getTooltip = () => {

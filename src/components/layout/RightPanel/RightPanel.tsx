@@ -4,6 +4,7 @@ import { buildThumbnailUrl } from '@/lib/thumbnailUrl'
 import { useRetryableImage } from '@/hooks/useRetryableImage'
 import { getFileIconType } from '@/lib/utils'
 import { formatFileSize } from '@/lib/utils'
+import { resolvePartNumber, resolveRevision, resolvedText } from '@/lib/metadata/overlay'
 import { DraggableTab, TabDropZone, PanelLocation } from '@/components/shared/DraggableTab'
 import { WhereUsedTab } from '@/features/integrations/solidworks'
 import { SWDatacardPanel } from '@/features/integrations/solidworks'
@@ -290,11 +291,11 @@ export function RightPanel() {
                   <div className="space-y-2 text-sm">
                     <div className="flex justify-between">
                       <span className="text-plm-fg-muted">Item Number</span>
-                      <span>{file.pdmData?.part_number || '-'}</span>
+                      <span>{resolvedText(resolvePartNumber(file), '-')}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-plm-fg-muted">Revision</span>
-                      <span>{file.pdmData?.revision || '-'}</span>
+                      <span>{resolvedText(resolveRevision(file), '-')}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-plm-fg-muted">Version</span>

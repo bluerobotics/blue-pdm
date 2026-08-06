@@ -18,6 +18,12 @@ import { useSolidWorksStatus } from '@/hooks/useSolidWorksStatus'
 import { isSolidWorksAlive } from '@/types/solidworks'
 import { getEffectiveExportSettings } from '@/features/settings/system'
 import { getSerializationSettings, combineBaseAndTab } from '@/lib/serialization'
+import {
+  resolveConfigurationTabs,
+  resolveDescription,
+  resolvePartNumber,
+  resolvedText,
+} from '@/lib/metadata/overlay'
 import { log } from '@/lib/logger'
 import { ContextSubmenu } from '../components'
 
@@ -140,29 +146,14 @@ export function ExportActions({
         )
 
         // Build PDM metadata for export filename pattern.
-        // Pending edits win over pdmData, matching what the Item Number and Description
-        // columns display - otherwise an uncommitted renumber is ignored by export.
-        const baseNumber =
-          file.pendingMetadata?.part_number !== undefined
-            ? (file.pendingMetadata.part_number ?? '')
-            : file.pdmData?.part_number || ''
-        const description =
-          file.pendingMetadata?.description !== undefined
-            ? (file.pendingMetadata.description ?? '')
-            : file.pdmData?.description || ''
+        const baseNumber = resolvedText(resolvePartNumber(file))
+        const description = resolvedText(resolveDescription(file))
         const revision = (file.pdmData?.revision || '').trim()
 
-        // Get tab number from pending config tabs (default config)
-        let tabNumber = ''
-        const configTabs =
-          file.pendingMetadata?.config_tabs ||
-          ((file.pdmData?.custom_properties as Record<string, unknown> | undefined)
-            ?._config_tabs as Record<string, string> | undefined)
-        if (configTabs) {
-          // Try to get tab for default config
-          tabNumber =
-            configTabs['Default'] || configTabs['default'] || Object.values(configTabs)[0] || ''
-        }
+        // Get tab number for the default config
+        const configTabs = resolveConfigurationTabs(file)
+        const tabNumber =
+          configTabs['Default'] || configTabs['default'] || Object.values(configTabs)[0] || ''
 
         // Build full item number with serialization settings
         let fullItemNumber = baseNumber
@@ -395,10 +386,8 @@ export function ExportActions({
         )
 
         const drawingRevision = (drawing.pdmData?.revision || '').trim()
-        const drawingPartNumber =
-          drawing.pdmData?.part_number || drawing.pendingMetadata?.part_number || ''
-        const drawingDescription =
-          drawing.pdmData?.description || drawing.pendingMetadata?.description || ''
+        const drawingPartNumber = resolvedText(resolvePartNumber(drawing))
+        const drawingDescription = resolvedText(resolveDescription(drawing))
         const drawingDir = drawing.path.replace(/[\\/][^\\/]+$/, '')
 
         let refs: Array<{
@@ -446,15 +435,9 @@ export function ExportActions({
           continue
         }
 
-        let tabNumber = ''
-        const configTabs =
-          drawing.pendingMetadata?.config_tabs ||
-          ((drawing.pdmData?.custom_properties as Record<string, unknown> | undefined)
-            ?._config_tabs as Record<string, string> | undefined)
-        if (configTabs) {
-          tabNumber =
-            configTabs['Default'] || configTabs['default'] || Object.values(configTabs)[0] || ''
-        }
+        const configTabs = resolveConfigurationTabs(drawing)
+        const tabNumber =
+          configTabs['Default'] || configTabs['default'] || Object.values(configTabs)[0] || ''
 
         let fullItemNumber = drawingPartNumber
         if (tabNumber && organization?.id) {

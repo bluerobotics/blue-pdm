@@ -20,6 +20,7 @@ import { useFilePaneContext } from '../../context'
 import { usePDMStore } from '@/stores/pdmStore'
 import { getTabValidationOptions } from '@/lib/tabValidation'
 import { combineBaseAndTab } from '@/lib/serialization'
+import { resolvePartNumber, resolvedText } from '@/lib/metadata/overlay'
 
 // ============================================================================
 // Types
@@ -291,7 +292,7 @@ export const FileListBody = forwardRef<HTMLTableSectionElement, FileListBodyProp
         const isCut =
           clipboard?.operation === 'cut' && clipboard.files.some((f) => f.path === file.path)
         const isEditable = !!file.pdmData?.id && file.pdmData?.checked_out_by === user?.id
-        const basePartNumber = file.pendingMetadata?.part_number || file.pdmData?.part_number || ''
+        const basePartNumber = resolvedText(resolvePartNumber(file))
 
         // Add file row
         rows.push({

@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 
 import { matchesSerialFormat } from '@/lib/serialization'
 import type { SerializationSettings } from '@/lib/serialization'
+import { resolvePartNumber } from '@/lib/metadata/overlay'
 import type { LocalFile } from '@/stores/types'
 import type { PDMFile } from '@/types/pdm'
 import {
@@ -36,12 +37,7 @@ function subRowRank(type: string | undefined): number {
 }
 
 function getPartNumber(file: LocalFile): string | null {
-  const pending = file.pendingMetadata?.part_number
-  if (pending !== undefined && pending !== null) {
-    return pending.trim() || null
-  }
-  const value = file.pdmData?.part_number
-  return value ? value.trim() || null : null
+  return resolvePartNumber(file).value?.trim() || null
 }
 
 function fileQualifies(

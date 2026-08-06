@@ -14,6 +14,7 @@ import { Sparkles, Loader2, Check, ArrowLeft, Box } from 'lucide-react'
 import { useFilePaneContext, useFilePaneHandlers } from '../../../context'
 import { usePDMStore } from '@/stores/pdmStore'
 import { getNextSerialNumber, previewNextSerialNumber } from '@/lib/serialization'
+import { resolvePartNumber, resolvedText } from '@/lib/metadata/overlay'
 import { useCellSlowHighlight } from '../../../hooks/useCellSlowHighlight'
 import { CopyHighlightInput } from './CopyHighlightInput'
 import type { CellRendererBaseProps } from './types'
@@ -200,11 +201,7 @@ export function ItemNumberCell({ file }: CellRendererBaseProps): React.ReactNode
     }
   }
 
-  // Prioritize pendingMetadata over pdmData - pending edits should always show
-  const displayValue =
-    file.pendingMetadata?.part_number !== undefined
-      ? (file.pendingMetadata.part_number ?? '-')
-      : file.pdmData?.part_number || '-'
+  const displayValue = resolvedText(resolvePartNumber(file), '-')
   const hasValue = displayValue !== '-'
 
   if (isEditingItemNumber && canEditItemNumber) {

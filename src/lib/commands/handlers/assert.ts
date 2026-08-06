@@ -17,6 +17,7 @@
  */
 
 import { usePDMStore, LocalFile } from '../../../stores/pdmStore'
+import { resolveDescription, resolvePartNumber, resolveRevision } from '@/lib/metadata/overlay'
 import { registerTerminalCommand } from '../registry'
 import type { ParsedCommand, TerminalOutput } from '../parser'
 
@@ -214,7 +215,7 @@ export async function handleAssert(
   // --part
   if (typeof parsed.flags['part'] === 'string') {
     const expectedPart = parsed.flags['part']
-    const actualPart = file.pendingMetadata?.part_number ?? file.pdmData?.part_number ?? null
+    const actualPart = resolvePartNumber(file).value
     check(
       `part_number of ${file.name}`,
       expectedPart,
@@ -226,7 +227,7 @@ export async function handleAssert(
   // --desc
   if (typeof parsed.flags['desc'] === 'string') {
     const expectedDesc = parsed.flags['desc']
-    const actualDesc = file.pendingMetadata?.description ?? file.pdmData?.description ?? null
+    const actualDesc = resolveDescription(file).value
     check(
       `description of ${file.name}`,
       expectedDesc,
@@ -238,7 +239,7 @@ export async function handleAssert(
   // --rev
   if (typeof parsed.flags['rev'] === 'string') {
     const expectedRev = parsed.flags['rev']
-    const actualRev = file.pendingMetadata?.revision ?? file.pdmData?.revision ?? null
+    const actualRev = resolveRevision(file).value
     check(
       `revision of ${file.name}`,
       expectedRev,

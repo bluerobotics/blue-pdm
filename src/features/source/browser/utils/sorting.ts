@@ -2,6 +2,12 @@
  * File sorting utilities for the file browser
  */
 import type { LocalFile } from '@/stores/pdmStore'
+import {
+  resolveDescription,
+  resolvePartNumber,
+  resolveRevision,
+  resolvedText,
+} from '@/lib/metadata/overlay'
 import type { SortColumn, SortDirection } from '../types'
 
 /**
@@ -30,20 +36,20 @@ export function compareFiles(
     case 'extension':
       comparison = a.extension.localeCompare(b.extension)
       break
+    // These three sort on the same overlay the matching cells render, so a pending edit
+    // moves the row rather than leaving it filed under the value it no longer shows.
     case 'itemNumber':
-      const aNum = a.pdmData?.part_number || ''
-      const bNum = b.pdmData?.part_number || ''
-      comparison = aNum.localeCompare(bNum)
+      comparison = resolvedText(resolvePartNumber(a)).localeCompare(
+        resolvedText(resolvePartNumber(b)),
+      )
       break
     case 'description':
-      const aDesc = a.pdmData?.description || ''
-      const bDesc = b.pdmData?.description || ''
-      comparison = aDesc.localeCompare(bDesc)
+      comparison = resolvedText(resolveDescription(a)).localeCompare(
+        resolvedText(resolveDescription(b)),
+      )
       break
     case 'revision':
-      const aRev = a.pdmData?.revision || ''
-      const bRev = b.pdmData?.revision || ''
-      comparison = aRev.localeCompare(bRev)
+      comparison = resolvedText(resolveRevision(a)).localeCompare(resolvedText(resolveRevision(b)))
       break
     case 'version':
       const aVer = a.pdmData?.version || 0

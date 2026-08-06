@@ -6,6 +6,13 @@ import { Loader2, Table } from 'lucide-react'
 import type { LocalFile } from '@/stores/pdmStore'
 import { usePDMStore } from '@/stores/pdmStore'
 import { getSerializationSettings, combineBaseAndTab } from '@/lib/serialization'
+import {
+  resolveConfigurationTabs,
+  resolveDescription,
+  resolvePartNumber,
+  resolveRevision,
+  resolvedText,
+} from '@/lib/metadata/overlay'
 import { log } from '@/lib/logger'
 import { ContextSubmenu } from '../components'
 import type { ActionComponentProps } from './types'
@@ -30,16 +37,10 @@ async function getBrNumberForFile(
   file: LocalFile,
   organizationId: string | undefined,
 ): Promise<string> {
-  const baseNumber = file.pdmData?.part_number || file.pendingMetadata?.part_number || ''
-  let tabNumber = ''
-  const configTabs =
-    file.pendingMetadata?.config_tabs ||
-    ((file.pdmData?.custom_properties as Record<string, unknown> | undefined)?._config_tabs as
-      | Record<string, string>
-      | undefined)
-  if (configTabs) {
-    tabNumber = configTabs['Default'] || configTabs['default'] || Object.values(configTabs)[0] || ''
-  }
+  const baseNumber = resolvedText(resolvePartNumber(file))
+  const configTabs = resolveConfigurationTabs(file)
+  const tabNumber =
+    configTabs['Default'] || configTabs['default'] || Object.values(configTabs)[0] || ''
   let fullItemNumber = baseNumber
   if (tabNumber && organizationId) {
     try {
@@ -90,13 +91,9 @@ export function ExportMetadataTableActions({ contextFiles, onClose }: ActionComp
 
     for (const file of tableFiles) {
       const brNumber = await getBrNumberForFile(file, orgId)
-      const description = file.pendingMetadata?.description ?? file.pdmData?.description ?? ''
-      const revision = (file.pendingMetadata?.revision ?? file.pdmData?.revision ?? '').trim()
-      rows.push([
-        csvEscapeCell(brNumber),
-        csvEscapeCell(description ?? ''),
-        csvEscapeCell(revision),
-      ])
+      const description = resolvedText(resolveDescription(file))
+      const revision = resolvedText(resolveRevision(file)).trim()
+      rows.push([csvEscapeCell(brNumber), csvEscapeCell(description), csvEscapeCell(revision)])
     }
 
     return rows.map((row) => row.join(',')).join('\r\n')

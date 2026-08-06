@@ -2,6 +2,7 @@ import { useCallback, useRef } from 'react'
 import type { LocalFile } from '@/stores/pdmStore'
 import { usePDMStore } from '@/stores/pdmStore'
 import { executeCommand } from '@/lib/commands'
+import { resolveFileMetadata, resolveTabNumber, resolvedText } from '@/lib/metadata/overlay'
 import { log } from '@/lib/logger'
 
 // SolidWorks file extensions that support custom properties
@@ -265,20 +266,20 @@ export function useFileEditHandlers(deps: FileEditHandlersDeps): UseFileEditHand
         }
       }
 
-      // Get the current value based on column (check pendingMetadata first, then pdmData)
+      const resolved = resolveFileMetadata(file)
       let currentValue = ''
       switch (column) {
         case 'itemNumber':
-          currentValue = file.pendingMetadata?.part_number ?? file.pdmData?.part_number ?? ''
+          currentValue = resolvedText(resolved.partNumber)
           break
         case 'description':
-          currentValue = file.pendingMetadata?.description ?? file.pdmData?.description ?? ''
+          currentValue = resolvedText(resolved.description)
           break
         case 'revision':
-          currentValue = file.pendingMetadata?.revision ?? file.pdmData?.revision ?? ''
+          currentValue = resolvedText(resolved.revision)
           break
         case 'tabNumber':
-          currentValue = file.pendingMetadata?.tab_number ?? ''
+          currentValue = resolvedText(resolveTabNumber(file))
           break
       }
 
@@ -333,25 +334,17 @@ export function useFileEditHandlers(deps: FileEditHandlersDeps): UseFileEditHand
       const trimmedValue = editValue.trim()
 
       // Check if value actually changed (consider pending metadata too)
+      const current = resolveFileMetadata(file)
       let currentValue = ''
       switch (editingCell.column) {
         case 'itemNumber':
-          currentValue =
-            file.pendingMetadata?.part_number !== undefined
-              ? file.pendingMetadata.part_number || ''
-              : file.pdmData?.part_number || ''
+          currentValue = resolvedText(current.partNumber)
           break
         case 'description':
-          currentValue =
-            file.pendingMetadata?.description !== undefined
-              ? file.pendingMetadata.description || ''
-              : file.pdmData?.description || ''
+          currentValue = resolvedText(current.description)
           break
         case 'revision':
-          currentValue =
-            file.pendingMetadata?.revision !== undefined
-              ? file.pendingMetadata.revision
-              : file.pdmData?.revision || ''
+          currentValue = resolvedText(current.revision)
           break
       }
 

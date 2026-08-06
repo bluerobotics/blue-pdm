@@ -25,6 +25,7 @@ import { recordMetric } from '@/lib/performanceMetrics'
 import { log } from '@/lib/logger'
 import { isPathHidden, readHiddenFolderPaths } from '@/lib/hiddenFolders'
 import { dropCommittedPendingMetadata } from '@/lib/pendingMetadata'
+import { resolveDescription, resolvePartNumber } from '@/lib/metadata/overlay'
 import { logExplorer } from '@/lib/userActionLogger'
 import { bumpFileMutationEpoch } from '@/lib/fileMutationEpoch'
 import { applyFileUpdates } from '../fileUpdates'
@@ -2125,8 +2126,8 @@ export const createFilesSlice: StateCreator<
         (f) =>
           f.name.toLowerCase().includes(query) ||
           f.relativePath.toLowerCase().includes(query) ||
-          f.pdmData?.part_number?.toLowerCase().includes(query) ||
-          f.pdmData?.description?.toLowerCase().includes(query),
+          resolvePartNumber(f).value?.toLowerCase().includes(query) ||
+          resolveDescription(f).value?.toLowerCase().includes(query),
       )
     }
 

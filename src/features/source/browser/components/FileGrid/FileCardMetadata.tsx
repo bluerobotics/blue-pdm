@@ -20,6 +20,7 @@ import type { LocalFile } from '@/stores/pdmStore'
 import { usePDMStore } from '@/stores/pdmStore'
 import { formatFileSize } from '@/lib/utils'
 import { getNextSerialNumber } from '@/lib/serialization'
+import { resolveDescription, resolvePartNumber, resolveRevision } from '@/lib/metadata/overlay'
 import { VersionHistoryDropdown } from '../FileList/cells/VersionHistoryDropdown'
 
 export interface FileCardMetadataProps {
@@ -35,27 +36,14 @@ const EDITABLE_FIELDS = ['itemNumber', 'description', 'revision']
  */
 function getFieldValue(file: LocalFile, fieldId: string): string | null {
   const pdmData = file.pdmData
-  const pendingMetadata = file.pendingMetadata
 
   switch (fieldId) {
-    case 'itemNumber': {
-      if (pendingMetadata?.part_number !== undefined) {
-        return pendingMetadata.part_number || null
-      }
-      return pdmData?.part_number || null
-    }
-    case 'description': {
-      if (pendingMetadata?.description !== undefined) {
-        return pendingMetadata.description || null
-      }
-      return pdmData?.description || null
-    }
-    case 'revision': {
-      if (pendingMetadata?.revision !== undefined) {
-        return pendingMetadata.revision || null
-      }
-      return pdmData?.revision || null
-    }
+    case 'itemNumber':
+      return resolvePartNumber(file).value
+    case 'description':
+      return resolveDescription(file).value
+    case 'revision':
+      return resolveRevision(file).value
     case 'version': {
       const version = pdmData?.version
       return version ? `v${version}` : null

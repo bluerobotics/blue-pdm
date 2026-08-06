@@ -31,6 +31,7 @@ import {
   type BatchPropertyWriteOutcome,
 } from '@/lib/metadata/propertyWriteOutcome'
 import { dropCommittedPendingMetadata } from '@/lib/pendingMetadata'
+import { resolveFileMetadata, resolvedText } from '@/lib/metadata/overlay'
 import {
   normalizeTabNumber,
   getSerializationSettings,
@@ -800,11 +801,11 @@ async function pushPartAssemblyMetadata(
   logSync('debug', 'PUSH: Writing metadata to part/assembly', { fullPath })
 
   const pending = file.pendingMetadata
-  const pdm = file.pdmData
 
-  const baseNumber = pending?.part_number ?? pdm?.part_number ?? ''
-  const fileDescription = pending?.description ?? pdm?.description ?? ''
-  const revision = pending?.revision ?? pdm?.revision ?? ''
+  const resolved = resolveFileMetadata(file)
+  const baseNumber = resolvedText(resolved.partNumber)
+  const fileDescription = resolvedText(resolved.description)
+  const revision = resolvedText(resolved.revision)
   const configTabs = pending?.config_tabs || {}
   const configDescs = pending?.config_descriptions || {}
 
