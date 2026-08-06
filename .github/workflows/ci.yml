@@ -33,12 +33,27 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            api/package-lock.json
 
       - name: Install dependencies
         run: npm ci
 
+      # api/ is a separate deployable with its own manifest and lockfile, and the
+      # Docker image installs from those. Root `npm ci` does not touch them, so
+      # without this step `typecheck:api` resolves the API against whatever the
+      # desktop app happens to have hoisted — a different dependency set from the
+      # one that actually ships. Installing api/'s own lockfile checks the API
+      # against the versions the image is built from.
+      - name: Install API dependencies
+        run: npm ci --prefix api
+
       - name: Typecheck
         run: npm run typecheck
+
+      - name: Typecheck API
+        run: npm run typecheck:api
 
       - name: Test
         run: npm test

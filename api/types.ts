@@ -4,6 +4,7 @@
  * Shared types for the API server, routes, and middleware.
  */
 
+import type { FastifyReply, FastifyRequest } from 'fastify'
 import { SupabaseClient } from '@supabase/supabase-js'
 
 // ============================================
@@ -190,6 +191,17 @@ export interface OdooConnectionResult {
 // Fastify Extensions
 // ============================================
 
+/**
+ * Guard added by `authPlugin` and applied as an `onRequest` hook by protected routes.
+ *
+ * Declared at file scope rather than inline in the augmentation below: names used
+ * inside a `declare module` block resolve against the ambient type graph, not this
+ * file's imports, so an inline `FastifyReply` compiled only as a side effect of some
+ * other installed package pulling Fastify's types into scope. Naming the type here
+ * makes the augmentation depend on an explicit import instead.
+ */
+export type AuthenticateHook = (request: FastifyRequest, reply: FastifyReply) => Promise<void>
+
 declare module 'fastify' {
   interface FastifyRequest {
     user: UserProfile | null
@@ -198,6 +210,6 @@ declare module 'fastify' {
   }
 
   interface FastifyInstance {
-    authenticate: (request: FastifyRequest, reply: FastifyReply) => Promise<void>
+    authenticate: AuthenticateHook
   }
 }

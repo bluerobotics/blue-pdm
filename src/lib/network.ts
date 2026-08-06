@@ -220,8 +220,13 @@ export async function resilientFetch(
   })
 }
 
-// Track network status for the app
-let isOnline = navigator.onLine
+// Track network status for the app.
+// `navigator` is a browser global that Node only gained in v21, and this module is
+// imported by code that runs outside the renderer (tests, CLI, Electron main). Reading
+// it unguarded at module scope makes the whole module fail to import there, which is
+// silent: the importing suite never runs rather than failing a visible assertion.
+// In the renderer `navigator` is always defined, so this reads exactly as before.
+let isOnline = typeof navigator !== 'undefined' ? navigator.onLine : true
 let networkListeners: Array<(online: boolean) => void> = []
 
 // Listen for online/offline events

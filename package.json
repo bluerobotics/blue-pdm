@@ -88,6 +88,9 @@
     "vitest": "^4.1.10",
     "wait-on": "^9.0.3"
   },
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "build": {
     "appId": "com.bluerobotics.plm",
     "productName": "BluePLM",
