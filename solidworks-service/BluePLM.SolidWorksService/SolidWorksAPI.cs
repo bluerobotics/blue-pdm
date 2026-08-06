@@ -66,7 +66,8 @@ namespace BluePLM.SolidWorksService
         {
             try
             {
-                var swType = Type.GetTypeFromProgID("SldWorks.Application");
+                if (SolidWorksComRegistry.GetInstalls().Count > 0) return true;
+                var swType = Type.GetTypeFromProgID(SolidWorksComRegistry.VersionIndependentProgId);
                 return swType != null;
             }
             catch
@@ -114,8 +115,13 @@ namespace BluePLM.SolidWorksService
         /// <summary>
         /// True when a recent probe found SolidWorks running but COM unreachable.
         /// Callers should take the same fail-open branch they would have taken then.
+        ///
+        /// Public because <see cref="IsFileOpenInSolidWorks"/> cannot distinguish "SolidWorks
+        /// told us this document is open" from "COM is unreachable so we assumed it is". Read
+        /// immediately after that call, this separates the two: true means the answer was a
+        /// guess, and a caller may safely route the read to Document Manager instead.
         /// </summary>
-        private static bool IsComKnownUnavailable()
+        public static bool IsComKnownUnavailable()
         {
             lock (_probeCacheLock)
             {
@@ -174,62 +180,97 @@ namespace BluePLM.SolidWorksService
         /// The service runs on an MTA thread, and Marshal.GetActiveObject can fail from MTA
         /// due to COM apartment or integrity-level mismatches. Running on an STA thread
         /// resolves this in many cases.
+        ///
+        /// Every candidate ProgID is tried on each transport before moving to the next,
+        /// because a machine with several SolidWorks releases installed only publishes the
+        /// running one under its own versioned ProgID - the version-independent
+        /// SldWorks.Application can point at a release that is not running.
         /// </summary>
         /// <param name="timeoutMs">Timeout in milliseconds for the STA thread attempt.</param>
         /// <returns>The active COM object, or null if not found.</returns>
         private static object? GetActiveObjectOnSTA(int timeoutMs = 5000)
         {
+            var progIds = SolidWorksComRegistry.GetAttachProgIdsInOrder();
+
             // First try directly on current thread (works if MTA can access ROT)
-            try
+            foreach (var progId in progIds)
             {
-                var obj = Marshal.GetActiveObject("SldWorks.Application");
-                if (obj != null)
+                try
                 {
-                    Console.Error.WriteLine("[SW-API] GetActiveObjectOnSTA: Found via direct call (MTA)");
-                    return obj;
+                    var obj = Marshal.GetActiveObject(progId);
+                    if (obj != null)
+                    {
+                        SolidWorksComRegistry.SetResolvedProgId(progId);
+                        Console.Error.WriteLine($"[SW-API] GetActiveObjectOnSTA: Found via direct call (MTA) using {progId}");
+                        return obj;
+                    }
+                }
+                catch (COMException ex) when (ex.HResult == unchecked((int)0x800401E3))
+                {
+                    if (Program.VerboseLogging)
+                        Console.Error.WriteLine($"[SW-API] GetActiveObjectOnSTA: {progId} not in ROT (MK_E_UNAVAILABLE)");
+                }
+                catch (Exception ex)
+                {
+                    if (Program.VerboseLogging)
+                        Console.Error.WriteLine($"[SW-API] GetActiveObjectOnSTA: {progId} direct call failed ({ex.Message})");
                 }
             }
-            catch (COMException ex) when (ex.HResult == unchecked((int)0x800401E3))
-            {
-                Console.Error.WriteLine("[SW-API] GetActiveObjectOnSTA: Direct call failed (MK_E_UNAVAILABLE), trying STA thread...");
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine($"[SW-API] GetActiveObjectOnSTA: Direct call failed ({ex.Message}), trying STA thread...");
-            }
+
+            Console.Error.WriteLine($"[SW-API] GetActiveObjectOnSTA: Direct call failed for {progIds.Count} ProgID(s) [{string.Join(", ", progIds)}], trying STA thread...");
 
             // Fallback: run the lookup on the shared STA pump, which owns the
             // IMessageFilter and saves creating a thread per call.
             if (_sharedComStability != null)
             {
-                if (_sharedComStability.TryInvokeOnSta(
-                        () => Marshal.GetActiveObject("SldWorks.Application"),
-                        timeoutMs,
-                        out var pumpResult))
+                bool pumpAvailable = false;
+                foreach (var progId in progIds)
                 {
+                    if (!_sharedComStability.TryInvokeOnSta(
+                            () => Marshal.GetActiveObject(progId),
+                            timeoutMs,
+                            out var pumpResult))
+                    {
+                        break;
+                    }
+
+                    pumpAvailable = true;
                     if (pumpResult != null)
                     {
-                        Console.Error.WriteLine("[SW-API] GetActiveObjectOnSTA: Found via STA pump");
+                        SolidWorksComRegistry.SetResolvedProgId(progId);
+                        Console.Error.WriteLine($"[SW-API] GetActiveObjectOnSTA: Found via STA pump using {progId}");
+                        return pumpResult;
                     }
-                    return pumpResult;
                 }
+
+                if (pumpAvailable) return null;
 
                 Console.Error.WriteLine("[SW-API] GetActiveObjectOnSTA: STA pump unavailable, using one-shot thread");
             }
 
-            // Fallback: try on a dedicated STA thread
+            // Fallback: try every candidate on a single dedicated STA thread
             object? result = null;
+            string? resultProgId = null;
             Exception? staException = null;
 
             var staThread = new Thread(() =>
             {
-                try
+                foreach (var progId in progIds)
                 {
-                    result = Marshal.GetActiveObject("SldWorks.Application");
-                }
-                catch (Exception ex)
-                {
-                    staException = ex;
+                    try
+                    {
+                        var obj = Marshal.GetActiveObject(progId);
+                        if (obj != null)
+                        {
+                            result = obj;
+                            resultProgId = progId;
+                            return;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        staException = ex;
+                    }
                 }
             });
             staThread.SetApartmentState(ApartmentState.STA);
@@ -244,7 +285,8 @@ namespace BluePLM.SolidWorksService
 
             if (result != null)
             {
-                Console.Error.WriteLine("[SW-API] GetActiveObjectOnSTA: Found via STA thread");
+                SolidWorksComRegistry.SetResolvedProgId(resultProgId);
+                Console.Error.WriteLine($"[SW-API] GetActiveObjectOnSTA: Found via STA thread using {resultProgId}");
                 return result;
             }
 
@@ -342,6 +384,17 @@ namespace BluePLM.SolidWorksService
                     Data = new { alreadyRunning = false, launched = true },
                 };
             }
+            catch (SolidWorksComInaccessibleException ex)
+            {
+                Console.Error.WriteLine($"[SW-API] EnsureRunning: {ex.Message}");
+                return new CommandResult
+                {
+                    Success = false,
+                    Error = SolidWorksComInaccessibleException.Code,
+                    ErrorDetails = ex.Message,
+                    ErrorCode = ComErrorCode.SwUnresponsive.ToString(),
+                };
+            }
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"[SW-API] EnsureRunning: warmup failed: {ex.Message}");
@@ -421,6 +474,10 @@ namespace BluePLM.SolidWorksService
         {
             Console.Error.WriteLine("[SW-API] ResetComConnection: Clearing cached COM reference");
             _swApp = null;
+            // Re-evaluate every ProgID next time: the user may have closed one SolidWorks
+            // release and opened another.
+            SolidWorksComRegistry.ClearResolvedProgId();
+            MarkComAvailable();
         }
 
         private ISldWorks GetSolidWorks()
@@ -454,6 +511,20 @@ namespace BluePLM.SolidWorksService
                 Console.Error.WriteLine("[SW-API] No running SolidWorks instance found");
             }
 
+            // SolidWorks is already running but no ProgID resolved it in the ROT. Launching
+            // now would start a SECOND SolidWorks - a different release than the one the user
+            // has open, which is exactly the situation that made the attach fail - so refuse.
+            if (IsSolidWorksProcessRunning())
+            {
+                MarkComUnavailable();
+                Console.Error.WriteLine("[SW-API] SolidWorks is running but unreachable via COM - refusing to launch a second instance");
+                Console.Error.WriteLine($"[SW-API] Registered installs: {SolidWorksComRegistry.DescribeInstalls()}");
+                throw new SolidWorksComInaccessibleException(
+                    "SolidWorks is running but not reachable via COM. This usually means a different " +
+                    "SolidWorks release is registered than the one that is open - pick the running " +
+                    "release in Settings > SolidWorks.");
+            }
+
             // *** CRITICAL: About to launch SolidWorks! ***
             // This should only happen for explicit user actions that require full SW API
             // (e.g., creating new files from templates, explicit metadata refresh)
@@ -462,7 +533,9 @@ namespace BluePLM.SolidWorksService
             Console.Error.WriteLine($"[SW-API] Called from: {new System.Diagnostics.StackTrace().GetFrame(1)?.GetMethod()?.Name ?? "unknown"}");
 
             // Start SolidWorks
-            var swType = Type.GetTypeFromProgID("SldWorks.Application");
+            var launchProgId = SolidWorksComRegistry.GetLaunchProgId();
+            Console.Error.WriteLine($"[SW-API] Launch ProgID: {launchProgId}");
+            var swType = Type.GetTypeFromProgID(launchProgId);
             if (swType == null)
                 throw new Exception("SolidWorks is not installed on this machine");
 
@@ -712,6 +785,10 @@ namespace BluePLM.SolidWorksService
                 var cachedApp = GetCachedLiveSwAppOrNull();
                 if (cachedApp != null)
                 {
+                    // The handle just answered a live call, so any earlier "COM unreachable"
+                    // verdict is stale. Clearing it keeps IsComKnownUnavailable an accurate
+                    // report of whether the answer below was measured or assumed.
+                    MarkComAvailable();
                     return IsFileAmongOpenDocuments(cachedApp, filePath);
                 }
 
@@ -1156,6 +1233,13 @@ namespace BluePLM.SolidWorksService
                     }
                 };
             }
+            catch (SolidWorksComInaccessibleException)
+            {
+                // Let the caller pick a Document Manager fallback, and let Program.cs map this
+                // to the SOLIDWORKS_COM_INACCESSIBLE wire code the app matches on. Flattening it
+                // into a plain message here loses both.
+                throw;
+            }
             catch (Exception ex)
             {
                 return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
@@ -1224,6 +1308,11 @@ namespace BluePLM.SolidWorksService
                     }
                 };
             }
+            catch (SolidWorksComInaccessibleException)
+            {
+                // See GetExternalReferences: preserve the typed failure for the caller.
+                throw;
+            }
             catch (Exception ex)
             {
                 return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
@@ -1261,14 +1350,36 @@ namespace BluePLM.SolidWorksService
                 if (doc == null)
                     return new CommandResult { Success = false, Error = $"Failed to open file: errors={errors}" };
 
-                WriteCustomProperties(doc, properties, configuration);
+                var report = WriteCustomProperties(doc, properties, configuration);
 
-                // Save the document
+                // Nothing landed, so there is nothing to save and a successful save would only
+                // disguise the failure. Report it so the caller can try another path.
+                if (report.AllFailed)
+                {
+                    Console.Error.WriteLine($"[SW-API] All {report.Failed} property writes refused for {Path.GetFileName(filePath)}: {report.DescribeFailures()}");
+                    return new CommandResult
+                    {
+                        Success = false,
+                        Error = $"SolidWorks refused every property write on {Path.GetFileName(filePath)}: {report.DescribeFailures()}"
+                    };
+                }
+
                 doc.Save3(
                     (int)swSaveAsOptions_e.swSaveAsOptions_Silent,
                     ref errors,
                     ref warnings
                 );
+
+                if (SwSaveError.IsFailure(errors))
+                {
+                    var reason = SwSaveError.Describe(errors);
+                    Console.Error.WriteLine($"[SW-API] Save3 refused {Path.GetFileName(filePath)}: {reason}");
+                    return new CommandResult
+                    {
+                        Success = false,
+                        Error = $"SolidWorks could not save {Path.GetFileName(filePath)}: {reason}"
+                    };
+                }
 
                 return new CommandResult
                 {
@@ -1276,10 +1387,18 @@ namespace BluePLM.SolidWorksService
                     Data = new
                     {
                         filePath,
-                        propertiesSet = properties.Count,
+                        propertiesSet = report.Written,
+                        propertiesFailed = report.Failed,
+                        failedProperties = report.Failed > 0 ? report.FailedProperties : null,
                         configuration = configuration ?? "(file-level)"
                     }
                 };
+            }
+            catch (SolidWorksComInaccessibleException)
+            {
+                // Must reach ProcessCommand as itself so the app can tell the user that the
+                // connection to SolidWorks is what needs fixing.
+                throw;
             }
             catch (Exception ex)
             {
@@ -1397,13 +1516,30 @@ namespace BluePLM.SolidWorksService
             return props;
         }
 
-        private void WriteCustomProperties(ModelDoc2 doc, Dictionary<string, string> properties, string? configuration)
+        /// <summary>
+        /// Write properties to one scope, returning what actually happened to each one.
+        ///
+        /// Set2, Add3 and Delete2 each return a result code saying whether the write landed. All
+        /// three were discarded here, so a property SolidWorks refused was counted as written.
+        /// </summary>
+        private PropertyWriteReport WriteCustomProperties(ModelDoc2 doc, Dictionary<string, string> properties, string? configuration)
         {
+            var report = new PropertyWriteReport();
             var ext = doc.Extension;
-            var configLabel = string.IsNullOrEmpty(configuration) ? "file-level" : configuration;
+            var configLabel = string.IsNullOrEmpty(configuration) ? "file-level" : configuration!;
             var manager = string.IsNullOrEmpty(configuration)
                 ? ext.CustomPropertyManager[""]
                 : ext.CustomPropertyManager[configuration];
+
+            if (manager == null)
+            {
+                foreach (var prop in properties)
+                {
+                    report.Record(configLabel, prop.Key, PropertyWriteStatus.Failed, "no property manager for this configuration");
+                }
+                Console.Error.WriteLine($"[SW-API] No custom property manager for {configLabel} - {properties.Count} properties not written");
+                return report;
+            }
 
             foreach (var prop in properties)
             {
@@ -1414,26 +1550,54 @@ namespace BluePLM.SolidWorksService
                     // value would survive and "bounce back".
                     if (string.IsNullOrWhiteSpace(prop.Value))
                     {
-                        try { manager.Delete2(prop.Key); } catch { }
-                        Console.Error.WriteLine($"[SW-API] Deleted property '{prop.Key}' on {configLabel} (empty value)");
+                        var deleteResult = manager.Delete2(prop.Key);
+                        if (SwCustomPropertyResult.DeleteSucceeded(deleteResult))
+                        {
+                            report.Record(configLabel, prop.Key, PropertyWriteStatus.Deleted);
+                            Console.Error.WriteLine($"[SW-API] Deleted property '{prop.Key}' on {configLabel} (empty value)");
+                        }
+                        else
+                        {
+                            var reason = SwCustomPropertyResult.DescribeDeleteResult(deleteResult);
+                            report.Record(configLabel, prop.Key, PropertyWriteStatus.Failed, reason);
+                            Console.Error.WriteLine($"[SW-API] Delete2 refused '{prop.Key}' on {configLabel}: {reason}");
+                        }
                         continue;
                     }
+
                     // Try to set existing property first, then add if it doesn't exist
-                    var result = manager.Set2(prop.Key, prop.Value);
-                    if (result != (int)swCustomInfoSetResult_e.swCustomInfoSetResult_OK)
+                    var setResult = manager.Set2(prop.Key, prop.Value);
+                    if (SwCustomPropertyResult.SetSucceeded(setResult))
                     {
-                        Console.Error.WriteLine($"[SW-API] Set2 failed for '{prop.Key}' on {configLabel} with code {result}, trying Add3...");
-                        manager.Add3(prop.Key, (int)swCustomInfoType_e.swCustomInfoText, prop.Value, 
-                            (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
-                        Console.Error.WriteLine($"[SW-API] Add3 succeeded for '{prop.Key}' on {configLabel}");
+                        report.Record(configLabel, prop.Key, PropertyWriteStatus.Updated);
+                        continue;
+                    }
+
+                    Console.Error.WriteLine($"[SW-API] Set2 declined '{prop.Key}' on {configLabel} ({SwCustomPropertyResult.DescribeSetResult(setResult)}), trying Add3...");
+                    var addResult = manager.Add3(prop.Key, (int)swCustomInfoType_e.swCustomInfoText, prop.Value,
+                        (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                    if (SwCustomPropertyResult.AddSucceeded(addResult))
+                    {
+                        report.Record(configLabel, prop.Key, PropertyWriteStatus.Created);
+                        Console.Error.WriteLine($"[SW-API] Add3 created '{prop.Key}' on {configLabel}");
+                    }
+                    else
+                    {
+                        var reason = SwCustomPropertyResult.DescribeAddResult(addResult);
+                        report.Record(configLabel, prop.Key, PropertyWriteStatus.Failed, reason);
+                        Console.Error.WriteLine($"[SW-API] Add3 refused '{prop.Key}' on {configLabel}: {reason}");
                     }
                 }
                 catch (Exception ex)
                 {
-                    // Log but don't abort - continue writing remaining properties
+                    // Record and continue - one bad property must not cost the rest, but it must
+                    // not be reported as written either.
+                    report.Record(configLabel, prop.Key, PropertyWriteStatus.Failed, ex.Message);
                     Console.Error.WriteLine($"[SW-API] Failed to write property '{prop.Key}' on {configLabel}: {ex.Message}");
                 }
             }
+
+            return report;
         }
 
         #endregion
@@ -1488,6 +1652,11 @@ namespace BluePLM.SolidWorksService
                         count = configs.Count
                     }
                 };
+            }
+            catch (SolidWorksComInaccessibleException)
+            {
+                // See GetExternalReferences: preserve the typed failure for the caller.
+                throw;
             }
             catch (Exception ex)
             {
@@ -4364,9 +4533,19 @@ namespace BluePLM.SolidWorksService
                 }
 
                 // Use the WriteCustomProperties helper to set properties
-                WriteCustomProperties(doc, properties, configuration);
+                var report = WriteCustomProperties(doc, properties, configuration);
 
-                Console.Error.WriteLine($"[SW-API] Set {properties.Count} properties on open document: {Path.GetFileName(filePath)}, config: {configuration ?? "file-level"}");
+                if (report.AllFailed)
+                {
+                    Console.Error.WriteLine($"[SW-API] All {report.Failed} property writes refused on open document {Path.GetFileName(filePath)}: {report.DescribeFailures()}");
+                    return new CommandResult
+                    {
+                        Success = false,
+                        Error = $"SolidWorks refused every property write on {Path.GetFileName(filePath)}: {report.DescribeFailures()}"
+                    };
+                }
+
+                Console.Error.WriteLine($"[SW-API] Set {report.Written} of {report.Attempted} properties on open document: {Path.GetFileName(filePath)}, config: {configuration ?? "file-level"}");
 
                 return new CommandResult
                 {
@@ -4375,7 +4554,9 @@ namespace BluePLM.SolidWorksService
                     {
                         filePath,
                         fileName = Path.GetFileName(filePath),
-                        propertiesSet = properties.Count,
+                        propertiesSet = report.Written,
+                        propertiesFailed = report.Failed,
+                        failedProperties = report.Failed > 0 ? report.FailedProperties : null,
                         configuration = configuration ?? "file-level"
                     }
                 };

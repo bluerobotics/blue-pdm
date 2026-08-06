@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -34,7 +35,7 @@ namespace BluePLM.SolidWorksService
         /// Service version - bump this when making changes that affect functionality.
         /// The app checks this version and warns if there's a mismatch.
         /// </summary>
-        private const string SERVICE_VERSION = "1.12.0";
+        private const string SERVICE_VERSION = "1.16.0";
 
         /// <summary>
         /// JSON settings for all stdout responses. EscapeNonAscii forces every non-ASCII character
@@ -87,6 +88,12 @@ namespace BluePLM.SolidWorksService
             bool singleCommand = false;
             string? commandJson = null;
             string? dmLicenseKey = null;
+            string? swProgId = null;
+            string? probeFilePath = null;
+            string? probeConfiguration = null;
+            bool probeAllowWrite = false;
+            bool probeReadOnlyAttribute = false;
+            bool probeReferences = false;
 
             for (int i = 0; i < args.Length; i++)
             {
@@ -104,6 +111,27 @@ namespace BluePLM.SolidWorksService
                         if (i + 1 < args.Length)
                             dmLicenseKey = args[++i];
                         break;
+                    case "--sw-progid":
+                        if (i + 1 < args.Length)
+                            swProgId = args[++i];
+                        break;
+                    case "--dm-probe":
+                        if (i + 1 < args.Length)
+                            probeFilePath = args[++i];
+                        break;
+                    case "--probe-config":
+                        if (i + 1 < args.Length)
+                            probeConfiguration = args[++i];
+                        break;
+                    case "--allow-write":
+                        probeAllowWrite = true;
+                        break;
+                    case "--probe-readonly":
+                        probeReadOnlyAttribute = true;
+                        break;
+                    case "--probe-references":
+                        probeReferences = true;
+                        break;
                     case "--help":
                         PrintUsage();
                         return 0;
@@ -113,10 +141,29 @@ namespace BluePLM.SolidWorksService
                 }
             }
 
+            SolidWorksComRegistry.SetPreferredProgId(swProgId);
+
+            // The probe is a self-contained diagnostic. It must run before any of the startup below,
+            // which creates SolidWorks-facing objects the probe deliberately avoids.
+            if (probeFilePath != null)
+            {
+                return DmWriteProbe.Run(new ProbeOptions
+                {
+                    FilePath = probeFilePath,
+                    Configuration = probeConfiguration,
+                    LicenseKey = dmLicenseKey,
+                    AllowWrite = probeAllowWrite,
+                    ProbeReadOnly = probeReadOnlyAttribute,
+                    ProbeReferences = probeReferences,
+                });
+            }
+
             // Initialize Document Manager API (for FAST operations - no SW launch!)
             Console.Error.WriteLine("=== BluePLM SolidWorks Service Startup ===");
             Console.Error.WriteLine($"[Startup] DM License key from command line: {(dmLicenseKey == null ? "not provided" : "provided")}");
             Console.Error.WriteLine($"[Startup] Verbose logging: {(VerboseLogging ? "enabled" : "disabled")}");
+            Console.Error.WriteLine($"[Startup] Preferred SolidWorks ProgID: {swProgId ?? "(machine default)"}");
+            Console.Error.WriteLine($"[Startup] Registered SolidWorks installs: {SolidWorksComRegistry.DescribeInstalls()}");
 
             // Initialize COM Stability Layer FIRST (before any COM operations)
             Console.Error.WriteLine("[Startup] Creating ComStabilityLayer instance...");
@@ -425,6 +472,16 @@ namespace BluePLM.SolidWorksService
             {
                 return new CommandResult { Success = false, Error = $"JSON parse error: {ex.Message}", RequestId = requestId };
             }
+            catch (SolidWorksComInaccessibleException ex)
+            {
+                return new CommandResult
+                {
+                    Success = false,
+                    Error = SolidWorksComInaccessibleException.Code,
+                    Data = new { message = ex.Message },
+                    RequestId = requestId,
+                };
+            }
         }
 
         // ========================================
@@ -465,17 +522,55 @@ namespace BluePLM.SolidWorksService
             return result;  // Return DM result - no fallback to SW API!
         }
 
+        /// <summary>
+        /// Perform a read through the full SolidWorks API when SolidWorks has the file open,
+        /// returning null when the caller should use Document Manager instead.
+        ///
+        /// IsFileOpenInSolidWorks answers "assume open" whenever COM is unreachable, because
+        /// pointing Document Manager at a document SolidWorks really has open can make
+        /// SolidWorks close it. That guess must not be terminal: if COM is unreachable then
+        /// SolidWorks is not reachable to be holding anything on our behalf, the SolidWorks API
+        /// can only fail, and Document Manager is both safe and the only path that can answer.
+        /// A failure for any other reason still propagates to the caller unchanged.
+        /// </summary>
+        static CommandResult? TryReadWhileOpenInSolidWorks(
+            string? filePath,
+            Func<string, CommandResult> read)
+        {
+            if (_swApi == null || string.IsNullOrEmpty(filePath)) return null;
+            if (!_swApi.IsFileOpenInSolidWorks(filePath!)) return null;
+
+            // Distinguishes "SolidWorks listed this document" from "we assumed it because COM
+            // is down". Only meaningful directly after the call above.
+            if (SolidWorksAPI.IsComKnownUnavailable())
+            {
+                Console.Error.WriteLine($"[Service] SolidWorks COM unreachable, using Document Manager instead: {Path.GetFileName(filePath)}");
+                return null;
+            }
+
+            Console.Error.WriteLine($"[Service] File is open in SolidWorks, using SW API: {Path.GetFileName(filePath)}");
+            try
+            {
+                return read(filePath!);
+            }
+            catch (SolidWorksComInaccessibleException ex)
+            {
+                // COM dropped between the probe and the read.
+                Console.Error.WriteLine($"[Service] SolidWorks COM became unreachable, falling back to Document Manager: {ex.Message}");
+                return null;
+            }
+        }
+
         static CommandResult GetPropertiesFast(string? filePath, JObject command)
         {
             // ONLY use SW API if THIS SPECIFIC FILE is already open in SolidWorks
             // This prevents loading component files into SW when reading assembly properties
             // (Opening an assembly via OpenDoc6 loads ALL component references, which stay orphaned
             // in SW session even after closing the main assembly)
-            if (_swApi != null && !string.IsNullOrEmpty(filePath) && _swApi.IsFileOpenInSolidWorks(filePath!))
-            {
-                Console.Error.WriteLine($"[Service] File is open in SolidWorks, using SW API: {Path.GetFileName(filePath)}");
-                return _swApi.GetCustomProperties(filePath, command["configuration"]?.ToString());
-            }
+            var swResult = TryReadWhileOpenInSolidWorks(
+                filePath,
+                path => _swApi!.GetCustomProperties(path, command["configuration"]?.ToString()));
+            if (swResult != null) return swResult;
             
             // Use Document Manager API - fast and doesn't load files into SolidWorks
             // DM API can read properties without launching SW or loading any component files
@@ -522,11 +617,8 @@ namespace BluePLM.SolidWorksService
         {
             // If SolidWorks has this file open, use full SW API to avoid DM API conflict
             // (DM API accessing a file open in SW can cause SW to close the file)
-            if (_swApi != null && !string.IsNullOrEmpty(filePath) && _swApi.IsFileOpenInSolidWorks(filePath!))
-            {
-                Console.Error.WriteLine($"[Service] File is open in SolidWorks, using SW API: {Path.GetFileName(filePath)}");
-                return _swApi.GetConfigurations(filePath);
-            }
+            var swResult = TryReadWhileOpenInSolidWorks(filePath, path => _swApi!.GetConfigurations(path));
+            if (swResult != null) return swResult;
             
             // Use Document Manager API ONLY - NEVER fall back to full SW API
             // Launching SolidWorks just for configuration extraction is too slow/disruptive
@@ -554,11 +646,8 @@ namespace BluePLM.SolidWorksService
         {
             // If SolidWorks has this file open, use full SW API to avoid DM API conflict
             // (DM API accessing a file open in SW can cause SW to close the file)
-            if (_swApi != null && !string.IsNullOrEmpty(filePath) && _swApi.IsFileOpenInSolidWorks(filePath!))
-            {
-                Console.Error.WriteLine($"[Service] File is open in SolidWorks, using SW API: {Path.GetFileName(filePath)}");
-                return _swApi.GetExternalReferences(filePath);
-            }
+            var swResult = TryReadWhileOpenInSolidWorks(filePath, path => _swApi!.GetExternalReferences(path));
+            if (swResult != null) return swResult;
             
             // Use Document Manager API ONLY - NEVER fall back to full SW API
             // Launching SolidWorks just for reference extraction is too slow/disruptive
@@ -647,25 +736,25 @@ namespace BluePLM.SolidWorksService
                     
                     // swStatus == "running" - SW is running and COM accessible
                     Console.Error.WriteLine($"[Service-Fallback] SW is running - Attempting SW API fallback: {Path.GetFileName(filePath)}");
-                    var swResult = _swApi!.GetExternalReferences(filePath);
-                    if (swResult.Success)
+                    var swFallbackResult = _swApi!.GetExternalReferences(filePath);
+                    if (swFallbackResult.Success)
                     {
                         int swRefCount = 0;
                         try
                         {
-                            var swData = swResult.Data as dynamic;
+                            var swData = swFallbackResult.Data as dynamic;
                             swRefCount = swData?.count ?? 0;
                         }
                         catch { }
                         Console.Error.WriteLine($"[Service-Fallback] SW API fallback returned {swRefCount} refs");
                         if (swRefCount > 0)
                         {
-                            return swResult;  // Use SW API result if it has refs
+                            return swFallbackResult;  // Use SW API result if it has refs
                         }
                     }
                     else
                     {
-                        Console.Error.WriteLine($"[Service-Fallback] SW API fallback failed: {swResult.Error}");
+                        Console.Error.WriteLine($"[Service-Fallback] SW API fallback failed: {swFallbackResult.Error}");
                     }
                 }
                 else if (refCount == 0 && !swApiAvailable)
@@ -801,24 +890,53 @@ namespace BluePLM.SolidWorksService
             return WindowsShellThumbnail.GetThumbnail(filePath!, 256);
         }
 
+        /// <summary>
+        /// The service is running without a SolidWorks installation to fall back to, so a Document
+        /// Manager failure is the end of the line rather than the start of an escalation.
+        /// </summary>
+        static CommandResult DocumentManagerOnlyMode(string operationName) => new CommandResult
+        {
+            Success = false,
+            Error = "This operation requires SolidWorks to be installed",
+            ErrorCode = "SW_NOT_INSTALLED",
+            ErrorDetails = $"The '{operationName}' operation fell back to SolidWorks because Document Manager " +
+                           "could not complete it, but no SolidWorks installation is available."
+        };
+
         static CommandResult SetPropertiesFast(string? filePath, System.Collections.Generic.Dictionary<string, string>? properties, string? configuration)
         {
-            // File-level-only writes (no configuration) for a file that is NOT currently open in
-            // SolidWorks can go through the Document Manager API, which writes properties without
-            // launching SolidWorks. This removes the SolidWorks cold start from the critical path
-            // for the common file-level metadata edit (e.g. description / number).
+            // Writes to a file that is NOT currently open in SolidWorks go through the Document
+            // Manager API, which writes properties without launching SolidWorks. This removes the
+            // SolidWorks cold start from the critical path for the common metadata edit.
             //
-            // Config-level writes stay on the full SW COM path: the DM API's AddCustomProperty
-            // silently fails for config-level properties on newer file formats, so DM is only
-            // trusted for file-level writes here. If the file IS open in SW, the SW path is used
-            // too (no cold start anyway, and DM touching an open file can foul the document).
-            bool fileLevelOnly = string.IsNullOrEmpty(configuration);
+            // Configuration-level writes used to be excluded here, on the belief that the DM API's
+            // AddCustomProperty silently failed for them on newer file formats. Measured on a real
+            // part, that limitation does not exist: creates failed at BOTH scopes because the
+            // service passed a custom-property type that is not a member of SwDmCustomInfoType.
+            // With the correct type, DM creates and updates properties at file and configuration
+            // level alike.
+            //
+            // If the file IS open in SolidWorks the SW path is used instead: there is no cold start
+            // to avoid, and pointing DM at an open document can foul it.
             bool fileOpenInSw = _swApi != null && !string.IsNullOrEmpty(filePath) && _swApi.IsFileOpenInSolidWorks(filePath!);
+            bool comUnreachable = fileOpenInSw && SolidWorksAPI.IsComKnownUnavailable();
 
-            if (fileLevelOnly && !fileOpenInSw && (_dmApi?.IsAvailable ?? false))
+            if ((!fileOpenInSw || comUnreachable) && (_dmApi?.IsAvailable ?? false))
             {
-                Console.Error.WriteLine($"[Service] DM-first file-level property write for: {(filePath != null ? Path.GetFileName(filePath) : "(null)")}");
-                var dmResult = _dmApi!.SetCustomProperties(filePath, properties, null);
+                if (comUnreachable)
+                {
+                    // "Open in SolidWorks" here is the assumption IsFileOpenInSolidWorks makes when
+                    // COM is unreachable. An unreachable SolidWorks cannot be holding the file on
+                    // our behalf, and the SW path can only fail, so DM is both safe and the only
+                    // path that can answer.
+                    Console.Error.WriteLine($"[Service] SolidWorks COM unreachable, writing properties through Document Manager: {(filePath != null ? Path.GetFileName(filePath) : "(null)")}");
+                }
+                else
+                {
+                    Console.Error.WriteLine($"[Service] DM-first property write for {(filePath != null ? Path.GetFileName(filePath) : "(null)")} (scope: {configuration ?? "file-level"})");
+                }
+
+                var dmResult = _dmApi!.SetCustomProperties(filePath, properties, configuration);
                 if (dmResult.Success)
                 {
                     return dmResult;
@@ -826,31 +944,75 @@ namespace BluePLM.SolidWorksService
 
                 // DM failed - fall back to the full SolidWorks COM API (may cold-start SW),
                 // preserving the previous behavior and error handling.
-                Console.Error.WriteLine($"[Service] DM file-level write failed ({dmResult.Error}); falling back to SolidWorks COM API");
+                if (_swApi == null) return dmResult;
+                Console.Error.WriteLine($"[Service] DM property write failed ({dmResult.Error}); falling back to SolidWorks COM API");
             }
 
-            return _swApi!.SetCustomProperties(filePath, properties, configuration);
+            if (_swApi == null)
+                return DocumentManagerOnlyMode("setProperties");
+
+            return _swApi.SetCustomProperties(filePath, properties, configuration);
         }
 
         static CommandResult SetPropertiesBatchFast(string? filePath, System.Collections.Generic.Dictionary<string, System.Collections.Generic.Dictionary<string, string>>? configProperties)
         {
-            // Always use the full SolidWorks COM API for property writes.
-            // The DM API's AddCustomProperty silently fails for config-level properties
-            // on newer file formats, so we bypass it entirely.
+            // This is a batch because Document Manager writes every configuration inside one
+            // open/save cycle. The SolidWorks COM path cannot: it is one OpenDoc6/Save3/CloseDoc
+            // per configuration, which on a part with 68 configurations is 68 round trips against
+            // a 60-second timeout. It is the fallback, not the default.
             if (configProperties == null)
                 return new CommandResult { Success = false, Error = "Missing configProperties" };
-                
-            int success = 0;
+
+            bool fileOpenInSw = _swApi != null && !string.IsNullOrEmpty(filePath) && _swApi.IsFileOpenInSolidWorks(filePath!);
+            bool comUnreachable = fileOpenInSw && SolidWorksAPI.IsComKnownUnavailable();
+
+            if ((!fileOpenInSw || comUnreachable) && (_dmApi?.IsAvailable ?? false))
+            {
+                Console.Error.WriteLine($"[Service] DM batch property write for {(filePath != null ? Path.GetFileName(filePath) : "(null)")} ({configProperties.Count} configurations, one open/save cycle)");
+                var dmResult = _dmApi!.SetCustomPropertiesBatch(filePath, configProperties);
+                if (dmResult.Success)
+                {
+                    return dmResult;
+                }
+
+                if (_swApi == null) return dmResult;
+                Console.Error.WriteLine($"[Service] DM batch write failed ({dmResult.Error}); falling back to SolidWorks COM API");
+            }
+
+            if (_swApi == null)
+                return DocumentManagerOnlyMode("setPropertiesBatch");
+
+            var written = new List<string>();
+            var failed = new Dictionary<string, string>();
             foreach (var kvp in configProperties)
             {
                 var result = _swApi!.SetCustomProperties(filePath, kvp.Value, kvp.Key);
-                if (result.Success) success++;
+                if (result.Success)
+                    written.Add(kvp.Key);
+                else
+                    failed[kvp.Key] = result.Error ?? "unknown error";
             }
-            
-            return new CommandResult 
-            { 
-                Success = success > 0,
-                Data = new { configurationsProcessed = success }
+
+            if (written.Count == 0 && failed.Count > 0)
+            {
+                return new CommandResult
+                {
+                    Success = false,
+                    Error = $"Failed to write properties to any of the {failed.Count} configurations: " +
+                            string.Join("; ", failed.Select(f => $"{f.Key}: {f.Value}"))
+                };
+            }
+
+            return new CommandResult
+            {
+                Success = true,
+                Data = new
+                {
+                    filePath,
+                    configurationsProcessed = written.Count,
+                    configurationsFailed = failed.Count,
+                    failedConfigurations = failed.Count > 0 ? failed : null
+                }
             };
         }
 
@@ -890,6 +1052,11 @@ namespace BluePLM.SolidWorksService
                     swInstalled = swAvailable,
                     swApiAvailable = swAvailable,
                     fastModeEnabled = dmAvailable,
+                    // Which SolidWorks release this service talks to (see SolidWorksComRegistry)
+                    preferredProgId = SolidWorksComRegistry.PreferredProgId,
+                    activeProgId = SolidWorksComRegistry.ResolvedProgId ?? SolidWorksComRegistry.PreferredProgId,
+                    comInstallCount = SolidWorksComRegistry.GetInstalls().Count,
+                    documentManagerDllPath = _dmApi?.LoadedAssemblyPath,
                     // Operational mode
                     mode = mode
                 } 
@@ -989,12 +1156,28 @@ Usage:
 
 Options:
   --dm-license <key>   Document Manager API license key for fast mode
+
+  --sw-progid <id>     Versioned SolidWorks ProgID to prefer when several releases are
+                       installed (e.g. SldWorks.Application.32 for 2024). Defaults to
+                       whichever release registered SldWorks.Application.
   
   --close-sw-after     Close SolidWorks after each operation
   
   --command <json>     Execute a single command and exit
   
   --help               Show this help message
+
+Document Manager write diagnostic (never launches SolidWorks):
+  --dm-probe <file>    Report which interop DLL loads, inventory the file's properties, and
+                       exit. Read-only unless --allow-write is also passed.
+  --probe-config <n>   Configuration to target. Defaults to the first one reported.
+  --allow-write        Exercise the write path: back up the file, capture every return value
+                       from SetCustomProperty / AddCustomProperty / Save, re-read through a
+                       fresh Document Manager handle, then restore from the backup.
+                       Refuses to run outside the regression fixture root (override it with
+                       the BLUEPLM_FIXTURE_ROOT environment variable).
+  --probe-readonly     Force the read-only file attribute on before writing, to capture what
+                       Save() returns for a file the vault has marked read-only.
 
 Getting a Document Manager License Key (FREE with SW subscription):
   1. Go to https://customerportal.solidworks.com/

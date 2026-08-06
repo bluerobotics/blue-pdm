@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -24,19 +25,42 @@ namespace BluePLM.SolidWorksService
     {
         private object? _dmApp;
         private Assembly? _dmAssembly;
+        private string? _dmAssemblyPath;
         private readonly string? _licenseKey;
         private bool _disposed;
         private bool _initialized;
         private string? _initError;
 
-        // Common SolidWorks installation paths to search for the Document Manager DLL
-        private static readonly string[] DllSearchPaths = new[]
+        // Last-resort SolidWorks installation paths, used only when the COM registry
+        // yields nothing. These assume the default install location and the default
+        // release, so on a multi-version machine they can pick the wrong interop -
+        // SolidWorksComRegistry candidates are always tried first.
+        private static readonly string[] FallbackDllSearchPaths = new[]
         {
             @"C:\Program Files\SOLIDWORKS Corp\SOLIDWORKS\api\redist\SolidWorks.Interop.swdocumentmgr.dll",
             @"C:\Program Files\SolidWorks Corp\SolidWorks\api\redist\SolidWorks.Interop.swdocumentmgr.dll",
             @"C:\Program Files (x86)\SOLIDWORKS Corp\SOLIDWORKS\api\redist\SolidWorks.Interop.swdocumentmgr.dll",
             @"C:\Program Files\Common Files\SolidWorks Shared\SolidWorks.Interop.swdocumentmgr.dll",
         };
+
+        /// <summary>
+        /// Paths to probe for the Document Manager interop, best match first: the release
+        /// the user selected, then any other registered release, then the legacy defaults.
+        /// </summary>
+        private static IEnumerable<string> GetDllSearchPaths()
+        {
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var path in SolidWorksComRegistry.GetDocumentManagerDllCandidates())
+            {
+                if (seen.Add(path)) yield return path;
+            }
+
+            foreach (var path in FallbackDllSearchPaths)
+            {
+                if (seen.Add(path)) yield return path;
+            }
+        }
 
         // Per-file lock to serialize DM operations on the same file (prevents race conditions)
         private static readonly ConcurrentDictionary<string, SemaphoreSlim> _fileLocks = new();
@@ -75,6 +99,13 @@ namespace BluePLM.SolidWorksService
         public bool IsAvailable => _initialized && _dmApp != null;
         public string? InitializationError => _initError;
 
+        /// <summary>
+        /// Path the Document Manager interop was loaded from, or null before it loads.
+        /// Reported in the ping response so a version mismatch with the selected
+        /// SolidWorks release is visible in the app.
+        /// </summary>
+        public string? LoadedAssemblyPath => _dmAssemblyPath;
+
         #region Dynamic Assembly Loading
 
         /// <summary>
@@ -96,9 +127,10 @@ namespace BluePLM.SolidWorksService
                 return true;
             }
 
-            LogDebug($"Searching for Document Manager DLL in {DllSearchPaths.Length} locations...");
+            var searchPaths = GetDllSearchPaths().ToList();
+            LogDebug($"Searching for Document Manager DLL in {searchPaths.Count} locations...");
 
-            foreach (var path in DllSearchPaths)
+            foreach (var path in searchPaths)
             {
                 LogDebug($"  Checking: {path}");
                 if (File.Exists(path))
@@ -107,6 +139,7 @@ namespace BluePLM.SolidWorksService
                     try
                     {
                         _dmAssembly = Assembly.LoadFrom(path);
+                        _dmAssemblyPath = path;
                         LogDebug($"  Successfully loaded assembly from: {path}");
                         return true;
                     }
@@ -129,6 +162,7 @@ namespace BluePLM.SolidWorksService
                 try
                 {
                     _dmAssembly = Assembly.LoadFrom(customPath);
+                    _dmAssemblyPath = customPath;
                     LogDebug($"Successfully loaded assembly from custom path: {customPath}");
                     return true;
                 }
@@ -155,12 +189,44 @@ namespace BluePLM.SolidWorksService
         /// Dynamic dispatch with Enum.ToObject() produces a boxed object that COM interop cannot
         /// resolve for overload matching; reflection passes the argument correctly.
         /// </summary>
-        private void InvokeAddCustomProperty(object comObj, string name, object typeEnum, string value)
+        /// <returns>
+        /// What the API reports: false means the property was not created. It refuses rather than
+        /// throws, so a discarded return value looks exactly like success.
+        /// </returns>
+        private bool InvokeAddCustomProperty(object comObj, string name, object typeEnum, string value)
         {
             var method = comObj.GetType().GetMethod("AddCustomProperty");
             if (method == null)
                 throw new InvalidOperationException($"AddCustomProperty not found on {comObj.GetType().Name}");
-            method.Invoke(comObj, new object[] { name, typeEnum, value });
+            return method.Invoke(comObj, new object[] { name, typeEnum, value }) is bool accepted && accepted;
+        }
+
+        /// <summary>
+        /// Resolve the interop's SwDmCustomInfoType value for a text property.
+        /// </summary>
+        /// <returns>Null when the interop does not expose the enum, which makes the write unsafe to attempt.</returns>
+        private object? TryGetCustomInfoTextEnum()
+        {
+            var customInfoType = GetDmType(SwDmConstants.CustomInfoTypeEnumName);
+            if (customInfoType == null)
+            {
+                Console.Error.WriteLine($"[DM-API] {SwDmConstants.CustomInfoTypeEnumName} not found in {_dmAssemblyPath ?? "the Document Manager assembly"}");
+                return null;
+            }
+            return Enum.ToObject(customInfoType, (int)SwDmConstants.CustomPropertyTextType);
+        }
+
+        /// <summary>
+        /// Save and decode the returned SwDmDocumentSaveError.
+        /// A refused save - a read-only file being the common case in a vault - is reported only
+        /// through this return value.
+        /// </summary>
+        private static SwDmDocumentSaveError SaveDocument(object doc)
+        {
+            object? returned = ((dynamic)doc).Save();
+            return returned == null
+                ? SwDmDocumentSaveError.None
+                : (SwDmDocumentSaveError)Convert.ToInt32(returned, CultureInfo.InvariantCulture);
         }
 
         /// <summary>
@@ -189,12 +255,12 @@ namespace BluePLM.SolidWorksService
 
         /// <summary>
         /// Build a search option object configured for resolving external references.
-        /// Default filters are SwDmSearchExternalReference | SwDmSearchRootAssemblyFolder |
-        /// SwDmSearchSubfolders | SwDmSearchInContextReference (1 + 2 + 4 + 8).
-        /// Note these are search BEHAVIOUR flags, not document TYPE flags.
+        /// The bitmask mixes search BEHAVIOUR flags with document TYPE flags; resolving references
+        /// requires SwDmSearchExternalReference, which the type flags do not imply.
         /// </summary>
-        private object? CreateReferenceSearchOption(IEnumerable<string?> searchPaths, int searchFilters = 15)
+        private object? CreateReferenceSearchOption(IEnumerable<string?> searchPaths, SwDmSearchFilter? filters = null)
         {
+            var searchFilters = (int)(filters ?? SwDmConstants.ReferenceResolutionFilters);
             var searchOpt = CreateSearchOptionObject();
             if (searchOpt == null) return null;
 
@@ -1267,7 +1333,7 @@ namespace BluePLM.SolidWorksService
                     if (searchOpt != null)
                     {
                         dynamic dynSearchOpt = searchOpt;
-                        dynSearchOpt.SearchFilters = 3; // swDmSearchForPart | swDmSearchForAssembly
+                        dynSearchOpt.SearchFilters = (int)SwDmConstants.ComponentSearchFilters;
                         
                         // Set search path to the directory containing the drawing
                         // This is required for GetAllExternalReferences to find referenced files
@@ -1428,10 +1494,15 @@ namespace BluePLM.SolidWorksService
                 int propsFailed = 0;
                 var failedProps = new List<string>();
                 
-                var customInfoType = GetDmType("SwDmCustomInfoType");
-                if (customInfoType == null)
-                    Console.Error.WriteLine("[DM-API] WARNING: SwDmCustomInfoType not found in assembly, falling back to raw int 2");
-                var swDmCustomInfoTextEnum = customInfoType != null ? Enum.ToObject(customInfoType, 2) : (object)2;
+                var swDmCustomInfoTextEnum = TryGetCustomInfoTextEnum();
+                if (swDmCustomInfoTextEnum == null)
+                {
+                    return new CommandResult
+                    {
+                        Success = false,
+                        Error = $"Cannot resolve {SwDmConstants.CustomInfoTypeEnumName} from the Document Manager interop"
+                    };
+                }
 
                 if (string.IsNullOrEmpty(configuration))
                 {
@@ -1462,9 +1533,17 @@ namespace BluePLM.SolidWorksService
                             } 
                             catch 
                             {
-                                InvokeAddCustomProperty(doc, kvp.Key, swDmCustomInfoTextEnum, kvp.Value);
-                                propsSet++;
-                                Console.Error.WriteLine($"[DM] Added file property '{kvp.Key}' via AddCustomProperty");
+                                if (InvokeAddCustomProperty(doc, kvp.Key, swDmCustomInfoTextEnum, kvp.Value))
+                                {
+                                    propsSet++;
+                                    Console.Error.WriteLine($"[DM] Added file property '{kvp.Key}' via AddCustomProperty");
+                                }
+                                else
+                                {
+                                    propsFailed++;
+                                    failedProps.Add(kvp.Key);
+                                    Console.Error.WriteLine($"[DM] AddCustomProperty refused file property '{kvp.Key}'");
+                                }
                             }
                         }
                         catch (Exception ex)
@@ -1512,9 +1591,17 @@ namespace BluePLM.SolidWorksService
                             } 
                             catch 
                             {
-                                InvokeAddCustomProperty((object)config, kvp.Key, swDmCustomInfoTextEnum, kvp.Value);
-                                propsSet++;
-                                Console.Error.WriteLine($"[DM] Added config property '{kvp.Key}' via AddCustomProperty");
+                                if (InvokeAddCustomProperty((object)config, kvp.Key, swDmCustomInfoTextEnum, kvp.Value))
+                                {
+                                    propsSet++;
+                                    Console.Error.WriteLine($"[DM] Added config property '{kvp.Key}' via AddCustomProperty");
+                                }
+                                else
+                                {
+                                    propsFailed++;
+                                    failedProps.Add(kvp.Key);
+                                    Console.Error.WriteLine($"[DM] AddCustomProperty refused config property '{kvp.Key}'");
+                                }
                             }
                         }
                         catch (Exception ex)
@@ -1533,7 +1620,8 @@ namespace BluePLM.SolidWorksService
                         try
                         {
                             try { dynDoc.DeleteCustomProperty("Number"); } catch { }
-                            InvokeAddCustomProperty(doc, "Number", swDmCustomInfoTextEnum, numberValue);
+                            if (!InvokeAddCustomProperty(doc, "Number", swDmCustomInfoTextEnum, numberValue))
+                                throw new InvalidOperationException("AddCustomProperty refused the file-level Number");
                         }
                         catch
                         {
@@ -1553,8 +1641,16 @@ namespace BluePLM.SolidWorksService
                     };
                 }
 
-                // Save the document
-                dynDoc.Save();
+                var saveError = SaveDocument(doc);
+                if (saveError != SwDmDocumentSaveError.None)
+                {
+                    Console.Error.WriteLine($"[DM-API] Save refused for {filePath}: {saveError} ({DescribeSaveError(saveError)})");
+                    return new CommandResult
+                    {
+                        Success = false,
+                        Error = $"Document Manager could not save {Path.GetFileName(filePath)}: {DescribeSaveError(saveError)}"
+                    };
+                }
 
                 return new CommandResult
                 {
@@ -1640,10 +1736,15 @@ namespace BluePLM.SolidWorksService
                 dynamic dynDoc = doc;
                 var configMgr = dynDoc.ConfigurationManager;
                 
-                var customInfoType = GetDmType("SwDmCustomInfoType");
-                if (customInfoType == null)
-                    Console.Error.WriteLine("[DM-API] WARNING: SwDmCustomInfoType not found in assembly, falling back to raw int 2");
-                var swDmCustomInfoTextEnum = customInfoType != null ? Enum.ToObject(customInfoType, 2) : (object)2;
+                var swDmCustomInfoTextEnum = TryGetCustomInfoTextEnum();
+                if (swDmCustomInfoTextEnum == null)
+                {
+                    return new CommandResult
+                    {
+                        Success = false,
+                        Error = $"Cannot resolve {SwDmConstants.CustomInfoTypeEnumName} from the Document Manager interop"
+                    };
+                }
                 
                 int totalPropsSet = 0;
                 int totalPropsFailed = 0;
@@ -1679,6 +1780,17 @@ namespace BluePLM.SolidWorksService
                             totalPropsAttempted++;
                             try
                             {
+                                // Empty value = clear the property entirely (decisive delete),
+                                // matching SetCustomProperties. SetCustomProperty("", ...) is
+                                // unreliable and reads drop empty values, so the old value would
+                                // otherwise survive and "bounce back".
+                                if (string.IsNullOrWhiteSpace(kvp.Value))
+                                {
+                                    try { config.DeleteCustomProperty(kvp.Key); } catch { }
+                                    propsSetForConfig++;
+                                    Console.Error.WriteLine($"[DM] Deleted config property '{kvp.Key}' on '{configName}' (empty value)");
+                                    continue;
+                                }
                                 // Try SetCustomProperty first (works if property exists)
                                 // This is safer than Delete+Add which can lose data if Add fails
                                 try 
@@ -1689,9 +1801,18 @@ namespace BluePLM.SolidWorksService
                                 } 
                                 catch 
                                 {
-                                    InvokeAddCustomProperty((object)config, kvp.Key, swDmCustomInfoTextEnum, kvp.Value);
-                                    propsSetForConfig++;
-                                    Console.Error.WriteLine($"[DM] Added config property '{kvp.Key}' via AddCustomProperty");
+                                    if (InvokeAddCustomProperty((object)config, kvp.Key, swDmCustomInfoTextEnum, kvp.Value))
+                                    {
+                                        propsSetForConfig++;
+                                        Console.Error.WriteLine($"[DM] Added config property '{kvp.Key}' via AddCustomProperty");
+                                    }
+                                    else
+                                    {
+                                        totalPropsFailed++;
+                                        failedProps.Add($"{configName}:{kvp.Key}");
+                                        Console.Error.WriteLine($"[DM] AddCustomProperty refused config property '{kvp.Key}' on '{configName}'");
+                                        continue;
+                                    }
                                 }
                                 
                                 if (kvp.Key == "Number" && !string.IsNullOrEmpty(kvp.Value))
@@ -1725,7 +1846,8 @@ namespace BluePLM.SolidWorksService
                     try
                     {
                         try { dynDoc.DeleteCustomProperty("Number"); } catch { }
-                        InvokeAddCustomProperty(doc, "Number", swDmCustomInfoTextEnum, lastNumberValue);
+                        if (!InvokeAddCustomProperty(doc, "Number", swDmCustomInfoTextEnum, lastNumberValue))
+                            throw new InvalidOperationException("AddCustomProperty refused the file-level Number");
                     }
                     catch
                     {
@@ -1746,7 +1868,16 @@ namespace BluePLM.SolidWorksService
 
                 // Save the document ONCE after all writes
                 Console.Error.WriteLine($"[DM] Saving document...");
-                dynDoc.Save();
+                var saveError = SaveDocument(doc);
+                if (saveError != SwDmDocumentSaveError.None)
+                {
+                    Console.Error.WriteLine($"[DM-API] Save refused for {filePath}: {saveError} ({DescribeSaveError(saveError)})");
+                    return new CommandResult
+                    {
+                        Success = false,
+                        Error = $"Document Manager could not save {Path.GetFileName(filePath)}: {DescribeSaveError(saveError)}"
+                    };
+                }
                 Console.Error.WriteLine($"[DM] Saved! {configsProcessed} configs, {totalPropsSet} properties total");
 
                 return new CommandResult
@@ -2577,15 +2708,30 @@ namespace BluePLM.SolidWorksService
             }
         }
 
-        private static string DescribeOpenError(int error) => error switch
+        /// <summary>
+        /// Describe a SwDmDocumentOpenError code.
+        /// </summary>
+        public static string DescribeOpenError(int error) => (SwDmDocumentOpenError)error switch
         {
-            1 => "generic failure (file locked, or Document Manager license missing)",
-            2 => "file not found",
-            3 => "file is read-only",
-            4 => "not a native SolidWorks file",
-            5 => "file is open in another application",
-            6 => "file was saved by a newer SolidWorks version than the installed Document Manager",
+            SwDmDocumentOpenError.None => "no error",
+            SwDmDocumentOpenError.Fail => "generic failure (file locked, or Document Manager license missing)",
+            SwDmDocumentOpenError.NonSW => "not a native SolidWorks file",
+            SwDmDocumentOpenError.FileNotFound => "file not found",
+            SwDmDocumentOpenError.FileReadOnly => "file is read-only",
+            SwDmDocumentOpenError.NoLicense => "no Document Manager license",
+            SwDmDocumentOpenError.FutureVersion => "file was saved by a newer SolidWorks version than the installed Document Manager",
             _ => $"error code {error}"
+        };
+
+        /// <summary>
+        /// Describe a SwDmDocumentSaveError code.
+        /// </summary>
+        public static string DescribeSaveError(SwDmDocumentSaveError error) => error switch
+        {
+            SwDmDocumentSaveError.None => "no error",
+            SwDmDocumentSaveError.ReadOnly => "the document is read-only",
+            SwDmDocumentSaveError.Fail => "the save was refused",
+            _ => $"save error code {(int)error}"
         };
 
         /// <summary>

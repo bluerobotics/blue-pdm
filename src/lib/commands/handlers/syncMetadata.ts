@@ -31,6 +31,8 @@ import {
   combineBaseAndTab,
 } from '@/lib/serialization'
 import { getSwReferencesCached } from '@/lib/solidworks'
+import { getContains } from '@/lib/supabase'
+import { getParentDir } from '@/lib/utils'
 import type { PendingMetadata } from '@/stores/types'
 
 // SolidWorks file extensions
@@ -59,6 +61,15 @@ function logSync(
 export interface SyncMetadataParams extends BaseCommandParams {}
 
 /**
+ * How a drawing's parent model was located, when SolidWorks could not report the
+ * drawing's references directly.
+ *
+ * `filename` and `reference-database` identify the parent unambiguously.
+ * `sole-model-in-folder` is a guess from folder layout - see `isParentAuthoritative`.
+ */
+type ParentInferenceStrategy = 'filename' | 'reference-database' | 'sole-model-in-folder'
+
+/**
  * Extracted metadata structure
  */
 interface ExtractedMetadata {
@@ -68,6 +79,11 @@ interface ExtractedMetadata {
   revision: string | null
   inheritedFromParent?: boolean
   parentModelPath?: string
+  /**
+   * Set only when the parent came from inference rather than the drawing's own
+   * references. Absent means SolidWorks named the parent itself.
+   */
+  parentInferenceStrategy?: ParentInferenceStrategy
   /**
    * The drawing's own part number, before parent inheritance replaced it.
    * Only set when `inheritedFromParent` is true, so callers can detect a
@@ -148,37 +164,139 @@ async function getDrawingReferences(fullPath: string): Promise<DrawingReferences
 }
 
 /**
- * Infer the parent model path from a drawing's filename.
- * Drawings almost always share the same base filename as their parent part/assembly
- * (e.g., t3000-magnet.SLDDRW -> t3000-magnet.SLDPRT).
- * This is used as a fallback when the DM API can't resolve drawing references.
+ * Shape of the joined child rows returned by `getContains`.
+ * Mirrors the select list in `src/lib/supabase/files/queries.ts`.
  */
-async function inferParentModelFromFilename(drawingFullPath: string): Promise<string | null> {
-  const lastBackslash = drawingFullPath.lastIndexOf('\\')
-  const lastForwardSlash = drawingFullPath.lastIndexOf('/')
-  const separatorIdx = Math.max(lastBackslash, lastForwardSlash)
-  const dir = separatorIdx >= 0 ? drawingFullPath.substring(0, separatorIdx + 1) : ''
-  const fileName = separatorIdx >= 0 ? drawingFullPath.substring(separatorIdx + 1) : drawingFullPath
+interface ContainsReference {
+  child: {
+    /** Vault-relative path, matching `LocalFile.relativePath`. */
+    file_path: string
+  } | null
+}
+
+/**
+ * Infer the parent model path from a drawing's filename.
+ * Drawings often share the same base filename as their parent part/assembly
+ * (e.g., t3000-magnet.SLDDRW -> t3000-magnet.SLDPRT).
+ */
+async function inferParentByFilename(drawingFullPath: string): Promise<string | null> {
+  const dir = getParentDir(drawingFullPath)
+  const separator = drawingFullPath.includes('\\') ? '\\' : '/'
+  const fileName = drawingFullPath.substring(dir.length).replace(/^[/\\]+/, '')
   const baseName = fileName.replace(/\.[^.]+$/, '')
 
   for (const ext of ['.SLDPRT', '.SLDASM']) {
-    const candidate = dir + baseName + ext
+    const candidate = `${dir}${separator}${baseName}${ext}`
     try {
       const result = await window.electronAPI?.solidworks?.getProperties?.(candidate)
-      if (result?.success) {
-        logSync('info', 'Filename inference found parent model', { drawingFullPath, candidate })
-        return candidate
-      }
+      if (result?.success) return candidate
     } catch {
-      // candidate doesn't exist, try next
+      // Candidate doesn't exist or can't be read; try the next extension.
     }
   }
 
-  logSync('debug', 'Filename inference found no matching parent model', {
-    drawingFullPath,
-    triedPart: dir + baseName + '.SLDPRT',
-    triedAssembly: dir + baseName + '.SLDASM',
-  })
+  return null
+}
+
+/**
+ * Look up the drawing's parent in the `file_references` table, which BluePLM populates
+ * whenever a drawing's references have resolved before. Authoritative regardless of how
+ * the two files are named, and works with SolidWorks entirely unavailable.
+ */
+async function inferParentFromReferenceDatabase(
+  drawingFile: LocalFile | undefined,
+): Promise<string | null> {
+  const fileId = drawingFile?.pdmData?.id
+  if (!fileId) return null
+
+  try {
+    const { references, error } = await getContains(fileId)
+    if (error || !references) return null
+
+    const store = usePDMStore.getState()
+
+    for (const ref of references as ContainsReference[]) {
+      const childPath = ref.child?.file_path
+      if (!childPath) continue
+
+      const ext = childPath.substring(childPath.lastIndexOf('.')).toLowerCase()
+      if (!PART_ASSEMBLY_EXTENSIONS.includes(ext)) continue
+
+      // Prefer the local file's own absolute path; it already reflects the vault this
+      // file was loaded from, including any case differences from the database.
+      const localMatch = store.files.find(
+        (candidate) => candidate.relativePath.toLowerCase() === childPath.toLowerCase(),
+      )
+      if (localMatch) return localMatch.path
+
+      if (store.vaultPath) return buildFullPath(store.vaultPath, childPath)
+    }
+  } catch (error) {
+    logSync('debug', 'Reference database lookup for parent model failed', {
+      fileId,
+      error: String(error),
+    })
+  }
+
+  return null
+}
+
+/**
+ * Pair a drawing with the only part/assembly sitting beside it. Deliberately requires
+ * exactly one candidate: with two or more there is no basis to choose, and a wrong parent
+ * is worse than none.
+ */
+function inferParentFromSoleModelInFolder(drawingFullPath: string): string | null {
+  const drawingDir = getParentDir(drawingFullPath).toLowerCase()
+  const { files } = usePDMStore.getState()
+
+  const models = files.filter(
+    (file) =>
+      !file.isDirectory &&
+      PART_ASSEMBLY_EXTENSIONS.includes(file.extension.toLowerCase()) &&
+      getParentDir(file.path).toLowerCase() === drawingDir,
+  )
+
+  return models.length === 1 ? models[0].path : null
+}
+
+/**
+ * Locate the part/assembly a drawing documents, when SolidWorks itself could not report
+ * the drawing's references. Strategies run most-certain first and the winner is recorded,
+ * because only the unambiguous ones may be written back into the drawing file.
+ */
+async function inferParentModel(
+  drawingFullPath: string,
+  drawingFile: LocalFile | undefined,
+): Promise<{ path: string; strategy: ParentInferenceStrategy } | null> {
+  const byFilename = await inferParentByFilename(drawingFullPath)
+  if (byFilename) {
+    logSync('info', 'Inferred parent model from matching filename', {
+      drawingFullPath,
+      parentModelPath: byFilename,
+    })
+    return { path: byFilename, strategy: 'filename' }
+  }
+
+  const byDatabase = await inferParentFromReferenceDatabase(drawingFile)
+  if (byDatabase) {
+    logSync('info', 'Inferred parent model from reference database', {
+      drawingFullPath,
+      parentModelPath: byDatabase,
+    })
+    return { path: byDatabase, strategy: 'reference-database' }
+  }
+
+  const byFolder = inferParentFromSoleModelInFolder(drawingFullPath)
+  if (byFolder) {
+    logSync('info', 'Inferred parent model as the only model in the drawing folder', {
+      drawingFullPath,
+      parentModelPath: byFolder,
+    })
+    return { path: byFolder, strategy: 'sole-model-in-folder' }
+  }
+
+  logSync('debug', 'No parent model could be inferred', { drawingFullPath })
   return null
 }
 
@@ -271,10 +389,29 @@ function extractMetadataFromProperties(allProps: Record<string, string>): {
 }
 
 /**
+ * Whether the resolved parent is certain enough to rewrite the drawing's own properties.
+ *
+ * A parent named by the drawing's references, by an exact filename match, or by the
+ * reference database is that drawing's parent by definition. `sole-model-in-folder` only
+ * infers it from folder layout, so it may populate BluePLM's fields - which a user can see
+ * and correct before check-in - but must never be written into the file, where a wrong
+ * guess would silently corrupt the title block.
+ */
+function isParentAuthoritative(metadata: ExtractedMetadata): boolean {
+  return metadata.parentInferenceStrategy !== 'sole-model-in-folder'
+}
+
+/**
  * PULL: Extract metadata from a drawing file (with PRP resolution)
  * Returns metadata read from the SW file (or parent model)
+ *
+ * `file` is optional so callers without a store record can still read a drawing; it only
+ * unlocks the reference-database step of parent inference.
  */
-async function pullDrawingMetadata(fullPath: string): Promise<ExtractedMetadata | null> {
+async function pullDrawingMetadata(
+  fullPath: string,
+  file?: LocalFile,
+): Promise<ExtractedMetadata | null> {
   logSync('debug', 'PULL: Reading metadata from drawing', { fullPath })
 
   // Get drawing's own properties
@@ -531,15 +668,14 @@ async function pullDrawingMetadata(fullPath: string): Promise<ExtractedMetadata 
     }
   }
 
-  // Filename-based fallback: when DM API can't resolve drawing references
-  // (common limitation with certain SW file format versions), try matching
-  // the drawing filename to a part/assembly in the same directory
-  logSync('info', 'No drawing references resolved, trying filename-based parent inference', {
+  // Inference fallback: SolidWorks could not name the parent, either because the DM API
+  // cannot parse references for this file format or because SolidWorks was unreachable.
+  logSync('info', 'No drawing references resolved, trying parent inference', {
     fullPath,
   })
-  const inferredParentPath = await inferParentModelFromFilename(fullPath)
-  if (inferredParentPath) {
-    const parentResult = await window.electronAPI?.solidworks?.getProperties?.(inferredParentPath)
+  const inferredParent = await inferParentModel(fullPath, file)
+  if (inferredParent) {
+    const parentResult = await window.electronAPI?.solidworks?.getProperties?.(inferredParent.path)
     const parentData = parentResult?.data as
       | {
           fileProperties?: Record<string, string>
@@ -563,9 +699,10 @@ async function pullDrawingMetadata(fullPath: string): Promise<ExtractedMetadata 
 
       const parentMetadata = extractMetadataFromProperties(parentAllProps)
 
-      logSync('info', 'Inherited metadata from parent model (filename inference)', {
+      logSync('info', 'Inherited metadata from inferred parent model', {
         drawingPath: fullPath,
-        parentModelPath: inferredParentPath,
+        parentModelPath: inferredParent.path,
+        strategy: inferredParent.strategy,
         inheritedPartNumber: parentMetadata.partNumber,
         inheritedDescription: parentMetadata.description?.substring(0, 50),
         drawingRevision: drawingMetadata.revision,
@@ -577,7 +714,8 @@ async function pullDrawingMetadata(fullPath: string): Promise<ExtractedMetadata 
         description: parentMetadata.description,
         revision: drawingMetadata.revision,
         inheritedFromParent: true,
-        parentModelPath: inferredParentPath,
+        parentModelPath: inferredParent.path,
+        parentInferenceStrategy: inferredParent.strategy,
         ownPartNumber: drawingMetadata.partNumber,
         ownDescription: drawingMetadata.description,
       }
@@ -586,7 +724,7 @@ async function pullDrawingMetadata(fullPath: string): Promise<ExtractedMetadata 
 
   // All parent lookup methods failed
   if (solidworksNotRunning) {
-    logSync('warn', 'SolidWorks not running and filename inference failed', {
+    logSync('warn', 'SolidWorks not running and parent inference failed', {
       fullPath,
       fallbackPartNumber: drawingMetadata.partNumber,
     })
@@ -597,7 +735,7 @@ async function pullDrawingMetadata(fullPath: string): Promise<ExtractedMetadata 
   }
 
   if (solidworksComInaccessible) {
-    logSync('warn', 'SolidWorks COM inaccessible and filename inference failed', {
+    logSync('warn', 'SolidWorks COM inaccessible and parent inference failed', {
       fullPath,
       fallbackPartNumber: drawingMetadata.partNumber,
     })
@@ -1044,7 +1182,7 @@ export async function refreshMetadataForFiles(
 
       // For drawings: PULL metadata from file
       if (isDrawing) {
-        const metadata = await pullDrawingMetadata(fullPath)
+        const metadata = await pullDrawingMetadata(fullPath, file)
 
         if (metadata) {
           const pendingUpdates: PendingMetadata = {}
@@ -1324,7 +1462,7 @@ export const syncMetadataCommand: Command<SyncMetadataParams> = {
           // PULL: Read metadata from drawing -> update pendingMetadata
           logSync('debug', 'Processing drawing (PULL)', { fullPath })
 
-          const metadata = await pullDrawingMetadata(fullPath)
+          const metadata = await pullDrawingMetadata(fullPath, file)
 
           if (metadata) {
             // Track if this drawing needed SW but it wasn't running or COM was inaccessible
@@ -1366,29 +1504,38 @@ export const syncMetadataCommand: Command<SyncMetadataParams> = {
 
             // PUSH: the drawing's own properties can have drifted from its parent (most
             // often when the drawing was copied from another item). Only correct them when
-            // the parent actually resolved - without it there is no authoritative value.
+            // the parent actually resolved - without it there is no authoritative value -
+            // and only when the parent was identified rather than guessed.
             const partNumberDrifted =
               !!metadata.partNumber && metadata.ownPartNumber !== metadata.partNumber
             const descriptionDrifted =
               !!metadata.description && metadata.ownDescription !== metadata.description
 
             if (metadata.inheritedFromParent && (partNumberDrifted || descriptionDrifted)) {
-              const writeResult = await pushDrawingMetadata(file, fullPath, metadata)
-
-              if (writeResult.success) {
-                drawingsCorrected++
-                logSync('info', 'PUSH complete - corrected drawing properties', {
+              if (!isParentAuthoritative(metadata)) {
+                logSync('info', 'Skipping drawing correction: parent was guessed, not identified', {
                   filePath: file.path,
-                  partNumber: metadata.partNumber,
+                  parentModelPath: metadata.parentModelPath,
+                  strategy: metadata.parentInferenceStrategy,
                 })
               } else {
-                failed++
-                const errorMsg = `Failed to correct ${file.name}: ${writeResult.error}`
-                errors.push(errorMsg)
-                logSync('error', 'PUSH to drawing failed', {
-                  filePath: file.path,
-                  error: writeResult.error,
-                })
+                const writeResult = await pushDrawingMetadata(file, fullPath, metadata)
+
+                if (writeResult.success) {
+                  drawingsCorrected++
+                  logSync('info', 'PUSH complete - corrected drawing properties', {
+                    filePath: file.path,
+                    partNumber: metadata.partNumber,
+                  })
+                } else {
+                  failed++
+                  const errorMsg = `Failed to correct ${file.name}: ${writeResult.error}`
+                  errors.push(errorMsg)
+                  logSync('error', 'PUSH to drawing failed', {
+                    filePath: file.path,
+                    error: writeResult.error,
+                  })
+                }
               }
             }
           }
