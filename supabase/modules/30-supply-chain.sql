@@ -77,7 +77,7 @@ END $$;
 -- Billing and shipping addresses for organizations (used by RFQs)
 
 CREATE TABLE IF NOT EXISTS organization_addresses (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   address_type address_type NOT NULL,
   label TEXT NOT NULL,
@@ -198,7 +198,7 @@ END $$;
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS suppliers (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   
   -- Basic info
@@ -270,7 +270,7 @@ END $$;
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS supplier_contacts (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   auth_user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
   supplier_id UUID NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
   
@@ -321,7 +321,7 @@ CREATE INDEX IF NOT EXISTS idx_supplier_contacts_auth_user_id ON supplier_contac
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS supplier_invitations (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   supplier_id UUID NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
   
@@ -352,7 +352,7 @@ CREATE INDEX IF NOT EXISTS idx_supplier_invitations_token ON supplier_invitation
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS part_suppliers (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
   supplier_id UUID NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
@@ -410,7 +410,7 @@ CREATE INDEX IF NOT EXISTS idx_part_suppliers_supplier_part_number ON part_suppl
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS rfqs (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   
   -- RFQ identity
@@ -501,7 +501,7 @@ CREATE TABLE IF NOT EXISTS rfq_number_counters (
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS rfq_items (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   rfq_id UUID NOT NULL REFERENCES rfqs(id) ON DELETE CASCADE,
   
   -- Line item
@@ -541,7 +541,7 @@ CREATE INDEX IF NOT EXISTS idx_rfq_items_file_id ON rfq_items(file_id);
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS rfq_suppliers (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   rfq_id UUID NOT NULL REFERENCES rfqs(id) ON DELETE CASCADE,
   supplier_id UUID NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
   
@@ -572,7 +572,7 @@ CREATE INDEX IF NOT EXISTS idx_rfq_suppliers_supplier_id ON rfq_suppliers(suppli
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS rfq_quotes (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   rfq_id UUID NOT NULL REFERENCES rfqs(id) ON DELETE CASCADE,
   rfq_item_id UUID NOT NULL REFERENCES rfq_items(id) ON DELETE CASCADE,
   supplier_id UUID NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
@@ -602,7 +602,7 @@ CREATE INDEX IF NOT EXISTS idx_rfq_quotes_supplier_id ON rfq_quotes(supplier_id)
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS rfq_activity (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   rfq_id UUID NOT NULL REFERENCES rfqs(id) ON DELETE CASCADE,
   
   -- Activity details

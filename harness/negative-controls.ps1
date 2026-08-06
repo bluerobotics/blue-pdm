@@ -14,16 +14,16 @@
 $ErrorActionPreference = 'Continue'
 Set-Location $PSScriptRoot
 
-$RELEASE = 91
+$RELEASE = 92
 
 function Psql {
-  param([string]$Sql, [string]$File)
+  param([string]$Sql, [string]$File, [string]$AsRole = 'postgres')
   if ($File) {
     docker compose exec -T -e PGPASSWORD=postgres db `
-      psql -v ON_ERROR_STOP=1 --no-psqlrc -U postgres -d postgres -h 127.0.0.1 -f $File 2>&1 | Out-String
+      psql -v ON_ERROR_STOP=1 --no-psqlrc -U $AsRole -d postgres -h 127.0.0.1 -f $File 2>&1 | Out-String
   } else {
     docker compose exec -T -e PGPASSWORD=postgres db `
-      psql -v ON_ERROR_STOP=1 --no-psqlrc -U postgres -d postgres -h 127.0.0.1 -c $Sql 2>&1 | Out-String
+      psql -v ON_ERROR_STOP=1 --no-psqlrc -U $AsRole -d postgres -h 127.0.0.1 -c $Sql 2>&1 | Out-String
   }
 }
 
@@ -47,14 +47,19 @@ function Test-Control {
     [string]$What,
     [string]$HoleFile,      # SQL that reintroduces the hole
     [string]$ExpectToken,   # must appear in the refusal, so the right check caught it
-    [string[]]$RepairFiles  # module files that put it back
+    [string[]]$RepairFiles, # module files that put it back
+    # Run after the repair has been verified. For a control whose repair is the
+    # remedy rather than a removal - NC6 repairs by running the sweep, leaving
+    # the procedure in place - this is what takes the object away afterwards.
+    [string[]]$CleanupFiles,
+    [string]$HoleRole = 'postgres'
   )
   Write-Host "`n--- $Id  $What" -ForegroundColor Cyan
 
   # Start from a known stamped state so "did not advance" is unambiguous.
   Psql -Sql "UPDATE schema_version SET version = 0 WHERE id = 1" | Out-Null
 
-  $applied = Psql -File $HoleFile
+  $applied = Psql -File $HoleFile -AsRole $HoleRole
   if ($applied -match 'ERROR') {
     Write-Host "  hole did not apply:" -ForegroundColor Red
     Write-Host $applied
@@ -88,6 +93,8 @@ function Test-Control {
     ($out2 -split "`n" | Select-String -Pattern 'WARNING|ERROR' | Select-Object -First 12) | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
     $script:Failures += "$Id (repair failed)"
   }
+
+  foreach ($f in $CleanupFiles) { Psql -File $f | Out-Null }
 }
 
 Write-Host "=== NEGATIVE CONTROLS ===" -ForegroundColor Yellow
@@ -122,10 +129,105 @@ Test-Control -Id 'NC5' -What 'a leftover overload from a previous release' `
   -HoleFile '/sql/nc5-leftover-overload.sql' -ExpectToken 'extra' `
   -RepairFiles @('/sql/nc5-drop.sql')
 
+# NC6 repairs by running the remedy, not by removing the hole. That is the
+# control: v90's defect was a blocking condition the operator could not clear,
+# and this release relocated it to procedures rather than fixing it. The stamp
+# has to come back with the procedure still sitting in public.
+Test-Control -Id 'NC6' -What 'a PROCEDURE in public that anon can call, cleared by the remedy the verifier prints' `
+  -HoleFile '/sql/nc6-procedure-open.sql' -ExpectToken 'anon-reachable' `
+  -RepairFiles @('/sql/nc6-run-remedy.sql') -CleanupFiles @('/sql/nc6-drop.sql')
+
+Test-Control -Id 'NC8' -What 'a materialized view in public, readable by authenticated' `
+  -HoleFile '/sql/nc8-matview.sql' -ExpectToken 'materialized view' `
+  -RepairFiles @('/sql/nc8-drop.sql')
+
+Test-Control -Id 'NC9' -What 'the NULL-unsafe membership test in four other spellings' `
+  -HoleFile '/sql/nc9-null-unsafe-alt.sql' -ExpectToken 'null-unsafe-gate' `
+  -RepairFiles @('/sql/nc9-drop.sql')
+
+Test-Control -Id 'NC10' -What 'a function with no authorization that refuses the probe for another reason' `
+  -HoleFile '/sql/nc10-ungated.sql' -ExpectToken 'ungated' `
+  -RepairFiles @('/sql/nc10-fix.sql') -CleanupFiles @('/sql/nc10-drop.sql')
+
+Test-Control -Id 'NC11' -What 'two entity ids, one checked, and no p_org_id anywhere' `
+  -HoleFile '/sql/nc11-entity-gated.sql' -ExpectToken 'unbound-entity-arg' `
+  -RepairFiles @('/sql/nc11-fix.sql') -CleanupFiles @('/sql/nc11-drop.sql')
+
+# ---------------------------------------------------------------------------
+# NC7 is the other direction, and it needs its own test.
+#
+# Every control above requires the verifier to REFUSE. This one requires it to
+# report loudly and stamp anyway, because the object is one no project role can
+# revoke - and a verifier that withholds the stamp for a condition the operator
+# cannot clear is the v90 defect, whatever it is protecting.
+#
+# Getting that wrong in either direction is fatal: silence would hide a live
+# anon entry point, and refusal would brick the project.
+# ---------------------------------------------------------------------------
+Write-Host "`n--- NC7  a function in public owned by supabase_admin, which postgres cannot revoke" -ForegroundColor Cyan
+
+Psql -Sql "UPDATE schema_version SET version = 0 WHERE id = 1" | Out-Null
+$applied = Psql -File '/sql/nc7-unrevokable.sql' -AsRole 'supabase_admin'
+if ($applied -match 'ERROR') {
+  Write-Host "  hole did not apply:" -ForegroundColor Red; Write-Host $applied
+  $script:Failures += 'NC7 (hole failed to apply)'
+} else {
+  # The premise: postgres genuinely cannot take this away. Without checking it,
+  # "advisory" would be a claim rather than a fact.
+  $tryRevoke = Psql -Sql "REVOKE EXECUTE ON FUNCTION public.nc_unrevokable(TEXT) FROM anon, PUBLIC"
+  $stillThere = (Psql -Sql "SELECT has_function_privilege('anon','public.nc_unrevokable(text)','EXECUTE')") -match 't'
+
+  $out = Invoke-Verify
+  $version = Get-StampedVersion
+  $reported  = ($out -match 'nc_unrevokable')
+  $advisory  = ($out -match 'advisory')
+  $refused   = ($out -match 'Schema verification failed')
+
+  if ($stillThere -and $reported -and $advisory -and -not $refused -and $version -eq $RELEASE) {
+    Write-Host "  correct: postgres could not revoke it, it is reported by name as advisory, and the stamp was still granted" -ForegroundColor Green
+  } else {
+    Write-Host ("  WRONG: anon still has it={0} reported={1} advisory={2} stamp withheld={3} version={4}" -f `
+      $stillThere, $reported, $advisory, $refused, $version) -ForegroundColor Red
+    if (-not $stillThere) { Write-Host "    postgres was able to revoke it, so this is not the condition being tested: $tryRevoke" -ForegroundColor DarkGray }
+    ($out -split "`n" | Select-String -Pattern 'nc_unrevokable|Schema NOT stamped' | Select-Object -First 6) |
+      ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+    $script:Failures += 'NC7 (unrevokable object graded wrongly)'
+  }
+
+  Psql -File '/sql/nc7-drop.sql' -AsRole 'supabase_admin' | Out-Null
+  Invoke-Verify | Out-Null
+}
+
+# ---------------------------------------------------------------------------
+# Posture checks: the things no HTTP request can see.
+# ---------------------------------------------------------------------------
+Write-Host "`n--- POSTURE CHECKS" -ForegroundColor Cyan
+$posture = Psql -File '/sql/posture-checks.sql'
+if ($posture -match 'POSTURE CHECKS PASSED') {
+  # psql writes NOTICE to stderr, PowerShell renders each stderr record as an
+  # ErrorRecord - prefixed with the command name and hard-wrapped at the console
+  # width. Collapsing the whitespace first is what keeps a captured run from
+  # showing half a sentence.
+  $flat = ($posture -replace '\s+', ' ')
+  [regex]::Matches($flat, 'PASS - [^.]+\.') | ForEach-Object { Write-Host ("  " + $_.Value) -ForegroundColor Green }
+} else {
+  Write-Host $posture -ForegroundColor Red
+  $script:Failures += 'posture checks'
+}
+
+# The database must still verify clean at the end, or one of the controls left
+# damage behind and every later run starts from a lie.
+Invoke-Verify | Out-Null
+if ((Get-StampedVersion) -ne $RELEASE) {
+  Write-Host "`nFAIL: the database no longer verifies clean after the controls ran." -ForegroundColor Red
+  Invoke-Verify | Select-String -Pattern 'WARNING|ERROR' | Select-Object -First 20
+  $script:Failures += 'left the database dirty'
+}
+
 Write-Host ""
 if ($script:Failures.Count -gt 0) {
   Write-Host ("FAIL: {0}" -f ($script:Failures -join '; ')) -ForegroundColor Red
   exit 1
 }
-Write-Host "OK: every hole was caught by the verifier, and removing it restored the stamp." -ForegroundColor Green
+Write-Host "OK: every hole was caught by the verifier, the one nobody can fix was reported without blocking, and the database still verifies clean." -ForegroundColor Green
 exit 0

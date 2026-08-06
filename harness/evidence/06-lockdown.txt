@@ -1,53 +1,48 @@
-docker : psql:/blueplm/tools/emergency-lockdown.sql:286: NOTICE:  Roles whose current access will be preserved 
-verbatim: authenticated, authenticator, postgres, service_role, supabase_auth_admin, supabase_etl_admin, 
-supabase_read_only_user, supabase_replication_admin
-At C:\Users\emill\AppData\Local\Temp\ps-script-b29f4785-b894-4d8f-866b-2416cf88fba7.ps1:101 char:1
-+ docker compose exec -T -e PGPASSWORD=postgres db psql --no-psqlrc -U  ...
-+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : NotSpecified: (psql:/blueplm/t...plication_admin:String) [], RemoteException
-    + FullyQualifiedErrorId : NativeCommandError
- 
-psql:/blueplm/tools/emergency-lockdown.sql:286: NOTICE:  Revoked EXECUTE from anon on 0 function(s); 0 of those also 
-needed PUBLIC withdrawn.
-psql:/blueplm/tools/emergency-lockdown.sql:286: NOTICE:  Revoked anon access to 1 view(s) and materialized view(s).
-psql:/blueplm/tools/emergency-lockdown.sql:286: NOTICE:  Adjusted 0 default-privilege entr(y/ies) so new functions are 
-not anon-executable.
-psql:/blueplm/tools/emergency-lockdown.sql:286: NOTICE:  1 default-privilege entr(y/ies) could not be changed. This is 
-expected on Supabase and is not a failure of this run: the entry is owned by supabase_admin, which no project role can 
-alter. It does not affect anything that exists right now - everything above has been revoked by name. It means a 
-function created by some *later* migration will be born reachable by anon, which tools/verify-schema.sql checks for 
-and refuses to certify.
+﻿# 06-lockdown.txt
+# Produced by: psql -f /blueplm/tools/emergency-lockdown.sql
+# Release under test: the working tree
+# Captured: 2026-08-06 15:25:56 -07:00 by capture-evidence.ps1
+#
+# Unedited output. Re-run the command above to reproduce it.
+
+psql:/blueplm/tools/emergency-lockdown.sql:329: NOTICE:  Roles whose current access will be preserved verbatim: authenticated, authenticator, postgres, service_role, supabase_auth_admin, supabase_etl_admin, supabase_read_only_user, supabase_replication_admin
+psql:/blueplm/tools/emergency-lockdown.sql:329: NOTICE:  Revoked EXECUTE from anon on 0 function(s); 0 of those also needed PUBLIC withdrawn.
+psql:/blueplm/tools/emergency-lockdown.sql:329: NOTICE:  Revoked anon access to 0 view(s) and materialized view(s).
+psql:/blueplm/tools/emergency-lockdown.sql:329: NOTICE:  Adjusted 0 default-privilege entr(y/ies) so new functions are not anon-executable.
+psql:/blueplm/tools/emergency-lockdown.sql:329: NOTICE:  1 default-privilege entr(y/ies) could not be changed. This is expected on Supabase and is not a failure of this run: the entry is owned by supabase_admin, which no project role can alter. It does not affect anything that exists right now - everything above has been revoked by name. It means a function created by some *later* migration will be born reachable by anon, which tools/verify-schema.sql checks for and refuses to certify.
 DO
                                                    action                                                    | functions 
 -------------------------------------------------------------------------------------------------------------+-----------
  COULD NOT CHANGE - owned by supabase_admin, which you are not a member of. Expected on Supabase; see below. |         1
- kept for anon (pre-login allowlist)                                                                         |         2
- revoked from anon (view)                                                                                    |         1
+ kept for anon (pre-login allowlist)                                                                         |         3
+ routines you create from now on are born unreachable by anon                                                |         1
 (3 rows)
 
-                  signature                   |                                                   action                                                    
-----------------------------------------------+-------------------------------------------------------------------------------------------------------------
- (default privileges for role supabase_admin) | COULD NOT CHANGE - owned by supabase_admin, which you are not a member of. Expected on Supabase; see below.
- get_org_auth_providers(text)                 | kept for anon (pre-login allowlist)
- validate_share_link(text)                    | kept for anon (pre-login allowlist)
- public.parts_with_pricing                    | revoked from anon (view)
-(4 rows)
+                      signature                      |                                                   action                                                    
+-----------------------------------------------------+-------------------------------------------------------------------------------------------------------------
+ (default privileges for role supabase_admin)        | COULD NOT CHANGE - owned by supabase_admin, which you are not a member of. Expected on Supabase; see below.
+ consume_share_link(text)                            | kept for anon (pre-login allowlist)
+ get_org_auth_providers(text)                        | kept for anon (pre-login allowlist)
+ validate_share_link(text)                           | kept for anon (pre-login allowlist)
+ (default privileges for role postgres, all schemas) | routines you create from now on are born unreachable by anon
+(5 rows)
 
  anon_executable_functions | anon_readable_views | tables_without_rls 
 ---------------------------+---------------------+--------------------
-                         2 |                   0 |                  0
+                         3 |                   0 |                  0
 (1 row)
 
    still_reachable_by_anon    
 ------------------------------
+ consume_share_link(text)
  get_org_auth_providers(text)
  validate_share_link(text)
-(2 rows)
+(3 rows)
 
  view_still_readable_by_anon 
 -----------------------------
 (0 rows)
 
-psql:/blueplm/tools/emergency-lockdown.sql:370: NOTICE:  PASS - only the 2 pre-login function(s) remain reachable by 
-anon, no view is, and every table has RLS.
+psql:/blueplm/tools/emergency-lockdown.sql:413: NOTICE:  PASS - only the 3 pre-login function(s) remain reachable by anon, no view is, and every table has RLS.
 DO
+

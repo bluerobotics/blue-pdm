@@ -1,24 +1,60 @@
-﻿=== NEGATIVE CONTROLS ===
-baseline verifies clean at 91
+﻿# 05-negative-controls.txt
+# Produced by: .\negative-controls.ps1
+# Release under test: the working tree
+# Captured: 2026-08-06 15:25:56 -07:00 by capture-evidence.ps1
+#
+# Unedited output. Re-run the command above to reproduce it.
+
+=== NEGATIVE CONTROLS ===
+baseline verifies clean at 92
 
 --- NC1  finding 2: parts_with_pricing as a plain view, readable by anon
   caught: stamp withheld, version still 0, reason mentions 'anon-reachable'
-  repaired: stamped again at 91
+  repaired: stamped again at 92
 
 --- NC2  finding 3: create_file_share_link gating p_org_id, acting on p_file_id
   caught: stamp withheld, version still 0, reason mentions 'unbound-entity-arg'
-  repaired: stamped again at 91
+  repaired: stamped again at 92
 
 --- NC3  finding 4: NOT IN (SELECT org_id FROM users ...)
   caught: stamp withheld, version still 0, reason mentions 'null-unsafe-gate'
-  repaired: stamped again at 91
+  repaired: stamped again at 92
 
 --- NC4  a function created later, born anon-executable
   caught: stamp withheld, version still 0, reason mentions 'anon-reachable'
-  repaired: stamped again at 91
+  repaired: stamped again at 92
 
 --- NC5  a leftover overload from a previous release
   caught: stamp withheld, version still 0, reason mentions 'extra'
-  repaired: stamped again at 91
+  repaired: stamped again at 92
 
-OK: every hole was caught by the verifier, and removing it restored the stamp.
+--- NC6  a PROCEDURE in public that anon can call, cleared by the remedy the verifier prints
+  caught: stamp withheld, version still 0, reason mentions 'anon-reachable'
+  repaired: stamped again at 92
+
+--- NC8  a materialized view in public, readable by authenticated
+  caught: stamp withheld, version still 0, reason mentions 'materialized view'
+  repaired: stamped again at 92
+
+--- NC9  the NULL-unsafe membership test in four other spellings
+  caught: stamp withheld, version still 0, reason mentions 'null-unsafe-gate'
+  repaired: stamped again at 92
+
+--- NC10  a function with no authorization that refuses the probe for another reason
+  caught: stamp withheld, version still 0, reason mentions 'ungated'
+  repaired: stamped again at 92
+
+--- NC11  two entity ids, one checked, and no p_org_id anywhere
+  caught: stamp withheld, version still 0, reason mentions 'unbound-entity-arg'
+  repaired: stamped again at 92
+
+--- NC7  a function in public owned by supabase_admin, which postgres cannot revoke
+  correct: postgres could not revoke it, it is reported by name as advisory, and the stamp was still granted
+
+--- POSTURE CHECKS
+  PASS - a routine created now is unreachable by anon and still reachable by authenticated.
+  PASS - apply_workflow_transition refuses a foreign transition and accepts its own.
+  PASS - a folder called 100% renames itself and nothing else.
+  PASS - validate_share_link and consume_share_link agree about require_auth.
+
+OK: every hole was caught by the verifier, the one nobody can fix was reported without blocking, and the database still verifies clean.

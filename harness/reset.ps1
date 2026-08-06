@@ -36,13 +36,38 @@ if ($log -notmatch 'HARNESS ASSERTIONS PASSED') {
   Write-Host $log
   throw "harness assertions did not pass - the environment is not faithful, so nothing tested on it counts"
 }
+Write-Host ($log -split "`n" | Select-String -Pattern 'ASSERTIONS PASSED' | Out-String)
+
 # Print the faithfulness evidence on every run. The demotion is the property a
 # previous container silently lost, so it gets read out loud each time rather
 # than being trusted to have happened.
-Write-Host ($log -split "`n" |
-  Select-String -Pattern 'ASSERTIONS PASSED|rolsuper|^db-1  \| (anon|authenticated|authenticator|postgres|service_role|supabase_admin) ' |
-  Out-String)
-Write-Host ($log -split "`n" | Select-String -Pattern 'defaclacl|=X/postgres|=X/supabase_admin' | Out-String)
+#
+# ASKED, NOT SCRAPED
+#
+# This used to grep the container log for lines beginning `db-1  | ` followed by
+# a role name. docker compose pads that prefix to the width of the longest
+# service name it is currently printing, and psql pads the role name column to
+# the width of its widest value, so the pattern matched neither and
+# evidence/00-harness-build.txt printed a column header with no rows under it -
+# for every run, while the README said the demotion was read out loud each time.
+# Nothing was wrong with the container; the evidence for it was simply absent.
+#
+# Querying the database directly cannot drift like that: there is no log format
+# in between, and the numbers are the ones a check would use.
+Write-Host "--- roles as this container actually has them ---"
+docker compose exec -T -e PGPASSWORD=postgres db `
+  psql --no-psqlrc -U postgres -d postgres -h 127.0.0.1 -c `
+  "SELECT rolname, rolsuper, rolbypassrls, rolcreaterole, rolcanlogin
+     FROM pg_roles
+    WHERE rolname IN ('supabase_admin','postgres','authenticator','anon','authenticated','service_role')
+    ORDER BY rolsuper DESC, rolname" 2>&1 | Write-Host
+
+Write-Host "--- default privileges in public, which is what makes a new function anon-reachable ---"
+docker compose exec -T -e PGPASSWORD=postgres db `
+  psql --no-psqlrc -U postgres -d postgres -h 127.0.0.1 -c `
+  "SELECT pg_get_userbyid(defaclrole) AS granting_role, defaclobjtype AS objtype, defaclacl
+     FROM pg_default_acl d JOIN pg_namespace n ON n.oid = d.defaclnamespace
+    WHERE n.nspname = 'public' ORDER BY 1, 2" 2>&1 | Write-Host
 
 Write-Host "=== installing release ===" -ForegroundColor Yellow
 if ($CoreOnly)      { & "$PSScriptRoot\install.ps1" -CoreOnly }

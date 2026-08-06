@@ -1,29 +1,29 @@
+﻿# 02-verify-before-fix.txt
+# Produced by: psql -f /blueplm/tools/verify-schema.sql
+# Release under test: ../../blueplm-v90/supabase
+# Captured: 2026-08-06 15:13:20 -07:00 by capture-evidence.ps1
+#
+# Unedited output. Re-run the command above to reproduce it.
+
+psql:/blueplm/tools/verify-schema.sql:76: NOTICE:  ✅ All 76 expected tables exist
 DO
-docker : psql:/blueplm/tools/verify-schema.sql:76: NOTICE:  Γ£à All 76 expected tables exist
-At C:\Users\emill\AppData\Local\Temp\ps-script-49637423-1c7e-4254-ac09-db8b09eefff8.ps1:94 char:1
-+ docker compose exec -T -e PGPASSWORD=postgres db psql --no-psqlrc -U  ...
-+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : NotSpecified: (psql:/blueplm/t...ed tables exist:String) [], RemoteException
-    + FullyQualifiedErrorId : NativeCommandError
- 
+psql:/blueplm/tools/verify-schema.sql:105: NOTICE:  ✅ All 18 key functions exist
 DO
-psql:/blueplm/tools/verify-schema.sql:105: NOTICE:  Γ£à All 18 key functions exist
+psql:/blueplm/tools/verify-schema.sql:136: NOTICE:  ✅ RLS enabled on all tables
 DO
-psql:/blueplm/tools/verify-schema.sql:136: NOTICE:  Γ£à RLS enabled on all tables
  signature | status | detail 
 -----------+--------+--------
 (0 rows)
 
+psql:/blueplm/tools/verify-schema.sql:179: NOTICE:  ✅ Every org-scoped RPC refused a foreign organization when asked
 DO
-psql:/blueplm/tools/verify-schema.sql:179: NOTICE:  Γ£à Every org-scoped RPC refused a foreign organization when asked
        kind        |          identity           |                                                                               detail                                                                               
 -------------------+-----------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------
  default_privilege | supabase_admin on functions | ALTER DEFAULT PRIVILEGES still grants EXECUTE to anon, so the next function created in public will be anon-executable. Run: SELECT enforce_anon_execute_posture();
 (1 row)
 
+psql:/blueplm/tools/verify-schema.sql:203: WARNING:  ❌ 1 object(s) reachable without authentication. Listed above; the stamp is withheld.
 DO
-psql:/blueplm/tools/verify-schema.sql:203: WARNING:  Γ¥î 1 object(s) reachable without authentication. Listed above; 
-the stamp is withheld.
           signature           |              reason              
 ------------------------------+----------------------------------
  get_org_auth_providers(text) | sign-in screen, pre-login
@@ -69,35 +69,13 @@ the stamp is withheld.
  core              | verify_and_stamp_schema()                                                            | ok     | 
 (35 rows)
 
-psql:/blueplm/tools/verify-schema.sql:248: WARNING:  Schema NOT stamped. Recorded version stays at 0, this release is 
-90.
-psql:/blueplm/tools/verify-schema.sql:248: WARNING:    [security] supabase_admin on functions - anon-reachable ALTER 
-DEFAULT PRIVILEGES still grants EXECUTE to anon, so the next function created in public will be anon-executable. Run: 
-SELECT enforce_anon_execute_posture();
-psql:/blueplm/tools/verify-schema.sql:248: ERROR:  Schema verification failed: 1 problem(s) listed above. Fix them - 
-for a missing or stale object, re-run the module file named beside it - then run this script again.
+psql:/blueplm/tools/verify-schema.sql:248: WARNING:  Schema NOT stamped. Recorded version stays at 0, this release is 90.
+psql:/blueplm/tools/verify-schema.sql:248: WARNING:    [security] supabase_admin on functions - anon-reachable ALTER DEFAULT PRIVILEGES still grants EXECUTE to anon, so the next function created in public will be anon-executable. Run: SELECT enforce_anon_execute_posture();
+psql:/blueplm/tools/verify-schema.sql:248: ERROR:  Schema verification failed: 1 problem(s) listed above. Fix them - for a missing or stale object, re-run the module file named beside it - then run this script again.
 CONTEXT:  PL/pgSQL function inline_code_block line 21 at RAISE
  recorded_version | release_version | total_tables | total_functions | total_policies 
 ------------------+-----------------+--------------+-----------------+----------------
                 0 |              90 |          102 |             149 |            263
 (1 row)
 
-docker : WARNING:  Could not cancel the anon default privilege held by supabase_admin. Functions created later will be 
-anon-executable until enforce_anon_execute_posture() is re-run as a member of that role.
-At C:\Users\emill\AppData\Local\Temp\ps-script-767d23e8-6d1a-48a3-bd98-c7334d944773.ps1:95 char:1
-+ docker compose exec -T -e PGPASSWORD=postgres db psql --no-psqlrc -U  ...
-+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : NotSpecified: (WARNING:  Could...r of that role.:String) [], RemoteException
-    + FullyQualifiedErrorId : NativeCommandError
- 
- enforce_anon_execute_posture 
-------------------------------
-                            0
-(1 row)
-
-    grantor     |                                                   defaclacl                                                    
-----------------+----------------------------------------------------------------------------------------------------------------
- supabase_admin | {postgres=X/supabase_admin,anon=X/supabase_admin,authenticated=X/supabase_admin,service_role=X/supabase_admin}
- postgres       | {postgres=X/postgres,authenticated=X/postgres,service_role=X/postgres}
-(2 rows)
 

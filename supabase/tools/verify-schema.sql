@@ -14,12 +14,22 @@
 -- again. Until it passes, the recorded version stays where it was - which is
 -- what makes the app's "database out of date" warning worth acting on.
 --
--- Three things withhold the stamp and end this script with an error: a manifest
--- object missing, stale or duplicated by a leftover overload; an org-scoped RPC
--- that acted on an organization the caller does not belong to; anything in
--- public reachable without authentication. The table, function and RLS
+-- These withhold the stamp and end this script with an error: a manifest object
+-- missing, stale or duplicated by a leftover overload; an org-scoped RPC that
+-- acted on an organization the caller does not belong to; a membership test
+-- that admits an account with no organization; a function that selects rows by
+-- more ids than it checks; anything in public reachable without authentication
+-- THAT THE CALLER IS PERMITTED TO REVOKE. The table, function and RLS
 -- inventories near the top are advisory - the manifest covers the same ground
 -- and is the one that blocks.
+--
+-- Nothing here can reach a state you cannot clear. That is a property this
+-- script has had to be given twice: v90 withheld the stamp for a default
+-- privilege owned by supabase_admin that no project role can cancel, and v91
+-- moved the same defect rather than fixing it - a PROCEDURE in public was
+-- graded blocking while the remedy it printed only looked at functions. The
+-- rule now is one sentence: if the caller could not change it, it is reported
+-- loudly and does not block. If they could, it blocks.
 
 -- ===========================================
 -- CHECK TABLES
@@ -206,10 +216,13 @@ DO $$
 DECLARE
   v_blocking INTEGER;
   v_advisory INTEGER;
+  v_live INTEGER;
+  r RECORD;
 BEGIN
   SELECT count(*) FILTER (WHERE severity = 'blocking'),
-         count(*) FILTER (WHERE severity = 'advisory')
-    INTO v_blocking, v_advisory
+         count(*) FILTER (WHERE severity = 'advisory'),
+         count(*) FILTER (WHERE severity = 'advisory' AND kind <> 'default_privilege')
+    INTO v_blocking, v_advisory, v_live
   FROM check_anon_reach();
 
   IF v_blocking > 0 THEN
@@ -219,7 +232,26 @@ BEGIN
   END IF;
 
   IF v_advisory > 0 THEN
-    RAISE NOTICE 'ℹ️  % advisory item(s) listed above - real, but not something you can change from here, so they do not withhold the stamp.', v_advisory;
+    RAISE NOTICE 'ℹ️  % advisory item(s) listed above - real, but not something % can change, so they do not withhold the stamp.', v_advisory, current_user;
+  END IF;
+
+  -- An advisory *object* is not the same thing as an advisory *policy*, and
+  -- folding both into one count would be the quiet way to lose a real exposure.
+  -- A default-privilege row describes what future objects get, and every object
+  -- it produces is still swept and still reported, so nothing hides behind it.
+  -- A live routine, view or table that anon can reach and nobody here can
+  -- revoke has no such backstop, so it is named again, individually, in a
+  -- warning rather than a notice.
+  IF v_live > 0 THEN
+    RAISE WARNING '⚠️  % of those advisory item(s) are LIVE OBJECTS anon can reach right now. They do not withhold the stamp because nothing % can run would change them - not because they are harmless:', v_live, current_user;
+    FOR r IN
+      SELECT kind, identity, detail FROM check_anon_reach()
+      WHERE severity = 'advisory' AND kind <> 'default_privilege'
+      ORDER BY kind, identity
+    LOOP
+      RAISE WARNING '     [%] % - %', r.kind, r.identity, r.detail;
+    END LOOP;
+    RAISE WARNING '     BluePLM installs no extensions and creates nothing it cannot revoke, so anything listed here came from somewhere else - almost always CREATE EXTENSION without a SCHEMA clause. Moving that extension to the extensions schema clears it.';
   END IF;
 END $$;
 
@@ -263,6 +295,12 @@ END $$;
 -- checks passed it: it refuses an unauthenticated caller, and the roles allowed
 -- to execute it were correct. What was wrong was the relationship between two
 -- arguments, which neither check looks at.
+--
+-- The first version of this check only considered functions taking a p_org_id,
+-- which is the finding restated rather than the rule behind it: a function that
+-- gates on an entity and then acts on a second, unchecked id has the identical
+-- defect and no p_org_id anywhere. apply_workflow_transition was exactly that,
+-- and shipped in the release whose manifest names it. It is covered now.
 
 SELECT signature, detail FROM check_unbound_entity_args() ORDER BY signature;
 
@@ -275,7 +313,7 @@ BEGIN
   IF v_count > 0 THEN
     RAISE WARNING '❌ % function(s) check one argument and then act on another. Listed above; the stamp is withheld.', v_count;
   ELSE
-    RAISE NOTICE '✅ Every function that gates on an org id also uses it to select rows';
+    RAISE NOTICE '✅ Every function that selects rows by more than one id checks each of them';
   END IF;
 END $$;
 

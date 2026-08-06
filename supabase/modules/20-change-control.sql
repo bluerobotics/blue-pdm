@@ -63,7 +63,7 @@ END $$;
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS ecos (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   
   -- ECO identity
@@ -101,7 +101,7 @@ CREATE INDEX IF NOT EXISTS idx_ecos_process_template ON ecos(process_template_id
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS file_ecos (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
   eco_id UUID NOT NULL REFERENCES ecos(id) ON DELETE CASCADE,
   created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -119,7 +119,7 @@ CREATE INDEX IF NOT EXISTS idx_file_ecos_eco_id ON file_ecos(eco_id);
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS reviews (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
   vault_id UUID REFERENCES vaults(id) ON DELETE SET NULL,
@@ -174,7 +174,7 @@ END $$;
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS review_responses (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   review_id UUID NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
   reviewer_id UUID NOT NULL REFERENCES users(id),
   status review_status DEFAULT 'pending',
@@ -195,7 +195,7 @@ CREATE INDEX IF NOT EXISTS idx_review_responses_status ON review_responses(statu
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS deviations (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   
   -- Deviation identity
@@ -240,7 +240,7 @@ CREATE INDEX IF NOT EXISTS idx_deviations_affected_parts ON deviations USING GIN
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS file_deviations (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
   deviation_id UUID NOT NULL REFERENCES deviations(id) ON DELETE CASCADE,
   file_version INTEGER,
@@ -260,7 +260,7 @@ CREATE INDEX IF NOT EXISTS idx_file_deviations_deviation_id ON file_deviations(d
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS process_templates (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   description TEXT,
@@ -280,7 +280,7 @@ CREATE INDEX IF NOT EXISTS idx_process_templates_org_id ON process_templates(org
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS process_template_phases (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   template_id UUID NOT NULL REFERENCES process_templates(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   description TEXT,
@@ -298,7 +298,7 @@ CREATE INDEX IF NOT EXISTS idx_process_template_phases_template_id ON process_te
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS process_template_items (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   phase_id UUID NOT NULL REFERENCES process_template_phases(id) ON DELETE CASCADE,
   uid TEXT,
   doc_number TEXT,
@@ -331,7 +331,7 @@ END $$;
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS eco_checklist_items (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   eco_id UUID NOT NULL REFERENCES ecos(id) ON DELETE CASCADE,
   template_item_id UUID REFERENCES process_template_items(id) ON DELETE SET NULL,
   phase_name TEXT NOT NULL,
@@ -382,7 +382,7 @@ CREATE INDEX IF NOT EXISTS idx_eco_checklist_items_phase ON eco_checklist_items(
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS eco_gate_approvals (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   eco_id UUID NOT NULL REFERENCES ecos(id) ON DELETE CASCADE,
   gate_name TEXT NOT NULL,
   phase_name TEXT,
@@ -402,7 +402,7 @@ CREATE INDEX IF NOT EXISTS idx_eco_gate_approvals_eco_id ON eco_gate_approvals(e
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS eco_checklist_activity (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   eco_id UUID NOT NULL REFERENCES ecos(id) ON DELETE CASCADE,
   checklist_item_id UUID REFERENCES eco_checklist_items(id) ON DELETE SET NULL,
   gate_approval_id UUID REFERENCES eco_gate_approvals(id) ON DELETE SET NULL,

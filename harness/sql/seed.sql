@@ -25,6 +25,12 @@ SET LOCAL client_min_messages = warning;
 \set acme_vault    '''aaaaaaaa-2222-4000-8000-000000000001'''
 \set umb_vault     '''bbbbbbbb-2222-4000-8000-000000000001'''
 \set acme_file     '''aaaaaaaa-3333-4000-8000-000000000001'''
+-- A second Acme file, used only by the cross-tenant transition attack. It is
+-- separate so that a successful attack - which rewrites the file's state and
+-- its assignment - cannot break the positive control that runs Alice's own
+-- transition on her own file afterwards. An attack that damages the thing the
+-- controls measure makes the controls useless.
+\set acme_file2    '''aaaaaaaa-3333-4000-8000-000000000002'''
 \set umb_file      '''bbbbbbbb-3333-4000-8000-000000000001'''
 \set acme_supplier '''aaaaaaaa-4444-4000-8000-000000000001'''
 
@@ -67,6 +73,9 @@ INSERT INTO files (id, org_id, vault_id, file_path, file_name, extension,
 VALUES (:acme_file, :acme_org, :acme_vault,
         'Acme/Classified/hypersonic-nozzle.sldprt', 'hypersonic-nozzle.sldprt', 'sldprt',
         'ACME-SECRET-0001', 'Hypersonic nozzle, ITAR controlled', 'C', 3, 'Released', :alice),
+       (:acme_file2, :acme_org, :acme_vault,
+        'Acme/Classified/inlet-cowl.sldprt', 'inlet-cowl.sldprt', 'sldprt',
+        'ACME-SECRET-0002', 'Inlet cowl, ITAR controlled', 'A', 1, 'WIP', :alice),
        (:umb_file, :umbrella_org, :umb_vault,
         'Umbrella/widget.sldprt', 'widget.sldprt', 'sldprt',
         'UMB-0001', 'A widget', 'A', 1, 'WIP', :bob)
@@ -105,6 +114,60 @@ ON CONFLICT DO NOTHING;
 INSERT INTO item_images (org_id, part_number, image_type, icon_name, icon_color, updated_by)
 VALUES (:acme_org, 'ACME-SECRET-0001', 'icon', 'rocket', '#ff0000', :alice)
 ON CONFLICT DO NOTHING;
+
+-- ---------------------------------------------------------------------------
+-- Workflows, one per tenant.
+--
+-- What the cross-tenant transition attack needs. Umbrella's workflow, states
+-- and transition are all named distinctively, because the point of the attack
+-- is not only that the write succeeds: apply_workflow_transition copies the
+-- workflow name, both state names and the transition name into
+-- workflow_history, and the row it writes is in the *caller's* organization.
+-- So a successful attack leaves Umbrella's private naming legible to Alice
+-- through her own history, and the attack script looks for exactly that string
+-- rather than for a 200.
+--
+-- Acme gets its own workflow so that the legitimate path has something to
+-- exercise, and so that "the attack was refused" can be told apart from "the
+-- function refuses everything".
+INSERT INTO workflow_templates (id, org_id, name, is_default, is_active, created_by)
+VALUES ('aaaaaaaa-6666-4000-8000-000000000001', :acme_org,
+        'Acme Standard Release', true, true, :alice),
+       ('bbbbbbbb-6666-4000-8000-000000000001', :umbrella_org,
+        'UMBRELLA-CONFIDENTIAL-WORKFLOW', true, true, :bob)
+ON CONFLICT (id) DO NOTHING;
+
+-- requires_checkout false on all of them. It defaults to true, and
+-- execute_workflow_transition then refuses the legitimate move with
+-- CHECKOUT_REQUIRED - a correct refusal for a reason that has nothing to do
+-- with anything under test, which would make the positive control unpassable.
+INSERT INTO workflow_states (id, workflow_id, name, sort_order, requires_checkout)
+VALUES ('aaaaaaaa-7777-4000-8000-000000000001', 'aaaaaaaa-6666-4000-8000-000000000001', 'Acme WIP', 1, false),
+       ('aaaaaaaa-7777-4000-8000-000000000002', 'aaaaaaaa-6666-4000-8000-000000000001', 'Acme Released', 2, false),
+       ('bbbbbbbb-7777-4000-8000-000000000001', 'bbbbbbbb-6666-4000-8000-000000000001', 'UMBRELLA-STATE-ALPHA', 1, false),
+       ('bbbbbbbb-7777-4000-8000-000000000002', 'bbbbbbbb-6666-4000-8000-000000000001', 'UMBRELLA-STATE-OMEGA', 2, false)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO workflow_transitions (id, workflow_id, from_state_id, to_state_id, name)
+VALUES ('aaaaaaaa-8888-4000-8000-000000000001', 'aaaaaaaa-6666-4000-8000-000000000001',
+        'aaaaaaaa-7777-4000-8000-000000000001', 'aaaaaaaa-7777-4000-8000-000000000002',
+        'Acme Approve'),
+       -- The way back, so that the positive control which runs a legitimate
+       -- transition is idempotent: a second run of attack.ps1 against the same
+       -- database would otherwise get WRONG_STATE and read as a broken control.
+       ('aaaaaaaa-8888-4000-8000-000000000002', 'aaaaaaaa-6666-4000-8000-000000000001',
+        'aaaaaaaa-7777-4000-8000-000000000002', 'aaaaaaaa-7777-4000-8000-000000000001',
+        'Acme Revert'),
+       ('bbbbbbbb-8888-4000-8000-000000000001', 'bbbbbbbb-6666-4000-8000-000000000001',
+        'bbbbbbbb-7777-4000-8000-000000000001', 'bbbbbbbb-7777-4000-8000-000000000002',
+        'UMBRELLA-TRANSITION-CLASSIFIED')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO file_workflow_assignments (file_id, workflow_id, current_state_id, assigned_by)
+VALUES (:acme_file, 'aaaaaaaa-6666-4000-8000-000000000001',
+        'aaaaaaaa-7777-4000-8000-000000000001', :alice)
+ON CONFLICT (file_id) DO UPDATE
+  SET workflow_id = EXCLUDED.workflow_id, current_state_id = EXCLUDED.current_state_id;
 
 COMMIT;
 

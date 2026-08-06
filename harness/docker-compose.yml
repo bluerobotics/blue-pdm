@@ -27,7 +27,19 @@ services:
       - ./supabase-init:/supabase-init:ro
       - ./initdb:/docker-entrypoint-initdb.d:ro
       - ./sql:/sql:ro
-      - ../supabase:/blueplm:ro
+      # The release under test. Defaults to the working tree, and points
+      # somewhere else for a before/after run:
+      #
+      #   git worktree add ../../blueplm-v90 <commit>
+      #   $env:RELEASE_DIR = '../../blueplm-v90/supabase'
+      #   .\reset.ps1; .\attack.ps1 -Expect vulnerable
+      #
+      # The alternative - stashing, or checking the old files out in place - has
+      # to be undone before the second half of the comparison can run, and a
+      # comparison whose two halves cannot both exist at once is one nobody can
+      # reproduce. That is how evidence/01-attacks-before-fix.txt came to be a
+      # file no committed script could regenerate.
+      - ${RELEASE_DIR:-../supabase}:/blueplm:ro
     ports:
       - "${PGPORT_HOST:-55432}:5432"
     command:

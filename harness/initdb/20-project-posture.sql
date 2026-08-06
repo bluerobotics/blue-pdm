@@ -1,8 +1,10 @@
 -- Runs as supabase_admin. The parts of a real project's posture that live
 -- outside the three role migrations but that BluePLM's schema depends on.
 
--- From Supabase's 00000000000003-post-setup.sql. core.sql calls
--- uuid_generate_v4(), which lives in the extensions schema.
+-- From Supabase's 00000000000003-post-setup.sql, verbatim in effect. BluePLM no
+-- longer needs anything from the extensions schema - gen_random_uuid() is
+-- built in - but the search_path is part of the posture being reproduced, not a
+-- convenience for the schema under test, so it stays as the project has it.
 ALTER ROLE supabase_admin SET search_path TO "$user", public, auth, extensions;
 ALTER ROLE postgres SET search_path TO "$user", public, extensions;
 ALTER ROLE authenticator SET search_path TO "$user", public, extensions;

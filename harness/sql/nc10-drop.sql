@@ -1,0 +1,1 @@
+DROP FUNCTION IF EXISTS nc_ungated_but_fussy(UUID, INTEGER);

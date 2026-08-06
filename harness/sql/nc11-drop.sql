@@ -1,0 +1,1 @@
+DROP FUNCTION IF EXISTS nc_two_entity_ids(UUID, UUID);

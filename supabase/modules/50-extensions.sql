@@ -138,7 +138,7 @@ COMMENT ON TABLE extension_secrets IS
 -- Secret version history for rollback
 
 CREATE TABLE IF NOT EXISTS extension_secret_versions (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   extension_id TEXT NOT NULL,
   name TEXT NOT NULL,
@@ -158,7 +158,7 @@ COMMENT ON TABLE extension_secret_versions IS
 -- Audit log for secret access
 
 CREATE TABLE IF NOT EXISTS extension_secret_access (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   extension_id TEXT NOT NULL,
   secret_name TEXT NOT NULL,
@@ -181,7 +181,7 @@ COMMENT ON TABLE extension_secret_access IS
 -- Log all HTTP requests made by extensions
 
 CREATE TABLE IF NOT EXISTS extension_http_log (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   extension_id TEXT NOT NULL,
   timestamp TIMESTAMPTZ DEFAULT NOW(),

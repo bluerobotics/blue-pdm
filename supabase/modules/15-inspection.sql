@@ -50,7 +50,7 @@ END $$;
 -- One row per inspection characteristic for the current head of a drawing file.
 
 CREATE TABLE IF NOT EXISTS inspection_characteristics (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
 
@@ -101,7 +101,7 @@ CREATE INDEX IF NOT EXISTS idx_inspection_characteristics_org_id ON inspection_c
 -- A copy of the live rows captured each time the parent file version increments.
 
 CREATE TABLE IF NOT EXISTS inspection_characteristic_versions (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   file_version_id UUID NOT NULL REFERENCES file_versions(id) ON DELETE CASCADE,
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
 
@@ -146,7 +146,7 @@ CREATE INDEX IF NOT EXISTS idx_inspection_char_versions_org_id ON inspection_cha
 -- merges these with the app defaults.
 
 CREATE TABLE IF NOT EXISTS inspection_methods (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   created_at TIMESTAMPTZ DEFAULT NOW(),

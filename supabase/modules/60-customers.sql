@@ -74,7 +74,7 @@ END $$;
 --   cleanup when an org is deleted, and no nullable-tenant queries anywhere.
 
 CREATE TABLE IF NOT EXISTS customer_categories (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
 
   category TEXT NOT NULL,
@@ -130,7 +130,7 @@ CREATE INDEX IF NOT EXISTS idx_customer_categories_sort ON customer_categories(o
 -- the distributor seed below only ever writes rows no person has edited.
 
 CREATE TABLE IF NOT EXISTS customer_accounts (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
 
   -- Normalized company name or email domain
@@ -202,7 +202,7 @@ CREATE INDEX IF NOT EXISTS idx_customer_accounts_channel
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS customers (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
 
   -- ERP sync
@@ -272,7 +272,7 @@ CREATE INDEX IF NOT EXISTS idx_customers_last_order_date ON customers(org_id, la
 -- are themselves res.partner records in Odoo, hence their own erp_id.
 
 CREATE TABLE IF NOT EXISTS customer_addresses (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
 
   erp_id TEXT,
@@ -299,7 +299,7 @@ CREATE INDEX IF NOT EXISTS idx_customer_addresses_erp_id ON customer_addresses(o
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS customer_orders (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
 
   erp_id TEXT,
@@ -353,7 +353,7 @@ CREATE INDEX IF NOT EXISTS idx_customer_orders_contact_id ON customer_orders(con
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS customer_order_lines (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   order_id UUID NOT NULL REFERENCES customer_orders(id) ON DELETE CASCADE,
 
@@ -377,7 +377,7 @@ CREATE INDEX IF NOT EXISTS idx_customer_order_lines_product_erp_id ON customer_o
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS customer_enrichments (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   account_id UUID NOT NULL REFERENCES customer_accounts(id) ON DELETE CASCADE,
 
@@ -431,7 +431,7 @@ CREATE INDEX IF NOT EXISTS idx_customer_enrichments_needs_review ON customer_enr
 -- its lifecycle and cascade from it.
 
 CREATE TABLE IF NOT EXISTS customer_enrichment_sources (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   enrichment_id UUID NOT NULL REFERENCES customer_enrichments(id) ON DELETE CASCADE,
 
@@ -450,7 +450,7 @@ CREATE INDEX IF NOT EXISTS idx_customer_enrichment_sources_enrichment_id ON cust
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS customer_enrichment_runs (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
 
   status TEXT NOT NULL DEFAULT 'pending',

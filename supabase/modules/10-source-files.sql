@@ -315,7 +315,7 @@ END $$;
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS vaults (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   slug TEXT NOT NULL,
@@ -344,7 +344,7 @@ CREATE INDEX IF NOT EXISTS idx_vaults_org_id ON vaults(org_id);
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS vault_access (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   vault_id UUID NOT NULL REFERENCES vaults(id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   granted_by UUID REFERENCES users(id),
@@ -358,7 +358,7 @@ CREATE INDEX IF NOT EXISTS idx_vault_access_user_id ON vault_access(user_id);
 
 -- Team vault access (references teams from core)
 CREATE TABLE IF NOT EXISTS team_vault_access (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
   vault_id UUID NOT NULL REFERENCES vaults(id) ON DELETE CASCADE,
   granted_at TIMESTAMPTZ DEFAULT NOW(),
@@ -375,7 +375,7 @@ CREATE INDEX IF NOT EXISTS idx_team_vault_access_vault_id ON team_vault_access(v
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS workflow_templates (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   description TEXT,
@@ -397,7 +397,7 @@ CREATE INDEX IF NOT EXISTS idx_workflow_templates_is_active ON workflow_template
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS workflow_states (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   workflow_id UUID NOT NULL REFERENCES workflow_templates(id) ON DELETE CASCADE,
   state_type state_type DEFAULT 'state',
   shape state_shape DEFAULT 'rectangle',
@@ -439,7 +439,7 @@ CREATE INDEX IF NOT EXISTS idx_workflow_states_workflow_id ON workflow_states(wo
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS files (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   vault_id UUID REFERENCES vaults(id) ON DELETE CASCADE,
   
@@ -558,7 +558,7 @@ END $$;
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS file_versions (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
   version INTEGER NOT NULL,
   revision TEXT NOT NULL,
@@ -606,7 +606,7 @@ CREATE INDEX IF NOT EXISTS idx_file_versions_content_hash ON file_versions(conte
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS release_files (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
   file_version_id UUID REFERENCES file_versions(id) ON DELETE SET NULL,
   version INTEGER NOT NULL,
@@ -636,7 +636,7 @@ CREATE INDEX IF NOT EXISTS idx_release_files_file_version_type ON release_files(
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS file_references (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   parent_file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
   child_file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
@@ -657,7 +657,7 @@ CREATE INDEX IF NOT EXISTS idx_file_references_child ON file_references(child_fi
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS folders (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   vault_id UUID NOT NULL REFERENCES vaults(id) ON DELETE CASCADE,
   folder_path TEXT NOT NULL,  -- relative path, e.g., "Assemblies" or "Project/Assemblies"
@@ -681,7 +681,7 @@ CREATE INDEX IF NOT EXISTS idx_folders_deleted_at ON folders(deleted_at) WHERE d
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS activity (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   file_id UUID REFERENCES files(id) ON DELETE SET NULL,
   user_id UUID NOT NULL REFERENCES users(id),
@@ -702,7 +702,7 @@ CREATE INDEX IF NOT EXISTS idx_activity_action ON activity(action);
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS workflow_transitions (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   workflow_id UUID NOT NULL REFERENCES workflow_templates(id) ON DELETE CASCADE,
   from_state_id UUID NOT NULL REFERENCES workflow_states(id) ON DELETE CASCADE,
   to_state_id UUID NOT NULL REFERENCES workflow_states(id) ON DELETE CASCADE,
@@ -754,7 +754,7 @@ UPDATE workflow_transitions SET line_arrow_head = 'end' WHERE line_arrow_head = 
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS workflow_gates (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   transition_id UUID NOT NULL REFERENCES workflow_transitions(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   description TEXT,
@@ -776,7 +776,7 @@ CREATE INDEX IF NOT EXISTS idx_workflow_gates_transition_id ON workflow_gates(tr
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS workflow_gate_reviewers (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   gate_id UUID NOT NULL REFERENCES workflow_gates(id) ON DELETE CASCADE,
   reviewer_type reviewer_type NOT NULL,
   user_id UUID REFERENCES users(id) ON DELETE CASCADE,
@@ -794,7 +794,7 @@ CREATE INDEX IF NOT EXISTS idx_workflow_gate_reviewers_user_id ON workflow_gate_
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS workflow_roles (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   description TEXT,
@@ -814,7 +814,7 @@ CREATE INDEX IF NOT EXISTS idx_workflow_roles_name ON workflow_roles(org_id, nam
 
 -- User workflow role assignments
 CREATE TABLE IF NOT EXISTS user_workflow_roles (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   workflow_role_id UUID NOT NULL REFERENCES workflow_roles(id) ON DELETE CASCADE,
   assigned_at TIMESTAMPTZ DEFAULT NOW(),
@@ -838,7 +838,7 @@ END $$;
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS file_workflow_assignments (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE UNIQUE,
   workflow_id UUID NOT NULL REFERENCES workflow_templates(id) ON DELETE CASCADE,
   current_state_id UUID REFERENCES workflow_states(id) ON DELETE SET NULL,
@@ -855,7 +855,7 @@ CREATE INDEX IF NOT EXISTS idx_file_workflow_assignments_current_state ON file_w
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS pending_reviews (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
   transition_id UUID NOT NULL REFERENCES workflow_transitions(id) ON DELETE CASCADE,
@@ -889,7 +889,7 @@ END $$;
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS workflow_review_history (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   file_id UUID REFERENCES files(id) ON DELETE SET NULL,
   file_path TEXT NOT NULL,
@@ -922,7 +922,7 @@ CREATE INDEX IF NOT EXISTS idx_workflow_review_history_created_at ON workflow_re
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS workflow_history (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   file_id UUID REFERENCES files(id) ON DELETE SET NULL,
   file_path TEXT NOT NULL,
@@ -954,7 +954,7 @@ CREATE INDEX IF NOT EXISTS idx_workflow_history_performed_at ON workflow_history
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS file_state_entries (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
   state_id UUID NOT NULL REFERENCES workflow_states(id) ON DELETE CASCADE,
   entered_at TIMESTAMPTZ DEFAULT NOW(),
@@ -975,7 +975,7 @@ CREATE INDEX IF NOT EXISTS idx_file_state_entries_active ON file_state_entries(s
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS file_watchers (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -997,7 +997,7 @@ CREATE INDEX IF NOT EXISTS idx_file_watchers_org_id ON file_watchers(org_id);
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS file_share_links (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
   token TEXT NOT NULL UNIQUE,
@@ -1025,7 +1025,7 @@ CREATE INDEX IF NOT EXISTS idx_file_share_links_expires_at ON file_share_links(e
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS file_comments (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   file_id UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   comment TEXT NOT NULL,
@@ -1062,7 +1062,7 @@ CREATE INDEX IF NOT EXISTS idx_file_comments_resolved ON file_comments(resolved)
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS file_metadata_columns (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   label TEXT NOT NULL,
@@ -1109,7 +1109,7 @@ END $$;
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS backup_config (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE UNIQUE,
   provider TEXT NOT NULL DEFAULT 'backblaze_b2',
   bucket TEXT,
@@ -1143,7 +1143,7 @@ CREATE TABLE IF NOT EXISTS backup_config (
 CREATE INDEX IF NOT EXISTS idx_backup_config_org_id ON backup_config(org_id);
 
 CREATE TABLE IF NOT EXISTS backup_history (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   completed_at TIMESTAMPTZ,
@@ -1167,7 +1167,7 @@ CREATE INDEX IF NOT EXISTS idx_backup_history_started_at ON backup_history(start
 CREATE INDEX IF NOT EXISTS idx_backup_history_status ON backup_history(status);
 
 CREATE TABLE IF NOT EXISTS backup_machines (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   machine_id TEXT NOT NULL,
   machine_name TEXT NOT NULL,
@@ -1186,7 +1186,7 @@ CREATE INDEX IF NOT EXISTS idx_backup_machines_org_id ON backup_machines(org_id)
 CREATE INDEX IF NOT EXISTS idx_backup_machines_last_seen ON backup_machines(last_seen);
 
 CREATE TABLE IF NOT EXISTS backup_locks (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE UNIQUE,
   locked_by_machine_id TEXT NOT NULL,
   locked_by_machine_name TEXT NOT NULL,
@@ -2092,25 +2092,54 @@ BEGIN
     RETURN;
   END IF;
 
-  -- COALESCE because require_auth is nullable and a NULL there must not read as
-  -- "no authentication required" by accident.
-  IF COALESCE(v_link.require_auth, false) AND auth.uid() IS NULL THEN
-    RETURN QUERY SELECT false::boolean, NULL::uuid, NULL::uuid, NULL::integer,
-                        'This link requires you to sign in'::text;
-    RETURN;
-  END IF;
-  
   IF v_link.max_downloads IS NOT NULL AND v_link.download_count >= v_link.max_downloads THEN
     RETURN QUERY SELECT false::boolean, NULL::uuid, NULL::uuid, NULL::integer, 'Download limit reached'::text;
     RETURN;
   END IF;
 
+  -- The file's organization is resolved before require_auth is tested, because
+  -- require_auth is a question about that organization.
   SELECT f.org_id INTO v_file_org_id FROM files f
    WHERE f.id = v_link.file_id AND f.deleted_at IS NULL;
 
   IF v_file_org_id IS NULL THEN
     RETURN QUERY SELECT false::boolean, NULL::uuid, NULL::uuid, NULL::integer, 'Link not found'::text;
     RETURN;
+  END IF;
+
+  -- WHAT require_auth MEANS
+  --
+  -- A member of the organization that owns the file. Not "any Supabase
+  -- account", which is what `auth.uid() IS NOT NULL` meant and which is not a
+  -- restriction at all: signing up is free and open, so an attacker holding the
+  -- token defeated the flag by creating an account. Executed against the
+  -- previous version, a member of an unrelated tenant and an account belonging
+  -- to no organization at all both got is_valid: true with the file id and the
+  -- owning org id.
+  --
+  -- The flag exists so that a link can be circulated inside a company without
+  -- becoming a bearer credential for the world; org membership is the only
+  -- reading of it that delivers that. A link intended for an outside recipient
+  -- is a link created with require_auth = false, which is the default.
+  --
+  -- COALESCE because require_auth is nullable and a NULL there must not read as
+  -- "no authentication required" by accident.
+  IF COALESCE(v_link.require_auth, false) THEN
+    IF auth.uid() IS NULL THEN
+      RETURN QUERY SELECT false::boolean, NULL::uuid, NULL::uuid, NULL::integer,
+                          'This link requires you to sign in'::text;
+      RETURN;
+    END IF;
+
+    IF NOT is_org_member(v_file_org_id) THEN
+      -- Deliberately distinct from 'Link not found'. The caller already holds
+      -- the token, so nothing is disclosed by telling them why they were
+      -- refused, and a member who is signed in to the wrong account otherwise
+      -- has no way to tell that from a broken link.
+      RETURN QUERY SELECT false::boolean, NULL::uuid, NULL::uuid, NULL::integer,
+                          'This link is restricted to members of the organization that owns the file'::text;
+      RETURN;
+    END IF;
   END IF;
 
   UPDATE file_share_links SET last_accessed_at = NOW() WHERE token = p_token;
@@ -2125,20 +2154,29 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 -- Re-checks everything validate_share_link() checks, in one UPDATE, so that two
 -- concurrent redemptions of the last remaining download cannot both succeed:
 -- the WHERE clause is evaluated under the row lock the UPDATE takes.
+--
+-- Re-checking rather than trusting the earlier validate_share_link() call is
+-- the point: the two are separate HTTP round trips and nothing forces a caller
+-- to make the first one. max_downloads is enforced here or nowhere.
 DROP FUNCTION IF EXISTS consume_share_link(TEXT) CASCADE;
 CREATE OR REPLACE FUNCTION consume_share_link(p_token TEXT)
 RETURNS BOOLEAN AS $$
 DECLARE
   v_updated INTEGER;
 BEGIN
-  UPDATE file_share_links
-     SET download_count = COALESCE(download_count, 0) + 1,
+  UPDATE file_share_links l
+     SET download_count = COALESCE(l.download_count, 0) + 1,
          last_accessed_at = NOW()
-   WHERE token = p_token
-     AND is_active
-     AND (expires_at IS NULL OR expires_at > NOW())
-     AND (max_downloads IS NULL OR COALESCE(download_count, 0) < max_downloads)
-     AND (NOT COALESCE(require_auth, false) OR auth.uid() IS NOT NULL);
+   WHERE l.token = p_token
+     AND l.is_active
+     AND (l.expires_at IS NULL OR l.expires_at > NOW())
+     AND (l.max_downloads IS NULL OR COALESCE(l.download_count, 0) < l.max_downloads)
+     -- Same meaning as in validate_share_link(): a member of the organization
+     -- that owns the file. The two must agree, or a link that refuses to
+     -- validate can still be spent, or the other way round.
+     AND (NOT COALESCE(l.require_auth, false)
+          OR is_org_member((SELECT f.org_id FROM files f
+                             WHERE f.id = l.file_id AND f.deleted_at IS NULL)));
 
   GET DIAGNOSTICS v_updated = ROW_COUNT;
   RETURN v_updated > 0;
@@ -2984,7 +3022,7 @@ GRANT EXECUTE ON FUNCTION update_item_definition_settings(UUID, JSONB) TO authen
 -- Per-item (part_number) image override, shared org-wide. The absence of a row
 -- means the item falls back to the default SolidWorks preview.
 CREATE TABLE IF NOT EXISTS item_images (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   part_number TEXT NOT NULL,
   image_type TEXT NOT NULL DEFAULT 'preview' CHECK (image_type IN ('preview', 'icon', 'image')),
@@ -3104,7 +3142,7 @@ GRANT EXECUTE ON FUNCTION reset_item_image(UUID, TEXT) TO authenticated;
 -- Assembly). Admins manage the list from Settings; every org is seeded with a
 -- default set on first read (see get_item_designations).
 CREATE TABLE IF NOT EXISTS item_designations (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   sort_order INTEGER NOT NULL DEFAULT 0,
@@ -3138,7 +3176,7 @@ CREATE POLICY "Admins manage item designations"
 -- Per-item designation assignment (override of the type-derived default),
 -- keyed by vault + part number. Absence of a row means the default applies.
 CREATE TABLE IF NOT EXISTS item_designation_assignments (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   vault_id UUID NOT NULL REFERENCES vaults(id) ON DELETE CASCADE,
   part_number TEXT NOT NULL,
@@ -3628,7 +3666,9 @@ BEGIN
     WHERE f.org_id = v_org_id
       AND f.deleted_at IS NULL
       AND f.vault_id IS NOT NULL
-      AND LOWER(f.file_path) LIKE LOWER(RTRIM(p_old_folder_path, '/')) || '/%';
+      -- like_escape, or a folder called `100%` matches half the vault. See
+      -- like_escape() in core.sql.
+      AND LOWER(f.file_path) LIKE like_escape(LOWER(RTRIM(p_old_folder_path, '/'))) || '/%' ESCAPE '\';
 
     IF v_candidate_vaults IS NULL THEN
       RETURN jsonb_build_object('success', true, 'updated', 0, 'total', 0);
@@ -3654,7 +3694,7 @@ BEGIN
     updated_by = v_actor,
     updated_at = NOW()
   WHERE
-    LOWER(file_path) LIKE LOWER(v_old_prefix) || '/%'
+    LOWER(file_path) LIKE like_escape(LOWER(v_old_prefix)) || '/%' ESCAPE '\'
     AND deleted_at IS NULL
     AND vault_id = p_vault_id
     AND org_id = v_org_id;
@@ -3775,9 +3815,29 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 GRANT EXECUTE ON FUNCTION user_can_run_transition(UUID, UUID) TO authenticated;
 
--- Moves a file into the transition's target state and records the move. Assumes
--- its caller has already validated the transition; both entry points below do.
--- Not granted to clients: it is the shared tail of those two.
+-- Moves a file into the transition's target state and records the move.
+--
+-- TWO IDS, TWO CHECKS
+--
+-- This function takes a file and a transition, and it used to check one of
+-- them. require_file_access(p_file_id) is correct and sufficient for the file;
+-- p_transition_id was then loaded with `WHERE id = p_transition_id` and tested
+-- only for existence. That is create_file_share_link's defect exactly - a gate
+-- on one argument while a second argument selects a row - in a function that
+-- was in the release manifest of the very release that closed it.
+--
+-- Executed: a member of one organization applied another organization's
+-- classified transition to her own file over HTTP with a real JWT. Her file's
+-- workflow_state_id then pointed at a foreign state, and her own
+-- workflow_history row carried the other tenant's workflow name, state name and
+-- transition name, which she can read. She needed the transition's uuid and RLS
+-- gives her no way to find one, so it was hard to exploit and completely open
+-- once exploited.
+--
+-- The transition is now loaded through its workflow's organization, so a
+-- transition outside the file's organization is not found rather than applied.
+-- check_unbound_entity_args() no longer starts from p_org_id, so a function
+-- with this shape and no organization argument at all cannot come back unseen.
 DROP FUNCTION IF EXISTS apply_workflow_transition(UUID, UUID, UUID, TEXT, JSONB) CASCADE;
 CREATE OR REPLACE FUNCTION apply_workflow_transition(
   p_file_id UUID,
@@ -3798,23 +3858,36 @@ DECLARE
   v_new_revision TEXT;
   v_legacy_state TEXT;
   v_actor UUID;
+  v_org_id UUID;
 BEGIN
   -- The comment above says this is not granted to clients, and it was not
   -- granted to authenticated - but Supabase's default privileges granted it to
-  -- anon regardless, so "internal" described the intent rather than the ACL.
-  -- It gates for itself now: p_user_id is ignored and the file decides the org.
+  -- anon and to authenticated regardless, so "internal" described the intent
+  -- and not the ACL. The REVOKE after this function now names authenticated,
+  -- and the function gates for itself as well: p_user_id is ignored and the
+  -- file decides the organization.
   v_actor := current_actor_id();
-  PERFORM require_file_access(p_file_id);
+  v_org_id := require_file_access(p_file_id);
 
   SELECT * INTO v_file FROM files WHERE id = p_file_id;
-  SELECT * INTO v_transition FROM workflow_transitions WHERE id = p_transition_id;
+
+  -- The transition has to belong to a workflow of the file's own organization.
+  -- Loading it by id alone and testing only that it exists is what let another
+  -- tenant's transition be applied to this file; the join is the check, so
+  -- there is no second statement anybody can accidentally reorder past.
+  SELECT wt.* INTO v_transition
+  FROM workflow_transitions wt
+  JOIN workflow_templates wtpl ON wtpl.id = wt.workflow_id
+  WHERE wt.id = p_transition_id AND wtpl.org_id = v_org_id;
+
   SELECT * INTO v_to_state FROM workflow_states WHERE id = v_transition.to_state_id;
   SELECT * INTO v_from_state FROM workflow_states WHERE id = v_transition.from_state_id;
   SELECT name INTO v_workflow_name FROM workflow_templates WHERE id = v_transition.workflow_id;
   SELECT email INTO v_user_email FROM users WHERE id = v_actor;
 
-  -- A transition belonging to another organization's workflow is not a
-  -- transition of this file.
+  -- A transition belonging to another organization's workflow is not found at
+  -- all, and gets the identical refusal to one that does not exist, so this is
+  -- not a way to ask which transition ids are real.
   IF v_transition.id IS NULL OR v_to_state.id IS NULL THEN
     RAISE EXCEPTION 'Transition not found'
       USING ERRCODE = 'invalid_parameter_value';
@@ -3877,7 +3950,16 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
-REVOKE EXECUTE ON FUNCTION apply_workflow_transition(UUID, UUID, UUID, TEXT, JSONB) FROM PUBLIC;
+-- Naming authenticated, not only PUBLIC. This is the shared tail of the two
+-- entry points below and no client has any business calling it: both of them
+-- are SECURITY DEFINER and owned by the same role, so they reach it regardless
+-- of who may execute it. REVOKE ... FROM PUBLIC on its own left the explicit
+-- `authenticated=X/postgres` that Supabase's default privileges put on every
+-- new function, which is how a function documented as internal was callable
+-- over PostgREST by any signed-in user - and how the cross-tenant transition
+-- above was reached.
+REVOKE EXECUTE ON FUNCTION apply_workflow_transition(UUID, UUID, UUID, TEXT, JSONB)
+  FROM PUBLIC, anon, authenticated;
 
 -- Run a transition on a file. Returns requires_review instead of advancing when
 -- the transition has blocking gates, having raised the reviews they need.
@@ -3919,7 +4001,19 @@ BEGIN
       'error_message', 'File belongs to another organization');
   END IF;
 
-  SELECT * INTO v_transition FROM workflow_transitions WHERE id = p_transition_id;
+  -- Scoped to the file's organization, like apply_workflow_transition below it.
+  --
+  -- This one was not exploitable: a foreign transition's from_state_id can
+  -- never equal this file's current state, so the WRONG_STATE test three
+  -- statements down refused it. That is a refusal by coincidence - it depends
+  -- on a check that exists for a different purpose, and on nobody ever
+  -- reordering it. Binding the id where it is loaded makes the refusal a
+  -- property of this statement instead of a consequence of a later one.
+  SELECT wt.* INTO v_transition
+  FROM workflow_transitions wt
+  JOIN workflow_templates wtpl ON wtpl.id = wt.workflow_id
+  WHERE wt.id = p_transition_id AND wtpl.org_id = v_file.org_id;
+
   IF v_transition.id IS NULL THEN
     RETURN jsonb_build_object('success', false, 'error_code', 'TRANSITION_NOT_FOUND',
       'error_message', 'Transition not found');

@@ -93,7 +93,7 @@ END $$;
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS organization_integrations (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   
   -- Integration type
@@ -137,7 +137,7 @@ CREATE INDEX IF NOT EXISTS idx_org_integrations_active ON organization_integrati
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS integration_sync_log (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   integration_id UUID NOT NULL REFERENCES organization_integrations(id) ON DELETE CASCADE,
   
@@ -256,7 +256,7 @@ CREATE INDEX IF NOT EXISTS idx_sync_log_watermark
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS odoo_saved_configs (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   
   -- Configuration identity
@@ -295,7 +295,7 @@ CREATE INDEX IF NOT EXISTS idx_odoo_saved_configs_active ON odoo_saved_configs(i
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS webhooks (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   
   -- Basic info
@@ -364,7 +364,7 @@ END $$;
 -- ===========================================
 
 CREATE TABLE IF NOT EXISTS webhook_deliveries (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   webhook_id UUID NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   
@@ -677,7 +677,7 @@ END $$;
 
 -- Table: SOLIDWORKS Licenses
 CREATE TABLE IF NOT EXISTS solidworks_licenses (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   
   -- License details
@@ -706,7 +706,7 @@ CREATE INDEX IF NOT EXISTS idx_solidworks_licenses_org_id ON solidworks_licenses
 
 -- Table: SOLIDWORKS License Assignments
 CREATE TABLE IF NOT EXISTS solidworks_license_assignments (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   license_id UUID NOT NULL REFERENCES solidworks_licenses(id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   
@@ -1186,7 +1186,7 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 -- to move the secret into a table that clients cannot read at all.
 
 CREATE TABLE IF NOT EXISTS integration_credentials (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
 
   -- Which record this credential belongs to. Deliberately not a foreign key

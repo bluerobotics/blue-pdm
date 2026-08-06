@@ -161,13 +161,17 @@ BEGIN
     action TEXT
   ) ON COMMIT PRESERVE ROWS;
 
+  -- Every routine, not just prokind = 'f'. A PROCEDURE in public is reachable
+  -- by anon exactly as a function is, and ON FUNCTION does not match one; the
+  -- statement that matches both is ON ROUTINE. This script and
+  -- check_anon_reach() have to agree about what they are counting, or an
+  -- emergency lockdown reports success over something still open.
   FOR r IN
     SELECT p.oid,
            p.oid::regprocedure::TEXT AS signature
     FROM pg_proc p
     JOIN pg_namespace n ON n.oid = p.pronamespace
     WHERE n.nspname = 'public'
-      AND p.prokind = 'f'
       AND has_function_privilege('anon', p.oid, 'EXECUTE')
     ORDER BY 1
   LOOP
@@ -178,23 +182,40 @@ BEGIN
       CONTINUE;
     END IF;
 
+    -- A grant made by a role this one is not a member of cannot be revoked
+    -- here. Saying so is the point: an emergency script that reports "revoked"
+    -- over a "WARNING: no privileges could be revoked" is worse than one that
+    -- reports the truth, because someone is reading it while deciding whether
+    -- the incident is over.
+    IF EXISTS (
+      SELECT 1 FROM unnest(anon_revoke_grantors(r.oid)) g
+      WHERE NOT pg_has_role(current_user, g, 'MEMBER')
+    ) AND NOT COALESCE((SELECT rolsuper FROM pg_roles WHERE rolname = current_user), false)
+    THEN
+      INSERT INTO _lockdown_report VALUES (v_signature,
+        'STILL REACHABLE BY ANON - granted by '
+        || array_to_string(anon_revoke_grantors(r.oid), ', ')
+        || ', which ' || current_user || ' cannot revoke');
+      CONTINUE;
+    END IF;
+
     -- Record who can execute this today, before anything is withdrawn.
     SELECT ARRAY(
       SELECT role_name FROM unnest(c_preserve_roles) AS role_name
       WHERE has_function_privilege(role_name, r.oid, 'EXECUTE')
     ) INTO v_keep;
 
-    EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM anon', v_signature);
+    EXECUTE format('REVOKE EXECUTE ON ROUTINE %s FROM anon', v_signature);
     v_revoked := v_revoked + 1;
 
     IF has_function_privilege('anon', r.oid, 'EXECUTE') THEN
       -- Still reachable, so the grant also comes from PUBLIC. Pin every other
       -- role's access down as an explicit grant before withdrawing PUBLIC.
       FOREACH v_role IN ARRAY v_keep LOOP
-        EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO %I', v_signature, v_role);
+        EXECUTE format('GRANT EXECUTE ON ROUTINE %s TO %I', v_signature, v_role);
       END LOOP;
 
-      EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC', v_signature);
+      EXECUTE format('REVOKE EXECUTE ON ROUTINE %s FROM PUBLIC', v_signature);
       v_public_revoked := v_public_revoked + 1;
       INSERT INTO _lockdown_report VALUES (v_signature, 'revoked from anon and PUBLIC');
     ELSE
@@ -262,12 +283,12 @@ BEGIN
     -- added to this loop belongs before the BEGIN.
     BEGIN
       EXECUTE format(
-        'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM anon',
+        'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public REVOKE EXECUTE ON ROUTINES FROM anon',
         d.grantor
       );
       v_defaults_fixed := v_defaults_fixed + 1;
       INSERT INTO _lockdown_report
-        VALUES ('(default privileges for role ' || d.grantor || ')', 'anon removed from future functions');
+        VALUES ('(default privileges for role ' || d.grantor || ')', 'anon removed from future routines');
     EXCEPTION WHEN insufficient_privilege THEN
       v_defaults_stuck := v_defaults_stuck + 1;
       INSERT INTO _lockdown_report
@@ -275,6 +296,25 @@ BEGIN
                 'COULD NOT CHANGE - owned by ' || d.grantor || ', which you are not a member of. Expected on Supabase; see below.');
     END;
   END LOOP;
+
+  -- And the global row, which is the one that suppresses the built-in PUBLIC
+  -- EXECUTE default. Without IN SCHEMA, this row replaces the hard-wired
+  -- default rather than being merged into it, so a routine created by this role
+  -- afterwards comes out with no PUBLIC grant at all. The schema-scoped form
+  -- above cannot do that, which is why both are here.
+  BEGIN
+    EXECUTE format(
+      'ALTER DEFAULT PRIVILEGES FOR ROLE %I REVOKE EXECUTE ON ROUTINES FROM PUBLIC, anon',
+      current_user
+    );
+    INSERT INTO _lockdown_report
+      VALUES ('(default privileges for role ' || current_user || ', all schemas)',
+              'routines you create from now on are born unreachable by anon');
+  EXCEPTION WHEN insufficient_privilege THEN
+    INSERT INTO _lockdown_report
+      VALUES ('(default privileges for role ' || current_user || ', all schemas)',
+              'COULD NOT SET - later routines will be born reachable by anon');
+  END;
 
   RAISE NOTICE 'Revoked EXECUTE from anon on % function(s); % of those also needed PUBLIC withdrawn.',
     v_revoked, v_public_revoked;
@@ -316,7 +356,7 @@ ORDER BY action, signature;
 SELECT
   (SELECT count(*)
      FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-    WHERE n.nspname = 'public' AND p.prokind = 'f'
+    WHERE n.nspname = 'public'
       AND has_function_privilege('anon', p.oid, 'EXECUTE')
   ) AS anon_executable_functions,
   (SELECT count(*)
@@ -331,7 +371,7 @@ SELECT
 
 SELECT p.oid::regprocedure::TEXT AS still_reachable_by_anon
 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-WHERE n.nspname = 'public' AND p.prokind = 'f'
+WHERE n.nspname = 'public'
   AND has_function_privilege('anon', p.oid, 'EXECUTE')
 ORDER BY 1;
 
@@ -352,7 +392,7 @@ DECLARE
 BEGIN
   SELECT count(*) INTO v_funcs
     FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-   WHERE n.nspname = 'public' AND p.prokind = 'f'
+   WHERE n.nspname = 'public'
      AND has_function_privilege('anon', p.oid, 'EXECUTE');
 
   SELECT count(*) INTO v_views

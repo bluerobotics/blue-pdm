@@ -1,48 +1,76 @@
+﻿# 01-attacks-before-fix.txt
+# Produced by: .\attack.ps1 -Expect vulnerable
+# Release under test: ../../blueplm-v90/supabase
+# Captured: 2026-08-06 15:13:18 -07:00 by capture-evidence.ps1
+#
+# Unedited output. Re-run the command above to reproduce it.
+
+
+=== PREFLIGHT ===
+PostgREST is answering and the seed is present.
 
 === ATTACKS (expecting: vulnerable) ===
 
 [BREACHED] F2a     anon reads parts_with_pricing (another tenant's parts and prices)
-         HTTP 200: [{"part_number":"ACME-SECRET-0001","description":"Hypersonic nozzle, ITAR 
-controlled","preferred_supplier":{"currency": "USD", "unit_price": 14250.0000, "supplier_id": 
-"aaaaaaaa-4444-4000-8000-000000000001", "supplier_co...
+         HTTP 200: [{"part_number":"ACME-SECRET-0001","description":"Hypersonic nozzle, ITAR controlled","preferred_supplier":{"currency": "USD", "unit_price": 14250.0000, "supplier_id": "aaaaaaaa-4444-4000-8000-000000000001", "supplier_co...
 [BREACHED] F2b     Umbrella member reads Acme parts through parts_with_pricing
-         HTTP 200: [{"part_number":"ACME-SECRET-0001","description":"Hypersonic nozzle, ITAR controlled"}, 
-{"part_number":"UMB-0001","description":"A widget"}]
+         HTTP 200: [{"part_number":"ACME-SECRET-0001","description":"Hypersonic nozzle, ITAR controlled"}, {"part_number":"ACME-SECRET-0002","description":"Inlet cowl, ITAR controlled"}, {"part_number":"UMB-0001","description":"A widget"}]
 [BREACHED] F3a     Umbrella member mints a share link for an Acme file
-         HTTP 200: [{"link_id":"dd7e3126-fe79-4620-ac62-7d7dcebe25f4","token":"QXQf9moSbNLc","expires_at":"2026-08-13T1
-9:16:50.010688+00:00"}]
-[BREACHED] F3b     anon redeems that cross-tenant token (require_auth=true ignored)
-         HTTP 200: [{"is_valid":true,"file_id":"aaaaaaaa-3333-4000-8000-000000000001","org_id":"bbbbbbbb-0000-4000-8000
--000000000001","file_version":null,"error_message":null}]
+         HTTP 200: [{"link_id":"f9ca8514-bc01-4645-b618-645d9dddd3e5","token":"Ws0p24XUw2I7","expires_at":"2026-08-13T22:13:16.29202+00:00"}]
+[BREACHED] F3b     anon redeems a require_auth=true link
+         HTTP 200: [{"is_valid":true,"file_id":"aaaaaaaa-3333-4000-8000-000000000001","org_id":"aaaaaaaa-0000-4000-8000-000000000001","file_version":null,"error_message":null}]
 [BREACHED] F3c     anon exhausts a 10-download allowance without downloading anything
-         limit hit after 10 further validate calls
+         limit hit after 11 validate calls
+[BREACHED] F3d     Umbrella member redeems Acme's require_auth=true link
+         HTTP 200: [{"is_valid":true,"file_id":"aaaaaaaa-3333-4000-8000-000000000001","org_id":"aaaaaaaa-0000-4000-8000-000000000001","file_version":null,"error_message":null}]
+[BREACHED] F3e     org-less account redeems Acme's require_auth=true link
+         HTTP 200: [{"is_valid":true,"file_id":"aaaaaaaa-3333-4000-8000-000000000001","org_id":"aaaaaaaa-0000-4000-8000-000000000001","file_version":null,"error_message":null}]
 [BREACHED] F4a     org-less account reads Acme's Odoo configuration
-         HTTP 200: [{"id":"3486efe4-4abf-49b3-90a7-f0c318918da8","name":"Acme Production Odoo","description":"live ERP"
-,"url":"https://acme-secret.odoo.com","database":"acme_prod","color":null,"is_active":true,"last_tested_at":null,"last_
-t...
+         HTTP 200: [{"id":"d4c0143f-0161-4a16-bc9b-f47c0cc620e8","name":"Acme Production Odoo","description":"live ERP","url":"https://acme-secret.odoo.com","database":"acme_prod","color":null,"is_active":true,"last_tested_at":null,"last_t...
 [BREACHED] F4a2    org-less account reads Acme's integration status
-         HTTP 200: [{"id":"1013eb01-b267-4f4a-89f9-546a7f185ce1","integration_type":"odoo","is_active":true,"is_connect
-ed":true,"last_connected_at":null,"auto_sync":false,"last_sync_at":null,"last_sync_status":null,"last_sync_count":null}
-]
+         HTTP 200: [{"id":"311751b9-4cb9-4b1b-bee2-d014397905cf","integration_type":"odoo","is_active":true,"is_connected":true,"last_connected_at":null,"auto_sync":false,"last_sync_at":null,"last_sync_status":null,"last_sync_count":null}]
 [BREACHED] F4b     org-less account reads Acme's item-designation assignments
-         HTTP 200: [{"id":"284fcdb8-46f8-41bf-94e2-f4bc424755bb","org_id":"aaaaaaaa-0000-4000-8000-000000000001","vault
-_id":"aaaaaaaa-2222-4000-8000-000000000001","part_number":"ACME-SECRET-0001","designation_id":"aaaaaaaa-5555-4000-8000-
-0...
+         HTTP 200: [{"id":"1f31321a-eda4-4720-be86-681088104060","org_id":"aaaaaaaa-0000-4000-8000-000000000001","vault_id":"aaaaaaaa-2222-4000-8000-000000000001","part_number":"ACME-SECRET-0001","designation_id":"aaaaaaaa-5555-4000-8000-0...
 [BREACHED] F4c     org-less account OVERWRITES a row in Acme's item_images
-         HTTP 200: {"id":"7067b1ac-3867-40d8-8431-34d71348653c","org_id":"aaaaaaaa-0000-4000-8000-000000000001","part_n
-umber":"ACME-SECRET-0001","image_type":"icon","icon_name":"skull","icon_color":"#000000","image_storage_path":null,"upd
-a...
+         HTTP 200: {"id":"654a7aff-9d4f-4f08-9611-aa60cd2da149","org_id":"aaaaaaaa-0000-4000-8000-000000000001","part_number":"ACME-SECRET-0001","image_type":"icon","icon_name":"skull","icon_color":"#000000","image_storage_path":null,"upda...
 [BREACHED] F4d     org-less account DELETES a row from Acme's item_images
          HTTP 200: true
 [BREACHED] F4e     org-less account reads Acme's item designations
-         HTTP 200: [{"id":"aaaaaaaa-5555-4000-8000-000000000001","org_id":"aaaaaaaa-0000-4000-8000-000000000001","name"
-:"ITAR","sort_order":1,"created_at":"2026-08-06T19:14:48.484189+00:00","created_by":"aaaaaaaa-1111-4000-8000-0000000000
-0...
+         HTTP 200: [{"id":"aaaaaaaa-5555-4000-8000-000000000001","org_id":"aaaaaaaa-0000-4000-8000-000000000001","name":"ITAR","sort_order":1,"created_at":"2026-08-06T22:13:04.43834+00:00","created_by":"aaaaaaaa-1111-4000-8000-000000000001...
 [refused ] F4f     org-less account writes an Acme item designation (admin check should stop this)
          HTTP 400: {"code":"P0001","details":null,"hint":null,"message":"Not authorized to manage item designations"}
-[BREACHED] F5a     org slug enumeration: real vs nonexistent org are distinguishable
-         real={"saml": true, "google": true}  fake={"users" : {"google" : true, "email" : true, "phone" : true}, 
-"suppliers" : {"google" : true, "email" : true, "phone" : ...
+[BREACHED] F5a     org slug enumeration: an existing org is distinguishable from a miss carrying the same answer
+         hit ={"users": {"email": true, "phone": true, "google": true}, "suppliers": {"email": true, "phone": true, "google": true}}
+         miss={"users" : {"google" : true, "email" : true, "phone" : true}, "suppliers" : {"google" : true, "email" : true, "phone" : true}}
+[BREACHED] F6a     Acme member applies UMBRELLA's transition to her own file
+         HTTP 200: {"success": true, "new_revision": "A", "new_state_id": "bbbbbbbb-7777-4000-8000-000000000002", "new_state_name": "UMBRELLA-STATE-OMEGA", "requires_review": false}
+[BREACHED] F6b     Acme member reads Umbrella's workflow/state/transition names out of her own history
+         HTTP 200: [{"workflow_name":"UMBRELLA-CONFIDENTIAL-WORKFLOW","to_state_name":"UMBRELLA-STATE-OMEGA","transition_name":"UMBRELLA-TRANSITION-CLASSIFIED"}]
 
-12 of 13 attacks succeeded.
-OK: every attack reproduced against the current code.
+=== POSITIVE CONTROLS (must pass before and after) ===
+
+[works   ] C1      Acme member still reads Acme parts through parts_with_pricing
+         HTTP 200: [{"part_number":"ACME-SECRET-0001","preferred_supplier":{"currency": "USD", "unit_price": 14250.0000, "supplier_id": "aaaaaaaa-4444-4000-8000-000000000001", "supplier_code": "CONF-FORGE", "supplier_na...
+[n/a yet ] C1b     ...and sees no other tenant in it
+         UMB-0001 present: True
+[works   ] C2      Acme member still mints a share link for their OWN file
+         HTTP 200: [{"link_id":"e8af128b-3a18-4be5-966e-7aa8c4aa6083","token":"jMNUmytmEZXt","expires_at":"2026-08-13T22:13:17.78101+00:00"}]
+[works   ] C3      anon recipient still validates a legitimate share link
+         HTTP 200: [{"is_valid":true,"file_id":"aaaaaaaa-3333-4000-8000-000000000001","org_id":"aaaaaaaa-0000-4000-8000-000000000001","file_version":null,"error_message":null}]
+[n/a yet ] C4      6 more validations do NOT exhaust a 3-download allowance
+         HTTP 200: [{"is_valid":false,"file_id":null,"org_id":null,"file_version":null,"error_message":"Download limit reached"}]
+[works   ] C5      sign-in screen still reads auth providers with the anon key
+         HTTP 200: {"saml": true, "google": true}
+[works   ] C6      Acme member still reads their OWN Odoo configuration
+         HTTP 200: [{"id":"d4c0143f-0161-4a16-bc9b-f47c0cc620e8","name":"Acme Production Odoo","description":"live ERP","url":"https://acme-secret.odoo.com","database":"acme_prod"...
+[works   ] C7      Acme member still writes their OWN item_images row
+         HTTP 200: {"id":"de1f6233-9139-49f9-8f21-963ae7df4faa","org_id":"aaaaaaaa-0000-4000-8000-000000000001","part_number":"ACME-SECRET-0001","image_type":"icon","icon_name":"r...
+[works   ] C8      Acme member still runs Acme's OWN workflow transition on her own file
+         HTTP 200: {"success": true, "new_revision": "C", "new_state_id": "aaaaaaaa-7777-4000-8000-000000000002", "new_state_name": "Acme Released", "requires_review": false}
+[works   ] C9      Acme member still redeems Acme's require_auth=true link
+         HTTP 200: [{"is_valid":true,"file_id":"aaaaaaaa-3333-4000-8000-000000000001","org_id":"aaaaaaaa-0000-4000-8000-000000000001","file_version":null,"error_message":null}]
+[n/a yet ] C10     consume_share_link spends exactly max_downloads and then refuses
+         accepted 0 of 4 attempts on a 3-download link
+
+16 of 17 attacks succeeded; 0 of 8 enforced positive controls broken.
+OK: every attack reproduced against the current code, with all positive controls working.
