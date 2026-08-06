@@ -305,6 +305,7 @@ BEGIN
     EXECUTE 'DROP FUNCTION IF EXISTS ' || r.func_sig || ' CASCADE';
   END LOOP;
 END $$;
+DROP FUNCTION IF EXISTS merge_custom_properties(JSONB, JSONB) CASCADE;
 DROP FUNCTION IF EXISTS drop_function_overloads(TEXT) CASCADE;
 DROP FUNCTION IF EXISTS log_file_activity() CASCADE;
 DROP FUNCTION IF EXISTS create_default_workflow(UUID, UUID) CASCADE;

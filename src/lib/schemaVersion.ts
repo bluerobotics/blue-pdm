@@ -26,7 +26,7 @@ import { supabase } from './supabase'
 
 // The schema version this app version expects
 // Increment this when releasing app updates that require schema changes
-export const EXPECTED_SCHEMA_VERSION = 86
+export const EXPECTED_SCHEMA_VERSION = 87
 
 // Minimum schema version that will still work (for soft warnings vs hard errors)
 // Set this to allow some backwards compatibility
@@ -119,6 +119,7 @@ export const VERSION_DESCRIPTIONS: Record<number, string> = {
   84: 'Known partners carry their own channel: integrators seeded alongside distributors, and channel_source records whether the list or a person set an account\u2019s channel',
   85: 'The customers date range governs the whole module: customer_rfm, customer_channel_counts, customer_partner_coverage, customer_detail and customer_cohort_retention take the selected window and report it, instead of the roster and the detail panel showing lifetime totals beside a windowed dashboard',
   86: 'Workflow diagrams save their layout: node size on workflow_states, endpoint anchors, waypoints and label placement on workflow_transitions, plus execute_workflow_transition/complete_gate_review as the single atomic path a file takes through a workflow, an auditable workflow_history and file_state_entries, and the removal of ten never-wired advanced workflow tables',
+  87: 'checkin_file merges the reserved per-configuration maps in custom_properties entry by entry instead of replacing them wholesale, so checking in one edited configuration no longer erases every configuration the user did not touch',
   // Note: Process templates module (v26+) is optional - see modules/process-templates.sql
 }
 

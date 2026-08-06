@@ -1136,6 +1136,10 @@ export const checkinCommand: Command<CheckinParams> = {
         // Only use pending metadata if user made edits
         // Auto-extraction removed - it was opening every SW file in Document Manager
         // Metadata sync happens on checkout when properties are displayed
+        //
+        // Pending holds only the configurations the user edited, so the row's committed
+        // custom_properties travels with it and checkinFile sends the complete configuration
+        // maps. Sending pending alone is what used to erase the rest of them.
         const metadataToUse = file.pendingMetadata
 
         if (fileHash) {
@@ -1284,6 +1288,7 @@ export const checkinCommand: Command<CheckinParams> = {
             newFileName: wasFileRenamed ? file.name : undefined,
             localActiveVersion: file.localActiveVersion,
             pendingMetadata: metadataToUse,
+            committedCustomProperties: file.pdmData?.custom_properties,
             comment: file.pendingCheckinNote,
             machineId,
             skipMachineMismatchCheck: true,
@@ -1451,6 +1456,7 @@ export const checkinCommand: Command<CheckinParams> = {
             newFileName: wasFileRenamed ? file.name : undefined,
             localActiveVersion: file.localActiveVersion,
             pendingMetadata: metadataToUse,
+            committedCustomProperties: file.pdmData?.custom_properties,
             comment: file.pendingCheckinNote,
             machineId,
             skipMachineMismatchCheck: true,

@@ -1,3 +1,5 @@
+import { buildConfigurationMapPayload } from '@/lib/metadata/configurationMaps'
+
 import { getSupabaseClient } from '../client'
 import { getCurrentUserEmail } from '../auth'
 
@@ -98,6 +100,16 @@ export async function checkinFile(
       config_tabs?: Record<string, string> // Per-configuration tab numbers
       config_descriptions?: Record<string, string> // Per-configuration descriptions
     }
+    /**
+     * The row's committed `custom_properties`, so the per-configuration maps can be sent complete.
+     *
+     * `pendingMetadata.config_tabs` holds only the configurations the user edited. Sent on its own
+     * it is indistinguishable from the file's entire configuration set, which is how check-in used
+     * to erase every configuration nobody touched. Passing the committed side in lets the payload
+     * carry committed-plus-pending, so the request is correct even against a database that still
+     * merges custom_properties with a top-level `||`.
+     */
+    committedCustomProperties?: unknown
     // Inspection table fingerprint override. Normally omitted: checkin_file computes the
     // authoritative fingerprint server-side from the live inspection_characteristics rows,
     // so any inspection edits made during checkout are detected and versioned automatically.
@@ -148,17 +160,12 @@ export async function checkinFile(
   // NOTE: Path/name updates are now handled in the RPC (eliminates separate UPDATE query)
   // This was a performance optimization - 1 atomic operation instead of 2 separate queries
 
-  // Build custom_properties JSONB for config data
-  let customPropsUpdate: Record<string, Record<string, string>> | null = null
-  if (options?.pendingMetadata?.config_tabs || options?.pendingMetadata?.config_descriptions) {
-    customPropsUpdate = {}
-    if (options.pendingMetadata.config_tabs) {
-      customPropsUpdate._config_tabs = options.pendingMetadata.config_tabs
-    }
-    if (options.pendingMetadata.config_descriptions) {
-      customPropsUpdate._config_descriptions = options.pendingMetadata.config_descriptions
-    }
-  }
+  // Build the custom_properties patch for the per-configuration maps, committed values included
+  // rather than the edited configurations alone. See buildConfigurationMapPayload.
+  const customPropsUpdate = buildConfigurationMapPayload(
+    options?.committedCustomProperties,
+    options?.pendingMetadata,
+  )
 
   // Use atomic RPC for checkin - handles versioning, path updates, and activity logging
   // Path/name updates are now handled in the RPC (performance: eliminates separate UPDATE)

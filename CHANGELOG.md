@@ -4,6 +4,13 @@ All notable changes to BluePLM will be documented in this file.
 
 ![1774273238438](image/CHANGELOG/1774273238438.png)
 
+## [3.25.0] - Unreleased
+
+> **Database schema 87.** Ask your admin to re-run `supabase/core.sql` and `supabase/modules/10-source-files.sql`. Until they do, BluePLM will report that your database is older than the app — the fix below lives in the `checkin_file` function and is not active until the module is re-run.
+
+### Fixed
+- **Checking in one edited configuration erased every configuration you had not touched** — a part with 68 configurations kept its per-configuration tab numbers and descriptions in a single map on the file's row. Check-in sent only the configurations you had edited during that checkout, and the database merged the incoming properties one level deep, so "here is configuration `AS568-014`" was read as "here are all the configurations" and the other 67 were dropped from the row. It was silent, it happened on the success path, and the only reason it is recoverable is that the wipe destroyed the database's copy and not the SOLIDWORKS file's. Two things changed so that neither half can cause it alone: check-in now sends the complete map — everything already recorded, with your edits laid over it — and the database now merges the per-configuration maps entry by entry rather than replacing them. A new client is therefore safe against a database that has not been updated yet, and an old client is safe against one that has. **This release does not repair rows that have already lost configurations**; run `npm run scan:divergence` to see how many there are, and a later release will repair them.
+
 ## [3.24.0] - 2026-08-04
 
 ### Added

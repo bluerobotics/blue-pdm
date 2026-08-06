@@ -2101,6 +2101,67 @@ $$;
 
 GRANT EXECUTE ON FUNCTION checkout_file(UUID, UUID, TEXT, TEXT, TEXT) TO authenticated;
 
+-- Merge an incoming custom_properties patch into the stored one.
+--
+-- `jsonb ||` is a TOP-LEVEL merge, so applying it to a patch that carries a reserved
+-- per-configuration map replaces that whole map. A caller that sends `_config_tabs` for the one
+-- configuration the user edited therefore erases the entry for every configuration they did not:
+-- on a part with 68 configurations, editing one dropped the other 67 from the row. That was
+-- silent data loss on the check-in success path.
+--
+-- Scalar keys keep the old wholesale behaviour - `Material` is one value and the newest one wins.
+-- The reserved maps are merged entry by entry instead, so a partial patch is an overlay rather
+-- than a replacement. A JSON `null` on an entry removes that configuration, which is the only way
+-- left to delete one now that omission means "leave alone".
+CREATE OR REPLACE FUNCTION merge_custom_properties(p_existing JSONB, p_incoming JSONB)
+RETURNS JSONB
+LANGUAGE plpgsql
+IMMUTABLE
+AS $$
+DECLARE
+  -- Every top-level key under custom_properties that holds a configuration-name-keyed map.
+  c_reserved_maps CONSTANT TEXT[] := ARRAY['_config_tabs', '_config_descriptions'];
+  v_existing JSONB;
+  v_result JSONB;
+  v_key TEXT;
+  v_incoming_map JSONB;
+  v_existing_map JSONB;
+  v_merged_map JSONB;
+  v_removed TEXT;
+BEGIN
+  IF p_incoming IS NULL THEN
+    RETURN p_existing;
+  END IF;
+
+  v_existing := COALESCE(p_existing, '{}'::jsonb);
+  v_result := v_existing || p_incoming;
+
+  FOREACH v_key IN ARRAY c_reserved_maps LOOP
+    v_incoming_map := p_incoming -> v_key;
+    -- Absent means "no opinion". A non-object means the caller is not sending a configuration
+    -- map at all, and it keeps whatever `||` already did with it rather than being reinterpreted.
+    CONTINUE WHEN v_incoming_map IS NULL OR jsonb_typeof(v_incoming_map) <> 'object';
+
+    v_existing_map := v_existing -> v_key;
+    IF v_existing_map IS NULL OR jsonb_typeof(v_existing_map) <> 'object' THEN
+      v_existing_map := '{}'::jsonb;
+    END IF;
+
+    v_merged_map := v_existing_map || v_incoming_map;
+
+    FOR v_removed IN
+      SELECT key FROM jsonb_each(v_incoming_map) WHERE jsonb_typeof(value) = 'null'
+    LOOP
+      v_merged_map := v_merged_map - v_removed;
+    END LOOP;
+
+    v_result := jsonb_set(v_result, ARRAY[v_key], v_merged_map);
+  END LOOP;
+
+  RETURN v_result;
+END;
+$$;
+
 -- Atomic checkin: safely checks in a file with conditional version increment
 -- Only increments version when content, metadata, or version switch is detected
 -- Returns JSONB with success status, error message, or updated file data
@@ -2261,9 +2322,11 @@ BEGIN
                         AND NOT v_restoring_exact_version
                         AND v_versions_created_during_checkout = 0;
   
-  -- Merge custom properties if provided (existing props + new props)
+  -- Merge custom properties if provided. Scalar keys are replaced; the reserved
+  -- per-configuration maps are merged entry by entry so a partial patch cannot erase the
+  -- configurations it does not mention. See merge_custom_properties.
   IF p_custom_properties IS NOT NULL THEN
-    v_merged_custom_props := COALESCE(v_file.custom_properties, '{}'::jsonb) || p_custom_properties;
+    v_merged_custom_props := merge_custom_properties(v_file.custom_properties, p_custom_properties);
   ELSE
     v_merged_custom_props := v_file.custom_properties;
   END IF;
@@ -3820,6 +3883,11 @@ ALTER TABLE files ADD COLUMN IF NOT EXISTS configuration_revisions JSONB DEFAULT
 -- ===========================================
 -- END OF SOURCE FILES MODULE
 -- ===========================================
+
+-- Stamped here as well as in core.sql so that re-running this module alone - the usual way a
+-- single RPC fix is applied - advances the recorded version. update_schema_version is monotonic,
+-- so this can never roll a newer database backwards.
+SELECT update_schema_version(87, 'checkin_file merges the reserved per-configuration maps in custom_properties entry by entry instead of replacing them, so checking in one edited configuration no longer erases every configuration the user did not touch');
 
 DO $$
 BEGIN

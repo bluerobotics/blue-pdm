@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 -- Insert initial version for new installations
 INSERT INTO schema_version (id, version, description, applied_at, applied_by)
-VALUES (1, 86, 'Workflow diagrams save their layout: node size on workflow_states, endpoint anchors, waypoints and label placement on workflow_transitions, plus an atomic transition engine, an auditable workflow_history and the removal of ten never-wired advanced workflow tables', NOW(), 'migration')
+VALUES (1, 87, 'checkin_file merges the reserved per-configuration maps in custom_properties entry by entry instead of replacing them, so checking in one edited configuration no longer erases every configuration the user did not touch', NOW(), 'migration')
 ON CONFLICT (id) DO UPDATE SET 
   version = EXCLUDED.version,
   description = EXCLUDED.description,
