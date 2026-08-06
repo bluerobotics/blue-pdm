@@ -5,7 +5,7 @@
  */
 
 // Supabase client factory
-export * from './supabase'
+export * from './supabase.js'
 
 // Logging configuration
-export * from './logging'
+export * from './logging.js'

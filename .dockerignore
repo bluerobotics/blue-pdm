@@ -1,0 +1,14 @@
+# Build context for api/Dockerfile, the repository's only image.
+#
+# The API is built from api/ alone — its own manifest, lockfile and sources —
+# so everything else is excluded. This keeps the context at a few hundred KB
+# instead of the ~2 GB the repository weighs with node_modules and release
+# artefacts in it.
+*
+!api/
+
+# Host installs and previous local builds must never land in the image: they
+# would overwrite what `npm ci` and `tsc` produce inside it, and node_modules
+# built on a developer's machine carries the wrong platform's binaries.
+api/node_modules/
+api/dist/

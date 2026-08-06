@@ -3,10 +3,13 @@ name: Publish API Docker Image
 on:
   push:
     branches: [main]
+    # The image is built from api/ alone. The old Dockerfile also copied
+    # src/lib/ and src/types/ into it, but nothing under api/ ever imported
+    # them — every '../src/...' specifier in the API resolves inside api/src/.
     paths:
       - 'api/**'
-      - 'src/lib/supabase.ts'
-      - 'src/types/**'
+      - '.dockerignore'
+      - '.github/workflows/publish-api.yml'
   workflow_dispatch: # Allow manual trigger
 
 env:

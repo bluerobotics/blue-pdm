@@ -3,8 +3,10 @@
   "version": "2.4.0",
   "description": "BluePLM REST API",
   "type": "module",
-  "main": "server.ts",
+  "main": "dist/server.js",
   "scripts": {
+    "build": "tsc -p tsconfig.build.json && node --input-type=commonjs -e \"require('fs').copyFileSync('package.json','dist/package.json')\"",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "start": "tsx server.ts",
     "dev": "tsx --watch server.ts",
     "test": "tsx test-api.ts"

@@ -1,0 +1,22 @@
+{
+  // Emit configuration for the deployable image. tsconfig.json is type-check
+  // only; this is the one that produces the JavaScript the container runs.
+  //
+  // rootDir is the api/ directory so dist/ mirrors the source layout exactly.
+  // Both server.ts and routes/health.ts read package.json through a path
+  // relative to import.meta.url, so the emitted tree has to keep the same
+  // shape or those reads land in the wrong directory. The build script copies
+  // package.json in beside them, which also gives dist/ the "type": "module"
+  // it needs to be loaded as ESM.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": ".",
+    "outDir": "./dist",
+    "declaration": false,
+    "sourceMap": true,
+    "inlineSources": true
+  },
+  "include": ["./**/*.ts"],
+  "exclude": ["node_modules", "dist", "**/*.test.ts", "test-api.ts"]
+}

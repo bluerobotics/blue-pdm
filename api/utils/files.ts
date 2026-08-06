@@ -2,7 +2,7 @@
  * File Utility Functions
  */
 
-import type { FileRecord } from '../types'
+import type { FileRecord } from '../types.js'
 
 /**
  * Determine file type from extension

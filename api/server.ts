@@ -1,4 +1,3 @@
-#!/usr/bin/env npx ts-node
 /**
  * BluePLM REST API Server (Fastify + TypeScript)
  *
@@ -20,8 +19,8 @@
  * - ERP-friendly endpoints (/parts, /bom, state shortcuts)
  *
  * Usage:
- *   npx ts-node api/server.ts
- *   npm run api
+ *   npm run api        — run from source with tsx (development)
+ *   npm run api:build  — compile to api/dist, which is what the image runs
  */
 
 import Fastify, { FastifyInstance } from 'fastify'

@@ -55,6 +55,14 @@ jobs:
       - name: Typecheck API
         run: npm run typecheck:api
 
+      # `typecheck:api` runs with noEmit, so it proves the types are sound and
+      # nothing else. The image runs the JavaScript that tsc emits, and emit can
+      # fail — or succeed while producing specifiers Node cannot resolve — with
+      # the type check still green. This compiles the API the same way the
+      # Dockerfile does, so a broken build fails the PR instead of the publish.
+      - name: Build API
+        run: npm run api:build
+
       - name: Test
         run: npm test
 

@@ -5,7 +5,7 @@
  * via the XML-RPC interface.
  */
 
-import type { OdooSupplier, OdooFetchResult, OdooConnectionResult } from '../types'
+import type { OdooSupplier, OdooFetchResult, OdooConnectionResult } from '../types.js'
 
 // Store last XML responses for debugging
 let lastXmlResponses: string[] = []
