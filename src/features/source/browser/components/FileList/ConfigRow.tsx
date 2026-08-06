@@ -1,5 +1,6 @@
 import React, { memo, useState, useEffect, useCallback } from 'react'
 import { Layers, FileInput, ChevronRight, ChevronDown, Loader2 } from 'lucide-react'
+import { t } from '@/lib/i18n'
 import type { ConfigWithDepth } from '../../types'
 import {
   validateTabInput,
@@ -31,6 +32,13 @@ export interface ConfigRowProps {
   tabEnabled?: boolean
   /** Tab validation options (from serialization settings) */
   tabValidationOptions?: TabValidationOptions
+  /**
+   * Whether this configuration's metadata is being written into the document right now.
+   *
+   * Committing either input writes to the file and reads it back, which on a cold service is
+   * seconds. Without this the row simply sat there, so the edit looked either instant or ignored.
+   */
+  isWriting?: boolean
   onClick: (e: React.MouseEvent) => void
   onContextMenu: (e: React.MouseEvent) => void
   onDescriptionChange: (value: string) => void
@@ -64,6 +72,7 @@ function areConfigRowPropsEqual(prevProps: ConfigRowProps, nextProps: ConfigRowP
   if (prevProps.isBomLoading !== nextProps.isBomLoading) return false
   if (prevProps.isDrawingsExpanded !== nextProps.isDrawingsExpanded) return false
   if (prevProps.isDrawingsLoading !== nextProps.isDrawingsLoading) return false
+  if (prevProps.isWriting !== nextProps.isWriting) return false
   if (prevProps.tabEnabled !== nextProps.tabEnabled) return false
   // Compare tab validation options
   const prevOpts = prevProps.tabValidationOptions
@@ -99,6 +108,7 @@ export const ConfigRow = memo(function ConfigRow({
   isDrawingsLoading,
   tabEnabled = false,
   tabValidationOptions = DEFAULT_TAB_VALIDATION_OPTIONS,
+  isWriting = false,
   onClick,
   onContextMenu,
   onDescriptionChange,
@@ -243,6 +253,14 @@ export const ConfigRow = memo(function ConfigRow({
                 <span
                   className="w-1.5 h-1.5 rounded-full bg-emerald-400 flex-shrink-0"
                   title="Active configuration"
+                />
+              )}
+              {/* Beside the name rather than in a column, so it shows whichever field was edited. */}
+              {isWriting && (
+                <Loader2
+                  size={10}
+                  className="text-plm-fg-muted animate-spin flex-shrink-0"
+                  aria-label={t('source.metadataWrite.stateWriting')}
                 />
               )}
             </div>

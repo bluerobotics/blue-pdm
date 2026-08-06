@@ -40,6 +40,12 @@ import { usePDMStore } from '@/stores/pdmStore'
 import type { Organization, PendingMetadataEdit } from '@/stores/types'
 
 import type { ConfigWithDepth } from '../types'
+import {
+  configurationWriteKey,
+  fileWriteKey,
+  withWriteInFlight,
+  withoutWriteInFlight,
+} from '../utils/metadataWriteInFlight'
 
 import { buildConfigurationExportMetadata } from './configExportMetadata'
 import {
@@ -282,6 +288,9 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
       // Write to SW file immediately so sync-metadata on drawings reads the updated value
       // Mark file change as expected so file watcher doesn't trigger a refresh that collapses configs
       const releaseWatcher = beginWatcherSuppression([file.relativePath])
+      // The row shows a spinner while this runs, and the check-in guards see the file as busy.
+      const inFlightKey = configurationWriteKey(filePath, configName)
+      setSavingConfigsToSW((prev) => withWriteInFlight(prev, inFlightKey))
 
       try {
         const groups = buildConfigurationTabWritePlan({
@@ -320,9 +329,10 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
         })
       } finally {
         releaseWatcher()
+        setSavingConfigsToSW((prev) => withoutWriteInFlight(prev, inFlightKey))
       }
     },
-    [addToast, organization],
+    [addToast, organization, setSavingConfigsToSW],
   )
 
   // Update config description
@@ -371,6 +381,9 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
       // Write to SW file immediately so sync-metadata on drawings reads the updated value
       // Mark file change as expected so file watcher doesn't trigger a refresh that collapses configs
       const releaseWatcher = beginWatcherSuppression([file.relativePath])
+      // The row shows a spinner while this runs, and the check-in guards see the file as busy.
+      const inFlightKey = configurationWriteKey(filePath, configName)
+      setSavingConfigsToSW((prev) => withWriteInFlight(prev, inFlightKey))
 
       try {
         const groups = buildConfigurationDescriptionWritePlan({
@@ -414,9 +427,10 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
         })
       } finally {
         releaseWatcher()
+        setSavingConfigsToSW((prev) => withoutWriteInFlight(prev, inFlightKey))
       }
     },
-    [addToast, organization],
+    [addToast, organization, setSavingConfigsToSW],
   )
 
   // Check if file can have configurations (sldprt or sldasm)
@@ -476,7 +490,8 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
 
       const configs = fileConfigurations.get(file.path) || []
 
-      setSavingConfigsToSW((prev) => new Set(prev).add(file.path))
+      const inFlightKey = fileWriteKey(file.path)
+      setSavingConfigsToSW((prev) => withWriteInFlight(prev, inFlightKey))
 
       // Mark file as processing to suppress file watcher refreshes during save.
       // This only covers events that arrive while the write runs; the watcher's own
@@ -620,11 +635,7 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
         usePDMStore.getState().removeProcessingFolder(file.relativePath)
         releaseWatcher()
 
-        setSavingConfigsToSW((prev) => {
-          const next = new Set(prev)
-          next.delete(file.path)
-          return next
-        })
+        setSavingConfigsToSW((prev) => withoutWriteInFlight(prev, inFlightKey))
       }
     },
     [fileConfigurations, setSavingConfigsToSW, justSavedConfigs, addToast],

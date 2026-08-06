@@ -17,6 +17,7 @@ import { usePDMStore } from '@/stores/pdmStore'
 import { resolveRevision, resolvedText } from '@/lib/metadata/overlay'
 import { MetadataWriteStateMarker } from '@/components/MetadataWriteStateMarker'
 import { useFilePaneContext, useFilePaneHandlers } from '../../../context'
+import { isFileWriteInFlight } from '../../../utils/metadataWriteInFlight'
 import type { CellRendererBaseProps } from './types'
 
 export function RevisionCell({ file }: CellRendererBaseProps): React.ReactNode {
@@ -119,7 +120,7 @@ export function RevisionCell({ file }: CellRendererBaseProps): React.ReactNode {
       <MetadataWriteStateMarker
         file={file}
         field="revision"
-        isWriting={savingConfigsToSW.has(file.path)}
+        isWriting={isFileWriteInFlight(savingConfigsToSW, file.path)}
         onRetry={saveConfigsToSWFile}
       />
       {isDrawingLocked && (

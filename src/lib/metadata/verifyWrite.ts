@@ -22,18 +22,15 @@
  *
  * An intended empty value is the interesting case. `normalizeValue` maps both "" and a missing key
  * to `null`, so a cleared field verifies whether the property is present-and-empty or absent
- * altogether. That is deliberate but it is not the whole story: the product decision is that
- * clearing writes an empty property and leaves it in the file, because a `$PRP:` title-block
- * reference renders blank against an empty property and can break against a missing one. The
- * service's write paths delete on empty instead, and its reads drop empty values, so the shape is
- * wrong today even when the value is right and the service could not report the difference anyway.
- * Verifying by value keeps this module honest about what it can see - the value the app will read
- * next time is correct either way - and `.cursor/plans/service-empty-property-write.plan.md`
- * specifies the change that makes the shape right. Once it lands, a cleared field that reads as
- * absent is still verified; what changes is that it stops happening. Either way the answer is the
- * same only because the read is scoped: a cleared configuration description reads as absent from
- * that configuration whether the service deleted the property or wrote it empty, and a file-level
- * `Description` that the user still wants showing through is not mistaken for a survivor.
+ * altogether. That is deliberate. The product decision is that clearing writes an empty property
+ * and leaves it in the file, because a `$PRP:` title-block reference renders blank against an
+ * empty property and can break against a missing one, and since service 1.19.0 the write paths do
+ * that rather than deleting. Accepting absence as well is what keeps this module right about a
+ * file written by an older service, or by SolidWorks itself, where the property is simply gone.
+ * The answer is the same either way only because the read is scoped: a cleared configuration
+ * description reads as absent from that configuration whether the property was deleted or written
+ * empty, and a file-level `Description` that the user still wants showing through is not mistaken
+ * for a survivor.
  *
  * Pure: no I/O, no store access, no React.
  */

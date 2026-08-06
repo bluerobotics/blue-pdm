@@ -13,6 +13,7 @@ import { ContextSubmenu } from '../components'
 import { useSolidWorksStatus } from '@/hooks/useSolidWorksStatus'
 import { isSolidWorksUsable } from '@/types/solidworks'
 import { ChangeStateSubmenu } from './ChangeStateSubmenu'
+import { isFileWriteInFlight } from '../../../utils/metadataWriteInFlight'
 
 interface CheckoutActionsProps extends RefreshableActionProps {
   counts: SelectionCounts
@@ -24,7 +25,7 @@ interface CheckoutActionsProps extends RefreshableActionProps {
   showStateSubmenu: boolean
   setShowStateSubmenu: (show: boolean) => void
   stateSubmenuTimeoutRef: React.MutableRefObject<NodeJS.Timeout | null>
-  /** Files currently saving metadata - blocks operations if any are saving */
+  /** Keys of the metadata writes currently running - blocks operations on the files they touch */
   savingConfigsToSW?: Set<string>
 }
 
@@ -50,10 +51,11 @@ export function CheckoutActions({
   const { status, hasChecked: swStatusChecked } = useSolidWorksStatus()
   const [isSyncing, setIsSyncing] = useState(false)
 
-  // Check if any files are currently saving metadata
+  // Check if any files are currently saving metadata, at any scope: a configuration edit mutates
+  // the same bytes a check-in is about to upload.
   const isAnySaving = (files: LocalFile[]): boolean => {
     if (!savingConfigsToSW || savingConfigsToSW.size === 0) return false
-    return files.some((f) => savingConfigsToSW.has(f.path))
+    return files.some((f) => isFileWriteInFlight(savingConfigsToSW, f.path))
   }
   const effectiveRole = getEffectiveRole()
   const isAdmin = effectiveRole === 'admin'

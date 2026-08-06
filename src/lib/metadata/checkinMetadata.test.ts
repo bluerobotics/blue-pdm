@@ -42,6 +42,7 @@ function file(overrides: Partial<LocalFile> = {}): LocalFile {
 
 interface Stub {
   setProperties: ReturnType<typeof vi.fn>
+  setPropertiesBatch: ReturnType<typeof vi.fn>
   getProperties: ReturnType<typeof vi.fn>
   getConfigurations: ReturnType<typeof vi.fn>
 }
@@ -56,6 +57,12 @@ function installService(options: {
   const configurations = options.configurations ?? []
   const service: Stub = {
     setProperties: vi.fn(async () => ({ success: options.writeSucceeds !== false })),
+    setPropertiesBatch: vi.fn(
+      async (_path: string, configProperties: Record<string, Record<string, string>>) => ({
+        success: options.writeSucceeds !== false,
+        data: { configurationsProcessed: Object.keys(configProperties).length },
+      }),
+    ),
     getProperties: vi.fn(async () => {
       if (options.readBack === 'throw') return { success: false, error: 'the document is locked' }
       return {

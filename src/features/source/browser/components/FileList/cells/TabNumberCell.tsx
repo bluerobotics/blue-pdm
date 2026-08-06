@@ -11,6 +11,7 @@ import { usePDMStore } from '@/stores/pdmStore'
 import { validateTabInput, getTabPlaceholder, getTabValidationOptions } from '@/lib/tabValidation'
 import { resolveTabNumber, resolvedText } from '@/lib/metadata/overlay'
 import { MetadataWriteStateMarker } from '@/components/MetadataWriteStateMarker'
+import { isFileWriteInFlight } from '../../../utils/metadataWriteInFlight'
 import type { CellRendererBaseProps } from './types'
 
 export function TabNumberCell({ file }: CellRendererBaseProps): React.ReactNode {
@@ -140,7 +141,7 @@ export function TabNumberCell({ file }: CellRendererBaseProps): React.ReactNode 
         <MetadataWriteStateMarker
           file={file}
           field="tab_number"
-          isWriting={savingConfigsToSW.has(file.path)}
+          isWriting={isFileWriteInFlight(savingConfigsToSW, file.path)}
           onRetry={saveConfigsToSWFile}
         />
       </span>

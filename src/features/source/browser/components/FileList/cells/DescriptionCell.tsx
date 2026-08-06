@@ -16,6 +16,7 @@ import { MetadataWriteStateMarker } from '@/components/MetadataWriteStateMarker'
 import { useFilePaneContext, useFilePaneHandlers } from '../../../context'
 import { useCellSlowHighlight } from '../../../hooks/useCellSlowHighlight'
 import { CopyHighlightInput } from './CopyHighlightInput'
+import { isFileWriteInFlight } from '../../../utils/metadataWriteInFlight'
 import type { CellRendererBaseProps } from './types'
 
 export function DescriptionCell({ file }: CellRendererBaseProps): React.ReactNode {
@@ -116,7 +117,7 @@ export function DescriptionCell({ file }: CellRendererBaseProps): React.ReactNod
       <MetadataWriteStateMarker
         file={file}
         field="description"
-        isWriting={savingConfigsToSW.has(file.path)}
+        isWriting={isFileWriteInFlight(savingConfigsToSW, file.path)}
         onRetry={saveConfigsToSWFile}
       />
       {isDrawingLocked && (

@@ -1,12 +1,15 @@
 /**
  * The verified write, end to end against a stubbed service.
  *
- * Three things are worth pinning here. The read-back is one call however many configurations the
- * write touched, because that is what makes verification affordable enough to leave on. A write no
- * scope accepted skips the read-back entirely, because a stale value that happens to match would
- * otherwise verify a write that never happened. And an outcome is only rounded up to a single answer
- * when every address agrees - any disagreement is `partial`, so a caller looking at the outcome alone
- * cannot be told that 68 configurations succeeded because 66 of them did.
+ * Four things are worth pinning here. Both halves of the write are one call however many
+ * configurations it touched - one `setPropertiesBatch` and one `getProperties` - because that is
+ * what makes verification affordable enough to leave on. A write no scope accepted skips the
+ * read-back entirely, because a stale value that happens to match would otherwise verify a write
+ * that never happened. Batching does not cost the per-address verdicts: the read-back names every
+ * configuration, and a scope the batch reports as refused is still failed without consulting it.
+ * And an outcome is only rounded up to a single answer when every address agrees - any disagreement
+ * is `partial`, so a caller looking at the outcome alone cannot be told that 68 configurations
+ * succeeded because 66 of them did.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -16,8 +19,21 @@ import type { VerifiedAddress } from './verifyWrite'
 
 interface Service {
   setProperties: ReturnType<typeof vi.fn>
+  setPropertiesBatch: ReturnType<typeof vi.fn>
   setDocumentProperties: ReturnType<typeof vi.fn>
   getProperties: ReturnType<typeof vi.fn>
+}
+
+/** What the service says about a batch it was handed, beyond whether the call itself worked. */
+interface BatchOutcome {
+  success?: boolean
+  error?: string
+  data?: {
+    configurationsProcessed?: number
+    failedConfigurations?: Record<string, string>
+    failedProperties?: string[]
+    errors?: string[]
+  }
 }
 
 const PATH = 'C:\\vault\\ORING-BUNA-70A.SLDPRT'
@@ -26,6 +42,7 @@ let service: Service
 
 function install(options: {
   writeSucceeds?: boolean | ((configuration?: string) => boolean)
+  batchOutcome?: BatchOutcome
   fileProperties?: Record<string, string>
   configurationProperties?: Record<string, Record<string, string>>
   readFails?: boolean
@@ -40,6 +57,16 @@ function install(options: {
       success: decide(configuration),
       error: decide(configuration) ? undefined : 'the property is read-only',
     })),
+    setPropertiesBatch: vi.fn(
+      async (_path: string, configProperties: Record<string, Record<string, string>>) => {
+        const outcome = options.batchOutcome
+        if (outcome) return { success: outcome.success !== false, ...outcome }
+        return {
+          success: true,
+          data: { configurationsProcessed: Object.keys(configProperties).length },
+        }
+      },
+    ),
     setDocumentProperties: vi.fn(async () => ({ success: true })),
     getProperties: vi.fn(async () => {
       if (options.readFails) return { success: false, error: 'the document is locked' }
@@ -57,6 +84,20 @@ function install(options: {
 
   // @ts-expect-error the test only needs the SolidWorks surface this module touches
   globalThis.window = { electronAPI: { solidworks: service } }
+}
+
+/** One configuration's group, as every plan that reaches more than one scope shapes it. */
+function configurationGroup(configuration: string, tab: string) {
+  return {
+    configuration,
+    properties: { 'Tab Number': tab },
+    intents: [
+      {
+        address: { scope: 'configuration' as const, field: 'config_tab' as const, configuration },
+        expected: tab,
+      },
+    ],
+  }
 }
 
 beforeEach(() => {
@@ -103,7 +144,7 @@ describe('confirming a write against the file', () => {
     expect(result.addresses[0].reason).toContain('BR-101010')
   })
 
-  it('reads the file back once however many configurations were written', async () => {
+  it('writes and reads back in one call each however many configurations were touched', async () => {
     const configurations = Array.from({ length: 12 }, (_, index) => `Config-${index}`)
     install({
       configurationProperties: Object.fromEntries(
@@ -111,22 +152,143 @@ describe('confirming a write against the file', () => {
       ),
     })
 
-    await writeMetadataWithVerification({
+    const result = await writeMetadataWithVerification({
       path: PATH,
-      groups: configurations.map((configuration) => ({
-        configuration,
-        properties: { 'Tab Number': '001' },
-        intents: [
-          {
-            address: { scope: 'configuration' as const, field: 'config_tab' as const, configuration },
-            expected: '001',
-          },
-        ],
-      })),
+      groups: configurations.map((configuration) => configurationGroup(configuration, '001')),
     })
 
-    expect(service.setProperties).toHaveBeenCalledTimes(12)
+    expect(service.setPropertiesBatch).toHaveBeenCalledTimes(1)
+    expect(service.setProperties).not.toHaveBeenCalled()
     expect(service.getProperties).toHaveBeenCalledTimes(1)
+    // Every address still gets its own verdict; only the number of calls changed.
+    expect(result.addresses).toHaveLength(12)
+    expect(result.outcome).toBe('verified')
+  })
+})
+
+describe('sending every configuration in one call', () => {
+  it('keeps the file-scope group on its own call, since the batch has no file scope', async () => {
+    install({
+      fileProperties: { Number: 'BR-202020' },
+      configurationProperties: { 'AS568-014': { Number: 'BR-202020' } },
+    })
+
+    await writeMetadataWithVerification({
+      path: PATH,
+      groups: [
+        { properties: { Number: 'BR-202020' }, intents: [] },
+        configurationGroup('AS568-014', '014'),
+        configurationGroup('AS568-015', '015'),
+      ],
+    })
+
+    expect(service.setProperties).toHaveBeenCalledTimes(1)
+    expect(service.setProperties.mock.calls[0][2]).toBeUndefined()
+    expect(service.setPropertiesBatch).toHaveBeenCalledTimes(1)
+    expect(Object.keys(service.setPropertiesBatch.mock.calls[0][1])).toEqual([
+      'AS568-014',
+      'AS568-015',
+    ])
+  })
+
+  it('writes the document bag before the configurations, as the plan ordered them', async () => {
+    // The sync command's configuration writes mirror `Number` back to file scope, so a document
+    // group issued after them would be overwritten by the mirror rather than the other way round.
+    install({ configurationProperties: {} })
+
+    await writeMetadataWithVerification({
+      path: PATH,
+      groups: [
+        { properties: { Number: 'BR-202020' }, intents: [] },
+        configurationGroup('AS568-014', '014'),
+        configurationGroup('AS568-015', '015'),
+      ],
+    })
+
+    expect(service.setProperties.mock.invocationCallOrder[0]).toBeLessThan(
+      service.setPropertiesBatch.mock.invocationCallOrder[0],
+    )
+  })
+
+  it('leaves a single configuration on the per-scope call, which states its own verdict', async () => {
+    install({ configurationProperties: { 'AS568-014': { 'Tab Number': '014' } } })
+
+    await writeMetadataWithVerification({
+      path: PATH,
+      groups: [configurationGroup('AS568-014', '014')],
+    })
+
+    expect(service.setProperties).toHaveBeenCalledTimes(1)
+    expect(service.setPropertiesBatch).not.toHaveBeenCalled()
+  })
+
+  it('refuses to batch two groups naming the same configuration, which would lose one', async () => {
+    install({ configurationProperties: { 'AS568-014': {} } })
+
+    await writeMetadataWithVerification({
+      path: PATH,
+      groups: [configurationGroup('AS568-014', '014'), configurationGroup('AS568-014', '015')],
+    })
+
+    expect(service.setPropertiesBatch).not.toHaveBeenCalled()
+    expect(service.setProperties).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the per-scope calls when the document is open in SolidWorks', async () => {
+    // The live API has no batch, so the loop is the only way to reach each configuration.
+    install({ configurationProperties: {} })
+
+    await writeMetadataWithVerification({
+      path: PATH,
+      useLiveApi: true,
+      groups: [configurationGroup('AS568-014', '014'), configurationGroup('AS568-015', '015')],
+    })
+
+    expect(service.setDocumentProperties).toHaveBeenCalledTimes(2)
+    expect(service.setPropertiesBatch).not.toHaveBeenCalled()
+  })
+
+  it('fails a configuration the batch reported as refused without consulting the read-back', async () => {
+    // The whole point of keeping the refusal signal: the file already holds the intended value, so
+    // the read-back alone would call this verified and confirm a write that never happened.
+    install({
+      batchOutcome: {
+        data: {
+          configurationsProcessed: 2,
+          failedProperties: ['AS568-015:Tab Number'],
+        },
+      },
+      configurationProperties: {
+        'AS568-014': { 'Tab Number': '014' },
+        'AS568-015': { 'Tab Number': '015' },
+      },
+    })
+
+    const result = await writeMetadataWithVerification({
+      path: PATH,
+      groups: [configurationGroup('AS568-014', '014'), configurationGroup('AS568-015', '015')],
+    })
+
+    expect(result.outcome).toBe('partial')
+    const refused = result.addresses.find(
+      (entry) =>
+        entry.address.scope === 'configuration' && entry.address.configuration === 'AS568-015',
+    )
+    expect(refused?.state).toBe('failed')
+  })
+
+  it('fails every configuration when the batch itself failed, and skips the read-back', async () => {
+    install({ batchOutcome: { success: false, error: 'the file is read-only' } })
+
+    const result = await writeMetadataWithVerification({
+      path: PATH,
+      groups: [configurationGroup('AS568-014', '014'), configurationGroup('AS568-015', '015')],
+    })
+
+    expect(result.outcome).toBe('failed')
+    expect(result.addresses).toHaveLength(2)
+    expect(result.addresses.every((entry) => entry.reason === 'the file is read-only')).toBe(true)
+    expect(service.getProperties).not.toHaveBeenCalled()
   })
 })
 
@@ -169,8 +331,8 @@ describe('when the read-back cannot happen', () => {
 
 describe('a write that landed in some scopes and not others', () => {
   it('reports partial and keeps the per-configuration detail', async () => {
+    // One call for both configurations, and the read-back still answers for each by name.
     install({
-      writeSucceeds: (configuration) => configuration !== 'AS568-015',
       configurationProperties: {
         'AS568-014': { 'Tab Number': '014' },
         'AS568-015': {},
@@ -179,30 +341,10 @@ describe('a write that landed in some scopes and not others', () => {
 
     const result = await writeMetadataWithVerification({
       path: PATH,
-      groups: [
-        {
-          configuration: 'AS568-014',
-          properties: { 'Tab Number': '014' },
-          intents: [
-            {
-              address: { scope: 'configuration', field: 'config_tab', configuration: 'AS568-014' },
-              expected: '014',
-            },
-          ],
-        },
-        {
-          configuration: 'AS568-015',
-          properties: { 'Tab Number': '015' },
-          intents: [
-            {
-              address: { scope: 'configuration', field: 'config_tab', configuration: 'AS568-015' },
-              expected: '015',
-            },
-          ],
-        },
-      ],
+      groups: [configurationGroup('AS568-014', '014'), configurationGroup('AS568-015', '015')],
     })
 
+    expect(service.setPropertiesBatch).toHaveBeenCalledTimes(1)
     expect(result.outcome).toBe('partial')
     expect(result.addresses.filter((entry) => entry.state === 'verified')).toHaveLength(1)
     expect(result.addresses.filter((entry) => entry.state === 'failed')).toHaveLength(1)

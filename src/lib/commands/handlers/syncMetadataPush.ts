@@ -15,13 +15,11 @@
  *
  * ## What verification costs here
  *
- * One `setProperties` call per scope, where the old code sent every configuration in a single
- * `setPropertiesBatch`. On the 68-configuration fixture that is 68 opens instead of one - roughly
- * four seconds against one, measured against the service's own logs. Sync Metadata is an explicit,
- * progress-tracked command over a selection the user made, so it can afford it, and the batch API
- * cannot report which configuration refused a property in a form the read-back can check.
- * `writeMetadataWithVerification` taking a batch of groups in one service call would remove the
- * difference; that is a change to a module this file only calls.
+ * One `setPropertiesBatch` for every configuration and one `getProperties` to confirm them, so two
+ * service calls whatever the configuration count. Migrating to the shared path briefly cost a call
+ * per scope - 68 opens on the 68-configuration fixture, eleven seconds of writing against under
+ * one - until `writeMetadataWithVerification` learned to send the groups together. It owns
+ * the measurement and the reasoning; this file only calls it.
  */
 
 import { t } from '@/lib/i18n'

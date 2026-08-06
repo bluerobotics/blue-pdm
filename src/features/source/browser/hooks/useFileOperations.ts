@@ -30,6 +30,8 @@ import { isMachineOnline } from '@/lib/supabase'
 import { moveFileOnServer, updateFolderPath, updateFolderServerPath } from '@/lib/supabase/files'
 import { getFilesInFolder } from '@/lib/commands/types'
 import { buildFullPath } from '@/lib/utils/path'
+
+import { isFileWriteInFlight } from '../utils/metadataWriteInFlight'
 import { beginWatcherSuppression } from '@/lib/fileWatcherSuppression'
 import type { CustomConfirmState } from './useDialogState'
 
@@ -54,7 +56,7 @@ export interface UseFileOperationsOptions {
     moved?: boolean,
   ) => void
   resetHoverStates?: () => void
-  /** Set of file paths currently saving metadata to SolidWorks file */
+  /** Keys of the metadata writes currently running - see `utils/metadataWriteInFlight`. */
   savingConfigsToSW?: Set<string>
 }
 
@@ -94,11 +96,12 @@ export function useFileOperations({
   resetHoverStates,
   savingConfigsToSW,
 }: UseFileOperationsOptions): UseFileOperationsReturn {
-  // Helper to check if any files are currently saving metadata
+  // Helper to check if any files are currently saving metadata, at any scope: a configuration
+  // edit mutates the same bytes a check-in is about to upload.
   const isAnySaving = useCallback(
     (filesToCheck: LocalFile[]): boolean => {
       if (!savingConfigsToSW || savingConfigsToSW.size === 0) return false
-      return filesToCheck.some((f) => savingConfigsToSW.has(f.path))
+      return filesToCheck.some((f) => isFileWriteInFlight(savingConfigsToSW, f.path))
     },
     [savingConfigsToSW],
   )

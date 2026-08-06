@@ -16,7 +16,8 @@ import { ConfigRow } from './ConfigRow'
 import { ConfigBomRow } from './ConfigBomRow'
 import { DrawingRefRow } from './DrawingRefRow'
 import { ConfigDrawingRow } from './ConfigDrawingRow'
-import { useFilePaneContext } from '../../context'
+import { useFilePaneContext, useFilePaneHandlers } from '../../context'
+import { isConfigurationWriteInFlight } from '../../utils/metadataWriteInFlight'
 import { usePDMStore } from '@/stores/pdmStore'
 import { getTabValidationOptions } from '@/lib/tabValidation'
 import { combineBaseAndTab } from '@/lib/serialization'
@@ -234,6 +235,7 @@ export const FileListBody = forwardRef<HTMLTableSectionElement, FileListBodyProp
       tableRef,
       pendingScrollToFile,
     } = useFilePaneContext()
+    const { savingConfigsToSW } = useFilePaneHandlers()
 
     // Get tab settings from organization serialization settings
     const serializationSettings = usePDMStore((s) => s.organization?.serialization_settings)
@@ -610,6 +612,7 @@ export const FileListBody = forwardRef<HTMLTableSectionElement, FileListBodyProp
             isDrawingsLoading={isDrawingsLoading}
             tabEnabled={tabEnabled}
             tabValidationOptions={tabValidationOptions}
+            isWriting={isConfigurationWriteInFlight(savingConfigsToSW, file.path, config.name)}
             onClick={(e) => onConfigRowClick(e, file.path, config.name, configs)}
             onContextMenu={(e) => onConfigContextMenu(e, file.path, config.name)}
             onDescriptionChange={(value) =>
@@ -631,6 +634,7 @@ export const FileListBody = forwardRef<HTMLTableSectionElement, FileListBodyProp
         fileConfigurations,
         tabEnabled,
         tabValidationOptions,
+        savingConfigsToSW,
         onConfigRowClick,
         onConfigContextMenu,
         onConfigDescriptionChange,

@@ -12,20 +12,36 @@
  * Here the sequence is write, read back, compare, and record per address. `verifyWrite.ts` owns the
  * comparison and is pure; this module owns the I/O and the timing.
  *
- * ## What the read-back costs
+ * ## What the write and the read-back cost
  *
- * One `getProperties` per write, regardless of how many configurations it touched, because that call
+ * Both halves are one service call, and neither scales with the configuration count.
+ *
+ * The read-back is one `getProperties` however many configurations were touched, because that call
  * returns the file bag, every configuration's bag and the configuration list from a single Document
- * Manager open. Measured against this machine's own service logs: a median of 29ms warm, up to about
- * 370ms on the first open after the service starts, against 60ms for a single-scope `setProperties`
- * and around 1,000ms for a batch write. So verification adds roughly 3-50% to a write that is
- * already the slow part of an edit, and it does not scale with the configuration count - the reason
- * the read-back is one call outside the per-configuration loop rather than one per configuration.
+ * Manager open. The write is one `setPropertiesBatch`, which `DocumentManagerAPI` answers by
+ * writing every configuration inside one open/save cycle rather than by looping.
  *
- * At that price it runs on every production write, which is why there is no flag to turn it off. The
- * one place it is deliberately skipped is a write no scope accepted: there is nothing to confirm,
- * the state is already known, and paying for an open to learn nothing would be the one case where
- * the cost buys nothing.
+ * Measured on the 68-configuration `ORING-BUNA-70A.SLDPRT` regression fixture, driving a service
+ * built from `solidworks-service/` directly over its stdin protocol, five rounds, medians. The
+ * whole sequence a sync issues - the document bag, all 68 configurations, the read-back, 275
+ * properties in all - takes 11,772ms with one `setProperties` per scope and 1,422ms with one
+ * batch. The write alone is 11,363ms looped against 797ms batched; the read-back is ~600ms either
+ * way. So the read-back, not the write, is now the larger half, which is why it is the half that
+ * was never worth batching.
+ *
+ * At that price verification runs on every production write, which is why there is no flag to turn
+ * it off. The one place it is deliberately skipped is a write no scope accepted: there is nothing
+ * to confirm, the state is already known, and paying for an open to learn nothing would be the one
+ * case where the cost buys nothing.
+ *
+ * ## Why the batch does not weaken the verdicts
+ *
+ * The per-address states are decided by the read-back, which names every configuration, so one
+ * call for 68 scopes still reports 66 verified and 2 failed by name. What the batch has to carry
+ * beyond that is the refusal signal: a scope the service says it did not write must be `failed`
+ * without consulting the read-back, or a stale value that happens to match would confirm a write
+ * that never happened. `batchWriteReport.ts` recovers that from the response, and says there what
+ * it can and cannot recover.
  *
  * ## Clearing a field
  *
@@ -34,15 +50,14 @@
  * property that stays visible in SolidWorks' own dialog is what a user expects from clearing a field
  * rather than deleting it. Empty values are therefore included in the properties sent, not filtered
  * out, and an intent whose expected value is empty is a real intent that gets verified like any
- * other. The service does not yet hold up its end: its four write paths read an empty value as
- * "delete this property", so today a cleared field leaves the file with no property at all. The value
- * the app reads next time is right either way; the shape is not, and the `$PRP:` case the decision
- * exists for is not yet served. `.cursor/plans/service-empty-property-write.plan.md` specifies the
- * change.
+ * other. Service 1.19.0 holds up the other end: its write paths carry an empty value through
+ * instead of reading it as an instruction to delete, and deleting is a separate command. Against
+ * an older service the value the app reads next time is still right; only the shape differs.
  */
 
 import { log } from '@/lib/logger'
 
+import { readBatchWriteReport, type BatchWriteScope } from './batchWriteReport'
 import type { FileMetadata } from './divergence'
 import type { MetadataWriteOutcome } from './pendingEdits'
 import {
@@ -160,12 +175,91 @@ async function writeGroup(
   }
 }
 
+/** One configuration group with its scope named, which is what the batch call is addressed by. */
+interface ConfigurationGroup extends MetadataWriteGroup {
+  configuration: string
+}
+
+function isConfigurationGroup(group: MetadataWriteGroup): group is ConfigurationGroup {
+  return group.configuration !== undefined
+}
+
+/**
+ * Whether these configuration groups can go in one call.
+ *
+ * Two groups naming the same configuration cannot: the request is a map keyed by configuration, so
+ * the second would silently replace the first and its properties would never be sent. No plan
+ * emits that shape - `buildMetadataWritePlan` produces one group per configuration - and refusing
+ * to batch rather than trusting it is what keeps a future one from losing a write in silence.
+ *
+ * A single configuration is left alone because the batch would be one call either way, and
+ * `setProperties` states its verdict for that scope outright instead of leaving it to be recovered
+ * from the batch's report. The inline configuration editors take that path on every keystroke.
+ */
+function canBatch(groups: readonly ConfigurationGroup[]): boolean {
+  if (groups.length < 2) return false
+  return new Set(groups.map((group) => group.configuration)).size === groups.length
+}
+
+async function writeConfigurationBatch(
+  path: string,
+  groups: readonly ConfigurationGroup[],
+): Promise<{ ok: boolean; error?: string; refused: ReadonlyMap<string, string> }> {
+  const api = window.electronAPI?.solidworks
+  if (!api?.setPropertiesBatch) {
+    return { ok: false, error: 'The SolidWorks service is not available', refused: new Map() }
+  }
+
+  const configProperties: Record<string, Record<string, string>> = {}
+  const sent: BatchWriteScope[] = []
+  for (const group of groups) {
+    configProperties[group.configuration] = group.properties
+    sent.push({ configuration: group.configuration, propertyNames: Object.keys(group.properties) })
+  }
+
+  try {
+    const result = await api.setPropertiesBatch(path, configProperties)
+    if (!result?.success) {
+      // The service fails a whole batch only when nothing in it reached the file: the document
+      // would not open, the save was refused, or every property was declined. Every scope is
+      // therefore refused, which is what the per-scope calls reported one at a time.
+      return {
+        ok: false,
+        error: result?.error ?? 'The write returned no result',
+        refused: new Map(),
+      }
+    }
+
+    const report = readBatchWriteReport(sent, result.data)
+    if (report.unaccountedFor > 0) {
+      log.warn('[MetadataWrite]', 'The batch write did not account for every configuration', {
+        path,
+        configurations: groups.length,
+        unaccountedFor: report.unaccountedFor,
+      })
+    }
+    return { ok: true, refused: report.refused }
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+      refused: new Map(),
+    }
+  }
+}
+
 /**
  * Write every group, then read the document back once and decide each address on the evidence.
  *
- * A group whose write call failed is recorded `failed` without consulting the read-back: the call
- * said nothing was written, and a stale value that happens to match would otherwise verify a write
- * that never happened.
+ * A group whose write the service reported as refused is recorded `failed` without consulting the
+ * read-back: nothing was written, and a stale value that happens to match would otherwise verify a
+ * write that never happened.
+ *
+ * Configuration groups go in one `setPropertiesBatch`; the file-scope group keeps its own
+ * `setProperties`, because the batch addresses configurations by name and has no file scope to
+ * send to. Groups are still visited in the order the plan gave them, and the batch is issued where
+ * its first group sat, so a plan that writes the document bag before the configurations - the sync
+ * command's, whose configuration writes mirror `Number` back to file scope - still does.
  */
 export async function writeMetadataWithVerification(
   request: MetadataWriteRequest,
@@ -179,25 +273,51 @@ export async function writeMetadataWithVerification(
   const accepted: MetadataWriteIntent[] = []
   const rejected: VerifiedAddress[] = []
 
+  const sendable: MetadataWriteGroup[] = []
   for (const group of request.groups) {
-    if (Object.keys(group.properties).length === 0) {
-      // A group with intents and nothing to send cannot establish them, and skipping it silently
-      // would leave those addresses in `allIntents` - which is what decides this is not a no-op -
-      // and out of `addresses`, so nothing would record a verdict for them at all. There is no
-      // plan that emits this shape today; saying so out loud is what keeps it that way.
-      if (group.intents.length > 0) {
-        log.warn('[MetadataWrite]', 'A write group named addresses but carried no properties', {
-          path: request.path,
-          configuration: group.configuration ?? '(file scope)',
-          intents: group.intents.length,
-        })
-        rejected.push(
-          ...unattemptedWrite(group.intents, 'the write plan produced no properties to send'),
-        )
+    if (Object.keys(group.properties).length > 0) {
+      sendable.push(group)
+      continue
+    }
+    // A group with intents and nothing to send cannot establish them, and skipping it silently
+    // would leave those addresses in `allIntents` - which is what decides this is not a no-op -
+    // and out of `addresses`, so nothing would record a verdict for them at all. There is no
+    // plan that emits this shape today; saying so out loud is what keeps it that way.
+    if (group.intents.length > 0) {
+      log.warn('[MetadataWrite]', 'A write group named addresses but carried no properties', {
+        path: request.path,
+        configuration: group.configuration ?? '(file scope)',
+        intents: group.intents.length,
+      })
+      rejected.push(
+        ...unattemptedWrite(group.intents, 'the write plan produced no properties to send'),
+      )
+    }
+  }
+
+  // The live SolidWorks API is per scope by nature - `setDocumentProperties` has no batch - so a
+  // document open in SolidWorks keeps the loop.
+  const useLiveApi = request.useLiveApi === true
+  const configurationGroups = useLiveApi ? [] : sendable.filter(isConfigurationGroup)
+  const batching = canBatch(configurationGroups)
+  let batchIssued = false
+
+  for (const group of sendable) {
+    if (batching && isConfigurationGroup(group)) {
+      if (batchIssued) continue
+      batchIssued = true
+
+      const batch = await writeConfigurationBatch(request.path, configurationGroups)
+      const wholeBatchRefused = batch.ok ? undefined : (batch.error ?? 'the write failed')
+      for (const configurationGroup of configurationGroups) {
+        const refusal = wholeBatchRefused ?? batch.refused.get(configurationGroup.configuration)
+        if (refusal === undefined) accepted.push(...configurationGroup.intents)
+        else rejected.push(...failedWrite(configurationGroup.intents, refusal))
       }
       continue
     }
-    const result = await writeGroup(request.path, group, request.useLiveApi === true)
+
+    const result = await writeGroup(request.path, group, useLiveApi)
     if (result.ok) accepted.push(...group.intents)
     else rejected.push(...failedWrite(group.intents, result.error ?? 'the write failed'))
   }
