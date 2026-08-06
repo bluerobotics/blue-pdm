@@ -959,6 +959,8 @@ export const en: TranslationDict = {
     scanned: '{{compared}} files compared of {{fetched}} rows ({{duration}}s)',
     cancelled: 'The scan was cancelled; the numbers below are partial.',
     notRead: '{{missing}} rows had no local file, {{unreadable}} could not be read.',
+    skippedOpenInSolidWorks:
+      '{{count}} files were left unread because SOLIDWORKS has them open - reading one through Document Manager can make SOLIDWORKS close it.',
     wipeHeading: '1. Configuration maps the database no longer describes',
     wipeSummary:
       '{{files}} of {{multi}} multi-configuration files record fewer configurations than the file has ({{pct}}). {{entries}} configuration entries are missing in total.',
@@ -1063,6 +1065,139 @@ export const en: TranslationDict = {
       assemblies: 'Assemblies',
       parts: 'Parts',
       drawings: 'Drawings',
+    },
+  },
+
+  // Admin-only Vault Audit page - presents the read-only divergence scan
+  vaultAudit: {
+    title: 'Vault Audit',
+    description:
+      'Compare what BluePLM records against what your SOLIDWORKS files actually contain. The audit reads and reports; it changes nothing.',
+    adminOnly: 'Only administrators can run the vault audit.',
+    noVault: 'Connect a vault before running the audit.',
+    serviceTooOld:
+      'The audit reads files with a command added in SOLIDWORKS service v{{version}}. The service on this computer is older, so a scan would fail on its first file after several minutes of walking the vault. Rebuild the service and start it again.',
+    readOnlyNote:
+      'Files are opened read-only through the Document Manager library. Documents SOLIDWORKS currently has open are skipped rather than read, so a session in progress is left alone.',
+
+    scope: {
+      legend: 'What to scan',
+      wholeVault: 'Whole vault',
+      wholeVaultHint:
+        'Every part and assembly. Around eight thousand documents and roughly three minutes.',
+      folder: 'One folder',
+      folderHint: 'That folder and everything beneath it.',
+      folderPlaceholder: 'e.g. 0 - SHARED\\00 - REGRESSION TESTS',
+      configurationRecorded: 'Multi-configuration files',
+      configurationRecordedHint:
+        'Only files BluePLM already records per-configuration metadata for, which is where a configuration record can have lost something. Six of seven models have a single configuration, so this costs a fraction of a full scan. It cannot see a multi-configuration file BluePLM never recorded — nothing was lost from a record that never existed.',
+    },
+
+    scan: 'Run audit',
+    rescan: 'Run again',
+    cancel: 'Cancel',
+    cancelling: 'Cancelling after the file in flight…',
+    clear: 'Clear results',
+    preparing: 'Asking SOLIDWORKS which documents are open…',
+    progressFiles: '{{completed}} of {{total}} files read',
+
+    result: {
+      heading: 'Result',
+      scanned: '{{files}} files compared in {{seconds}}s',
+      cancelledNote: 'Cancelled part-way — these numbers cover only the files that were read.',
+      generatedAt: 'Scanned {{time}}',
+      noFindings: 'Every value compared agrees. Nothing to act on.',
+      filesWithFindings: '{{files}} of {{compared}} files have at least one finding',
+      multiConfiguration: '{{count}} of them have more than one configuration',
+      noEvidence:
+        '{{count}} values are absent from both sides on rows that never described the file. That is an absence, not a loss, and it is excluded from the counts above.',
+      artifact: 'Full report written to {{path}}',
+      notStored:
+        'Results are recomputed each time rather than stored. A saved audit stops being true the moment anyone checks a file in, and it does so silently.',
+    },
+
+    unread: {
+      heading: 'Not read',
+      missingOnDisk: '{{count}} have no local copy',
+      openInSolidWorks: '{{count}} are open in SOLIDWORKS',
+      readFailed: '{{count}} could not be opened',
+    },
+
+    integrity: {
+      verified:
+        '{{count}} regression fixtures hashed before and after the read; all byte-identical.',
+      changed: '{{count}} files changed while being read. This should never happen.',
+    },
+
+    coverage: {
+      heading: 'Configuration records',
+      description:
+        'Whether the per-configuration metadata BluePLM holds still lines up with the configurations in each file. Compared by name — a record with more entries than the file has configurations is not damaged, it is carrying keys for configurations that have since gone.',
+      allAligned: 'Every record describes exactly the configurations its file has.',
+      undescribed: '{{files}} files have configurations their record does not describe',
+      undescribedEntries: '{{count}} configurations undescribed in total',
+      emptied: '{{count}} of those records exist and describe nothing at all',
+      stale: '{{files}} files carry {{count}} entries for configurations that no longer exist',
+      staleNote:
+        'Stale entries are clutter left by a rename or a deletion, not a loss. They are listed separately because comparing entry counts instead of names would report those files as damaged.',
+      noRecord:
+        '{{count}} files with configurations carry no record at all and are excluded from both counts above.',
+      columnFile: 'File',
+      columnConfigurations: 'Configurations',
+      columnUndescribed: 'Undescribed',
+      columnStale: 'Stale entries',
+      recordEmptied: 'record emptied',
+      showAll: 'Show all {{total}} files',
+      showFewer: 'Show fewer',
+    },
+
+    category: {
+      heading: 'Findings',
+      lost: 'Lost from both sides',
+      lostDescription:
+        'Neither BluePLM nor the file holds these any more. No tool can bring them back.',
+      conflicting: 'The two disagree',
+      conflictingDescription:
+        'Both hold a value and they differ. Someone has to decide which is right.',
+      recoverable: 'The file still has it',
+      recoverableDescription:
+        'Missing from BluePLM, still in the file under the key BluePLM itself writes. Restorable.',
+      unattributed: 'Not BluePLM’s to hold',
+      unattributedDescription:
+        'The file holds a value BluePLM never owned. Adopting one would invent a record rather than restore it.',
+      values: '{{count}} values',
+      files: '{{count}} files',
+    },
+
+    findings: {
+      heading: 'Values in this category',
+      none: 'Nothing in this category.',
+      selectPrompt: 'Choose a category above to see the individual values.',
+      filterPlaceholder: 'Filter by path, configuration or value',
+      showing: 'Showing {{shown}} of {{total}}',
+      noMatches: 'No values match that filter.',
+      columnFile: 'File',
+      columnConfiguration: 'Configuration',
+      columnField: 'Field',
+      columnDatabase: 'BluePLM',
+      columnFile2: 'File',
+      fileScope: 'file',
+      empty: '—',
+      reveal: 'Show in file browser',
+      revealUnavailable: 'This file has no local copy to show.',
+      repair: 'Repair',
+      repairUnavailable:
+        'Repair is not part of the audit. This button becomes active when the repair tool is installed.',
+    },
+
+    fields: {
+      heading: 'Per field',
+      columnField: 'Field',
+      columnCompared: 'Compared',
+      columnAgrees: 'Agree',
+      columnFileEmpty: 'File empty',
+      columnDatabaseEmpty: 'BluePLM empty',
+      columnDiffer: 'Differ',
     },
   },
 

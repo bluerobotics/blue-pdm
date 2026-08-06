@@ -97,6 +97,9 @@ const RecoveryCodeSettings = lazy(() =>
 const DeleteAccountSettings = lazy(() =>
   import('../account/DeleteAccountSettings').then((m) => ({ default: m.DeleteAccountSettings })),
 )
+const VaultAuditSettings = lazy(() =>
+  import('../system/vault-audit').then((m) => ({ default: m.VaultAuditSettings })),
+)
 
 interface SettingsContentProps {
   activeTab: SettingsTab
@@ -160,6 +163,9 @@ export function SettingsContent({ activeTab }: SettingsContentProps) {
         return <SupabaseSettings />
       case 'recovery-codes':
         return <RecoveryCodeSettings />
+      // The panel re-checks the role itself, so reaching this by a persisted tab id still gates.
+      case 'vault-audit':
+        return <VaultAuditSettings />
       case 'performance':
         return <PerformanceSettings />
       case 'logs':

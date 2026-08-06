@@ -137,6 +137,10 @@ export function formatDivergenceReport(report: DivergenceReport): string[] {
     )
   }
 
+  if (counts.filesOpenInSolidWorks > 0) {
+    lines.push(t('divergence.skippedOpenInSolidWorks', { count: counts.filesOpenInSolidWorks }))
+  }
+
   lines.push('')
   lines.push(t('divergence.wipeHeading', '1. Configuration maps the database no longer describes'))
   lines.push(

@@ -45,6 +45,7 @@ function reportOf(): DivergenceReport {
       pathPrefix: null,
       limit: null,
       includeDrawings: false,
+      configurationRecordedOnly: false,
     },
     counts: {
       rowsFetched: 1,
@@ -52,6 +53,7 @@ function reportOf(): DivergenceReport {
       filesCompared: 1,
       filesMissingOnDisk: 0,
       filesUnreadable: 0,
+      filesOpenInSolidWorks: 0,
     },
     summary: summarizeDivergence([scanned]),
     files: [scanned],

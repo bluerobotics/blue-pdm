@@ -1,6 +1,7 @@
 import { usePDMStore } from '@/stores/pdmStore'
 import type { IntegrationStatusValue, IntegrationId, BackupStatusValue } from '@/stores/types'
 import type { SettingsTab } from '@/types/settings'
+import { t } from '@/lib/i18n'
 import { logSettings } from '@/lib/userActionLogger'
 
 interface SettingsNavigationProps {
@@ -8,12 +9,21 @@ interface SettingsNavigationProps {
   onTabChange: (tab: SettingsTab) => void
 }
 
-interface SettingsSection {
-  category: string
-  items: { id: SettingsTab; label: string }[]
+interface SettingsNavigationItem {
+  id: SettingsTab
+  label: string
+  /** Hidden from the navigation for everyone but an admin. The panel gates itself as well. */
+  adminOnly?: boolean
 }
 
-const settingsSections: SettingsSection[] = [
+interface SettingsSection {
+  category: string
+  items: SettingsNavigationItem[]
+}
+
+// A function rather than a constant because the labels are translated at render time, and the
+// language can change without the module being re-evaluated.
+const settingsSections = (): SettingsSection[] => [
   {
     category: 'Account',
     items: [
@@ -30,6 +40,7 @@ const settingsSections: SettingsSection[] = [
       { id: 'supabase', label: 'Supabase' },
       { id: 'backup', label: 'Backups' },
       { id: 'vaults', label: 'Vaults' },
+      { id: 'vault-audit', label: t('vaultAudit.title'), adminOnly: true },
       { id: 'team-members', label: 'Members & Teams' },
       { id: 'module-access', label: 'Module Access' },
       { id: 'company-profile', label: 'Company Profile' },
@@ -133,6 +144,12 @@ export function SettingsNavigation({ activeTab, onTabChange }: SettingsNavigatio
   // The useIntegrationStatus hook in App.tsx handles the status check orchestration
   const integrations = usePDMStore((s) => s.integrations)
   const backupStatus = usePDMStore((s) => s.backupStatus)
+  const isAdmin = usePDMStore((s) => s.getEffectiveRole() === 'admin')
+
+  const sections = settingsSections().map((section) => ({
+    ...section,
+    items: section.items.filter((item) => !item.adminOnly || isAdmin),
+  }))
 
   const isIntegration = (id: SettingsTab): boolean => {
     return (integrationIds as readonly string[]).includes(id)
@@ -154,7 +171,7 @@ export function SettingsNavigation({ activeTab, onTabChange }: SettingsNavigatio
         aria-label="Settings navigation"
       >
         <div className="flex flex-col py-1">
-          {settingsSections.map((section, sectionIndex) => (
+          {sections.map((section, sectionIndex) => (
             <div key={section.category}>
               {/* Section */}
               <div className="mt-4 mb-1 mx-3">
@@ -192,7 +209,7 @@ export function SettingsNavigation({ activeTab, onTabChange }: SettingsNavigatio
               </div>
 
               {/* Divider between sections (except after last) */}
-              {sectionIndex < settingsSections.length - 1 && (
+              {sectionIndex < sections.length - 1 && (
                 <div className="h-px w-full bg-plm-border/50 mt-3" />
               )}
             </div>

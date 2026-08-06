@@ -24,6 +24,7 @@ export type SettingsTab =
   | 'api'
   | 'supabase'
   | 'recovery-codes'
+  | 'vault-audit' // Admin only - hidden from the navigation for everyone else
   | 'performance'
   | 'logs'
   | 'dev-tools'

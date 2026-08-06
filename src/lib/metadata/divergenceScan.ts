@@ -11,10 +11,15 @@
  *   `.update`, `.upsert`, `.delete` or `.rpc` anywhere in this file, and nothing from
  *   `lib/supabase/files/` - the modules that hold check-in, check-out and metadata promotion - is
  *   imported. A reviewer can confirm that from the import list alone.
- * - **SolidWorks files**: read through `solidworks.getProperties`, which resolves to
+ * - **SolidWorks files**: read through `solidworks.getPropertiesDocumentManager`, which resolves to
  *   `DocumentManagerAPI.GetCustomProperties` and opens the document with `readOnly: true`.
  *   `setProperties`, `setPropertiesBatch`, `setDocumentProperties` and `saveDocument` are never
  *   called, and `syncMetadata` - the module that owns the write path - is not imported.
+ *
+ *   Deliberately not `getProperties`: that dispatch asks `IsFileOpenInSolidWorks` and reads
+ *   through the running session when the answer is yes, which would put a vault-wide walk through
+ *   the session the user is working in. The caller is expected to supply `openInSolidWorks` so
+ *   that documents SolidWorks is holding are skipped rather than opened by either route.
  * - **Disk**: the single write is the report artifact, and it goes to the application's log
  *   directory. Nothing under the vault is opened for writing.
  *
@@ -25,11 +30,14 @@
 
 import { getSupabaseClient } from '@/lib/supabase/client'
 import { log } from '@/lib/logger'
+import { UNKNOWN_ACTION } from '@/lib/solidworks/types'
 
 import {
   compareOwnedMetadata,
   readDatabaseMetadata,
   summarizeDivergence,
+  CONFIG_DESCRIPTIONS_KEY,
+  CONFIG_TABS_KEY,
   type ComparedFileType,
   type DivergenceSummary,
   type FileDivergence,
@@ -82,6 +90,29 @@ export interface DivergenceScanOptions {
   vaultPath: string
   /** Only scan files whose relative path starts with this, case-insensitively. */
   pathPrefix?: string
+  /**
+   * Only scan rows whose `custom_properties` carries a reserved configuration map.
+   *
+   * Six of every seven models in a real vault have a single configuration, and the wipe this scan
+   * exists to measure can only have taken something from a row that once described its
+   * configurations. Restricting the walk to rows carrying `_config_tabs` or `_config_descriptions`
+   * therefore keeps the findings and drops most of the cost - including rows whose map is present
+   * and empty, which is exactly what a total wipe leaves behind.
+   *
+   * Its blind spot, which the caller must state rather than hide: a multi-configuration file whose
+   * row never carried a map is skipped. Nothing was lost from a map that never existed, so those
+   * files can only produce `no-evidence` and `unattributed` values.
+   */
+  configurationRecordedOnly?: boolean
+  /**
+   * Absolute paths, lower-cased, that SolidWorks currently has open.
+   *
+   * Pointing Document Manager at a document SolidWorks is holding can make SolidWorks close it, so
+   * those files are recorded as unread rather than opened. One query answers this for the whole
+   * vault; asking per file would mean thousands of COM round-trips, which is the cost this scan
+   * routes around in the first place.
+   */
+  openInSolidWorks?: ReadonlySet<string>
   /** Stop after this many files. Undefined scans the whole vault. */
   limit?: number
   /** Include drawings. Off by default - a drawing's revision is file-owned, so it needs its own rules. */
@@ -95,15 +126,38 @@ export interface DivergenceScanOptions {
   timingRepeats?: number
   /** Called with human-readable progress. */
   onProgress?: (message: string) => void
+  /**
+   * Called after every file with the running count, for a progress bar.
+   *
+   * Separate from `onProgress`, which reports in prose every twenty-fifth file. A bar needs a
+   * number after each one, and a caller that renders on every call would render thousands of
+   * times, so throttling is the caller's job.
+   */
+  onFileProgress?: (completed: number, total: number) => void
   /** Checked between files so a long scan can be stopped. */
   shouldCancel?: () => boolean
+}
+
+/**
+ * The running service does not have `getPropertiesDocumentManager` at all.
+ *
+ * Distinct from a file that could not be read, and handled differently: every remaining file would
+ * fail the same way, so the scan stops instead of producing a report that reads like a vault-wide
+ * finding. The caller checks the service version before starting for exactly this reason; this is
+ * what happens if that check is wrong.
+ */
+export class SwServiceCommandMissingError extends Error {
+  constructor(action: string) {
+    super(`The SolidWorks service does not have the "${action}" command. Rebuild it.`)
+    this.name = 'SwServiceCommandMissingError'
+  }
 }
 
 /** A file the scan could not compare, and why. */
 export interface UnreadableFile {
   fileId: string
   relativePath: string
-  reason: 'missing-on-disk' | 'read-failed'
+  reason: 'missing-on-disk' | 'read-failed' | 'open-in-solidworks'
   detail?: string
 }
 
@@ -136,6 +190,7 @@ export interface DivergenceReport {
     pathPrefix: string | null
     limit: number | null
     includeDrawings: boolean
+    configurationRecordedOnly: boolean
   }
   counts: {
     rowsFetched: number
@@ -143,6 +198,7 @@ export interface DivergenceReport {
     filesCompared: number
     filesMissingOnDisk: number
     filesUnreadable: number
+    filesOpenInSolidWorks: number
   }
   summary: DivergenceSummary
   files: FileDivergence[]
@@ -284,9 +340,14 @@ interface DocumentProperties {
  */
 async function readDocument(absolutePath: string): Promise<DocumentProperties> {
   const api = window.electronAPI?.solidworks
-  if (!api?.getProperties) throw new Error('The SolidWorks service is not available')
+  if (!api?.getPropertiesDocumentManager) {
+    throw new Error('The SolidWorks service is not available')
+  }
 
-  const result = await api.getProperties(absolutePath)
+  const result = await api.getPropertiesDocumentManager(absolutePath)
+  if (result?.errorCode === UNKNOWN_ACTION) {
+    throw new SwServiceCommandMissingError('getPropertiesDocumentManager')
+  }
   if (!result?.success || !result.data) {
     throw new Error(result?.error ?? 'No response from the SolidWorks service')
   }
@@ -431,6 +492,19 @@ async function timeReadBack(
   return timings
 }
 
+/**
+ * Whether the row's `custom_properties` carries either reserved configuration map.
+ *
+ * The key's presence, not its size, for the same reason `classifyRecoverability` turns on it: a
+ * map that is present and empty is a row that has lost every configuration it described, and
+ * dropping it from the scan would hide the most complete instance of the thing being measured.
+ */
+function recordsConfigurations(row: ScanRow): boolean {
+  const properties = row.custom_properties
+  if (!properties) return false
+  return CONFIG_TABS_KEY in properties || CONFIG_DESCRIPTIONS_KEY in properties
+}
+
 function inScope(row: ScanRow, options: DivergenceScanOptions): boolean {
   const extension = extensionOf(row)
   const isModel = (MODEL_EXTENSIONS as readonly string[]).includes(extension)
@@ -442,6 +516,8 @@ function inScope(row: ScanRow, options: DivergenceScanOptions): boolean {
     const prefix = normalizeSeparators(options.pathPrefix).toLowerCase()
     if (!normalizeSeparators(row.file_path).toLowerCase().startsWith(prefix)) return false
   }
+
+  if (options.configurationRecordedOnly && !recordsConfigurations(row)) return false
 
   return true
 }
@@ -469,7 +545,18 @@ export async function runDivergenceScan(
   const breaches: IntegrityBreach[] = []
   let filesHashed = 0
   let missingOnDisk = 0
+  let openInSolidWorks = 0
   let cancelled = false
+
+  // A file that was skipped still moved the walk along, so every path out of the loop body reports
+  // it. A bar that stalls on a run of missing files reads as a hang, which is the thing progress
+  // exists to rule out.
+  const advance = (index: number): void => {
+    options.onFileProgress?.(index + 1, rows.length)
+    if ((index + 1) % PROGRESS_INTERVAL === 0) {
+      report(`${index + 1}/${rows.length} files read...`)
+    }
+  }
 
   for (const [index, row] of rows.entries()) {
     if (options.shouldCancel?.()) {
@@ -479,10 +566,22 @@ export async function runDivergenceScan(
 
     const absolutePath = resolveAbsolutePath(options.vaultPath, row.file_path)
 
+    if (options.openInSolidWorks?.has(absolutePath.toLowerCase())) {
+      openInSolidWorks += 1
+      unreadable.push({
+        fileId: row.id,
+        relativePath: row.file_path,
+        reason: 'open-in-solidworks',
+      })
+      advance(index)
+      continue
+    }
+
     const exists = await window.electronAPI?.fileExists?.(absolutePath)
     if (!exists) {
       missingOnDisk += 1
       unreadable.push({ fileId: row.id, relativePath: row.file_path, reason: 'missing-on-disk' })
+      advance(index)
       continue
     }
 
@@ -509,6 +608,10 @@ export async function runDivergenceScan(
         ),
       )
     } catch (error) {
+      // Not a property of this file, and true of every remaining one. Recording it per file would
+      // turn one fact about the service into thousands of findings about the vault.
+      if (error instanceof SwServiceCommandMissingError) throw error
+
       unreadable.push({
         fileId: row.id,
         relativePath: row.file_path,
@@ -528,9 +631,7 @@ export async function runDivergenceScan(
       }
     }
 
-    if ((index + 1) % PROGRESS_INTERVAL === 0) {
-      report(`${index + 1}/${rows.length} files read...`)
-    }
+    advance(index)
   }
 
   const readBackTimings = cancelled
@@ -547,6 +648,7 @@ export async function runDivergenceScan(
       pathPrefix: options.pathPrefix ?? null,
       limit: options.limit ?? null,
       includeDrawings: options.includeDrawings === true,
+      configurationRecordedOnly: options.configurationRecordedOnly === true,
     },
     counts: {
       rowsFetched: allRows.length,
@@ -554,6 +656,7 @@ export async function runDivergenceScan(
       filesCompared: files.length,
       filesMissingOnDisk: missingOnDisk,
       filesUnreadable: unreadable.filter((entry) => entry.reason === 'read-failed').length,
+      filesOpenInSolidWorks: openInSolidWorks,
     },
     summary: summarizeDivergence(files),
     files,
