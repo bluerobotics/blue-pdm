@@ -1,16 +1,18 @@
 # BluePLM Optional Modules
 
-This folder contains optional SQL schema modules that extend BluePLM's functionality.
+This folder contains the SQL schema modules that extend BluePLM's functionality beyond `core.sql`. Most are optional; `10-source-files.sql` and `15-inspection.sql` are not, and the table below says which is which.
 
 ## Module Structure
 
-| File | Module | Description | Dependencies |
-|------|--------|-------------|--------------|
-| `10-source-files.sql` | Source Files | Vaults, files, workflows, backups, watchers | core.sql |
-| `20-change-control.sql` | Change Control | ECOs, reviews, deviations, process templates | core.sql, 10-source-files.sql |
-| `30-supply-chain.sql` | Supply Chain | Suppliers, RFQs, supplier portal | core.sql, 10-source-files.sql |
-| `40-integrations.sql` | Integrations | Odoo, webhooks, credential store | core.sql, 10-source-files.sql |
-| `60-customers.sql` | Customers | Odoo customer sync, AI enrichment | core.sql |
+| File | Module | Description | Dependencies | Optional? |
+|------|--------|-------------|--------------|-----------|
+| `10-source-files.sql` | Source Files | Vaults, files, workflows, backups, watchers | core.sql | No |
+| `15-inspection.sql` | Inspection | Inspection characteristics, per-version snapshots | core.sql, 10-source-files.sql | **No** — `checkin_file()` in module 10 requires it |
+| `20-change-control.sql` | Change Control | ECOs, reviews, deviations, process templates | core.sql, 10-source-files.sql | Yes |
+| `30-supply-chain.sql` | Supply Chain | Suppliers, RFQs, supplier portal | core.sql, 10-source-files.sql | Yes |
+| `40-integrations.sql` | Integrations | Odoo, webhooks, credential store | core.sql | Yes |
+| `50-extensions.sql` | Extensions | Extension system, extension secret store | core.sql | Yes |
+| `60-customers.sql` | Customers | Odoo customer sync, AI enrichment | core.sql | Yes |
 
 ## Installation Order
 
@@ -27,11 +29,16 @@ Always install in this order:
    \i modules/10-source-files.sql
    ```
 
-3. **Optional Modules** (Install as needed)
+3. **Inspection Module** (Required alongside module 10)
    ```sql
-   -- Inspection (drawing inspection tables, version snapshots)
+   -- checkin_file() in module 10 reads inspection_characteristics and writes
+   -- inspection_characteristic_versions on every call. Both tables are created here,
+   -- so check-in fails at run time without this file even though the install succeeds.
    \i modules/15-inspection.sql
-   
+   ```
+
+4. **Optional Modules** (Install as needed, in any relative order)
+   ```sql
    -- Change Control (ECOs, Reviews, Deviations)
    \i modules/20-change-control.sql
    
@@ -40,6 +47,9 @@ Always install in this order:
    
    -- Integrations (Odoo, Webhooks)
    \i modules/40-integrations.sql
+
+   -- Extensions (extension system, extension secret store)
+   \i modules/50-extensions.sql
 
    -- Customers (Odoo customer sync, AI enrichment)
    \i modules/60-customers.sql
@@ -58,6 +68,20 @@ Contains the file management system including:
 - **Advanced Workflows** - State permissions, conditions, actions, auto-transitions
 - **Backups** - Restic-based backup configuration and history
 - **File Features** - Watchers, share links, comments, custom metadata columns
+
+### 15-inspection.sql (Inspection)
+
+Contains the bluePLM-native inspection table:
+- **Inspection Characteristics** - the live/working rows for the current head of a drawing
+- **Inspection Characteristic Versions** - immutable snapshot rows keyed by file version
+
+This module is numbered as though it were optional but it is not. `checkin_file()` lives
+in `10-source-files.sql` and reads `inspection_characteristics` unconditionally to compute
+the inspection fingerprint, then snapshots those rows into
+`inspection_characteristic_versions` whenever it creates a version. Neither reference is
+behind a file-type test, so on a database without this module every check-in fails with
+`relation "inspection_characteristics" does not exist`. Nothing catches that at install
+time, because a `plpgsql` body is only syntax-checked when the function is created.
 
 ### 20-change-control.sql (Change Control)
 
@@ -91,6 +115,16 @@ columns were named as though they held ciphertext but never did, and the SELECT
 policies on both tables grant access to every org member — RLS filters rows
 rather than columns, so relocating the secret was the only way to hide it. The
 API needs `EXTENSION_ENCRYPTION_KEY` set before it can store new credentials.
+
+### 50-extensions.sql (Extensions)
+
+Contains the extension system:
+- **Installed Extensions / Config** - per-org installs, manifests, handler code, pinned versions
+- **Extension Storage** - extension-scoped key-value storage
+- **Extension Secrets** - encrypted secrets with version history and an access audit log
+- **Extension HTTP Log** - outbound request logging, scoped by the extension's allowed domains
+
+Depends on `core.sql` only, and nothing else depends on it.
 
 ### 60-customers.sql (Customers)
 

@@ -33,9 +33,28 @@ const { data } = await supabase.from('files').select('*');
 - Private files: signed URLs only
 - Public assets: direct URLs OK
 
-## Migration Naming
+## No Migration Files
 
-`YYYYMMDD-description.sql` → e.g., `20240115-add-workflow-status.sql`
+This project has no `migrations/` directory and no dated migration files. Do not create
+either, and do not follow a `YYYYMMDD-description.sql` convention — nothing in this repo
+reads one.
+
+`supabase/core.sql` and `supabase/modules/*.sql` are the source of truth and are edited in
+place. Every file is idempotent (`CREATE TABLE IF NOT EXISTS`, `DROP POLICY IF EXISTS`
+before `CREATE POLICY`, enum creation and FK additions wrapped in exception-handling `DO`
+blocks), so a fresh install and an upgrade are the same operation: run the whole edited
+file in the Supabase SQL editor. There is no delta to write, which is why the workflow
+below says to run the full schema file.
+
+`schema_version` and `EXPECTED_SCHEMA_VERSION` do the job a migration ledger would
+otherwise do — they are how the app decides whether a database is current, so bumping both
+is not optional (see Change Protocol above).
+
+Building a database from nothing means running `core.sql`, then `10-source-files.sql`,
+`15-inspection.sql`, `20-change-control.sql`, `30-supply-chain.sql`,
+`40-integrations.sql`, `50-extensions.sql`, `60-customers.sql`. Modules `10` and `15` are
+both required despite `15` being numbered like an optional one — `checkin_file()` in
+module 10 queries tables that module 15 creates. See `supabase/README.md`.
 
 ## Schema Change Workflow
 
