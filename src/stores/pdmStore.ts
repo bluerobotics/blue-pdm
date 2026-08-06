@@ -63,6 +63,7 @@ import {
   createAnnotationsSlice,
   createItemBrowserSlice,
   createCustomersSlice,
+  createVaultAuditSlice,
 } from './slices'
 import { defaultCardViewFields } from './slices/settingsSlice'
 
@@ -91,6 +92,7 @@ export const usePDMStore = create<PDMStoreState>()(
       ...createAnnotationsSlice(...a),
       ...createItemBrowserSlice(...a),
       ...createCustomersSlice(...a),
+      ...createVaultAuditSlice(...a),
     }),
     {
       name: 'blue-plm-storage',
@@ -244,6 +246,13 @@ export const usePDMStore = create<PDMStoreState>()(
         // Test Runner
         // ═══════════════════════════════════════════════════════════════
         testFolderName: state.testFolderName,
+
+        // ═══════════════════════════════════════════════════════════════
+        // Vault Audit
+        // The chosen scope only. The run and its report are session-scoped
+        // on purpose - see the note at the top of slices/vaultAuditSlice.ts.
+        // ═══════════════════════════════════════════════════════════════
+        vaultAuditScope: state.vaultAuditScope,
       }),
       /**
        * Called when hydration starts and finishes.

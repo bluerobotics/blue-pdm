@@ -27,4 +27,6 @@ export type {
 } from './operationLogSlice'
 export { createAnnotationsSlice } from './annotationsSlice'
 export { createItemBrowserSlice } from './itemBrowserSlice'
+export { createVaultAuditSlice } from './vaultAuditSlice'
+export type { VaultAuditSlice, VaultAuditRun } from './vaultAuditSlice'
 export { createCustomersSlice, DEFAULT_CUSTOMER_FILTERS } from './customersSlice'

@@ -19,6 +19,7 @@ import type {
   PendingMember,
 } from '../features/settings/organization/team-members/types'
 import type { OperationLogSlice } from './slices/operationLogSlice'
+import type { VaultAuditSlice } from './slices/vaultAuditSlice'
 import type { NewAnnotationData } from '../features/source/details/components/PdfAnnotationViewer'
 import type { FileAnnotation, ECO, Supplier } from '../types/database'
 import type { SolidWorksServiceStatus } from '../types/solidworks'
@@ -2246,7 +2247,8 @@ export type PDMStoreState = ToastsSlice &
   OperationLogSlice &
   AnnotationsSlice &
   ItemBrowserSlice &
-  CustomersSlice
+  CustomersSlice &
+  VaultAuditSlice
 
 // ============================================================================
 // Store Versioning
