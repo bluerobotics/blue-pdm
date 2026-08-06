@@ -28,6 +28,30 @@ const WRITE_SETTLE_MS = 750
 const WATCHER_RESTART_DELAY_MS = 1_000
 const UNNAMED_EVENT_SUMMARY_MS = 5_000
 
+/**
+ * How many changed paths to name in the log line.
+ *
+ * A bare count is not diagnosable. An 88-file batch that nobody could explain after the fact cost
+ * an afternoon of reading logs that recorded only "88 files"; a handful of paths and the common
+ * folder identify the culprit immediately, and a handful is cheap enough to log every time.
+ */
+const CHANGE_SAMPLE_SIZE = 5
+
+/** Describe a change batch so an unexplained one is diagnosable from the log alone. */
+function describeChanges(paths: string[]): string {
+  const sample = paths.slice(0, CHANGE_SAMPLE_SIZE)
+  const remainder = paths.length - sample.length
+  const folders = new Set(paths.map((p) => path.dirname(p)))
+
+  const suffix = remainder > 0 ? `, +${remainder} more` : ''
+  const scope =
+    folders.size === 1
+      ? `all in ${Array.from(folders)[0]}`
+      : `across ${folders.size} folders`
+
+  return `${paths.length} files (${scope}): ${sample.join(', ')}${suffix}`
+}
+
 const IGNORED_PATTERNS = [
   /(^|[/\\])\../,
   /node_modules/,
@@ -244,7 +268,7 @@ function createNativeWatcher(dirPath: string, deps: VaultWatcherDeps): VaultWatc
     }
 
     if (changedPaths.length > 0) {
-      log('File changes detected: ' + changedPaths.length + ' files')
+      log('File changes detected: ' + describeChanges(changedPaths))
       window.webContents.send('files-changed', changedPaths)
     }
   }
@@ -355,7 +379,7 @@ function createChokidarWatcher(dirPath: string, deps: VaultWatcherDeps): VaultWa
     if (changedFiles.size > 0 && window && !window.isDestroyed()) {
       const files = Array.from(changedFiles)
       changedFiles.clear()
-      log('File changes detected: ' + files.length + ' files')
+      log('File changes detected: ' + describeChanges(files))
       window.webContents.send('files-changed', files)
     }
     debounceTimer = null

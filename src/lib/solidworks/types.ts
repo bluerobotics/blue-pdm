@@ -51,6 +51,24 @@ export interface PathMatchResult {
 }
 
 /**
+ * Who asked for a reference read.
+ *
+ * The service treats this as permission as much as priority: a `background` read is answered
+ * headlessly or not at all, so a file-watcher batch can never put a SolidWorks window on screen.
+ * `foreground` reads may escalate to opening the document, because somebody is waiting.
+ */
+export type SwReferenceOrigin = 'foreground' | 'background'
+
+/**
+ * The service's answer when no tier could read a file's references.
+ *
+ * Distinct from a successful read of a file that has none. Recording the two as the same thing is
+ * what let a wrong Document Manager search filter look like a vault full of reference-free
+ * drawings, so nothing downstream may write "no references" on seeing this.
+ */
+export const REFERENCES_UNRESOLVED = 'REFERENCES_UNRESOLVED'
+
+/**
  * Reference from SolidWorks service representing a component in an assembly.
  */
 export interface SWServiceReference {
@@ -65,6 +83,18 @@ export interface SWServiceReference {
 
   /** SolidWorks file type (e.g., "Part", "Assembly", "Drawing") */
   fileType: string
+
+  /**
+   * For a drawing reference, the configuration the drawing's views show of this model.
+   * Read from `ISwDMView.ReferencedConfiguration`, so it is available headlessly.
+   */
+  configuration?: string
+
+  /** Every distinct configuration this drawing's views show of the same model. */
+  configurations?: string[]
+
+  /** True when SolidWorks reported the reference but could not resolve it on disk. */
+  broken?: boolean
 }
 
 /**

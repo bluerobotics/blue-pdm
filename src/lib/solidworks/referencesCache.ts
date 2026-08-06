@@ -15,7 +15,8 @@
 
 import { normalizePath } from './pathMatching'
 
-import type { SWServiceReference } from './types'
+import { REFERENCES_UNRESOLVED } from './types'
+import type { SWServiceReference, SwReferenceOrigin } from './types'
 
 /** Backstop lifetime for a resolved entry; watcher batches normally clear well before this. */
 const REFERENCES_CACHE_TTL_MS = 30_000
@@ -28,6 +29,16 @@ export interface SwReferencesResult {
     count: number
   }
   error?: string
+}
+
+/**
+ * Whether the service declined to answer, as opposed to answering "none".
+ *
+ * Every consumer that writes references to the database must check this before recording an
+ * absence: an unresolved read carries no information about what the file references.
+ */
+export function isReferencesUnresolved(result: SwReferencesResult | undefined): boolean {
+  return result?.error === REFERENCES_UNRESOLVED
 }
 
 interface CacheEntry {
@@ -43,39 +54,51 @@ const cache = new Map<string, CacheEntry>()
  * spaced callers.
  *
  * @param filePath - Absolute path to the drawing or assembly
+ * @param origin - Who asked. Background reads are answered headlessly and queue behind
+ *   interactive work; a foreground read may escalate to opening the document. Defaults to
+ *   background so a caller that has not thought about it cannot surprise the user with a window.
  * @returns The service response, or undefined when the SolidWorks bridge is unavailable
  */
-export function getSwReferencesCached(filePath: string): Promise<SwReferencesResult | undefined> {
+export function getSwReferencesCached(
+  filePath: string,
+  origin: SwReferenceOrigin = 'background',
+): Promise<SwReferencesResult | undefined> {
   const key = normalizePath(filePath)
   const cached = cache.get(key)
 
+  // A foreground read is a deliberate retry of something the background tier could not answer,
+  // so it must not be served the cached failure or a background call still in flight.
   if (
     cached &&
+    origin !== 'foreground' &&
     (cached.resolvedAt === null || Date.now() - cached.resolvedAt < REFERENCES_CACHE_TTL_MS)
   ) {
     return cached.promise
   }
 
+  // Held by reference so a call this one superseded cannot mark it resolved when it lands.
+  let entry: CacheEntry | undefined
+
   const promise = (async () => {
-    const result = await window.electronAPI?.solidworks?.getReferences?.(filePath)
+    const result = await window.electronAPI?.solidworks?.getReferences?.(filePath, origin)
 
     // Only a successful read is worth reusing. Failures here are usually transient — the
     // service restarting, SolidWorks busy, a command timing out — so the next caller
     // should get a fresh attempt rather than a memoized error.
-    if (result?.success) {
-      const entry = cache.get(key)
-      if (entry) entry.resolvedAt = Date.now()
-    } else {
-      cache.delete(key)
+    const current = entry
+    if (current !== undefined && cache.get(key) === current) {
+      if (result?.success) current.resolvedAt = Date.now()
+      else cache.delete(key)
     }
 
     return result
   })().catch((error: unknown) => {
-    cache.delete(key)
+    if (entry !== undefined && cache.get(key) === entry) cache.delete(key)
     throw error
   })
 
-  cache.set(key, { promise, resolvedAt: null })
+  entry = { promise, resolvedAt: null }
+  cache.set(key, entry)
 
   return promise
 }

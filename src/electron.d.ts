@@ -719,15 +719,39 @@ declare global {
           }
           error?: string
         }>
-        getReferences: (filePath: string) => Promise<{
+        /**
+         * Read a file's references. `origin` decides the queue priority and whether the service
+         * may open the document to answer; it defaults to `background`, which is headless-only.
+         *
+         * `error === 'REFERENCES_UNRESOLVED'` means no tier could answer. That is not the same as
+         * a successful read of a file with no references, and callers must not record it as one.
+         */
+        getReferences: (
+          filePath: string,
+          origin?: 'foreground' | 'background',
+        ) => Promise<{
           success: boolean
           data?: {
             filePath: string
-            references: Array<{ path: string; fileName: string; exists: boolean; fileType: string }>
+            references: Array<{
+              path: string
+              fileName: string
+              exists: boolean
+              fileType: string
+              configuration?: string
+              configurations?: string[]
+              broken?: boolean
+            }>
             count: number
+            resolved?: boolean
+            source?: string
+            message?: string
           }
           error?: string
+          errorCode?: string
         }>
+        /** Drop queued background reference reads a newer watcher batch has made stale. */
+        cancelBackgroundReferences: (reason?: string) => Promise<{ cancelledCount: number }>
         getPreview: (
           filePath: string,
           configuration?: string,
