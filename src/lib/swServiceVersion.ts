@@ -85,7 +85,7 @@
 
 // The SolidWorks service version this app version expects
 // Uses semver: MAJOR.MINOR.PATCH
-export const EXPECTED_SW_SERVICE_VERSION = '1.17.1'
+export const EXPECTED_SW_SERVICE_VERSION = '1.18.0'
 
 // Minimum service version that will still work (for soft warnings vs hard errors)
 // Breaking changes should bump the major version and update this
@@ -132,6 +132,8 @@ export const SW_SERVICE_VERSION_DESCRIPTIONS: Record<string, string> = {
     'Drawing references are read without opening SolidWorks, including which configuration each view shows, and a file whose references genuinely cannot be read now says so instead of looking like a file with none. Reads triggered by the file watcher never open a SolidWorks window; only a read you asked for can',
   '1.17.1':
     'The built-in diagnostic that writes to a test file can no longer be tricked into writing somewhere else. It used to be fooled by a shortcut standing in for the test folder, by a path spelled in a form Windows does not tidy up, and by a path relative to wherever the service happened to be started from. It now refuses anything it cannot prove sits inside the test folder, and says which rule the path broke',
+  '1.18.0':
+    'A read triggered by the file watcher can no longer open a document or start SolidWorks by any route, rather than being kept away from one by timing. Starting SolidWorks no longer takes ownership of an instance that was already running, so your own window cannot be hidden or closed by BluePLM. The built-in diagnostic keeps the read-only promise it makes: without --allow-write it now deletes, moves and restores nothing, it leaves hand-made .bak files alone, two of them running at once can no longer destroy each other\'s only copy, and it refuses a test folder too broad to confine anything instead of treating a whole drive as fair game',
 }
 
 export interface SwServiceVersionCheckResult {

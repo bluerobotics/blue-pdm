@@ -29,6 +29,12 @@ import {
 import type { ExtractedImage, ThumbnailTier } from './thumbnails/types'
 import { classifySwProcess, planSwClose, type SwProcessVerdict } from './swProcess/classify'
 import {
+  proveSwLaunch,
+  readSwOwnershipMarker,
+  takeCompleteLines,
+  type SwOwnershipMarker,
+} from './swProcess/markers'
+import {
   abandonSwProcess,
   forgetSwProcess,
   getSwOwnershipRecord,
@@ -304,57 +310,108 @@ function ensureSwOwnershipStore(): void {
   })
 }
 
-/** Markers the service writes to stderr to hand us ownership of a SolidWorks process. */
-const SW_LAUNCH_MARKER = '[SW-API] LAUNCHING_SW'
-const SW_LAUNCHED_PID_PATTERN = /\[SW-API\] LAUNCHED_PID=(\d+)/
-const SW_RELEASED_PID_PATTERN = /\[SW-API\] RELEASED_PID=(\d+)/
+/**
+ * Unterminated tail of the service's stderr stream.
+ *
+ * The ownership markers are lines, and a pipe chunk is not one. Buffering here
+ * is what stops `LAUNCHED_PID=23456` split across two chunks being read as a
+ * claim on PID 234.
+ */
+let swStderrBuffer = ''
 
 /**
- * Reads SolidWorks process-ownership markers out of the service's stderr stream.
+ * When the service last announced that it was about to launch SolidWorks, or
+ * null when no launch is outstanding. This is the only thing that makes a
+ * later `LAUNCHED_PID` more than an assertion: a process that was already
+ * running when the launch was announced cannot be the one it started.
  */
-function trackSwProcessOwnership(stderr: string): void {
-  if (stderr.includes(SW_LAUNCH_MARKER)) {
-    log('[SolidWorks] Service is launching a SolidWorks instance')
+let swLaunchAnnouncedAt: number | null = null
+
+/**
+ * Feeds a raw stderr chunk through the line buffer and acts on every complete
+ * ownership marker in it. Returns the complete lines so the caller can log them.
+ */
+function readSwServiceStderr(chunk: string): string[] {
+  const { lines, rest } = takeCompleteLines(swStderrBuffer, chunk)
+  swStderrBuffer = rest
+
+  for (const line of lines) {
+    const marker = readSwOwnershipMarker(line)
+    if (marker) applySwOwnershipMarker(marker)
   }
 
-  const launched = stderr.match(SW_LAUNCHED_PID_PATTERN)
-  if (launched) {
-    void claimLaunchedSwProcess(parseInt(launched[1], 10))
-  }
+  return lines
+}
 
-  const released = stderr.match(SW_RELEASED_PID_PATTERN)
-  if (released) {
-    const pid = parseInt(released[1], 10)
-    releaseSwProcess(pid)
-    log(`[SolidWorks] Service released SolidWorks PID ${pid} - now eligible for cleanup`)
+function applySwOwnershipMarker(marker: SwOwnershipMarker): void {
+  switch (marker.kind) {
+    case 'launching':
+      swLaunchAnnouncedAt = Date.now()
+      log('[SolidWorks] Service is launching a SolidWorks instance')
+      return
+
+    case 'launched':
+      void claimLaunchedSwProcess(marker.pid)
+      return
+
+    case 'released':
+      releaseSwProcess(marker.pid)
+      log(`[SolidWorks] Service released SolidWorks PID ${marker.pid} - now eligible for cleanup`)
+      return
   }
 }
 
 /**
- * Pins ownership of a SolidWorks instance the service just launched.
+ * Pins ownership of a SolidWorks instance the service says it just launched,
+ * but only once that claim has been shown to be true.
  *
- * The start time is read immediately because it is what keeps the claim honest
- * across a PID recycle. When Windows will not report it the record is still
- * written, but it can never be matched again, so that instance will be left
- * running rather than acted on from a PID alone.
+ * The start time read here is not by itself evidence of anything: it describes
+ * whatever process currently holds the PID, so writing it down unexamined mints
+ * a record that agrees with itself and lets the watchdog close a SolidWorks
+ * BluePLM never started. It becomes evidence only when checked against the
+ * launch the service announced - a process that predates the announcement was
+ * already running, whoever it belongs to.
+ *
+ * A claim that cannot be proven is refused. The cost of refusing a true claim
+ * is a hidden SolidWorks the user has to close by hand; the cost of accepting a
+ * false one is closing the SolidWorks they are working in.
  */
 async function claimLaunchedSwProcess(pid: number): Promise<void> {
   ensureSwOwnershipStore()
 
+  const launchAnnouncedAt = swLaunchAnnouncedAt
+  // Consumed either way: one announcement authorises one claim, so a stray
+  // marker afterwards cannot reuse it.
+  swLaunchAnnouncedAt = null
+
   const startedAt = await querySwProcessStartTime(pid)
+  const proof = proveSwLaunch({
+    pid,
+    observedStartedAt: startedAt,
+    launchWindowOpenedAt: launchAnnouncedAt,
+    now: Date.now(),
+  })
+
+  if (!proof.proven) {
+    logWarn(
+      `[SolidWorks] Refusing to record ownership of SolidWorks PID ${pid}: ${proof.reason}. ` +
+        'It will be left running rather than acted on.',
+      {
+        pid,
+        observedStartedAt: describeInstant(startedAt),
+        launchAnnouncedAt: describeInstant(launchAnnouncedAt),
+      },
+    )
+    return
+  }
+
   const record = recordSwLaunch(pid, startedAt)
 
   log(`[SolidWorks] Now owns SolidWorks PID ${pid}`, {
-    startedAt: startedAt === null ? 'unknown' : new Date(startedAt).toISOString(),
-    identifiable: startedAt !== null,
+    startedAt: describeInstant(startedAt),
+    launchAnnouncedAt: describeInstant(launchAnnouncedAt),
     sessionId: record.sessionId,
   })
-
-  if (startedAt === null) {
-    logWarn(
-      `[SolidWorks] Could not read the start time of PID ${pid}. It can no longer be told apart from a recycled PID, so cleanup will leave it running.`,
-    )
-  }
 }
 
 interface LockingProcessInfo {
@@ -503,9 +560,10 @@ async function reapLeakedSolidWorksProcesses(): Promise<SwReapResult> {
     ownershipRecords: listSwOwnershipRecords().length,
   })
 
-  // An enumeration that failed outright proves nothing about what is running,
-  // so ownership records must survive it untouched.
-  if (source !== 'none') {
+  // Only an enumeration that actually ran is evidence of what is not running.
+  // `none` is a failed query and `unsupported` is a platform that was never
+  // asked - on either, an empty list would otherwise retire every record we hold.
+  if (source === 'powershell' || source === 'tasklist') {
     forgetVanishedSwProcesses(processes)
   }
 
@@ -647,9 +705,23 @@ function stopOrphanWatchdog(): void {
 }
 
 /**
+ * True while a pass is running. The watchdog ticks every 5s and a single
+ * process enumeration is allowed 10s, so without this two passes overlap and
+ * both act on the same records - sending a second close request to a process
+ * that has not been given time to answer the first.
+ */
+let orphanCheckInFlight = false
+
+/**
  * Performs a single cleanup pass. Called periodically by the watchdog.
  */
 async function runOrphanCheck(): Promise<void> {
+  if (orphanCheckInFlight) {
+    log('[SolidWorks Watchdog] Previous pass is still running; skipping this tick')
+    return
+  }
+
+  orphanCheckInFlight = true
   try {
     const result = await reapLeakedSolidWorksProcesses()
 
@@ -667,6 +739,8 @@ async function runOrphanCheck(): Promise<void> {
     }
   } catch (error) {
     logError(`[SolidWorks Watchdog] Error during cleanup pass: ${String(error)}`)
+  } finally {
+    orphanCheckInFlight = false
   }
 }
 
@@ -720,6 +794,10 @@ function clearServiceState(reason: string, force: boolean = false): void {
 
   swServiceProcess = null
   swServiceBuffer = ''
+  swStderrBuffer = ''
+  // A launch the dead service announced can never report its PID now, so the
+  // window must not stay open for whatever the next service says.
+  swLaunchAnnouncedAt = null
   lastKnownServicePid = null
   cachedServiceVersion = null
 
@@ -1735,9 +1813,11 @@ async function startSWService(
       })
 
       swServiceProcess.stderr?.on('data', (data: Buffer) => {
-        const stderr = data.toString().trim()
-        if (stderr) {
-          trackSwProcessOwnership(stderr)
+        // Ownership markers are read off complete lines only. A pipe chunk can
+        // split one anywhere, including inside a PID.
+        for (const line of readSwServiceStderr(data.toString())) {
+          const stderr = line.trim()
+          if (!stderr) continue
 
           // Filter out verbose ping-related messages to reduce log spam
           // Pings happen every 5 seconds and generate 6-7 lines each

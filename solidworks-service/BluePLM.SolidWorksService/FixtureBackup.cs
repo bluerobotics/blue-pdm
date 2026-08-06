@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
@@ -25,6 +27,13 @@ namespace BluePLM.SolidWorksService
         /// <summary>Appended to the fixture's name. Recognised by the pre-flight sweep.</summary>
         public const string BackupSuffix = ".blueplm-probe.bak";
 
+        /// <summary>
+        /// Appended to the backup's name. Says which process the backup belongs to, so the sweep
+        /// can tell a dead run's orphan - which it must restore - from a live run's working copy,
+        /// which it must not touch.
+        /// </summary>
+        public const string OwnerSuffix = ".owner";
+
         private static readonly object RegistryGate = new object();
         private static readonly List<FixtureBackup> Pending = new List<FixtureBackup>();
         private static bool _safetyNetInstalled;
@@ -45,6 +54,9 @@ namespace BluePLM.SolidWorksService
 
         /// <summary>Where its copy lives until the restore completes.</summary>
         public string BackupPath { get; }
+
+        /// <summary>Where the note saying who owns <see cref="BackupPath"/> lives.</summary>
+        public string OwnerPath => BackupPath + OwnerSuffix;
 
         /// <summary>SHA-256 of the fixture before anything wrote to it.</summary>
         public string OriginalHash { get; }
@@ -71,6 +83,7 @@ namespace BluePLM.SolidWorksService
                 throw new FileNotFoundException($"Nothing to back up at {filePath}", filePath);
 
             var backupPath = filePath + BackupSuffix;
+            var ownerPath = backupPath + OwnerSuffix;
 
             // An orphan holds the only copy of the original, and the fixture next to it is the
             // modified one. Overwriting it would destroy the original for good.
@@ -81,7 +94,28 @@ namespace BluePLM.SolidWorksService
                     "modified. Sweep the fixture folder before writing to it again.");
             }
 
-            File.Copy(filePath, backupPath);
+            if (File.Exists(ownerPath))
+            {
+                throw new InvalidOperationException(
+                    $"{ownerPath} already exists, so another run is backing up {filePath} right now or died " +
+                    "between claiming it and copying it. Sweep the fixture folder before writing to it again.");
+            }
+
+            // Claimed before the copy exists, not after. A sweep that runs in the gap has to see an
+            // owner it can check; a backup that appeared first with no owner beside it reads as an
+            // orphan, and the sweep would restore it over the fixture this run is about to write.
+            FixtureBackupOwner.Mine().WriteTo(ownerPath);
+
+            try
+            {
+                File.Copy(filePath, backupPath);
+            }
+            catch
+            {
+                // Leaving a claim with nothing behind it would block every later run.
+                TryDelete(ownerPath);
+                throw;
+            }
 
             var backup = new FixtureBackup(filePath, backupPath, FixtureFile.ComputeSha256(filePath), FixtureFile.IsReadOnly(filePath));
             Track(backup);
@@ -115,6 +149,7 @@ namespace BluePLM.SolidWorksService
                     string.Equals(FixtureFile.ComputeSha256(FilePath), OriginalHash, StringComparison.OrdinalIgnoreCase))
                 {
                     ApplyReadOnly();
+                    TryDelete(OwnerPath);
                     return FixtureRestoreResult.Success(FilePath, "the fixture already matches its original SHA-256");
                 }
 
@@ -156,8 +191,26 @@ namespace BluePLM.SolidWorksService
                     "The fixture folder is not clean.");
             }
 
+            // Last, so a crash anywhere above leaves a claim the next sweep can still act on.
+            TryDelete(OwnerPath);
+
             return FixtureRestoreResult.Success(FilePath,
                 $"restored and verified ({restoredHash}), read-only={WasReadOnly}, backup removed");
+        }
+
+        private static void TryDelete(string path)
+        {
+            try
+            {
+                FixtureFile.ClearReadOnly(path);
+                if (File.Exists(path)) File.Delete(path);
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
         }
 
         private void ApplyReadOnly()
@@ -216,6 +269,140 @@ namespace BluePLM.SolidWorksService
 
         #endregion
 
+    }
+
+    /// <summary>
+    /// Who a backup belongs to.
+    ///
+    /// Without this, every <c>.blueplm-probe.bak</c> looks the same, and the sweep has to guess: it
+    /// treated all of them as wreckage from a dead run, so a second probe starting in the same root
+    /// would copy the first probe's backup over the fixture it was mid-way through writing and then
+    /// delete it. The first probe's restore would then find no backup, and no copy of the original
+    /// would exist anywhere.
+    ///
+    /// A process id alone is not identity - Windows reuses them - so the start time is recorded with
+    /// it, and the machine name too, because a vault can be a share and a PID from another machine
+    /// means nothing here.
+    /// </summary>
+    public sealed class FixtureBackupOwner
+    {
+        private const string ProcessIdKey = "pid";
+        private const string StartedAtKey = "startedAtUtc";
+        private const string MachineKey = "machine";
+
+        public FixtureBackupOwner(int processId, string startedAtUtc, string machineName)
+        {
+            ProcessId = processId;
+            StartedAtUtc = startedAtUtc;
+            MachineName = machineName;
+        }
+
+        public int ProcessId { get; }
+
+        /// <summary>Round-trip format, or empty when the process would not report it.</summary>
+        public string StartedAtUtc { get; }
+
+        public string MachineName { get; }
+
+        /// <summary>The running process, as it should be written next to a backup it is holding.</summary>
+        public static FixtureBackupOwner Mine()
+        {
+            using var self = Process.GetCurrentProcess();
+            return new FixtureBackupOwner(self.Id, DescribeStartTime(self), Environment.MachineName);
+        }
+
+        public void WriteTo(string path)
+        {
+            File.WriteAllLines(path, new[]
+            {
+                $"{ProcessIdKey}={ProcessId}",
+                $"{StartedAtKey}={StartedAtUtc}",
+                $"{MachineKey}={MachineName}",
+            });
+        }
+
+        /// <summary>The owner recorded at <paramref name="path"/>, or null when there is none to read.</summary>
+        public static FixtureBackupOwner? ReadFrom(string path)
+        {
+            try
+            {
+                if (!File.Exists(path)) return null;
+
+                var fields = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var line in File.ReadAllLines(path))
+                {
+                    var separator = line.IndexOf('=');
+                    if (separator <= 0) continue;
+                    fields[line.Substring(0, separator)] = line.Substring(separator + 1);
+                }
+
+                if (!fields.TryGetValue(ProcessIdKey, out var rawPid) ||
+                    !int.TryParse(rawPid, NumberStyles.Integer, CultureInfo.InvariantCulture, out var pid))
+                {
+                    return null;
+                }
+
+                fields.TryGetValue(StartedAtKey, out var startedAt);
+                fields.TryGetValue(MachineKey, out var machine);
+
+                return new FixtureBackupOwner(pid, startedAt ?? string.Empty, machine ?? string.Empty);
+            }
+            catch (IOException)
+            {
+                return null;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Whether the process that claimed the backup is still running.
+        ///
+        /// Every answer this cannot establish is "yes". Saying a live owner is dead costs the only
+        /// copy of a fixture; saying a dead owner is live costs a message telling an operator to
+        /// delete a file.
+        /// </summary>
+        public bool IsStillRunning()
+        {
+            if (!string.Equals(MachineName, Environment.MachineName, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (ProcessId <= 0 || StartedAtUtc.Length == 0) return true;
+
+            try
+            {
+                using var process = Process.GetProcessById(ProcessId);
+                // A recycled PID is a different process, and its backup is not this one's.
+                return string.Equals(DescribeStartTime(process), StartedAtUtc, StringComparison.Ordinal);
+            }
+            catch (ArgumentException)
+            {
+                // Nothing is running under that id.
+                return false;
+            }
+            catch (Exception)
+            {
+                return true;
+            }
+        }
+
+        public string Describe() =>
+            $"process {ProcessId} on {(MachineName.Length == 0 ? "an unnamed machine" : MachineName)}" +
+            (StartedAtUtc.Length == 0 ? string.Empty : $", started {StartedAtUtc}");
+
+        private static string DescribeStartTime(Process process)
+        {
+            try
+            {
+                return process.StartTime.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture);
+            }
+            catch (Exception)
+            {
+                return string.Empty;
+            }
+        }
     }
 
     /// <summary>
@@ -282,6 +469,11 @@ namespace BluePLM.SolidWorksService
         /// <summary>
         /// Files SolidWorks and earlier runs leave lying around. Probe backups are excluded: those
         /// are restored, never simply deleted.
+        ///
+        /// A bare <c>*.bak</c> used to be on this list and is not a SolidWorks leftover at all - it
+        /// is the extension everyone reaches for when they copy a file aside by hand, including the
+        /// manual before-and-after copies these fixtures are checked against. SolidWorks writes
+        /// <c>.swbak</c>; a <c>.bak</c> in the fixture folder belongs to whoever put it there.
         /// </summary>
         private static readonly string[] LeftoverPatterns =
         {
@@ -290,15 +482,29 @@ namespace BluePLM.SolidWorksService
             "*.~sldasm",
             "*.~slddrw",
             "*.swbak",
-            "*.bak",
         };
 
         /// <summary>Restore any orphaned backup under <paramref name="root"/>, then delete leftovers.</summary>
-        public static FixtureSweepReport Sweep(string root)
+        public static FixtureSweepReport Sweep(string root) => Sweep(root, owner => owner.IsStillRunning());
+
+        /// <summary>
+        /// The sweep, with the liveness test injectable so the concurrent-probe case can be
+        /// exercised without starting a second process.
+        /// </summary>
+        public static FixtureSweepReport Sweep(string root, Func<FixtureBackupOwner, bool> isOwnerAlive)
         {
             var report = new FixtureSweepReport { Root = root };
 
-            if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
+            // Asked before walking anything: a root that confines nothing would send the walk over a
+            // whole volume, to act on none of it once the containment filter below had its say.
+            var rootRefusal = RegressionFixtureGuard.DescribeRootRefusal(root);
+            if (rootRefusal != null)
+            {
+                report.Failures.Add($"'{root}' cannot be swept because it is not a usable fixture root: {rootRefusal}");
+                return report;
+            }
+
+            if (!Directory.Exists(root))
             {
                 report.Note = $"nothing swept: '{root}' does not exist";
                 return report;
@@ -308,13 +514,71 @@ namespace BluePLM.SolidWorksService
                 .Where(file => RegressionFixtureGuard.IsInside(file.FullName, root))
                 .ToList();
 
-            foreach (var backup in files.Where(file => file.Name.EndsWith(FixtureBackup.BackupSuffix, StringComparison.OrdinalIgnoreCase)))
-                RestoreOrphan(backup, report);
+            foreach (var backup in files.Where(IsBackup))
+                RestoreOrphanUnlessHeld(backup, isOwnerAlive, report);
+
+            foreach (var claim in files.Where(IsOwnerRecord))
+                SweepStrandedClaim(claim, isOwnerAlive, report);
 
             foreach (var leftover in files.Where(IsLeftover))
                 DeleteLeftover(leftover, report);
 
             return report;
+        }
+
+        private static bool IsBackup(FileInfo file) =>
+            file.Name.EndsWith(FixtureBackup.BackupSuffix, StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsOwnerRecord(FileInfo file) =>
+            file.Name.EndsWith(FixtureBackup.BackupSuffix + FixtureBackup.OwnerSuffix, StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// A backup whose owner is still running is not wreckage - it is the only copy of a fixture
+        /// another probe is part way through writing. Restoring it would put the original back over
+        /// a half-written file and then delete the copy, leaving that run with nothing to restore
+        /// from. So it is reported and left exactly alone, which fails the sweep and stops this run
+        /// before it can write in the same folder.
+        /// </summary>
+        private static void RestoreOrphanUnlessHeld(
+            FileInfo backup,
+            Func<FixtureBackupOwner, bool> isOwnerAlive,
+            FixtureSweepReport report)
+        {
+            var owner = FixtureBackupOwner.ReadFrom(backup.FullName + FixtureBackup.OwnerSuffix);
+
+            if (owner != null && isOwnerAlive(owner))
+            {
+                report.Failures.Add(
+                    $"{backup.FullName} belongs to {owner.Describe()}, which is still running. Another probe is " +
+                    "using this fixture folder; wait for it to finish rather than running two at once.");
+                return;
+            }
+
+            RestoreOrphan(backup, report);
+        }
+
+        /// <summary>A claim whose backup never appeared, or was already put back.</summary>
+        private static void SweepStrandedClaim(
+            FileInfo claim,
+            Func<FixtureBackupOwner, bool> isOwnerAlive,
+            FixtureSweepReport report)
+        {
+            // The restore above may already have taken both of them.
+            if (!File.Exists(claim.FullName)) return;
+
+            var backupPath = claim.FullName.Substring(0, claim.FullName.Length - FixtureBackup.OwnerSuffix.Length);
+            if (File.Exists(backupPath)) return;
+
+            var owner = FixtureBackupOwner.ReadFrom(claim.FullName);
+            if (owner != null && isOwnerAlive(owner))
+            {
+                report.Failures.Add(
+                    $"{claim.FullName} was just claimed by {owner.Describe()}, which is still running and is " +
+                    "about to copy the fixture aside. Wait for it to finish rather than running two at once.");
+                return;
+            }
+
+            DeleteLeftover(claim, report);
         }
 
         /// <summary>
@@ -346,6 +610,12 @@ namespace BluePLM.SolidWorksService
 
                 FixtureFile.ClearReadOnly(backup.FullName);
                 File.Delete(backup.FullName);
+
+                // The claim outlives the backup it describes only long enough for a crash here to
+                // still be recoverable.
+                var ownerPath = backup.FullName + FixtureBackup.OwnerSuffix;
+                FixtureFile.ClearReadOnly(ownerPath);
+                if (File.Exists(ownerPath)) File.Delete(ownerPath);
 
                 report.Restored.Add($"{fixturePath}: restored from an interrupted run ({restoredHash}), read-only={wasReadOnly}");
             }

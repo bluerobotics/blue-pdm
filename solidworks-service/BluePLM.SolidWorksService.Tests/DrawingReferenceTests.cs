@@ -58,16 +58,18 @@ namespace BluePLM.SolidWorksService.Tests
         }
 
         [DocumentManagerFixtureFact(Oring)]
-        public void The_production_filters_find_what_the_type_flags_alone_cannot()
+        public void The_production_filters_are_never_worse_than_the_type_flags_alone()
         {
             var drawing = _fixtures.PathTo(Oring, "ORING-BUNA-70A-265.SLDDRW");
 
             var production = _fixtures.Api.ReadReferences(drawing);
             var typeFlagsOnly = _fixtures.Api.ReadReferences(drawing, TypeFlagsOnly);
 
-            // Not "the wrong bitmask returns nothing" - that pins vendor behaviour this suite does not
-            // own. The property that matters is that the bitmask production ships with is no worse
-            // than one that omits ExternalReference, which is exactly what failed before.
+            // Deliberately ">=" and named for it. "The production filters find what the type flags
+            // cannot" would be a stronger claim than the assertion makes - it passes when the two
+            // sets are equivalent - and pinning the strict inequality would pin vendor behaviour
+            // this suite does not own. What is worth holding is that the bitmask production ships
+            // with is never the worse of the two, which is exactly what failed before.
             Assert.True(
                 production.External.References.Count >= typeFlagsOnly.External.References.Count,
                 $"Filters {(int)SwDmConstants.ReferenceResolutionFilters} " +

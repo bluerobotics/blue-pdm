@@ -16,6 +16,7 @@ namespace BluePLM.SolidWorksService.Tests
     /// let the earlier holes through, so nothing in this file is asserted on the strength of what
     /// the documentation says a path should do.
     /// </summary>
+    [Collection(FixtureRootEnvironmentCollection.Name)]
     public class RegressionFixtureGuardTests : IClassFixture<AdversarialLayout>
     {
         private static readonly string Root = RegressionFixtureGuard.DefaultFixtureRoot;
@@ -520,6 +521,69 @@ namespace BluePLM.SolidWorksService.Tests
                 Assert.False(RegressionFixtureGuard.IsInside(file, unusableRoot));
 
             Assert.Contains("root", RegressionFixtureGuard.DescribeRefusal(file, "relative"), StringComparison.OrdinalIgnoreCase);
+        }
+
+        #endregion
+
+        #region Roots that are well formed and still useless
+
+        /// <summary>
+        /// A malformed root refuses everything, which the guard already had right. A well-formed
+        /// but over-broad one did the opposite: "C:\" is absolute, canonical and names a volume, so
+        /// it parsed cleanly into zero components - and the containment loop, which compares the
+        /// root's components one by one, then had nothing to compare and let the whole drive
+        /// through. BLUEPLM_FIXTURE_ROOT is taken verbatim from the environment, so this is one
+        /// unset variable or one stray backslash away.
+        /// </summary>
+        [Theory]
+        [InlineData(@"C:\")]
+        [InlineData(@"C:/")]
+        [InlineData(@"C:\Windows")]
+        [InlineData(@"C:\Users")]
+        [InlineData(@"\\server\share")]
+        [InlineData(@"\\server\share\")]
+        public void A_root_too_shallow_to_confine_anything_refuses_everything(string overBroadRoot)
+        {
+            Assert.NotNull(RegressionFixtureGuard.DescribeRootRefusal(overBroadRoot));
+
+            Assert.False(RegressionFixtureGuard.IsInside(@"C:\Windows\System32\config\SAM", overBroadRoot));
+            Assert.False(RegressionFixtureGuard.IsInside(@"C:\Users\someone\Documents\PRODUCTION.SLDPRT", overBroadRoot));
+            Assert.False(RegressionFixtureGuard.IsInside(overBroadRoot, overBroadRoot));
+        }
+
+        [Fact]
+        public void The_refusal_of_an_over_broad_root_says_it_is_the_root_that_is_wrong()
+        {
+            var refusal = RegressionFixtureGuard.DescribeRefusal(@"C:\Windows\System32\config\SAM", @"C:\");
+
+            Assert.Contains("root", refusal, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("below its volume", refusal, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void The_roots_that_are_actually_used_are_deep_enough()
+        {
+            Assert.Null(RegressionFixtureGuard.DescribeRootRefusal(RegressionFixtureGuard.DefaultFixtureRoot));
+            Assert.Null(RegressionFixtureGuard.DescribeRootRefusal(_layout.Root));
+            Assert.Null(RegressionFixtureGuard.DescribeRootRefusal(Path.Combine(Path.GetTempPath(), "blueplm-sandbox")));
+        }
+
+        [Fact]
+        public void An_over_broad_root_in_the_environment_authorises_nothing()
+        {
+            var original = Environment.GetEnvironmentVariable(RegressionFixtureGuard.FixtureRootVariable);
+
+            try
+            {
+                Environment.SetEnvironmentVariable(RegressionFixtureGuard.FixtureRootVariable, @"C:\");
+
+                Assert.False(RegressionFixtureGuard.IsInsideAllowedRoot(@"C:\Users\someone\PRODUCTION.SLDPRT"));
+                Assert.False(RegressionFixtureGuard.IsInsideAllowedRoot(Path.Combine(Root, "REAL.SLDPRT")));
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable(RegressionFixtureGuard.FixtureRootVariable, original);
+            }
         }
 
         #endregion

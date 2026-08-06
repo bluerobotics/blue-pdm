@@ -28,6 +28,10 @@ namespace BluePLM.SolidWorksService
     /// - No junction or symbolic link stands anywhere between the volume root and the path, the
     ///   allowed root itself included. A reparse point makes the name a lie, and one planted at or
     ///   above the root redirects the whole fixture folder.
+    /// - The root is deep enough to confine anything. A well-formed root can still be useless as a
+    ///   boundary: <c>C:\</c> has no components below its volume, so containment compares nothing
+    ///   and every path on the drive passes. Being a valid path and being a usable root are
+    ///   separate questions, and both are asked.
     ///
     /// What it does not prove: that the answer is still true a moment later. Nothing that inspects a
     /// path and then acts on it can promise that, so the callers back a write with
@@ -41,12 +45,25 @@ namespace BluePLM.SolidWorksService
         /// <summary>
         /// Overrides <see cref="DefaultFixtureRoot"/>, so a test can point a spawned diagnostic at a
         /// throwaway copy of a fixture instead of the vault. It must itself be an absolute, canonical
-        /// path; a root that does not satisfy the rules above refuses everything.
+        /// path, and deep enough to be a boundary; a root that does not satisfy the rules above
+        /// refuses everything, whether it is malformed or merely too broad.
         /// </summary>
         public const string FixtureRootVariable = "BLUEPLM_FIXTURE_ROOT";
 
         /// <summary>A fixture path is a handful of levels below its root, never more than this.</summary>
         private const int MaxDepthBelowRoot = 12;
+
+        /// <summary>
+        /// Named folders a root must have below its volume before it can confine anything.
+        ///
+        /// A root of <c>C:\</c> parses perfectly well - it is absolute, canonical and names a
+        /// volume - and has zero components, so the component-by-component containment check below
+        /// compares nothing and authorises the entire drive. The same is true of <c>\\server\share</c>,
+        /// and one component short of it lets through <c>C:\Windows</c> and <c>C:\Users</c>. Those
+        /// are precisely the roots a typo or an unset environment variable produces, so the shape of
+        /// the root is checked rather than assumed. The real fixture root has four.
+        /// </summary>
+        private const int MinRootComponents = 2;
 
         /// <summary>
         /// Total components a path may have, root included. Splitting on separators cannot loop, so
@@ -86,6 +103,22 @@ namespace BluePLM.SolidWorksService
         public static bool IsInsideAllowedRoot(string? candidate) => IsInside(candidate, ResolveAllowedRoot());
 
         /// <summary>
+        /// Why <paramref name="root"/> cannot confine anything, or null when it can.
+        ///
+        /// Callers that sweep or enumerate a root ask this first: a root that authorises nothing
+        /// would otherwise send them walking a whole volume to act on none of it.
+        /// </summary>
+        public static string? DescribeRootRefusal(string? root)
+        {
+            if (!TryReadPath(root, out _, out var components, out var refusal)) return refusal;
+
+            return components.Count < MinRootComponents
+                ? $"it is only {components.Count} folder(s) below its volume, and a root that shallow " +
+                  $"confines writes to little more than the whole drive (at least {MinRootComponents} required)"
+                : null;
+        }
+
+        /// <summary>
         /// Whether <paramref name="candidate"/> is <paramref name="root"/> or something proven to be
         /// beneath it. See the type's remarks for what has to hold for the answer to be true.
         /// </summary>
@@ -106,8 +139,12 @@ namespace BluePLM.SolidWorksService
         /// <summary>The reason to refuse, or null when there is none.</summary>
         private static string? FindRefusal(string? candidate, string? root)
         {
-            if (!TryReadPath(root, out var rootVolume, out var rootComponents, out var rootRefusal))
+            var rootRefusal = DescribeRootRefusal(root);
+            if (rootRefusal != null)
                 return $"the allowed root cannot be used as a boundary - {rootRefusal}";
+
+            // Already known to succeed: DescribeRootRefusal ran it.
+            TryReadPath(root, out var rootVolume, out var rootComponents, out _);
 
             if (!TryReadPath(candidate, out var volume, out var components, out var refusal))
                 return refusal;

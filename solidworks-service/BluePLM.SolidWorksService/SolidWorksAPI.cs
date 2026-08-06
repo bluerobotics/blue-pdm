@@ -549,15 +549,36 @@ namespace BluePLM.SolidWorksService
             Console.Error.WriteLine("[SW-API] LAUNCHING_SW");
 
             _swApp = (ISldWorks)Activator.CreateInstance(swType)!;
-            _weStartedSW = true;
+
+            // CreateInstance does not promise to have created anything: against a SolidWorks that
+            // came up between the check above and this line, it hands back that one. The snapshot
+            // taken before the call is what tells the two apart, and everything below turns on the
+            // answer - whether the window may be hidden, whether the instance is ours to close, and
+            // whether a PID may be claimed from it.
+            var launched = ResolveLaunchedProcessId(_swApp, pidsBeforeLaunch);
+            Console.Error.WriteLine($"[SW-API] {launched.Reason}");
+
+            _weStartedSW = launched.IsOurs;
 
             // Claim the PID before the long startup wait below: the host's watchdog
             // scans every 5s and would otherwise kill this instance mid-startup.
-            ClaimLaunchedProcess(ResolveLaunchedProcessId(_swApp, pidsBeforeLaunch));
+            ClaimLaunchedProcess(launched.ProcessId);
 
-            // Run hidden
-            _swApp.Visible = false;
-            _swApp.UserControl = false;
+            if (launched.IsOurs)
+            {
+                // Run hidden
+                _swApp.Visible = false;
+                _swApp.UserControl = false;
+            }
+            else
+            {
+                // Hiding a window the user is working in, and taking user control away from it, is
+                // the worst thing this method can do. It is only ever correct for an instance
+                // BluePLM started.
+                Console.Error.WriteLine(
+                    "[SW-API] Attached to a SolidWorks that was already running - leaving its window " +
+                    "and user control exactly as the user has them");
+            }
 
             Console.Error.WriteLine("[SW-API] Waiting for SolidWorks startup to complete...");
 
@@ -578,9 +599,12 @@ namespace BluePLM.SolidWorksService
         }
 
         /// <summary>
-        /// PIDs of every SLDWORKS.exe currently running.
+        /// PIDs of every SLDWORKS.exe currently running, or null when the enumeration failed.
+        ///
+        /// Null rather than an empty array on failure: "nothing is running" and "nobody would say
+        /// what is running" lead to opposite conclusions about whether a PID is newly launched.
         /// </summary>
-        private static int[] GetSolidWorksProcessIds()
+        private static int[]? GetSolidWorksProcessIds()
         {
             try
             {
@@ -589,32 +613,33 @@ namespace BluePLM.SolidWorksService
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"[SW-API] GetSolidWorksProcessIds failed: {ex.Message}");
-                return Array.Empty<int>();
+                return null;
             }
         }
 
         /// <summary>
-        /// PID of the instance we just launched. Asks SolidWorks directly, and falls
-        /// back to whichever SLDWORKS.exe appeared since <paramref name="pidsBeforeLaunch"/>
-        /// was taken.
+        /// Which SLDWORKS.exe the launch attempt produced, if any.
+        ///
+        /// Both the PID SolidWorks reports and the process snapshot are gathered here; the
+        /// decision itself lives in <see cref="LaunchedProcessResolver"/>, which needs neither COM
+        /// nor an installation and is tested directly. A reported PID is checked against
+        /// <paramref name="pidsBeforeLaunch"/> rather than trusted: it names the process the COM
+        /// object lives in, which is the user's own session whenever CreateInstance attached
+        /// instead of starting one.
         /// </summary>
-        private static int ResolveLaunchedProcessId(ISldWorks app, int[] pidsBeforeLaunch)
+        private static LaunchedProcess ResolveLaunchedProcessId(ISldWorks app, int[]? pidsBeforeLaunch)
         {
+            var reportedPid = 0;
             try
             {
-                var pid = app.GetProcessID();
-                if (pid > 0) return pid;
+                reportedPid = app.GetProcessID();
             }
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"[SW-API] GetProcessID failed, falling back to process diff: {ex.Message}");
             }
 
-            var newPids = GetSolidWorksProcessIds().Except(pidsBeforeLaunch).ToArray();
-            if (newPids.Length == 1) return newPids[0];
-
-            Console.Error.WriteLine($"[SW-API] Could not identify launched PID ({newPids.Length} new SLDWORKS.exe process(es))");
-            return 0;
+            return LaunchedProcessResolver.Resolve(reportedPid, pidsBeforeLaunch, GetSolidWorksProcessIds());
         }
 
         /// <summary>
@@ -1187,7 +1212,59 @@ namespace BluePLM.SolidWorksService
         }
 
         /// <summary>
-        /// Get all external references from a file
+        /// Read a document's references from a handle SolidWorks already holds for it.
+        ///
+        /// This exists so a background caller has something it can call. It never opens a document
+        /// and never launches SolidWorks: it asks for the running instance, asks that instance for
+        /// the document, and gives up if either is missing. That is a property of the code rather
+        /// than of the order things happen in - <see cref="GetExternalReferences"/> reaches
+        /// OpenDoc6 through OpenDocument, and OpenDocument reaches a launch through GetSolidWorks,
+        /// so nothing about how recently a caller checked whether the file was open can make it
+        /// safe to hand a background request.
+        ///
+        /// Returns null when the document is not open, which the caller reads as "this reader
+        /// declined" rather than "there are no references".
+        /// </summary>
+        public CommandResult? GetExternalReferencesFromOpenDocument(string? filePath)
+        {
+            if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath)) return null;
+
+            try
+            {
+                var sw = GetRunningSwInstanceOrNull();
+                if (sw == null)
+                {
+                    Console.Error.WriteLine(
+                        $"[SW-API] GetExternalReferencesFromOpenDocument: no running SolidWorks to ask about {Path.GetFileName(filePath)}");
+                    return null;
+                }
+
+                if (!(sw.GetOpenDocument(filePath!) is ModelDoc2 doc))
+                {
+                    Console.Error.WriteLine(
+                        $"[SW-API] GetExternalReferencesFromOpenDocument: {Path.GetFileName(filePath)} is not open, declining rather than opening it");
+                    return null;
+                }
+
+                return ReadExternalReferences(doc, filePath!);
+            }
+            catch (SolidWorksComInaccessibleException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[SW-API] GetExternalReferencesFromOpenDocument failed: {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Get all external references from a file.
+        ///
+        /// Opens the document if SolidWorks does not already have it, which puts a window on the
+        /// user's screen and can launch SolidWorks to do it. Only ever correct for a request the
+        /// user initiated.
         /// </summary>
         public CommandResult GetExternalReferences(string? filePath)
         {
@@ -1205,6 +1282,36 @@ namespace BluePLM.SolidWorksService
                 if (doc == null)
                     return new CommandResult { Success = false, Error = $"Failed to open file: errors={errors}" };
 
+                return ReadExternalReferences(doc, filePath!);
+            }
+            catch (SolidWorksComInaccessibleException)
+            {
+                // Let the caller pick a Document Manager fallback, and let Program.cs map this
+                // to the SOLIDWORKS_COM_INACCESSIBLE wire code the app matches on. Flattening it
+                // into a plain message here loses both.
+                throw;
+            }
+            catch (Exception ex)
+            {
+                return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
+            }
+            finally
+            {
+                // Only close if WE opened it - don't close user's open documents!
+                if (doc != null && !wasAlreadyOpen)
+                {
+                    try { CloseDocument(filePath!); } catch { }
+                }
+                CloseSolidWorksIfWeStartedIt();
+            }
+        }
+
+        /// <summary>
+        /// Shape a live document's references. Reads only; the caller owns the document's lifetime.
+        /// </summary>
+        private CommandResult ReadExternalReferences(ModelDoc2 doc, string filePath)
+        {
+            {
                 var references = new List<object>();
                 
                 // #region agent log - FIX: For drawings, get referenced configuration from views
@@ -1314,26 +1421,6 @@ namespace BluePLM.SolidWorksService
                         count = references.Count
                     }
                 };
-            }
-            catch (SolidWorksComInaccessibleException)
-            {
-                // Let the caller pick a Document Manager fallback, and let Program.cs map this
-                // to the SOLIDWORKS_COM_INACCESSIBLE wire code the app matches on. Flattening it
-                // into a plain message here loses both.
-                throw;
-            }
-            catch (Exception ex)
-            {
-                return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
-            }
-            finally
-            {
-                // Only close if WE opened it - don't close user's open documents!
-                if (doc != null && !wasAlreadyOpen)
-                {
-                    try { CloseDocument(filePath!); } catch { }
-                }
-                CloseSolidWorksIfWeStartedIt();
             }
         }
 

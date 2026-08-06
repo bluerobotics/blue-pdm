@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 
@@ -262,7 +263,6 @@ namespace BluePLM.SolidWorksService.Tests
         [InlineData("ASSEMBLY.~sldasm")]
         [InlineData("DRAWING.~slddrw")]
         [InlineData("PART.swbak")]
-        [InlineData("PART.SLDPRT.bak")]
         public void The_sweep_deletes_leftovers(string leftoverName)
         {
             using var root = new SyntheticFixtureRoot();
@@ -278,6 +278,25 @@ namespace BluePLM.SolidWorksService.Tests
             Assert.Equal(originalHash, FixtureFile.ComputeSha256(fixture));
         }
 
+        [Theory]
+        [InlineData("PART.SLDPRT.bak")]
+        [InlineData("before-the-write.bak")]
+        public void The_sweep_keeps_a_hand_made_backup(string name)
+        {
+            // ".bak" is what a person types when copying a file aside, not something SolidWorks
+            // writes - SolidWorks writes ".swbak". The sweep used to delete both, so a manual
+            // before-and-after copy taken to check a fixture disappeared the next time a probe ran.
+            using var root = new SyntheticFixtureRoot();
+            root.WriteFixture(FixtureName, OriginalContents);
+            var handMade = root.WriteFixture(name, "a copy somebody took on purpose");
+
+            var sweep = FixtureSweeper.Sweep(root.Root);
+
+            Assert.True(sweep.IsClean, string.Join(" | ", sweep.Failures));
+            Assert.True(File.Exists(handMade), $"{name} is not a SolidWorks leftover and is not the sweep's to delete.");
+            Assert.DoesNotContain(sweep.Deleted, deleted => deleted.EndsWith(name, StringComparison.OrdinalIgnoreCase));
+        }
+
         [Fact]
         public void The_sweep_leaves_the_fixtures_themselves_alone()
         {
@@ -290,6 +309,167 @@ namespace BluePLM.SolidWorksService.Tests
             Assert.False(sweep.ActedOnAnything);
             Assert.True(File.Exists(part));
             Assert.True(File.Exists(drawing));
+        }
+
+        #endregion
+
+        #region Two probes in one folder
+
+        /// <summary>
+        /// The sweep and a live backup used to be indistinguishable, and the sweep acted first.
+        /// A second probe starting in a folder the first was writing in would restore the first
+        /// probe's backup over the fixture mid-write and then delete it; the first probe's own
+        /// restore then took the "backup is gone" branch and reported a hash mismatch with no copy
+        /// of the original left anywhere.
+        /// </summary>
+        [Fact]
+        public void A_backup_a_live_probe_is_holding_is_not_swept_away_underneath_it()
+        {
+            using var root = new SyntheticFixtureRoot();
+            var fixture = root.WriteFixture(FixtureName, OriginalContents);
+            var originalHash = FixtureFile.ComputeSha256(fixture);
+
+            using var backup = FixtureBackup.Create(fixture, root.Root);
+            FixtureFile.ClearReadOnly(fixture);
+            File.WriteAllText(fixture, ModifiedContents);
+
+            var sweep = FixtureSweeper.Sweep(root.Root, owner => true);
+
+            Assert.False(sweep.IsClean, "A folder another probe is writing in is not one this run may use.");
+            Assert.Contains(sweep.Failures, failure => failure.Contains("still running"));
+            Assert.Empty(sweep.Restored);
+            Assert.True(File.Exists(backup.BackupPath), "The live probe's only copy of the original must survive.");
+
+            // And the run that owns it can still finish, because its backup is untouched.
+            var restored = backup.Restore();
+            Assert.True(restored.Restored, restored.Message);
+            Assert.Equal(originalHash, FixtureFile.ComputeSha256(fixture));
+        }
+
+        [Fact]
+        public void A_backup_whose_owner_is_gone_is_still_treated_as_wreckage_and_restored()
+        {
+            using var root = new SyntheticFixtureRoot();
+            var fixture = root.WriteFixture(FixtureName, OriginalContents);
+            var originalHash = FixtureFile.ComputeSha256(fixture);
+
+            using (FixtureBackup.Create(fixture, root.Root))
+            {
+                FixtureFile.ClearReadOnly(fixture);
+                File.WriteAllText(fixture, ModifiedContents);
+
+                var sweep = FixtureSweeper.Sweep(root.Root, owner => false);
+
+                Assert.True(sweep.InterruptedRunDetected);
+                Assert.True(sweep.IsClean, string.Join(" | ", sweep.Failures));
+                Assert.Single(sweep.Restored);
+                Assert.Equal(originalHash, FixtureFile.ComputeSha256(fixture));
+                Assert.Empty(Directory.GetFiles(root.Root, "*" + FixtureBackup.BackupSuffix + "*"));
+            }
+        }
+
+        [Fact]
+        public void A_second_backup_of_the_same_fixture_is_refused_rather_than_taken()
+        {
+            using var root = new SyntheticFixtureRoot();
+            var fixture = root.WriteFixture(FixtureName, OriginalContents);
+
+            using var first = FixtureBackup.Create(fixture, root.Root);
+
+            var refusal = Assert.Throws<InvalidOperationException>(() => FixtureBackup.Create(fixture, root.Root));
+
+            Assert.Contains("already exists", refusal.Message);
+            Assert.True(File.Exists(first.BackupPath));
+        }
+
+        [Fact]
+        public void A_claim_left_behind_without_its_backup_is_cleared_once_its_owner_is_gone()
+        {
+            // The window between claiming a fixture and copying it is small, but a kill inside it
+            // leaves a claim with nothing behind it, and that must not block every later run.
+            using var root = new SyntheticFixtureRoot();
+            var fixture = root.WriteFixture(FixtureName, OriginalContents);
+            var strandedClaim = fixture + FixtureBackup.BackupSuffix + FixtureBackup.OwnerSuffix;
+
+            new FixtureBackupOwner(4242, "2026-08-06T00:00:00.0000000Z", Environment.MachineName).WriteTo(strandedClaim);
+
+            Assert.False(FixtureSweeper.Sweep(root.Root, owner => true).IsClean, "A live owner's claim is left alone.");
+            Assert.True(File.Exists(strandedClaim));
+
+            var sweep = FixtureSweeper.Sweep(root.Root, owner => false);
+
+            Assert.True(sweep.IsClean, string.Join(" | ", sweep.Failures));
+            Assert.False(File.Exists(strandedClaim));
+            Assert.True(File.Exists(fixture));
+        }
+
+        [Fact]
+        public void A_backup_taken_here_records_this_process_as_its_owner()
+        {
+            using var root = new SyntheticFixtureRoot();
+            var fixture = root.WriteFixture(FixtureName, OriginalContents);
+
+            using var backup = FixtureBackup.Create(fixture, root.Root);
+
+            var owner = FixtureBackupOwner.ReadFrom(backup.OwnerPath);
+
+            Assert.NotNull(owner);
+            Assert.Equal(Process.GetCurrentProcess().Id, owner!.ProcessId);
+            Assert.Equal(Environment.MachineName, owner.MachineName);
+            Assert.True(owner.IsStillRunning(), "This test is the owner, and it is running.");
+        }
+
+        [Fact]
+        public void An_owner_that_cannot_be_judged_is_assumed_to_be_alive()
+        {
+            // Every unanswerable question resolves towards keeping the backup: mistaking a live
+            // owner for a dead one destroys the only copy of a fixture.
+            Assert.True(new FixtureBackupOwner(1, "2026-08-06T00:00:00.0000000Z", "SOME-OTHER-MACHINE").IsStillRunning());
+            Assert.True(new FixtureBackupOwner(0, "2026-08-06T00:00:00.0000000Z", Environment.MachineName).IsStillRunning());
+            Assert.True(new FixtureBackupOwner(4242, string.Empty, Environment.MachineName).IsStillRunning());
+        }
+
+        [Fact]
+        public void An_owner_whose_pid_was_recycled_is_not_mistaken_for_the_original()
+        {
+            // This process's id, but a start time that is not this process's: a different process
+            // wearing a reused number, and its claim is not on anything here.
+            var recycled = new FixtureBackupOwner(
+                Process.GetCurrentProcess().Id,
+                "1999-01-01T00:00:00.0000000Z",
+                Environment.MachineName);
+
+            Assert.False(recycled.IsStillRunning());
+        }
+
+        #endregion
+
+        #region Roots that cannot confine anything
+
+        [Theory]
+        [InlineData(@"C:\")]
+        [InlineData(@"C:\Windows")]
+        [InlineData(@"\\server\share")]
+        public void A_root_too_broad_to_be_a_boundary_is_swept_by_nothing(string overBroadRoot)
+        {
+            // "C:\" parses as a perfectly good path with zero components below its volume, so the
+            // containment check compares nothing and authorises the entire drive.
+            var sweep = FixtureSweeper.Sweep(overBroadRoot, owner => false);
+
+            Assert.False(sweep.IsClean);
+            Assert.Empty(sweep.Deleted);
+            Assert.Empty(sweep.Restored);
+            Assert.Contains(sweep.Failures, failure => failure.Contains("usable fixture root"));
+        }
+
+        [Fact]
+        public void A_backup_under_a_root_too_broad_to_be_a_boundary_is_refused()
+        {
+            using var root = new SyntheticFixtureRoot();
+            var fixture = root.WriteFixture(FixtureName, OriginalContents);
+
+            Assert.Throws<InvalidOperationException>(() => FixtureBackup.Create(fixture, @"C:\"));
+            Assert.False(File.Exists(fixture + FixtureBackup.BackupSuffix));
         }
 
         #endregion

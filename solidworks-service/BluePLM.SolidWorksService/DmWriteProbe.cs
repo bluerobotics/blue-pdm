@@ -50,20 +50,34 @@ namespace BluePLM.SolidWorksService
             {
                 var allowedRoot = RegressionFixtureGuard.ResolveAllowedRoot();
 
-                // Before anything else: a previous run may have been killed mid-write, and the only
-                // thing that can finish its cleanup is the next run.
-                if (!RunPreflightSweep(allowedRoot, report)) return Emit(report);
-
                 if (!File.Exists(options.FilePath))
                 {
                     Fail(report, $"File not found: {options.FilePath}");
                     return Emit(report);
                 }
 
-                if (options.AllowWrite && !RegressionFixtureGuard.IsInside(options.FilePath, allowedRoot))
+                // Everything that touches the fixture folder lives behind this one check, --allow-write
+                // included. The sweep used to run above it, for every invocation: a plain --dm-probe,
+                // documented as read-only, deleted matching files throughout the live vault before it
+                // read anything. A diagnostic whose stated contract is not the one it keeps is worse
+                // than no diagnostic.
+                if (options.AllowWrite)
                 {
-                    Fail(report, $"Refusing to write: {RegressionFixtureGuard.DescribeRefusal(options.FilePath, allowedRoot)}");
-                    return Emit(report);
+                    if (!RegressionFixtureGuard.IsInside(options.FilePath, allowedRoot))
+                    {
+                        Fail(report, $"Refusing to write: {RegressionFixtureGuard.DescribeRefusal(options.FilePath, allowedRoot)}");
+                        return Emit(report);
+                    }
+
+                    // A previous run may have been killed mid-write, and the only thing that can
+                    // finish its cleanup is the next run that is allowed to write.
+                    if (!RunPreflightSweep(allowedRoot, report)) return Emit(report);
+                }
+                else
+                {
+                    Section("Pre-flight (fixture folder)");
+                    Line($"Root: {allowedRoot}");
+                    Line("  read-only run: nothing under the root is read, moved, restored or deleted.");
                 }
 
                 // Reported before the license check: knowing which interop DLLs exist and what state

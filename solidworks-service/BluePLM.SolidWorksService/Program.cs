@@ -35,7 +35,7 @@ namespace BluePLM.SolidWorksService
         /// Service version - bump this when making changes that affect functionality.
         /// The app checks this version and warns if there's a mismatch.
         /// </summary>
-        private const string SERVICE_VERSION = "1.17.1";
+        private const string SERVICE_VERSION = "1.18.0";
 
         /// <summary>
         /// JSON settings for all stdout responses. EscapeNonAscii forces every non-ASCII character
@@ -549,7 +549,7 @@ namespace BluePLM.SolidWorksService
         /// </summary>
         static CommandResult? TryReadWhileOpenInSolidWorks(
             string? filePath,
-            Func<string, CommandResult> read)
+            Func<string, CommandResult?> read)
         {
             if (_swApi == null || string.IsNullOrEmpty(filePath)) return null;
             if (!_swApi.IsFileOpenInSolidWorks(filePath!)) return null;
@@ -690,12 +690,22 @@ namespace BluePLM.SolidWorksService
         /// A background request that exhausts tier 2 returns REFERENCES_UNRESOLVED. That is a distinct
         /// state from "this file has no references", and the app records and surfaces it rather than
         /// writing an empty reference list it cannot distinguish from a real one.
+        ///
+        /// The origin decides which reader is handed to tier 0 as well as whether tier 3 is reached.
+        /// It has to: tier 0 reuses the handle SolidWorks already holds, but the reader it used to be
+        /// given was the same one tier 3 uses, and that one opens the document - and launches
+        /// SolidWorks to do it - whenever the handle turns out not to exist. All that stood between a
+        /// background request and a window was an IsFileOpenInSolidWorks check microseconds earlier,
+        /// which is a race, not a gate. Narrowing that race is what was done before; this closes it,
+        /// because the reader a background request is given has no code path that can open anything.
         /// </summary>
         static CommandResult GetReferencesFast(string? filePath, ReferenceOrigin origin)
         {
             // A document SolidWorks already has open cannot be read by Document Manager, and reusing
             // the handle the user already has costs nothing and shows nothing.
-            var openHandleResult = TryReadWhileOpenInSolidWorks(filePath, path => _swApi!.GetExternalReferences(path));
+            var openHandleResult = origin == ReferenceOrigin.Foreground
+                ? TryReadWhileOpenInSolidWorks(filePath, path => _swApi!.GetExternalReferences(path))
+                : TryReadWhileOpenInSolidWorks(filePath, path => _swApi!.GetExternalReferencesFromOpenDocument(path));
             if (openHandleResult != null) return openHandleResult;
 
             if (_dmApi == null)
@@ -1169,11 +1179,13 @@ Options:
 
 Document Manager write diagnostic (never launches SolidWorks):
   --dm-probe <file>    Report which interop DLL loads, inventory the file's properties, and
-                       exit. Read-only unless --allow-write is also passed.
+                       exit. Read-only unless --allow-write is also passed: without it,
+                       nothing under the fixture root is written, moved or deleted.
   --probe-config <n>   Configuration to target. Defaults to the first one reported.
-  --allow-write        Exercise the write path: back up the file, capture every return value
-                       from SetCustomProperty / AddCustomProperty / Save, re-read through a
-                       fresh Document Manager handle, then restore from the backup.
+  --allow-write        Exercise the write path: sweep the fixture folder clean of anything an
+                       interrupted run left behind, back up the file, capture every return
+                       value from SetCustomProperty / AddCustomProperty / Save, re-read
+                       through a fresh Document Manager handle, then restore from the backup.
                        Refuses to run outside the regression fixture root (override it with
                        the BLUEPLM_FIXTURE_ROOT environment variable).
   --probe-readonly     Force the read-only file attribute on before writing, to capture what
