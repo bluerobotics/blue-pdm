@@ -365,4 +365,35 @@ export const fr: TranslationDict = {
     connect: 'Connecter le coffre',
     skip: 'Ignorer la configuration',
   },
+
+  solidworksVersion: {
+    title: 'Choisissez votre version de SOLIDWORKS',
+    subtitle: 'Plusieurs versions sont installées sur cet ordinateur',
+    explanation:
+      "BluePLM ne peut se connecter qu'à une seule version de SOLIDWORKS à la fois. Choisissez celle que vous utilisez réellement, sinon BluePLM peut indiquer que SOLIDWORKS est indisponible alors qu'il est ouvert.",
+    windowsDefault: 'Défaut Windows',
+    confirm: 'Utiliser cette version',
+    decideLater: 'Décider plus tard',
+    settingTitle: 'Version de SOLIDWORKS',
+    settingLabel: 'Version à laquelle se connecter',
+    settingDescription: 'La version de SOLIDWORKS avec laquelle BluePLM communique',
+    settingHint:
+      'Ce changement redémarre le service SOLIDWORKS. Choisissez la version dans laquelle vous ouvrez vos fichiers.',
+    automatic: 'Automatique',
+    automaticDescription: 'Utiliser la version que Windows a enregistrée par défaut',
+  },
+
+  hiddenFolders: {
+    hideFromNonAdmins: 'Masquer aux non-administrateurs',
+    showToEveryone: 'Afficher pour tout le monde',
+    notAccessControl:
+      "Masque ce dossier dans l'interface pour les non-administrateurs. Ce n'est pas une restriction d'accès, les fichiers restent lisibles.",
+    badgeLabel: 'Masqué aux non-administrateurs',
+    hidden: 'Dossier masqué aux non-administrateurs',
+    unhidden: 'Dossier visible par tout le monde',
+    updateFailed: 'Échec de la mise à jour de la visibilité du dossier',
+    updateNotPermitted:
+      "Vous n'avez peut-être pas l'autorisation de modifier la visibilité du dossier",
+    scanSkipped: '{{count}} fichiers ignorés dans des dossiers masqués aux non-administrateurs',
+  },
 }

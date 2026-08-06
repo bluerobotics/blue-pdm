@@ -50,6 +50,9 @@ export const createUISlice: StateCreator<
   // Initial state - Command confirmation dialog
   pendingCommandConfirm: null,
 
+  // Initial state - SOLIDWORKS version picker
+  showSolidworksVersionModal: false,
+
   // Initial state - Review preview
   reviewPreviewFile: null,
 
@@ -236,6 +239,9 @@ export const createUISlice: StateCreator<
 
   // Actions - Command confirmation dialog
   setPendingCommandConfirm: (confirm) => set({ pendingCommandConfirm: confirm }),
+
+  // Actions - SOLIDWORKS version picker
+  setShowSolidworksVersionModal: (show) => set({ showSolidworksVersionModal: show }),
 
   // Actions - Review preview
   setReviewPreviewFile: (file) => set({ reviewPreviewFile: file }),

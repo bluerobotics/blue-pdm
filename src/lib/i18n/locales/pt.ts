@@ -360,4 +360,34 @@ export const pt: TranslationDict = {
     connect: 'Conectar cofre',
     skip: 'Ignorar configuração',
   },
+
+  solidworksVersion: {
+    title: 'Escolha a sua versão do SOLIDWORKS',
+    subtitle: 'Existem várias versões instaladas neste computador',
+    explanation:
+      'O BluePLM só consegue ligar-se a uma versão do SOLIDWORKS de cada vez. Escolha aquela que realmente usa, caso contrário o BluePLM pode indicar que o SOLIDWORKS está indisponível mesmo estando aberto.',
+    windowsDefault: 'Predefinição do Windows',
+    confirm: 'Usar esta versão',
+    decideLater: 'Decidir mais tarde',
+    settingTitle: 'Versão do SOLIDWORKS',
+    settingLabel: 'Versão à qual ligar',
+    settingDescription: 'Com que versão do SOLIDWORKS o BluePLM comunica',
+    settingHint:
+      'Esta alteração reinicia o serviço SOLIDWORKS. Escolha a versão em que abre os seus ficheiros.',
+    automatic: 'Automática',
+    automaticDescription: 'Usar a versão que o Windows registou como predefinida',
+  },
+
+  hiddenFolders: {
+    hideFromNonAdmins: 'Ocultar de não administradores',
+    showToEveryone: 'Mostrar a todos',
+    notAccessControl:
+      'Oculta esta pasta na interface para quem não é administrador. Não é uma restrição de acesso, os ficheiros continuam legíveis.',
+    badgeLabel: 'Oculta de não administradores',
+    hidden: 'Pasta oculta de não administradores',
+    unhidden: 'Pasta visível para todos',
+    updateFailed: 'Não foi possível atualizar a visibilidade da pasta',
+    updateNotPermitted: 'Pode não ter permissão para alterar a visibilidade da pasta',
+    scanSkipped: 'Foram ignorados {{count}} ficheiros em pastas ocultas de não administradores',
+  },
 }

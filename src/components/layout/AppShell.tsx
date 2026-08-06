@@ -15,6 +15,7 @@ import {
   StagedCheckinConflictDialog,
   UploadSizeWarningContainer,
   CommandConfirmContainer,
+  SolidWorksVersionModal,
 } from '@/components/shared/Dialogs'
 
 import { MenuBar } from './MenuBar'
@@ -204,6 +205,9 @@ export function AppShell({ showWelcome, isSignInScreen, handleChangeOrg }: AppSh
 
       {/* Update Modal */}
       <UpdateModal />
+
+      {/* SOLIDWORKS version picker (several releases installed, no choice saved) */}
+      <SolidWorksVersionModal />
 
       {/* Orphaned Checkouts Dialog */}
       <OrphanedCheckoutsContainer onRefresh={loadFiles} />

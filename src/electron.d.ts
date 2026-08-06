@@ -167,6 +167,26 @@ interface ZipProgressEvent {
 }
 
 declare global {
+  /**
+   * A SOLIDWORKS release as described by its COM registration.
+   *
+   * Each release registers a versioned ProgID (`SldWorks.Application.32` for 2024,
+   * `.34` for 2026) plus the version-independent `SldWorks.Application`, which points
+   * at whichever release registered last. A running SOLIDWORKS only publishes itself
+   * under its own versioned class, so with several releases installed BluePLM has to
+   * know which one to attach to.
+   */
+  interface SolidWorksComInstall {
+    /** Versioned ProgID, e.g. `SldWorks.Application.32`. */
+    progId: string
+    clsid: string
+    exePath: string
+    /** Release year, e.g. 2024. */
+    year: number
+    /** True when `SldWorks.Application` resolves to this release. */
+    isDefault: boolean
+  }
+
   interface Window {
     electronAPI: {
       // App info
@@ -559,11 +579,21 @@ declare global {
           integrationEnabled: boolean
           dmLicenseKey?: string
           verboseLogging?: boolean
+          /** Versioned ProgID to target; null clears the choice back to the machine default. */
+          swProgId?: string | null
         }) => Promise<{ success: boolean }>
+        /**
+         * Every SolidWorks release registered for COM on this machine. More than one
+         * means the user has to say which release BluePLM should talk to, because a
+         * running SolidWorks is only reachable under its own versioned ProgID.
+         */
+        getComInstalls: () => Promise<{
+          success: boolean
+          installs?: SolidWorksComInstall[]
+          selectedProgId?: string | null
+        }>
         stopService: () => Promise<{ success: boolean }>
-        forceRestart: (
-          dmLicenseKey?: string,
-        ) => Promise<{
+        forceRestart: (dmLicenseKey?: string) => Promise<{
           success: boolean
           data?: { message: string; version?: string }
           error?: string
@@ -588,6 +618,13 @@ declare global {
             queueDepth?: number
             referenceRecoveryNeeded?: boolean
             message?: string
+            /** How many SolidWorks releases are registered for COM on this machine. */
+            comInstallCount?: number
+            /** Versioned ProgID the user picked, or null for the machine default. */
+            selectedProgId?: string | null
+            /** Versioned ProgID the service actually attached to, when it has attached. */
+            activeProgId?: string | null
+            documentManagerDllPath?: string | null
           }
           error?: string
         }>
@@ -653,9 +690,7 @@ declare global {
           data?: { filePath: string; configurationsProcessed: number }
           error?: string
         }>
-        getConfigurations: (
-          filePath: string,
-        ) => Promise<{
+        getConfigurations: (filePath: string) => Promise<{
           success: boolean
           data?: {
             filePath: string
@@ -670,9 +705,7 @@ declare global {
           }
           error?: string
         }>
-        getReferences: (
-          filePath: string,
-        ) => Promise<{
+        getReferences: (filePath: string) => Promise<{
           success: boolean
           data?: {
             filePath: string

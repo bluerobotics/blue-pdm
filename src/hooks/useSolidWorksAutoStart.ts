@@ -66,6 +66,7 @@ export function useSolidWorksAutoStart(organization: Organization | null) {
   const solidworksServiceVerboseLogging = usePDMStore(
     (state) => state.solidworksServiceVerboseLogging,
   )
+  const solidworksProgId = usePDMStore((state) => state.solidworksProgId)
 
   // Track auto-start attempts per organization
   const attemptStateRef = useRef<AutoStartAttempt | null>(null)
@@ -161,7 +162,10 @@ export function useSolidWorksAutoStart(organization: Organization | null) {
             if (result?.success) {
               log('info', '[SolidWorks] Background warmup complete - edits will be fast')
             } else {
-              log('warn', `[SolidWorks] Background warmup did not complete: ${result?.error ?? 'unknown'}`)
+              log(
+                'warn',
+                `[SolidWorks] Background warmup did not complete: ${result?.error ?? 'unknown'}`,
+              )
               // Allow a retry on the next successful status cycle
               warmedOrgRef.current = null
             }
@@ -203,6 +207,7 @@ export function useSolidWorksAutoStart(organization: Organization | null) {
         integrationEnabled: solidworksIntegrationEnabled,
         dmLicenseKey: organization?.settings?.solidworks_dm_license_key || undefined,
         verboseLogging: solidworksServiceVerboseLogging,
+        swProgId: solidworksProgId,
       })
       .catch((error) => {
         log('warn', `[SolidWorks] Failed to persist auto-start config: ${error}`)
@@ -212,9 +217,39 @@ export function useSolidWorksAutoStart(organization: Organization | null) {
     autoStartSolidworksService,
     solidworksIntegrationEnabled,
     solidworksServiceVerboseLogging,
+    solidworksProgId,
     organization,
     log,
   ])
+
+  // Ask which SOLIDWORKS to use when several are installed and nothing is saved.
+  // A running SOLIDWORKS is only reachable under its own versioned ProgID, so
+  // guessing here is what makes "SolidWorks is running but COM is unavailable" happen.
+  useEffect(() => {
+    if (!hasHydrated) return
+    if (!solidworksIntegrationEnabled) return
+    if (solidworksProgId) return
+    if (!window.electronAPI?.solidworks?.getComInstalls) return
+
+    let cancelled = false
+    window.electronAPI.solidworks
+      .getComInstalls()
+      .then((result) => {
+        if (cancelled) return
+        const installCount = result?.installs?.length ?? 0
+        if (installCount > 1) {
+          log('info', `[SolidWorks] ${installCount} versions installed - prompting for a choice`)
+          usePDMStore.getState().setShowSolidworksVersionModal(true)
+        }
+      })
+      .catch((error) => {
+        log('warn', `[SolidWorks] Failed to enumerate COM installs: ${error}`)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [hasHydrated, solidworksIntegrationEnabled, solidworksProgId, log])
 
   useEffect(() => {
     const dmLicenseKey = organization?.settings?.solidworks_dm_license_key

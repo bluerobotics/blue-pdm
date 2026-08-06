@@ -187,6 +187,7 @@ export const usePDMStore = create<PDMStoreState>()(
         solidworksIntegrationEnabled: state.solidworksIntegrationEnabled,
         solidworksPath: state.solidworksPath,
         solidworksDmLicenseKey: state.solidworksDmLicenseKey,
+        solidworksProgId: state.solidworksProgId,
         autoStartSolidworksService: state.autoStartSolidworksService,
         hideSolidworksTempFiles: state.hideSolidworksTempFiles,
         ignoreSolidworksTempFiles: state.ignoreSolidworksTempFiles,
@@ -340,6 +341,7 @@ export const usePDMStore = create<PDMStoreState>()(
               : true, // Default enabled, onboarding will auto-detect
           solidworksPath: (persisted.solidworksPath as string | null) || null,
           solidworksDmLicenseKey: (persisted.solidworksDmLicenseKey as string | null) || null,
+          solidworksProgId: (persisted.solidworksProgId as string | null) || null,
           autoStartSolidworksService: (persisted.autoStartSolidworksService as boolean) ?? true,
           hideSolidworksTempFiles:
             persisted.hideSolidworksTempFiles !== undefined

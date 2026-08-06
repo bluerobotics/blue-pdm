@@ -80,6 +80,7 @@ export const createSettingsSlice: StateCreator<
   solidworksIntegrationEnabled: true,
   solidworksPath: null,
   solidworksDmLicenseKey: null,
+  solidworksProgId: null,
   autoStartSolidworksService: true,
   hideSolidworksTempFiles: true,
   ignoreSolidworksTempFiles: true,
@@ -172,6 +173,7 @@ export const createSettingsSlice: StateCreator<
     set({ solidworksIntegrationEnabled }),
   setSolidworksPath: (solidworksPath) => set({ solidworksPath }),
   setSolidworksDmLicenseKey: (solidworksDmLicenseKey) => set({ solidworksDmLicenseKey }),
+  setSolidworksProgId: (solidworksProgId) => set({ solidworksProgId }),
   setAutoStartSolidworksService: (autoStartSolidworksService) =>
     set({ autoStartSolidworksService }),
   setHideSolidworksTempFiles: (hideSolidworksTempFiles) => set({ hideSolidworksTempFiles }),

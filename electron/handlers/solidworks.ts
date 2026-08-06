@@ -1115,6 +1115,122 @@ async function pollServiceUntilReady(
   }
 }
 
+// ============================================
+// SolidWorks COM Registrations
+// ============================================
+
+/**
+ * A SolidWorks release as described by its COM registration.
+ *
+ * Each release registers a versioned ProgID (SldWorks.Application.32 for 2024,
+ * .34 for 2026) plus the version-independent SldWorks.Application, which points at
+ * whichever release registered last. A running SolidWorks only publishes itself in
+ * the Running Object Table under its OWN versioned class, so with several releases
+ * installed the app has to know which one to ask for.
+ */
+export interface SolidWorksComInstall {
+  /** Versioned ProgID, e.g. "SldWorks.Application.32". */
+  progId: string
+  clsid: string
+  exePath: string
+  /** Release year, e.g. 2024. */
+  year: number
+  /** True when SldWorks.Application resolves to this release. */
+  isDefault: boolean
+}
+
+/** SolidWorks API version numbers are the release year minus this offset (2024 -> 32). */
+const SW_API_VERSION_YEAR_OFFSET = 1992
+
+let solidWorksComInstalls: SolidWorksComInstall[] | null = null
+
+function queryRegistryDefaultValue(key: string): string | null {
+  try {
+    const output = execSync(`reg query "${key}" /ve`, {
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    // "    (Default)    REG_SZ    {666aaee2-...}"
+    const match = output.match(/\(Default\)\s+REG_\w+\s+(.+)/)
+    return match ? match[1].trim() : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Turn an 8.3 short path (C:\PROGRA~1\SOLIDW~1\SOLIDW~4\SLDWORKS.exe, which is how
+ * SolidWorks registers LocalServer32) into its readable long form.
+ */
+function expandShortPath(exePath: string): string {
+  try {
+    return fs.realpathSync.native(exePath)
+  } catch {
+    return exePath
+  }
+}
+
+/**
+ * Every SolidWorks COM registration on this machine, newest release first.
+ * Cached for the life of the process: installs do not appear while the app runs.
+ */
+function getSolidWorksComInstalls(): SolidWorksComInstall[] {
+  if (solidWorksComInstalls !== null) return solidWorksComInstalls
+  if (process.platform !== 'win32') {
+    solidWorksComInstalls = []
+    return solidWorksComInstalls
+  }
+
+  const defaultClsid = queryRegistryDefaultValue('HKEY_CLASSES_ROOT\\SldWorks.Application\\CLSID')
+  const installs: SolidWorksComInstall[] = []
+
+  try {
+    const output = execSync('reg query HKCR /f "SldWorks.Application*" /k', {
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+
+    for (const line of output.split('\n')) {
+      const match = line.match(/^HKEY_CLASSES_ROOT\\(SldWorks\.Application\.(\d+))\s*$/i)
+      if (!match) continue
+
+      const progId = match[1]
+      const apiVersion = parseInt(match[2], 10)
+      const clsid = queryRegistryDefaultValue(`HKEY_CLASSES_ROOT\\${progId}\\CLSID`)
+      if (!clsid) continue
+
+      const rawExePath = queryRegistryDefaultValue(
+        `HKEY_CLASSES_ROOT\\CLSID\\${clsid}\\LocalServer32`,
+      )
+      // Registered as e.g. "SldWorks 2026 Application"
+      const description = queryRegistryDefaultValue(`HKEY_CLASSES_ROOT\\CLSID\\${clsid}`)
+      const yearMatch = description?.match(/(20\d{2})/)
+
+      installs.push({
+        progId,
+        clsid,
+        exePath: rawExePath ? expandShortPath(rawExePath.replace(/^"|"$/g, '')) : '',
+        year: yearMatch ? parseInt(yearMatch[1], 10) : apiVersion + SW_API_VERSION_YEAR_OFFSET,
+        isDefault: clsid.toLowerCase() === defaultClsid?.toLowerCase(),
+      })
+    }
+  } catch (error) {
+    logWarn(`[SolidWorks] Failed to enumerate COM registrations: ${error}`)
+  }
+
+  installs.sort((a, b) => b.year - a.year)
+  solidWorksComInstalls = installs
+
+  if (installs.length > 0) {
+    log(
+      '[SolidWorks] COM registrations: ' +
+        installs.map((i) => `${i.year} [${i.progId}]${i.isDefault ? ' (default)' : ''}`).join(', '),
+    )
+  }
+
+  return installs
+}
+
 // Detect if SolidWorks is installed
 function isSolidWorksInstalled(): boolean {
   if (solidWorksInstalled !== null) {
@@ -1124,6 +1240,12 @@ function isSolidWorksInstalled(): boolean {
   if (process.platform !== 'win32') {
     solidWorksInstalled = false
     return false
+  }
+
+  if (getSolidWorksComInstalls().length > 0) {
+    solidWorksInstalled = true
+    log('[SolidWorks] Installation detected: true')
+    return true
   }
 
   try {
@@ -1345,6 +1467,8 @@ interface SwAutoStartConfig {
   integrationEnabled: boolean
   dmLicenseKey?: string
   verboseLogging?: boolean
+  /** Versioned ProgID of the SolidWorks release the user picked, when several are installed. */
+  swProgId?: string
 }
 
 function getAutoStartConfigPath(): string {
@@ -1379,6 +1503,27 @@ function updateAutoStartConfig(patch: Partial<SwAutoStartConfig>): void {
   } catch (error) {
     logWarn(`[SolidWorks] Failed to write auto-start config: ${error}`)
   }
+}
+
+/**
+ * The versioned ProgID the service should prefer, or undefined when the machine
+ * default is fine. Read from the persisted config on every start so a change made
+ * in Settings takes effect on the next service restart, and dropped when it names a
+ * release that is no longer registered.
+ */
+function resolvePreferredProgId(): string | undefined {
+  const configured = readAutoStartConfig()?.swProgId
+  if (!configured) return undefined
+
+  const installs = getSolidWorksComInstalls()
+  if (installs.length === 0) return configured
+
+  if (!installs.some((install) => install.progId === configured)) {
+    logWarn(`[SolidWorks] Configured ProgID ${configured} is no longer registered - ignoring`)
+    return undefined
+  }
+
+  return configured
 }
 
 /**
@@ -1532,12 +1677,17 @@ async function startSWService(
   if (verboseLogging) {
     args.push('--verbose')
   }
+  const preferredProgId = resolvePreferredProgId()
+  if (preferredProgId) {
+    args.push('--sw-progid', preferredProgId)
+  }
 
   return new Promise((resolve) => {
     try {
       log('[SolidWorks] Spawning new service process...')
       log(`[SolidWorks] Executable: ${servicePath}`)
       log(`[SolidWorks] DM License: ${dmLicenseKey ? 'provided' : 'not provided'}`)
+      log(`[SolidWorks] SolidWorks ProgID: ${preferredProgId ?? 'machine default'}`)
 
       swServiceProcess = spawn(servicePath, args, {
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -1620,7 +1770,9 @@ async function startSWService(
         })
         .catch((error) => {
           const totalTime = Date.now() - startTime
-          logError(`[SolidWorks] [FAIL] SERVICE STARTUP EXCEPTION: ${String(error)} (${totalTime}ms)`)
+          logError(
+            `[SolidWorks] [FAIL] SERVICE STARTUP EXCEPTION: ${String(error)} (${totalTime}ms)`,
+          )
           logServiceState('After startup exception')
           resolve({
             success: false,
@@ -2674,6 +2826,7 @@ export function registerSolidWorksHandlers(
         integrationEnabled: boolean
         dmLicenseKey?: string
         verboseLogging?: boolean
+        swProgId?: string | null
       },
     ) => {
       const patch: Partial<SwAutoStartConfig> = {
@@ -2682,6 +2835,8 @@ export function registerSolidWorksHandlers(
       }
       if (config.dmLicenseKey !== undefined) patch.dmLicenseKey = config.dmLicenseKey
       if (config.verboseLogging !== undefined) patch.verboseLogging = config.verboseLogging
+      // null explicitly clears the choice back to the machine default
+      if (config.swProgId !== undefined) patch.swProgId = config.swProgId ?? undefined
       updateAutoStartConfig(patch)
       return { success: true }
     },
@@ -2735,6 +2890,13 @@ export function registerSolidWorksHandlers(
     const swInstalled = isSolidWorksInstalled()
     const queueStats = getQueueStats()
 
+    // Which SolidWorks release the service targets. Spread into every branch below
+    // so the version picker can react regardless of how the status was derived.
+    const comStats = {
+      comInstallCount: getSolidWorksComInstalls().length,
+      selectedProgId: resolvePreferredProgId() ?? null,
+    }
+
     // Helper to determine operational mode
     const getMode = (dmAvailable: boolean, swApiAvailable: boolean): string => {
       if (dmAvailable && swApiAvailable) return 'full'
@@ -2760,10 +2922,14 @@ export function registerSolidWorksHandlers(
             referenceRecoveryNeeded: true,
             message: 'Service running but IPC connection lost - restart recommended',
             ...queueStats,
+            ...comStats,
           },
         }
       }
-      return { success: true, data: { running: false, installed: swInstalled, ...queueStats } }
+      return {
+        success: true,
+        data: { running: false, installed: swInstalled, ...queueStats, ...comStats },
+      }
     }
 
     // First check if process is alive at OS level
@@ -2773,7 +2939,10 @@ export function registerSolidWorksHandlers(
     if (!processAlive) {
       log('[SolidWorks] Status check: process not alive at OS level, cleaning up')
       clearServiceState('Process no longer exists (detected during status check)', true)
-      return { success: true, data: { running: false, installed: swInstalled, ...queueStats } }
+      return {
+        success: true,
+        data: { running: false, installed: swInstalled, ...queueStats, ...comStats },
+      }
     }
 
     // While a background pre-warm is launching SolidWorks, the service can't answer
@@ -2798,6 +2967,7 @@ export function registerSolidWorksHandlers(
           fastModeEnabled: cachedData?.fastModeEnabled,
           mode: getMode(dmAvailable, swApiAvailable),
           ...queueStats,
+          ...comStats,
         },
       }
     }
@@ -2832,6 +3002,7 @@ export function registerSolidWorksHandlers(
           fastModeEnabled: cachedData?.fastModeEnabled,
           mode: getMode(dmAvailable, swApiAvailable),
           ...queueStats,
+          ...comStats,
         },
       }
     }
@@ -2859,6 +3030,7 @@ export function registerSolidWorksHandlers(
           fastModeEnabled: cachedData?.fastModeEnabled,
           mode: getMode(dmAvailable, swApiAvailable),
           ...queueStats,
+          ...comStats,
         },
       }
     }
@@ -2917,13 +3089,25 @@ export function registerSolidWorksHandlers(
         documentManagerError: data?.documentManagerError,
         fastModeEnabled: data?.fastModeEnabled,
         mode: getMode(dmAvailable, swApiAvailable),
+        // ProgID the service actually attached to, when it has attached at all
+        activeProgId: data?.activeProgId ?? null,
+        documentManagerDllPath: data?.documentManagerDllPath ?? null,
         ...queueStats,
+        ...comStats,
       },
     }
   })
 
   ipcMain.handle('solidworks:is-installed', async () => {
     return { success: true, data: { installed: isSolidWorksInstalled() } }
+  })
+
+  ipcMain.handle('solidworks:get-com-installs', async () => {
+    return {
+      success: true,
+      installs: getSolidWorksComInstalls(),
+      selectedProgId: resolvePreferredProgId() ?? null,
+    }
   })
 
   // Orphaned process management
@@ -3069,11 +3253,7 @@ export function registerSolidWorksHandlers(
 
   ipcMain.handle(
     'solidworks:set-inspection-characteristics',
-    async (
-      _,
-      filePath: string,
-      characteristics: Array<Record<string, string | null>>,
-    ) => {
+    async (_, filePath: string, characteristics: Array<Record<string, string | null>>) => {
       return sendSWCommand({ action: 'setInspectionCharacteristics', filePath, characteristics })
     },
   )
@@ -3557,6 +3737,7 @@ export function unregisterSolidWorksHandlers(): void {
     'solidworks:set-document-properties',
     'solidworks:get-selected-files',
     'solidworks:get-installed-versions',
+    'solidworks:get-com-installs',
     'solidworks:get-file-locations',
     'solidworks:set-file-locations',
     'solidworks:get-license-registry',

@@ -7,6 +7,7 @@ export {
 } from './StagedCheckinConflictDialog'
 export { VaultNotFoundDialog } from './VaultNotFoundDialog'
 export { UpdateModal } from './UpdateModal'
+export { SolidWorksVersionModal } from './SolidWorksVersionModal'
 export { VaultSetupDialog, type VaultSyncStats } from './VaultSetupDialog'
 export { UploadSizeWarningDialog, type LargeFile } from './UploadSizeWarningDialog'
 export { UploadSizeWarningContainer } from './UploadSizeWarningContainer'

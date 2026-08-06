@@ -675,21 +675,30 @@ namespace BluePLM.SolidWorksService
 
             try
             {
-                // Try to get the active SolidWorks instance
+                // Try to get the active SolidWorks instance. Every registered ProgID is
+                // probed: with several SolidWorks releases installed, the running one is
+                // only published under its own versioned class.
                 object? swObj = null;
-                try
+                foreach (var progId in SolidWorksComRegistry.GetAttachProgIdsInOrder())
                 {
-                    swObj = Marshal.GetActiveObject("SldWorks.Application");
-                }
-                catch (COMException ex) when (ex.HResult == unchecked((int)0x800401E3)) // MK_E_UNAVAILABLE
-                {
-                    Console.Error.WriteLine("[ComStability] Health check: SolidWorks not running");
-                    return SwHealthStatus.NotRunning;
+                    try
+                    {
+                        swObj = Marshal.GetActiveObject(progId);
+                        if (swObj != null)
+                        {
+                            SolidWorksComRegistry.SetResolvedProgId(progId);
+                            break;
+                        }
+                    }
+                    catch (COMException ex) when (ex.HResult == unchecked((int)0x800401E3)) // MK_E_UNAVAILABLE
+                    {
+                        // Not this release - keep probing the remaining ProgIDs.
+                    }
                 }
 
                 if (swObj == null)
                 {
-                    Console.Error.WriteLine("[ComStability] Health check: GetActiveObject returned null");
+                    Console.Error.WriteLine("[ComStability] Health check: SolidWorks not running (no ProgID resolved in the ROT)");
                     return SwHealthStatus.NotRunning;
                 }
 

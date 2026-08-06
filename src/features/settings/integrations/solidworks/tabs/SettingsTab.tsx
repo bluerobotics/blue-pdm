@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import {
   Image,
   ExternalLink,
@@ -10,15 +11,26 @@ import {
   FileText,
   Globe,
   Loader2,
+  Check,
+  ChevronDown,
+  Cpu,
 } from 'lucide-react'
+
+import { useTranslation } from '@/lib/i18n'
+
 import { useSolidWorksSettings } from '../hooks'
 
 export function SettingsTab() {
+  const { t } = useTranslation()
+  const [isVersionDropdownOpen, setIsVersionDropdownOpen] = useState(false)
   const {
     cadPreviewMode,
     setCadPreviewMode,
     solidworksPath,
     setSolidworksPath,
+    swComInstalls,
+    solidworksProgId,
+    handleSelectSolidworksProgId,
     hideSolidworksTempFiles,
     setHideSolidworksTempFiles,
     ignoreSolidworksTempFiles,
@@ -302,6 +314,91 @@ export function SettingsTab() {
           </div>
         </div>
       </div>
+
+      {/* Version selection - only meaningful with several releases installed */}
+      {swComInstalls.length > 1 && (
+        <div className="space-y-3">
+          <label className="text-sm text-plm-fg-muted uppercase tracking-wide font-medium">
+            {t('solidworksVersion.settingTitle')}
+          </label>
+          <div className="p-4 bg-plm-bg rounded-lg border border-plm-border space-y-3">
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <Cpu size={18} className="text-plm-fg-muted" />
+                <div>
+                  <div className="text-sm text-plm-fg">{t('solidworksVersion.settingLabel')}</div>
+                  <div className="text-xs text-plm-fg-muted">
+                    {t('solidworksVersion.settingDescription')}
+                  </div>
+                </div>
+              </div>
+              <div className="relative flex-shrink-0">
+                <button
+                  onClick={() => setIsVersionDropdownOpen(!isVersionDropdownOpen)}
+                  className="flex items-center gap-2 px-4 py-2.5 bg-plm-bg-secondary border border-plm-border rounded-lg hover:border-plm-accent/50 transition-colors min-w-[200px]"
+                >
+                  <span className="flex-1 text-left text-plm-fg font-medium">
+                    {swComInstalls.find((install) => install.progId === solidworksProgId)
+                      ? `SOLIDWORKS ${swComInstalls.find((install) => install.progId === solidworksProgId)!.year}`
+                      : t('solidworksVersion.automatic')}
+                  </span>
+                  <ChevronDown
+                    size={16}
+                    className={`text-plm-fg-muted transition-transform ${isVersionDropdownOpen ? 'rotate-180' : ''}`}
+                  />
+                </button>
+
+                {isVersionDropdownOpen && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-40"
+                      onClick={() => setIsVersionDropdownOpen(false)}
+                    />
+                    <div className="absolute right-0 top-full mt-1 z-50 min-w-[280px] bg-plm-bg-secondary border border-plm-border rounded-lg shadow-xl overflow-hidden">
+                      {[null, ...swComInstalls.map((install) => install.progId)].map((progId) => {
+                        const install = swComInstalls.find((item) => item.progId === progId)
+                        const isSelected = solidworksProgId === progId
+                        return (
+                          <button
+                            key={progId ?? 'automatic'}
+                            onClick={() => {
+                              setIsVersionDropdownOpen(false)
+                              handleSelectSolidworksProgId(progId)
+                            }}
+                            className={`w-full flex items-center justify-between gap-3 px-4 py-2.5 text-left transition-colors ${
+                              isSelected
+                                ? 'bg-plm-accent/15 text-plm-accent'
+                                : 'text-plm-fg hover:bg-plm-bg'
+                            }`}
+                          >
+                            <div className="min-w-0">
+                              <div className="text-sm font-medium">
+                                {install
+                                  ? `SOLIDWORKS ${install.year}`
+                                  : t('solidworksVersion.automatic')}
+                              </div>
+                              <div className="text-xs text-plm-fg-muted truncate">
+                                {install
+                                  ? install.exePath || install.progId
+                                  : t('solidworksVersion.automaticDescription')}
+                              </div>
+                            </div>
+                            {isSelected && <Check size={16} className="flex-shrink-0" />}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+            <div className="flex items-start gap-2 text-sm text-plm-fg-muted pt-2 border-t border-plm-border">
+              <Info size={16} className="mt-0.5 flex-shrink-0" />
+              <span>{t('solidworksVersion.settingHint')}</span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Installation Path */}
       <div className="space-y-3">

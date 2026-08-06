@@ -42,6 +42,15 @@ interface FileStatResult extends OperationResult {
   isDirectory?: boolean
 }
 
+/** A SolidWorks release as described by its COM registration. Mirrors the main-process type. */
+interface SolidWorksComInstall {
+  progId: string
+  clsid: string
+  exePath: string
+  year: number
+  isDefault: boolean
+}
+
 interface FileSelectResult extends OperationResult {
   files?: Array<{
     name: string
@@ -446,7 +455,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       integrationEnabled: boolean
       dmLicenseKey?: string
       verboseLogging?: boolean
+      swProgId?: string | null
     }) => ipcRenderer.invoke('solidworks:set-autostart-config', config),
+    getComInstalls: () => ipcRenderer.invoke('solidworks:get-com-installs'),
     stopService: () => ipcRenderer.invoke('solidworks:stop-service'),
     forceRestart: (dmLicenseKey?: string) =>
       ipcRenderer.invoke('solidworks:force-restart', dmLicenseKey),
@@ -490,8 +501,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     setInspectionCharacteristics: (
       filePath: string,
       characteristics: Array<Record<string, string | null>>,
-    ) =>
-      ipcRenderer.invoke('solidworks:set-inspection-characteristics', filePath, characteristics),
+    ) => ipcRenderer.invoke('solidworks:set-inspection-characteristics', filePath, characteristics),
 
     // Document creation
     createDocumentFromTemplate: (templatePath: string, outputPath: string) =>
@@ -1275,9 +1285,7 @@ declare global {
       ) => Promise<{ cancelledCount: number; activeCount: number; activePaths: string[] }>
 
       // Generate cache entries for a folder's uncached CAD files in the background
-      prewarmThumbnails: (
-        folderPath: string,
-      ) => Promise<{ generated: number; skipped: number }>
+      prewarmThumbnails: (folderPath: string) => Promise<{ generated: number; skipped: number }>
 
       // Release SolidWorks Document Manager handles (used before folder moves to prevent EPERM)
       releaseHandles: () => Promise<{
@@ -1348,7 +1356,13 @@ declare global {
           integrationEnabled: boolean
           dmLicenseKey?: string
           verboseLogging?: boolean
+          swProgId?: string | null
         }) => Promise<{ success: boolean }>
+        getComInstalls: () => Promise<{
+          success: boolean
+          installs?: SolidWorksComInstall[]
+          selectedProgId?: string | null
+        }>
         stopService: () => Promise<{ success: boolean }>
         getServiceStatus: () => Promise<{
           success: boolean

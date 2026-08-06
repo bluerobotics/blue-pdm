@@ -125,6 +125,9 @@ export function useSolidWorksSettings() {
     setLockDrawingDescription,
     solidworksServiceVerboseLogging,
     setSolidworksServiceVerboseLogging,
+    solidworksProgId,
+    setSolidworksProgId,
+    solidworksIntegrationEnabled,
     vaultPath,
     user,
     files,
@@ -178,6 +181,56 @@ export function useSolidWorksSettings() {
       })
       .catch(() => {})
   }, [])
+
+  // ============================================
+  // SOLIDWORKS Release Selection
+  // ============================================
+
+  // Which releases are registered for COM. With more than one the user has to say
+  // which to attach to: a running SOLIDWORKS is only reachable under its own
+  // versioned ProgID, not the shared SldWorks.Application.
+  const [swComInstalls, setSwComInstalls] = useState<SolidWorksComInstall[]>([])
+
+  useEffect(() => {
+    window.electronAPI?.solidworks
+      ?.getComInstalls?.()
+      .then((result) => {
+        if (result?.success && result.installs) setSwComInstalls(result.installs)
+      })
+      .catch(() => {})
+  }, [])
+
+  const handleSelectSolidworksProgId = useCallback(
+    async (progId: string | null) => {
+      setSolidworksProgId(progId)
+      try {
+        // Persist first: startSWService reads the choice back from disk.
+        await window.electronAPI?.solidworks?.setAutoStartConfig({
+          autoStartEnabled: autoStartSolidworksService,
+          integrationEnabled: solidworksIntegrationEnabled,
+          swProgId: progId,
+        })
+        await window.electronAPI?.solidworks?.forceRestart()
+        const selected = swComInstalls.find((install) => install.progId === progId)
+        addToast(
+          'success',
+          selected
+            ? `Now using SOLIDWORKS ${selected.year}`
+            : 'Now using the default SOLIDWORKS version',
+        )
+      } catch (error) {
+        log.error('[SWSettings]', 'Select SolidWorks version failed', { error })
+        addToast('error', 'Failed to switch SOLIDWORKS version')
+      }
+    },
+    [
+      setSolidworksProgId,
+      autoStartSolidworksService,
+      solidworksIntegrationEnabled,
+      swComInstalls,
+      addToast,
+    ],
+  )
 
   // Update template state when organization changes
   useEffect(() => {
@@ -516,7 +569,10 @@ export function useSolidWorksSettings() {
       }
     } catch (error) {
       log.error('[SWSettings]', 'Apply templates failed', { error: error })
-      addToast('error', error instanceof Error ? error.message : 'Failed to apply template settings')
+      addToast(
+        'error',
+        error instanceof Error ? error.message : 'Failed to apply template settings',
+      )
     } finally {
       setIsApplyingTemplates(false)
     }
@@ -571,7 +627,10 @@ export function useSolidWorksSettings() {
         )
       } catch (error) {
         log.error('[SWSettings]', 'Toggle model revision failed', { error: error })
-        addToast('error', error instanceof Error ? error.message : 'Failed to update revision policy')
+        addToast(
+          'error',
+          error instanceof Error ? error.message : 'Failed to update revision policy',
+        )
       } finally {
         setIsSavingRevisionPolicy(false)
       }
@@ -627,7 +686,10 @@ export function useSolidWorksSettings() {
         }
       } catch (error) {
         log.error('[SWSettings]', 'Toggle prewarm failed', { error: error })
-        addToast('error', error instanceof Error ? error.message : 'Failed to update warmup setting')
+        addToast(
+          'error',
+          error instanceof Error ? error.message : 'Failed to update warmup setting',
+        )
       } finally {
         setIsSavingPrewarm(false)
       }
@@ -718,6 +780,10 @@ export function useSolidWorksSettings() {
     // Service logging
     solidworksServiceVerboseLogging,
     setSolidworksServiceVerboseLogging,
+    // SOLIDWORKS release selection
+    swComInstalls,
+    solidworksProgId,
+    handleSelectSolidworksProgId,
 
     // DM License key
     dmLicenseKeyInput,

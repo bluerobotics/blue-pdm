@@ -363,4 +363,34 @@ export const es: TranslationDict = {
     connect: 'Conectar bóveda',
     skip: 'Omitir configuración',
   },
+
+  solidworksVersion: {
+    title: 'Elige tu versión de SOLIDWORKS',
+    subtitle: 'Hay varias versiones instaladas en este equipo',
+    explanation:
+      'BluePLM solo puede conectarse a una versión de SOLIDWORKS a la vez. Elige la que realmente usas; de lo contrario, BluePLM puede indicar que SOLIDWORKS no está disponible aunque esté abierto.',
+    windowsDefault: 'Predeterminada de Windows',
+    confirm: 'Usar esta versión',
+    decideLater: 'Decidir más tarde',
+    settingTitle: 'Versión de SOLIDWORKS',
+    settingLabel: 'Versión a la que conectarse',
+    settingDescription: 'Con qué versión de SOLIDWORKS se comunica BluePLM',
+    settingHint:
+      'Este cambio reinicia el servicio de SOLIDWORKS. Elige la versión en la que abres tus archivos.',
+    automatic: 'Automática',
+    automaticDescription: 'Usar la versión que Windows registró como predeterminada',
+  },
+
+  hiddenFolders: {
+    hideFromNonAdmins: 'Ocultar a los no administradores',
+    showToEveryone: 'Mostrar a todos',
+    notAccessControl:
+      'Oculta esta carpeta de la interfaz para quienes no son administradores. No es una restricción de acceso, los archivos siguen siendo legibles.',
+    badgeLabel: 'Oculta a los no administradores',
+    hidden: 'Carpeta oculta a los no administradores',
+    unhidden: 'Carpeta visible para todos',
+    updateFailed: 'No se pudo actualizar la visibilidad de la carpeta',
+    updateNotPermitted: 'Puede que no tengas permiso para cambiar la visibilidad de la carpeta',
+    scanSkipped: 'Se omitieron {{count}} archivos en carpetas ocultas a los no administradores',
+  },
 }

@@ -349,4 +349,32 @@ export const zhCN: TranslationDict = {
     connect: '连接保险库',
     skip: '跳过设置',
   },
+
+  solidworksVersion: {
+    title: '选择您的 SOLIDWORKS 版本',
+    subtitle: '此计算机上安装了多个版本',
+    explanation:
+      'BluePLM 一次只能连接一个 SOLIDWORKS 版本。请选择您实际使用的版本，否则即使 SOLIDWORKS 已打开，BluePLM 也可能提示无法连接。',
+    windowsDefault: 'Windows 默认',
+    confirm: '使用此版本',
+    decideLater: '稍后决定',
+    settingTitle: 'SOLIDWORKS 版本',
+    settingLabel: '要连接的版本',
+    settingDescription: 'BluePLM 与哪个 SOLIDWORKS 版本通信',
+    settingHint: '更改此设置会重启 SOLIDWORKS 服务。请选择您用来打开文件的版本。',
+    automatic: '自动',
+    automaticDescription: '使用 Windows 注册为默认的版本',
+  },
+
+  hiddenFolders: {
+    hideFromNonAdmins: '对非管理员隐藏',
+    showToEveryone: '对所有人显示',
+    notAccessControl: '在界面中对非管理员隐藏此文件夹。这不是访问限制，文件仍然可读。',
+    badgeLabel: '已对非管理员隐藏',
+    hidden: '文件夹已对非管理员隐藏',
+    unhidden: '文件夹已对所有人可见',
+    updateFailed: '更新文件夹可见性失败',
+    updateNotPermitted: '您可能没有权限更改文件夹可见性',
+    scanSkipped: '已跳过对非管理员隐藏的文件夹中的 {{count}} 个文件',
+  },
 }

@@ -366,4 +366,35 @@ export const de: TranslationDict = {
     connect: 'Tresor verbinden',
     skip: 'Einrichtung überspringen',
   },
+
+  solidworksVersion: {
+    title: 'Wählen Sie Ihre SOLIDWORKS-Version',
+    subtitle: 'Auf diesem Computer sind mehrere Versionen installiert',
+    explanation:
+      'BluePLM kann sich immer nur mit einer SOLIDWORKS-Version verbinden. Wählen Sie die Version, mit der Sie tatsächlich arbeiten - sonst meldet BluePLM möglicherweise, dass SOLIDWORKS nicht verfügbar ist, obwohl es geöffnet ist.',
+    windowsDefault: 'Windows-Standard',
+    confirm: 'Diese Version verwenden',
+    decideLater: 'Später entscheiden',
+    settingTitle: 'SOLIDWORKS-Version',
+    settingLabel: 'Zu verbindende Version',
+    settingDescription: 'Mit welcher SOLIDWORKS-Version BluePLM kommuniziert',
+    settingHint:
+      'Diese Änderung startet den SOLIDWORKS-Dienst neu. Wählen Sie die Version, in der Sie Ihre Dateien öffnen.',
+    automatic: 'Automatisch',
+    automaticDescription: 'Die von Windows als Standard registrierte Version verwenden',
+  },
+
+  hiddenFolders: {
+    hideFromNonAdmins: 'Vor Nicht-Administratoren ausblenden',
+    showToEveryone: 'Für alle anzeigen',
+    notAccessControl:
+      'Blendet diesen Ordner in der Oberfläche für Nicht-Administratoren aus. Das ist keine Zugriffsbeschränkung, die Dateien bleiben lesbar.',
+    badgeLabel: 'Vor Nicht-Administratoren ausgeblendet',
+    hidden: 'Ordner vor Nicht-Administratoren ausgeblendet',
+    unhidden: 'Ordner für alle sichtbar',
+    updateFailed: 'Ordnersichtbarkeit konnte nicht aktualisiert werden',
+    updateNotPermitted:
+      'Sie haben möglicherweise keine Berechtigung, die Ordnersichtbarkeit zu ändern',
+    scanSkipped: '{{count}} Dateien in ausgeblendeten Ordnern übersprungen',
+  },
 }

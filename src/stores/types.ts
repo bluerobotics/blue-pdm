@@ -541,6 +541,9 @@ export interface UISlice {
     confirmText?: string
   } | null
 
+  // First-run picker shown when several SOLIDWORKS releases are installed
+  showSolidworksVersionModal: boolean
+
   // Review preview (full-screen PDF in reviews view)
   reviewPreviewFile: {
     filePath: string // local filesystem path for PDF rendering
@@ -592,6 +595,9 @@ export interface UISlice {
   // Command confirmation dialog
   setPendingCommandConfirm: (confirm: UISlice['pendingCommandConfirm']) => void
 
+  // SOLIDWORKS version picker
+  setShowSolidworksVersionModal: (show: boolean) => void
+
   // Review preview
   setReviewPreviewFile: (file: UISlice['reviewPreviewFile']) => void
   clearReviewPreviewFile: () => void
@@ -615,6 +621,12 @@ export interface SettingsSlice {
   solidworksIntegrationEnabled: boolean
   solidworksPath: string | null
   solidworksDmLicenseKey: string | null
+  /**
+   * Versioned ProgID of the SOLIDWORKS release BluePLM should talk to
+   * (e.g. `SldWorks.Application.32` for 2024). Null means the machine default.
+   * Only meaningful when several releases are installed side by side.
+   */
+  solidworksProgId: string | null
   autoStartSolidworksService: boolean
   hideSolidworksTempFiles: boolean
   ignoreSolidworksTempFiles: boolean
@@ -707,6 +719,7 @@ export interface SettingsSlice {
   setSolidworksIntegrationEnabled: (enabled: boolean) => void
   setSolidworksPath: (path: string | null) => void
   setSolidworksDmLicenseKey: (key: string | null) => void
+  setSolidworksProgId: (progId: string | null) => void
   setAutoStartSolidworksService: (enabled: boolean) => void
   setHideSolidworksTempFiles: (enabled: boolean) => void
   setIgnoreSolidworksTempFiles: (enabled: boolean) => void

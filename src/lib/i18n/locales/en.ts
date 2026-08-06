@@ -905,6 +905,24 @@ export const en: TranslationDict = {
     createRfq: 'Create RFQ',
   },
 
+  // SOLIDWORKS version selection (picker modal + settings row)
+  solidworksVersion: {
+    title: 'Choose your SOLIDWORKS version',
+    subtitle: 'Several versions are installed on this computer',
+    explanation:
+      'BluePLM can only connect to one SOLIDWORKS version at a time. Pick the one you actually work in, otherwise BluePLM may report that SOLIDWORKS is unavailable while it is open.',
+    windowsDefault: 'Windows default',
+    confirm: 'Use this version',
+    decideLater: 'Decide later',
+    settingTitle: 'SOLIDWORKS Version',
+    settingLabel: 'Version to connect to',
+    settingDescription: 'Which SOLIDWORKS release BluePLM talks to',
+    settingHint:
+      'Changing this restarts the SOLIDWORKS service. Pick the version you open your files in.',
+    automatic: 'Automatic',
+    automaticDescription: 'Use whichever version Windows registered as the default',
+  },
+
   // Context menu translations
   contextMenu: {
     assembly: {
@@ -930,5 +948,19 @@ export const en: TranslationDict = {
       parts: 'Parts',
       drawings: 'Drawings',
     },
+  },
+
+  // Admin-only folder visibility (decluttering, not access control)
+  hiddenFolders: {
+    hideFromNonAdmins: 'Hide from non-admins',
+    showToEveryone: 'Show to everyone',
+    notAccessControl:
+      'Hides this folder from the interface for non-admins. This is not an access restriction, the files stay readable.',
+    badgeLabel: 'Hidden from non-admins',
+    hidden: 'Folder hidden from non-admins',
+    unhidden: 'Folder shown to everyone',
+    updateFailed: 'Failed to update folder visibility',
+    updateNotPermitted: 'You may not have permission to change folder visibility',
+    scanSkipped: 'Skipped {{count}} files in folders hidden from non-admins',
   },
 }
