@@ -40,6 +40,27 @@
  * - Version 1.12.0: IsFileOpenInSolidWorks answers from the cached SolidWorks handle before
  *                   attempting a ROT lookup, so an integrity-level mismatch no longer forces
  *                   every read onto the slow SW API instead of Document Manager
+ * - Version 1.13.0: Attach to whichever SolidWorks release is actually running by probing every
+ *                   registered versioned ProgID (--sw-progid selects one), never launch a second
+ *                   SolidWorks when one is already running, and load the Document Manager interop
+ *                   from the selected release instead of a hardcoded path
+ * - Version 1.14.0: Read properties/configurations/references through Document Manager when
+ *                   SolidWorks is running but unreachable via COM, instead of failing outright,
+ *                   and report SOLIDWORKS_COM_INACCESSIBLE instead of a prose message so the app
+ *                   can tell the user what to fix
+ * - Version 1.15.0: Pass swDmCustomInfoText (30) to AddCustomProperty instead of 2, which is not a
+ *                   member of SwDmCustomInfoType, so creating a property through Document Manager
+ *                   works at file and configuration level; set SwDmSearchExternalReference when
+ *                   resolving references, without which the search never looks for one; honour the
+ *                   AddCustomProperty and Save return codes instead of reporting success
+ *                   unconditionally; and decode SwDmDocumentOpenError correctly from code 2 up.
+ *                   The --dm-probe diagnostic restores its fixture on every exit path and repairs
+ *                   anything an interrupted previous run left behind before it starts
+ * - Version 1.16.0: Honour the Set2/Add3/Delete2 and Save3 result codes on the SolidWorks COM
+ *                   write path, which reported success unconditionally; route configuration-level
+ *                   property writes through Document Manager as well as file-level ones now that
+ *                   the create bug is fixed; and make setPropertiesBatch one Document Manager
+ *                   open/save cycle for every configuration instead of one per configuration
  *
  * When making service changes:
  * 1. Increment SERVICE_VERSION in Program.cs
@@ -49,7 +70,7 @@
 
 // The SolidWorks service version this app version expects
 // Uses semver: MAJOR.MINOR.PATCH
-export const EXPECTED_SW_SERVICE_VERSION = '1.12.0'
+export const EXPECTED_SW_SERVICE_VERSION = '1.16.0'
 
 // Minimum service version that will still work (for soft warnings vs hard errors)
 // Breaking changes should bump the major version and update this
@@ -84,6 +105,14 @@ export const SW_SERVICE_VERSION_DESCRIPTIONS: Record<string, string> = {
     'Exports no longer fail at random: the service tells the app which SolidWorks process it launched, so the background cleanup stops killing the hidden instance an export is using',
   '1.12.0':
     'Reading metadata and references is seconds faster when SolidWorks is open: the service reuses its existing SolidWorks connection to check whether a file is open, instead of falling back to the slow path whenever that check fails',
+  '1.13.0':
+    'Works with several SolidWorks versions installed: the service connects to the release you actually have open instead of only the one Windows registers by default, never starts a second SolidWorks behind your back, and reads files with the matching Document Manager library',
+  '1.14.0':
+    'Metadata still reads when SolidWorks stops responding to other programs: the service falls back to the Document Manager library instead of failing, and when nothing can be read it now says the connection to SolidWorks is the problem rather than reporting a generic failure',
+  '1.15.0':
+    'Writing a new property no longer needs SolidWorks open, and a file\'s references are found at last: the service was asking the Document Manager library to create properties of a type that does not exist and to search for references without ever asking it to look for references. It also now reports a refused write as a failure instead of as success, and names the real reason a file could not be opened',
+  '1.16.0':
+    'A property write that SolidWorks refuses is now reported as a failure on every path, not just the Document Manager one, and writing to a part with many configurations is a single pass over the file instead of one open-and-save per configuration',
 }
 
 export interface SwServiceVersionCheckResult {

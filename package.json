@@ -1,6 +1,6 @@
 {
   "name": "blue-plm",
-  "version": "3.23.0",
+  "version": "3.24.0",
   "description": "Open-source Product Lifecycle Management",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -13,6 +13,7 @@
     "typecheck:api": "tsc --noEmit -p api/tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:sw-service": "dotnet test solidworks-service/BluePLM.SolidWorksService.sln -c Release",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write \"src/**/*.{ts,tsx}\" \"api/**/*.ts\" \"electron/**/*.ts\"",
