@@ -24,6 +24,12 @@ import { buildFullPath } from '../types'
 import { ProgressTracker } from '../executor'
 import { usePDMStore } from '../../../stores/pdmStore'
 import { log } from '@/lib/logger'
+import { t } from '@/lib/i18n'
+import {
+  describeBatchPropertyWriteFailure,
+  summarizeBatchPropertyWrite,
+  type BatchPropertyWriteOutcome,
+} from '@/lib/metadata/propertyWriteOutcome'
 import { dropCommittedPendingMetadata } from '@/lib/pendingMetadata'
 import {
   normalizeTabNumber,
@@ -754,6 +760,29 @@ async function pullDrawingMetadata(
 }
 
 /**
+ * Turn an incomplete configuration write into the sentence the user sees.
+ *
+ * Configurations and properties are counted separately because they are different failures: 56 of
+ * 68 configurations refusing the write is not the same event as one property inside every
+ * configuration refusing it, and collapsing them would report the wrong number either way.
+ */
+function describeIncompleteWrite(outcome: BatchPropertyWriteOutcome): string {
+  const summary =
+    outcome.configurationsMissing > 0
+      ? t('metadataWrite.configurationsFailed', {
+          failed: outcome.configurationsMissing,
+          total: outcome.configurationsRequested,
+        })
+      : t('metadataWrite.propertiesFailed', {
+          failed: outcome.propertiesFailed,
+          total: outcome.configurationsRequested,
+        })
+
+  const detail = describeBatchPropertyWriteFailure(outcome)
+  return detail ? `${summary} (${detail})` : summary
+}
+
+/**
  * PUSH: Write metadata from BluePLM into a part/assembly file
  * Uses values from pendingMetadata (user edits) falling back to pdmData (database)
  *
@@ -900,7 +929,7 @@ async function pushPartAssemblyMetadata(
         })
 
         // Fallback: write to each config individually
-        let failCount = 0
+        const failedConfigurations: Record<string, string> = {}
         for (const [configName, props] of Object.entries(batchProps)) {
           try {
             const r = await window.electronAPI?.solidworks?.setProperties(
@@ -909,7 +938,7 @@ async function pushPartAssemblyMetadata(
               configName,
             )
             if (!r?.success) {
-              failCount++
+              failedConfigurations[configName] = r?.error || t('metadataWrite.writeRefused')
               logSync('error', 'Failed to write config properties', {
                 fullPath,
                 configName,
@@ -917,7 +946,7 @@ async function pushPartAssemblyMetadata(
               })
             }
           } catch (error) {
-            failCount++
+            failedConfigurations[configName] = error instanceof Error ? error.message : String(error)
             logSync('error', 'Exception writing config properties', {
               fullPath,
               configName,
@@ -926,8 +955,35 @@ async function pushPartAssemblyMetadata(
           }
         }
 
-        if (failCount === configs.length) {
-          return { success: false, error: 'Failed to write properties to any configuration' }
+        // Any configuration that did not take the write is a failure. Reporting success as long as
+        // one of them landed is how "12 of 68 configurations were written" became a green toast.
+        // The disk was still mutated, so writeSucceeded stays true and the hash still refreshes.
+        const failedCount = Object.keys(failedConfigurations).length
+        if (failedCount > 0) {
+          writeSucceeded = true
+          return {
+            success: false,
+            error: describeIncompleteWrite(
+              summarizeBatchPropertyWrite(configs.length, {
+                configurationsProcessed: configs.length - failedCount,
+                configurationsFailed: failedCount,
+                failedConfigurations,
+              }),
+            ),
+          }
+        }
+      } else {
+        // The batch reported success. That is not the same as having written everything: both
+        // service paths report per-configuration and per-property failures inside a successful
+        // response, and nothing here used to read them.
+        const outcome = summarizeBatchPropertyWrite(configs.length, batchResult.data)
+        if (!outcome.complete) {
+          writeSucceeded = true
+          logSync('error', 'Batch write reported success but did not write every configuration', {
+            fullPath,
+            ...outcome,
+          })
+          return { success: false, error: describeIncompleteWrite(outcome) }
         }
       }
 
@@ -937,12 +993,19 @@ async function pushPartAssemblyMetadata(
       })
       writeSucceeded = true
     } catch (error) {
-      logSync('warn', 'Failed to fetch/write configurations (file-level write succeeded)', {
+      // The file-level write landed, so the disk was mutated and the hash must be refreshed - but
+      // the configurations were not written, and this used to return success anyway.
+      writeSucceeded = true
+      logSync('error', 'Failed to fetch/write configurations (file-level write succeeded)', {
         fullPath,
         error: String(error),
       })
-      // File-level write did succeed, so we did mutate disk and need a fresh hash.
-      writeSucceeded = true
+      return {
+        success: false,
+        error: t('metadataWrite.configurationsUnwritten', {
+          reason: error instanceof Error ? error.message : String(error),
+        }),
+      }
     }
 
     return { success: true }

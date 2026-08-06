@@ -979,6 +979,17 @@ export const en: TranslationDict = {
     timingFailed: 'Could not read {{path}}: {{reason}}',
   },
 
+  // Writing BluePLM's metadata into a SolidWorks file
+  metadataWrite: {
+    configurationsFailed:
+      'Only part of the file was written: {{failed}} of {{total}} configurations did not take the change',
+    propertiesFailed:
+      'Only part of the file was written: {{failed}} properties across {{total}} configurations did not take the change',
+    configurationsUnwritten:
+      'File-level properties were written, but the configurations were not: {{reason}}',
+    writeRefused: 'the write was refused',
+  },
+
   // Context menu translations
   contextMenu: {
     assembly: {

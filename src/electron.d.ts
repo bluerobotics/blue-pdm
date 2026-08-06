@@ -687,7 +687,21 @@ declare global {
           configProperties: Record<string, Record<string, string>>,
         ) => Promise<{
           success: boolean
-          data?: { filePath: string; configurationsProcessed: number }
+          /**
+           * Partial failure is reported inside a successful response, and the two service paths
+           * report it differently: Document Manager counts properties, the SolidWorks COM
+           * fallback counts configurations. Both are optional because either path can answer.
+           */
+          data?: {
+            filePath: string
+            configurationsProcessed: number
+            configurationsFailed?: number
+            failedConfigurations?: Record<string, string> | null
+            propertiesSet?: number
+            propertiesFailed?: number
+            failedProperties?: string[] | null
+            errors?: string[] | null
+          }
           error?: string
         }>
         getConfigurations: (filePath: string) => Promise<{
