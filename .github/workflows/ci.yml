@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+# A superseded push to a pull request has nothing left to prove, so cancel it.
+# Pushes to main are never cancelled: every commit on main gets its own answer.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    name: Typecheck and Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # Node 22 rather than the 20 the release workflow builds with. Node 20 has no
+      # `navigator` global — that arrived in 21 — and src/lib/network.ts reads
+      # `navigator.onLine` at module scope, so on 20 two suites fail to import and
+      # 25 tests never run. 22 is also what Electron 39 embeds and what
+      # @electron/rebuild's engines field requires, so it is the closer match to
+      # what this code actually runs on.
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+  # Non-blocking on purpose. `npm run lint` currently reports 136 errors and 539
+  # warnings across 172 files, all pre-existing; a blocking lint job would fail on
+  # its first run and be switched off before anyone fixed them. This reports the
+  # count so it can be driven down, and starts blocking once it reaches zero.
+  lint:
+    name: Lint (non-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
