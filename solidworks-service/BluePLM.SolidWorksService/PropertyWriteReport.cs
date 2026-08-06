@@ -15,8 +15,14 @@ namespace BluePLM.SolidWorksService
         /// <summary>The property did not exist and was created.</summary>
         Created,
 
-        /// <summary>An empty value was requested, so the property was removed.</summary>
+        /// <summary>A delete was asked for, and the property was removed.</summary>
         Deleted,
+
+        /// <summary>
+        /// A delete was asked for and the property was not there. The end state is the one the
+        /// caller wanted, so this is a no-op rather than a failure.
+        /// </summary>
+        NotPresent,
 
         /// <summary>The API refused the write, or threw.</summary>
         Failed,
@@ -74,6 +80,8 @@ namespace BluePLM.SolidWorksService
 
         public int Attempted => _outcomes.Count;
 
+        public int CountOf(PropertyWriteStatus status) => _outcomes.Count(o => o.Status == status);
+
         public int Written => _outcomes.Count(o => o.Succeeded);
 
         public int Failed => _outcomes.Count(o => !o.Succeeded);
@@ -92,6 +100,26 @@ namespace BluePLM.SolidWorksService
         public string DescribeFailures() =>
             string.Join(", ", _outcomes.Where(o => !o.Succeeded)
                 .Select(o => o.Detail == null ? o.QualifiedName : $"{o.QualifiedName} ({o.Detail})"));
+    }
+
+    /// <summary>
+    /// The payload a delete returns, built the same way by the Document Manager path and the
+    /// SolidWorks COM path so a caller does not have to know which one ran.
+    /// </summary>
+    public static class PropertyDeleteResult
+    {
+        /// <summary>Scope name used when the properties belong to the document, not a configuration.</summary>
+        public const string FileLevelScope = "file-level";
+
+        public static object Build(string? filePath, PropertyWriteReport report, string? configuration) => new
+        {
+            filePath,
+            propertiesDeleted = report.CountOf(PropertyWriteStatus.Deleted),
+            propertiesNotPresent = report.CountOf(PropertyWriteStatus.NotPresent),
+            propertiesFailed = report.Failed,
+            failedProperties = report.AnyFailed ? report.FailedProperties : null,
+            configuration = configuration ?? FileLevelScope,
+        };
     }
 
     /// <summary>

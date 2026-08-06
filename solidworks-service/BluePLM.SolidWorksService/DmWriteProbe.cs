@@ -257,7 +257,7 @@ namespace BluePLM.SolidWorksService
                 foreach (var kvp in report.FileLevelProperties.OrderBy(k => k.Key, StringComparer.OrdinalIgnoreCase))
                     Line($"  {kvp.Key} = {Truncate(kvp.Value)}");
 
-                var configNames = (string[]?)dynDoc.ConfigurationManager.GetConfigurationNames() ?? Array.Empty<string>();
+                var configNames = ReadConfigurationNames(dynDoc);
                 report.ConfigurationCount = configNames.Length;
                 report.ConfigurationNames.AddRange(configNames);
                 Line($"Configurations: {configNames.Length}");
@@ -266,10 +266,18 @@ namespace BluePLM.SolidWorksService
                 report.TargetConfiguration = ResolveTargetConfiguration(configNames, options.Configuration);
                 if (report.TargetConfiguration == null)
                 {
-                    Fail(report, options.Configuration == null
-                        ? "The document reports no configurations."
-                        : $"Configuration '{options.Configuration}' not found. Available: {string.Join(", ", configNames)}");
-                    return false;
+                    // A drawing has no configurations at all, and the file-level probes are the ones
+                    // that matter for it: a title block's $PRP: reference resolves against the file
+                    // scope. Refusing to run would leave the document type the whole empty-property
+                    // decision is about as the one type never measured.
+                    if (options.Configuration != null)
+                    {
+                        Fail(report, $"Configuration '{options.Configuration}' not found. Available: {string.Join(", ", configNames)}");
+                        return false;
+                    }
+
+                    Line("No configurations; file-level probes only.");
+                    return true;
                 }
 
                 Line($"Target config : {report.TargetConfiguration}");
@@ -291,6 +299,24 @@ namespace BluePLM.SolidWorksService
             finally
             {
                 TryClose(doc);
+            }
+        }
+
+        /// <summary>
+        /// A drawing's ConfigurationManager throws E_FAIL out of GetConfigurationNames rather than
+        /// returning an empty array, so "this document has no configurations" arrives as an
+        /// exception and has to be read as an answer.
+        /// </summary>
+        private static string[] ReadConfigurationNames(dynamic doc)
+        {
+            try
+            {
+                return (string[]?)doc.ConfigurationManager.GetConfigurationNames() ?? Array.Empty<string>();
+            }
+            catch (Exception ex)
+            {
+                Line($"  (GetConfigurationNames failed, treating the document as having none: {ex.InnerException?.Message ?? ex.Message})");
+                return Array.Empty<string>();
             }
         }
 
@@ -544,9 +570,11 @@ namespace BluePLM.SolidWorksService
 
             Section("Verdict");
             report.Verdict = DetermineVerdict(report);
+            report.EmptyValueVerdict = DetermineEmptyValueVerdict(report);
             foreach (var probe in report.Probes)
                 Line($"  [{(probe.Verified == true ? "PASS" : probe.Verified == false ? "FAIL" : "????")}] {probe.Name}: {probe.Notes}");
-            Line($"Overall: {report.Verdict}");
+            Line($"Overall    : {report.Verdict}");
+            Line($"Empty value: {report.EmptyValueVerdict}");
         }
 
         /// <summary>
@@ -601,6 +629,15 @@ namespace BluePLM.SolidWorksService
                 report.Probes.Add(SetNew(doc, $"file-level AddCustomProperty type={ProductionInfoTypeValue} (production constant)", productionInfoType, useAdd: true, tag: "AddProd", ProbeVariant.ProductionInfoType));
                 report.Probes.Add(SetNew(doc, $"file-level AddCustomProperty type={DocumentedTextInfoTypeValue} (swDmCustomInfoText)", documentedInfoType, useAdd: true, tag: "AddText", ProbeVariant.DocumentedInfoType));
 
+                AddEmptyValueProbes(doc, "file", documentedInfoType, report);
+
+                if (report.TargetConfiguration == null)
+                {
+                    Line("  (no configurations on this document; config-level probes skipped)");
+                    CaptureSaveResult(doc, report);
+                    return;
+                }
+
                 var config = dynDoc.ConfigurationManager.GetConfigurationByName(report.TargetConfiguration);
                 if (config == null)
                 {
@@ -614,6 +651,8 @@ namespace BluePLM.SolidWorksService
                     report.Probes.Add(SetNew((object)config, "config-level SetCustomProperty (new key)", productionInfoType, useAdd: false, tag: "Set", ProbeVariant.NewKeyViaSet));
                     report.Probes.Add(SetNew((object)config, $"config-level AddCustomProperty type={ProductionInfoTypeValue} (production constant)", productionInfoType, useAdd: true, tag: "AddProd", ProbeVariant.ProductionInfoType));
                     report.Probes.Add(SetNew((object)config, $"config-level AddCustomProperty type={DocumentedTextInfoTypeValue} (swDmCustomInfoText)", documentedInfoType, useAdd: true, tag: "AddText", ProbeVariant.DocumentedInfoType));
+
+                    AddEmptyValueProbes((object)config, "config", documentedInfoType, report);
                 }
 
                 CaptureSaveResult(doc, report);
@@ -694,6 +733,150 @@ namespace BluePLM.SolidWorksService
             return probe;
         }
 
+        /// <summary>
+        /// Can Document Manager hold a property that exists and has no value?
+        ///
+        /// Clearing a field in BluePLM has to leave the property in the file, because a title block
+        /// linked with $PRP:"Description" renders blank against an empty property and breaks against
+        /// one that is not there. The service deleted the property instead, on the strength of a code
+        /// comment calling SetCustomProperty("", ...) "unreliable" - a claim no one had measured.
+        ///
+        /// Each route to an empty value is tried separately, because they can fail independently:
+        /// emptying a property that already has a value is a different call from creating one empty.
+        /// </summary>
+        private static void AddEmptyValueProbes(object owner, string scope, object infoTypeEnum, ProbeReport report)
+        {
+            var tag = scope == "config" ? "Cfg" : "File";
+
+            // The two halves of production's set-then-add sequence, each with an empty value.
+            report.Probes.Add(EmptyAfterValue(owner, scope, tag, infoTypeEnum));
+            report.Probes.Add(EmptyViaAdd(owner, scope, tag, infoTypeEnum));
+
+            // Controls. SetCustomProperty against a name that does not exist fails for any value,
+            // empty or not, which is why production follows it with AddCustomProperty; running it
+            // here keeps that failure from being mistaken for one about the empty value.
+            report.Probes.Add(EmptyViaSetOnMissingKey(owner, scope, tag));
+            report.Probes.Add(EmptyViaSpaceThenSet(owner, scope, tag, infoTypeEnum));
+        }
+
+        /// <summary>
+        /// The case the product decision is about: a property that holds a value, then the user
+        /// clears the field. Seeded with a value first so this measures emptying, not creating.
+        /// </summary>
+        private static ProbeCase EmptyAfterValue(object owner, string scope, string tag, object infoTypeEnum)
+        {
+            var probe = NewEmptyProbe(scope, $"{scope}-level SetCustomProperty(\"\") over an existing value", $"{tag}EmptyOverValue");
+
+            try
+            {
+                var seeded = InvokeAdd(owner, probe.PropertyName, infoTypeEnum, "seed-value");
+                probe.ReturnValue = $"AddCustomProperty(seed)={seeded}";
+
+                dynamic dynOwner = owner;
+                dynOwner.SetCustomProperty(probe.PropertyName, string.Empty);
+                probe.CallThrew = false;
+                probe.Notes = $"seeded then SetCustomProperty(\"\") returned without throwing [{probe.ReturnValue}]";
+            }
+            catch (Exception ex)
+            {
+                probe.CallThrew = true;
+                probe.Notes = $"threw: {ex.InnerException?.Message ?? ex.Message}";
+            }
+
+            Line($"  {probe.Name} [{probe.PropertyName}] -> {probe.Notes}");
+            return probe;
+        }
+
+        /// <summary>SetCustomProperty with an empty value against a name that does not exist yet.</summary>
+        private static ProbeCase EmptyViaSetOnMissingKey(object owner, string scope, string tag)
+        {
+            var probe = NewEmptyProbe(scope, $"{scope}-level SetCustomProperty(\"\") on a missing key (control)", $"{tag}EmptySet", isControl: true);
+
+            try
+            {
+                dynamic dynOwner = owner;
+                dynOwner.SetCustomProperty(probe.PropertyName, string.Empty);
+                probe.CallThrew = false;
+                probe.ReturnValue = "void (API returns nothing)";
+                probe.Notes = "SetCustomProperty(\"\") on a missing key returned without throwing";
+            }
+            catch (Exception ex)
+            {
+                probe.CallThrew = true;
+                probe.Notes = $"threw: {ex.InnerException?.Message ?? ex.Message}";
+            }
+
+            Line($"  {probe.Name} [{probe.PropertyName}] -> {probe.Notes}");
+            return probe;
+        }
+
+        /// <summary>AddCustomProperty with an empty value. Its bool is the answer production needs.</summary>
+        private static ProbeCase EmptyViaAdd(object owner, string scope, string tag, object infoTypeEnum)
+        {
+            var probe = NewEmptyProbe(scope, $"{scope}-level AddCustomProperty(\"\") on a missing key", $"{tag}EmptyAdd");
+
+            try
+            {
+                var accepted = InvokeAdd(owner, probe.PropertyName, infoTypeEnum, string.Empty);
+                probe.CallThrew = false;
+                probe.ReturnValue = accepted.ToString();
+                probe.Notes = $"AddCustomProperty returned {probe.ReturnValue}";
+            }
+            catch (Exception ex)
+            {
+                probe.CallThrew = true;
+                probe.Notes = $"threw: {ex.InnerException?.Message ?? ex.Message}";
+            }
+
+            Line($"  {probe.Name} [{probe.PropertyName}] -> {probe.Notes}");
+            return probe;
+        }
+
+        /// <summary>
+        /// The fallback the plan proposed in case an empty value cannot create a property: create it
+        /// with a single space, then empty it. Worth measuring even when the direct routes work,
+        /// because it is the only remaining option if one of them regresses.
+        /// </summary>
+        private static ProbeCase EmptyViaSpaceThenSet(object owner, string scope, string tag, object infoTypeEnum)
+        {
+            var probe = NewEmptyProbe(scope, $"{scope}-level AddCustomProperty(\" \") then SetCustomProperty(\"\") (fallback)", $"{tag}EmptySpace", isControl: true);
+
+            try
+            {
+                var accepted = InvokeAdd(owner, probe.PropertyName, infoTypeEnum, " ");
+                probe.ReturnValue = $"AddCustomProperty(\" \")={accepted}";
+
+                dynamic dynOwner = owner;
+                dynOwner.SetCustomProperty(probe.PropertyName, string.Empty);
+                probe.CallThrew = false;
+                probe.Notes = $"space-then-empty completed [{probe.ReturnValue}]";
+            }
+            catch (Exception ex)
+            {
+                probe.CallThrew = true;
+                probe.Notes = $"threw: {ex.InnerException?.Message ?? ex.Message}";
+            }
+
+            Line($"  {probe.Name} [{probe.PropertyName}] -> {probe.Notes}");
+            return probe;
+        }
+
+        private static ProbeCase NewEmptyProbe(string scope, string name, string tag, bool isControl = false) => new ProbeCase
+        {
+            Name = name,
+            PropertyName = $"{ProbePropertyPrefix}{tag}_{ProbeStamp}",
+            Scope = scope,
+            Variant = isControl ? ProbeVariant.EmptyValueControl : ProbeVariant.EmptyValue,
+            ExpectedValue = string.Empty,
+        };
+
+        private static bool InvokeAdd(object owner, string name, object infoTypeEnum, string value)
+        {
+            var method = owner.GetType().GetMethod("AddCustomProperty")
+                ?? throw new InvalidOperationException("AddCustomProperty not found on the COM object");
+            return method.Invoke(owner, new object[] { name, infoTypeEnum, value }) is bool accepted && accepted;
+        }
+
         private static void CaptureSaveResult(object doc, ProbeReport report)
         {
             try
@@ -758,7 +941,9 @@ namespace BluePLM.SolidWorksService
                 var infoTypeDefault = verifier.MakeCustomInfoTextEnum(0);
                 var fileProps = ReadPropertyBag(doc, infoTypeDefault);
 
-                var configObj = dynDoc.ConfigurationManager.GetConfigurationByName(report.TargetConfiguration);
+                var configObj = report.TargetConfiguration == null
+                    ? null
+                    : dynDoc.ConfigurationManager.GetConfigurationByName(report.TargetConfiguration);
                 var configProps = configObj == null
                     ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                     : ReadPropertyBag((object)configObj, infoTypeDefault);
@@ -769,10 +954,12 @@ namespace BluePLM.SolidWorksService
                 foreach (var probe in report.Probes)
                 {
                     var bag = probe.Scope == "config" ? configProps : fileProps;
-                    probe.ActualValue = bag.TryGetValue(probe.PropertyName, out var actual) ? actual : null;
-                    probe.Verified = string.Equals(probe.ActualValue, probe.ExpectedValue, StringComparison.Ordinal);
+                    probe.PresentAfterWrite = bag.TryGetValue(probe.PropertyName, out var actual);
+                    probe.ActualValue = probe.PresentAfterWrite == true ? actual : null;
+                    probe.Verified = probe.PresentAfterWrite == true &&
+                        string.Equals(probe.ActualValue, probe.ExpectedValue, StringComparison.Ordinal);
                     probe.Notes += probe.Verified == true
-                        ? " | read-back OK"
+                        ? $" | read-back OK (present, value '{probe.ActualValue}')"
                         : $" | read-back MISMATCH (expected '{probe.ExpectedValue}', got '{probe.ActualValue ?? "<absent>"}')";
                 }
             }
@@ -809,6 +996,33 @@ namespace BluePLM.SolidWorksService
             if (updatesWork) return "DM_UPDATE_ONLY";
 
             return "DM_WRITES_NOTHING";
+        }
+
+        /// <summary>
+        /// Whether Document Manager can hold a property that exists and has no value, which is what
+        /// "the user cleared this field" has to look like in the file.
+        ///
+        /// Judged on the routes production takes only. The fallback verdict is what decides whether
+        /// a workaround is needed, so it is reported rather than folded in.
+        /// </summary>
+        private static string DetermineEmptyValueVerdict(ProbeReport report)
+        {
+            var cases = report.Probes.Where(p => p.Variant == ProbeVariant.EmptyValue).ToList();
+            if (cases.Count == 0) return "NO_EMPTY_PROBES_RAN";
+            if (cases.All(p => p.Verified == true)) return "DM_STORES_EMPTY_PROPERTIES";
+
+            var fallbackWorks = report.Probes
+                .Any(p => p.Variant == ProbeVariant.EmptyValueControl && p.Verified == true);
+
+            if (cases.All(p => p.PresentAfterWrite != true))
+            {
+                return fallbackWorks
+                    ? "DM_STORES_EMPTY_PROPERTIES_ONLY_VIA_FALLBACK"
+                    : "DM_CANNOT_STORE_EMPTY_PROPERTIES";
+            }
+
+            var failed = cases.Where(p => p.Verified != true).Select(p => p.Name);
+            return $"DM_STORES_EMPTY_PROPERTIES_ONLY_SOMETIMES (failed: {string.Join("; ", failed)})";
         }
 
         /// <summary>
@@ -1153,6 +1367,19 @@ namespace BluePLM.SolidWorksService
         public const string NewKeyViaSet = "new-key-via-set";
         public const string ProductionInfoType = "production-info-type";
         public const string DocumentedInfoType = "documented-info-type";
+
+        /// <summary>
+        /// An empty value written the way production writes any value, which must leave the property
+        /// present rather than remove it.
+        /// </summary>
+        public const string EmptyValue = "empty-value";
+
+        /// <summary>
+        /// An empty value written by a route production does not use: a control that isolates
+        /// whether a failure is about the empty value or about the call, and the fallback that
+        /// would be needed if the production routes stopped working.
+        /// </summary>
+        public const string EmptyValueControl = "empty-value-control";
     }
 
     public sealed class ProbeCase
@@ -1163,6 +1390,14 @@ namespace BluePLM.SolidWorksService
         public string PropertyName { get; set; } = string.Empty;
         public string ExpectedValue { get; set; } = string.Empty;
         public string? ActualValue { get; set; }
+
+        /// <summary>
+        /// Whether the property name came back at all. An empty value makes this the whole question:
+        /// "present and empty" and "not there" are the same <see cref="ActualValue"/> otherwise, and
+        /// telling them apart is the point of the change this probe measures.
+        /// </summary>
+        public bool? PresentAfterWrite { get; set; }
+
         public string? ReturnValue { get; set; }
         public bool CallThrew { get; set; }
         public bool? Verified { get; set; }
@@ -1174,6 +1409,10 @@ namespace BluePLM.SolidWorksService
         public string FilePath { get; set; } = string.Empty;
         public bool WriteMode { get; set; }
         public string? Verdict { get; set; }
+
+        /// <summary>Whether an empty custom property survives a write and a re-read.</summary>
+        public string? EmptyValueVerdict { get; set; }
+
         public string? Error { get; set; }
         public string? Detail { get; set; }
 

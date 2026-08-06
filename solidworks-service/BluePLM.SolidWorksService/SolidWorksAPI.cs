@@ -1584,6 +1584,133 @@ namespace BluePLM.SolidWorksService
             }
         }
 
+        /// <summary>
+        /// Remove named custom properties from a file, taking the names out of the document rather
+        /// than emptying them.
+        ///
+        /// This is the only way to ask for a delete. An empty value used to mean one, which made a
+        /// caller that meant "the user cleared this field" and a caller that meant "this property
+        /// should not exist" write the identical request; they want opposite things, so they now
+        /// call different commands.
+        /// </summary>
+        public CommandResult DeleteCustomProperties(string? filePath, List<string>? propertyNames, string? configuration = null)
+        {
+            if (string.IsNullOrEmpty(filePath))
+                return new CommandResult { Success = false, Error = "Missing 'filePath'" };
+
+            if (!File.Exists(filePath))
+                return new CommandResult { Success = false, Error = $"File not found: {filePath}" };
+
+            if (propertyNames == null || propertyNames.Count == 0)
+                return new CommandResult { Success = false, Error = "Missing or empty 'propertyNames'" };
+
+            ModelDoc2? doc = null;
+            bool wasAlreadyOpen = false;
+            try
+            {
+                doc = OpenDocument(filePath!, out var errors, out var warnings, out wasAlreadyOpen, readOnly: false);
+                if (doc == null)
+                    return new CommandResult { Success = false, Error = $"Failed to open file: errors={errors}" };
+
+                var report = DeletePropertiesFromScope(doc, propertyNames, configuration);
+
+                if (report.AllFailed)
+                {
+                    Console.Error.WriteLine($"[SW-API] All {report.Failed} property deletes refused for {Path.GetFileName(filePath)}: {report.DescribeFailures()}");
+                    return new CommandResult
+                    {
+                        Success = false,
+                        Error = $"SolidWorks refused every property delete on {Path.GetFileName(filePath)}: {report.DescribeFailures()}"
+                    };
+                }
+
+                doc.Save3((int)swSaveAsOptions_e.swSaveAsOptions_Silent, ref errors, ref warnings);
+
+                if (SwSaveError.IsFailure(errors))
+                {
+                    var reason = SwSaveError.Describe(errors);
+                    Console.Error.WriteLine($"[SW-API] Save3 refused {Path.GetFileName(filePath)}: {reason}");
+                    return new CommandResult
+                    {
+                        Success = false,
+                        Error = $"SolidWorks could not save {Path.GetFileName(filePath)}: {reason}"
+                    };
+                }
+
+                return new CommandResult
+                {
+                    Success = true,
+                    Data = PropertyDeleteResult.Build(filePath, report, configuration)
+                };
+            }
+            catch (SolidWorksComInaccessibleException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
+            }
+            finally
+            {
+                if (doc != null && !wasAlreadyOpen)
+                {
+                    try { CloseDocument(filePath!); } catch { }
+                }
+                CloseSolidWorksIfWeStartedIt();
+            }
+        }
+
+        /// <summary>
+        /// Delete from one scope, reporting per property. A property that was not there is the end
+        /// state the caller asked for, so it is a no-op rather than a failure; a linked property
+        /// cannot be removed and is a real one.
+        /// </summary>
+        private PropertyWriteReport DeletePropertiesFromScope(ModelDoc2 doc, List<string> propertyNames, string? configuration)
+        {
+            var report = new PropertyWriteReport();
+            var configLabel = string.IsNullOrEmpty(configuration) ? "file-level" : configuration!;
+            var manager = string.IsNullOrEmpty(configuration)
+                ? doc.Extension.CustomPropertyManager[""]
+                : doc.Extension.CustomPropertyManager[configuration];
+
+            if (manager == null)
+            {
+                foreach (var name in propertyNames)
+                    report.Record(configLabel, name, PropertyWriteStatus.Failed, "no property manager for this configuration");
+                return report;
+            }
+
+            foreach (var name in propertyNames)
+            {
+                try
+                {
+                    var result = manager.Delete2(name);
+                    if (result == (int)swCustomInfoDeleteResult_e.swCustomInfoDeleteResult_NotPresent)
+                    {
+                        report.Record(configLabel, name, PropertyWriteStatus.NotPresent, "was not present");
+                        continue;
+                    }
+
+                    if (SwCustomPropertyResult.DeleteSucceeded(result))
+                    {
+                        report.Record(configLabel, name, PropertyWriteStatus.Deleted);
+                        continue;
+                    }
+
+                    var reason = SwCustomPropertyResult.DescribeDeleteResult(result);
+                    report.Record(configLabel, name, PropertyWriteStatus.Failed, reason);
+                    Console.Error.WriteLine($"[SW-API] Delete2 refused '{name}' on {configLabel}: {reason}");
+                }
+                catch (Exception ex)
+                {
+                    report.Record(configLabel, name, PropertyWriteStatus.Failed, ex.Message);
+                }
+            }
+
+            return report;
+        }
+
         private Dictionary<string, string> ReadCustomProperties(ModelDoc2 doc, string? configuration)
         {
             var props = new Dictionary<string, string>();
@@ -1714,28 +1841,16 @@ namespace BluePLM.SolidWorksService
             {
                 try
                 {
-                    // Empty value = clear the property entirely (decisive delete).
-                    // Setting an empty value leaves a stale property that reads drop, so the old
-                    // value would survive and "bounce back".
-                    if (string.IsNullOrWhiteSpace(prop.Value))
-                    {
-                        var deleteResult = manager.Delete2(prop.Key);
-                        if (SwCustomPropertyResult.DeleteSucceeded(deleteResult))
-                        {
-                            report.Record(configLabel, prop.Key, PropertyWriteStatus.Deleted);
-                            Console.Error.WriteLine($"[SW-API] Deleted property '{prop.Key}' on {configLabel} (empty value)");
-                        }
-                        else
-                        {
-                            var reason = SwCustomPropertyResult.DescribeDeleteResult(deleteResult);
-                            report.Record(configLabel, prop.Key, PropertyWriteStatus.Failed, reason);
-                            Console.Error.WriteLine($"[SW-API] Delete2 refused '{prop.Key}' on {configLabel}: {reason}");
-                        }
-                        continue;
-                    }
+                    // An empty value writes an empty property. Deleting it instead - which this did,
+                    // for the same reason the Document Manager path did - takes the name out of the
+                    // file, and a title block linked with $PRP:"Description" breaks against a name
+                    // that is not there where it would render blank against an empty one.
+                    // Delete2 is no longer reachable from a property write; DeleteCustomProperties
+                    // is how a caller asks for that.
+                    var value = prop.Value ?? string.Empty;
 
                     // Try to set existing property first, then add if it doesn't exist
-                    var setResult = manager.Set2(prop.Key, prop.Value);
+                    var setResult = manager.Set2(prop.Key, value);
                     if (SwCustomPropertyResult.SetSucceeded(setResult))
                     {
                         report.Record(configLabel, prop.Key, PropertyWriteStatus.Updated);
@@ -1743,7 +1858,7 @@ namespace BluePLM.SolidWorksService
                     }
 
                     Console.Error.WriteLine($"[SW-API] Set2 declined '{prop.Key}' on {configLabel} ({SwCustomPropertyResult.DescribeSetResult(setResult)}), trying Add3...");
-                    var addResult = manager.Add3(prop.Key, (int)swCustomInfoType_e.swCustomInfoText, prop.Value,
+                    var addResult = manager.Add3(prop.Key, (int)swCustomInfoType_e.swCustomInfoText, value,
                         (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
                     if (SwCustomPropertyResult.AddSucceeded(addResult))
                     {

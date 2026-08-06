@@ -76,6 +76,16 @@
  *                   same input could be judged either way. It now requires an absolute, already
  *                   canonical path, compares component by component, and refuses a reparse point
  *                   anywhere between the volume root and the file
+ * - Version 1.19.0: Clearing a field writes an empty custom property instead of deleting it, on all
+ *                   four write paths (SetCustomProperties at file and configuration scope,
+ *                   SetCustomPropertiesBatch, and the SolidWorks COM WriteCustomProperties, which
+ *                   used Delete2). Measured first: Document Manager stores empty properties at both
+ *                   scopes on parts, assemblies and drawings - SetCustomProperty accepts an empty
+ *                   string over an existing value and AddCustomProperty returns true for one, so
+ *                   the "SetCustomProperty('') is unreliable" comment the delete rested on was
+ *                   wrong. ReadProperties no longer drops a property whose value is empty, so the
+ *                   app can tell a cleared field from one that was never set. Delete is still
+ *                   expressible, through a new deleteProperties command rather than a magic value
  *
  * When making service changes:
  * 1. Increment SERVICE_VERSION in Program.cs
@@ -85,7 +95,7 @@
 
 // The SolidWorks service version this app version expects
 // Uses semver: MAJOR.MINOR.PATCH
-export const EXPECTED_SW_SERVICE_VERSION = '1.18.0'
+export const EXPECTED_SW_SERVICE_VERSION = '1.19.0'
 
 // Minimum service version that will still work (for soft warnings vs hard errors)
 // Breaking changes should bump the major version and update this
@@ -134,6 +144,8 @@ export const SW_SERVICE_VERSION_DESCRIPTIONS: Record<string, string> = {
     'The built-in diagnostic that writes to a test file can no longer be tricked into writing somewhere else. It used to be fooled by a shortcut standing in for the test folder, by a path spelled in a form Windows does not tidy up, and by a path relative to wherever the service happened to be started from. It now refuses anything it cannot prove sits inside the test folder, and says which rule the path broke',
   '1.18.0':
     'A read triggered by the file watcher can no longer open a document or start SolidWorks by any route, rather than being kept away from one by timing. Starting SolidWorks no longer takes ownership of an instance that was already running, so your own window cannot be hidden or closed by BluePLM. The built-in diagnostic keeps the read-only promise it makes: without --allow-write it now deletes, moves and restores nothing, it leaves hand-made .bak files alone, two of them running at once can no longer destroy each other\'s only copy, and it refuses a test folder too broad to confine anything instead of treating a whole drive as fair game',
+  '1.19.0':
+    'Clearing a metadata field now empties the custom property in the file instead of removing it, so a title block or note linked to that property keeps showing blank rather than breaking or falling back to the old value. The service also reports a property that exists and is empty, which it used to hide, so BluePLM can tell a field you cleared from one that was never filled in. Removing a property outright is still possible, but a caller now has to ask for it explicitly',
 }
 
 export interface SwServiceVersionCheckResult {

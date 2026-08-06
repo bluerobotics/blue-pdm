@@ -35,7 +35,7 @@ namespace BluePLM.SolidWorksService
         /// Service version - bump this when making changes that affect functionality.
         /// The app checks this version and warns if there's a mismatch.
         /// </summary>
-        private const string SERVICE_VERSION = "1.18.0";
+        private const string SERVICE_VERSION = "1.19.0";
 
         /// <summary>
         /// JSON settings for all stdout responses. EscapeNonAscii forces every non-ASCII character
@@ -390,6 +390,12 @@ namespace BluePLM.SolidWorksService
                         command["configuration"]?.ToString()),
                     "setPropertiesBatch" => SetPropertiesBatchFast(filePath,
                         command["configProperties"]?.ToObject<System.Collections.Generic.Dictionary<string, System.Collections.Generic.Dictionary<string, string>>>()),
+
+                    // Removing a property is a different request from clearing a field, so it is a
+                    // different command. An empty value in setProperties writes an empty property.
+                    "deleteProperties" => DeletePropertiesFast(filePath,
+                        command["propertyNames"]?.ToObject<List<string>>(),
+                        command["configuration"]?.ToString()),
                     
                     // getMassProperties requires full SolidWorks (needs rebuild)
                     "getMassProperties" => RequiresSolidWorks(() => _swApi!.GetMassProperties(filePath,
@@ -964,6 +970,39 @@ namespace BluePLM.SolidWorksService
             return _swApi.SetCustomProperties(filePath, properties, configuration);
         }
 
+        /// <summary>
+        /// Take named properties out of a file entirely.
+        ///
+        /// Kept apart from setProperties on purpose. Writing an empty value used to delete the
+        /// property, so a caller clearing a field and a caller removing a property sent the same
+        /// request and got the caller-removing-a-property behaviour. Clearing now writes an empty
+        /// property, and a caller that means delete has to name this command.
+        /// </summary>
+        static CommandResult DeletePropertiesFast(string? filePath, List<string>? propertyNames, string? configuration)
+        {
+            if (propertyNames == null || propertyNames.Count == 0)
+                return new CommandResult { Success = false, Error = "Missing propertyNames" };
+
+            // Same routing as setProperties: Document Manager unless SolidWorks is holding the file.
+            bool fileOpenInSw = _swApi != null && !string.IsNullOrEmpty(filePath) && _swApi.IsFileOpenInSolidWorks(filePath!);
+            bool comUnreachable = fileOpenInSw && SolidWorksAPI.IsComKnownUnavailable();
+
+            if ((!fileOpenInSw || comUnreachable) && (_dmApi?.IsAvailable ?? false))
+            {
+                Console.Error.WriteLine($"[Service] DM-first property delete for {(filePath != null ? Path.GetFileName(filePath) : "(null)")} (scope: {configuration ?? "file-level"})");
+                var dmResult = _dmApi!.DeleteCustomProperties(filePath, propertyNames, configuration);
+                if (dmResult.Success) return dmResult;
+
+                if (_swApi == null) return dmResult;
+                Console.Error.WriteLine($"[Service] DM property delete failed ({dmResult.Error}); falling back to SolidWorks COM API");
+            }
+
+            if (_swApi == null)
+                return DocumentManagerOnlyMode("deleteProperties");
+
+            return _swApi.DeleteCustomProperties(filePath, propertyNames, configuration);
+        }
+
         static CommandResult SetPropertiesBatchFast(string? filePath, System.Collections.Generic.Dictionary<string, System.Collections.Generic.Dictionary<string, string>>? configProperties)
         {
             // This is a batch because Document Manager writes every configuration inside one
@@ -1151,8 +1190,11 @@ BluePLM SolidWorks Service v{SERVICE_VERSION}
 =================================
 
 FAST operations (Document Manager API - NO SolidWorks launch!):
-  getBom, getProperties, setProperties, getConfigurations, getReferences, getPreview
+  getBom, getProperties, setProperties, deleteProperties, getConfigurations, getReferences,
+  getPreview
   Requires a DM license key (free with SW subscription)
+
+  setProperties with an empty value writes an empty property; deleteProperties removes it.
 
 Open Document Management (control documents in running SolidWorks):
   getOpenDocuments, isDocumentOpen, getDocumentInfo, setDocumentReadOnly, saveDocument

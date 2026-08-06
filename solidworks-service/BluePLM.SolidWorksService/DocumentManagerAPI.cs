@@ -62,6 +62,15 @@ namespace BluePLM.SolidWorksService
             }
         }
 
+        /// <summary>Scope name used when a property belongs to the document rather than a configuration.</summary>
+        private const string FileLevelScope = "file-level";
+
+        /// <summary>
+        /// The one property written to both scopes, because a read that only looks at the document
+        /// still has to find it.
+        /// </summary>
+        private const string NumberPropertyName = "Number";
+
         // Per-file lock to serialize DM operations on the same file (prevents race conditions)
         private static readonly ConcurrentDictionary<string, SemaphoreSlim> _fileLocks = new();
 
@@ -199,6 +208,131 @@ namespace BluePLM.SolidWorksService
             if (method == null)
                 throw new InvalidOperationException($"AddCustomProperty not found on {comObj.GetType().Name}");
             return method.Invoke(comObj, new object[] { name, typeEnum, value }) is bool accepted && accepted;
+        }
+
+        /// <summary>
+        /// Write one property to one Document Manager scope - a whole document, or one of its
+        /// configurations - and report what happened to it.
+        ///
+        /// An empty value writes an empty property. It used to delete the property instead, on the
+        /// strength of a comment calling <c>SetCustomProperty("", ...)</c> unreliable. Probing the
+        /// installed interop against a part, an assembly and a drawing says otherwise: an empty
+        /// string stores over an existing value, and AddCustomProperty returns true for one and
+        /// creates a property that reads back present and empty. SetCustomProperty does fail against
+        /// a name that does not exist yet - but it fails that way for every value, empty or not,
+        /// which is exactly what the AddCustomProperty fallback below has always been for.
+        ///
+        /// The distinction is not BluePLM's. A drawing title block linked with
+        /// <c>$PRP:"Description"</c> renders blank against a property that exists and is empty, and
+        /// breaks against one that is not there.
+        /// </summary>
+        /// <param name="owner">An ISwDMDocument or an ISwDMConfiguration.</param>
+        /// <param name="detail">Why it failed, when it failed.</param>
+        private PropertyWriteStatus WriteProperty(object owner, string name, string? value, object textTypeEnum, out string? detail)
+        {
+            detail = null;
+            var text = value ?? string.Empty;
+
+            try
+            {
+                ((dynamic)owner).SetCustomProperty(name, text);
+                return PropertyWriteStatus.Updated;
+            }
+            catch (Exception setError)
+            {
+                try
+                {
+                    if (InvokeAddCustomProperty(owner, name, textTypeEnum, text))
+                        return PropertyWriteStatus.Created;
+
+                    detail = $"AddCustomProperty refused it, after SetCustomProperty failed with: {setError.Message}";
+                    return PropertyWriteStatus.Failed;
+                }
+                catch (Exception addError)
+                {
+                    detail = addError.InnerException?.Message ?? addError.Message;
+                    return PropertyWriteStatus.Failed;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Which Number a batch should leave at file level, given what it wrote to each configuration.
+        ///
+        /// A non-empty Number wins over an empty one no matter which configuration carried it: the
+        /// file-level copy is a fallback for readers that do not look at configurations, and
+        /// blanking it because the last configuration in the batch happened to be cleared would hide
+        /// a number the document still has. When every configuration that names Number clears it,
+        /// the file-level copy is cleared too rather than left holding the old value.
+        /// </summary>
+        /// <returns>Whether the batch mentioned Number at all, and the value to mirror if it did.</returns>
+        public static (bool Requested, string? Value) ResolveNumberToMirror(
+            Dictionary<string, Dictionary<string, string>> configProperties)
+        {
+            var requested = false;
+            string? lastNonEmpty = null;
+
+            foreach (var properties in configProperties.Values)
+            {
+                if (properties == null) continue;
+                if (!properties.TryGetValue(NumberPropertyName, out var value)) continue;
+
+                requested = true;
+                if (!string.IsNullOrEmpty(value)) lastNonEmpty = value;
+            }
+
+            return (requested, lastNonEmpty ?? string.Empty);
+        }
+
+        /// <summary>
+        /// Mirror a configuration's Number to file level, so a read that only looks at the document
+        /// cannot miss it. A cleared Number is mirrored as an empty property rather than skipped:
+        /// the file-level copy is otherwise the stale value the user just deleted.
+        /// </summary>
+        private void MirrorNumberToFileLevel(object doc, string? numberValue, object textTypeEnum, PropertyWriteReport report)
+        {
+            Console.Error.WriteLine($"[DM] Also writing Number to file-level: '{numberValue}'");
+            var status = WriteProperty(doc, NumberPropertyName, numberValue, textTypeEnum, out var detail);
+            report.Record(FileLevelScope, NumberPropertyName, status, detail);
+            LogPropertyOutcome(FileLevelScope, NumberPropertyName, numberValue, status, detail);
+        }
+
+        private static void LogPropertyOutcome(string scope, string name, string? value, PropertyWriteStatus status, string? detail)
+        {
+            var shape = string.IsNullOrEmpty(value) ? "empty" : $"'{value}'";
+            Console.Error.WriteLine(status == PropertyWriteStatus.Failed
+                ? $"[DM] FAILED to write {scope} property '{name}' ({shape}): {detail}"
+                : $"[DM] {status} {scope} property '{name}' ({shape})");
+        }
+
+        /// <summary>
+        /// Remove one property from one Document Manager scope.
+        ///
+        /// Presence is checked first because DeleteCustomProperty does not say whether it removed
+        /// anything, and a property that is not there is the state the caller asked for rather than
+        /// a failure.
+        /// </summary>
+        private PropertyWriteStatus DeleteProperty(object owner, string name, out string? detail)
+        {
+            detail = null;
+
+            try
+            {
+                var names = (string[]?)((dynamic)owner).GetCustomPropertyNames() ?? Array.Empty<string>();
+                if (!names.Any(existing => string.Equals(existing, name, StringComparison.OrdinalIgnoreCase)))
+                {
+                    detail = "was not present";
+                    return PropertyWriteStatus.NotPresent;
+                }
+
+                ((dynamic)owner).DeleteCustomProperty(name);
+                return PropertyWriteStatus.Deleted;
+            }
+            catch (Exception error)
+            {
+                detail = error.InnerException?.Message ?? error.Message;
+                return PropertyWriteStatus.Failed;
+            }
         }
 
         /// <summary>
@@ -858,6 +992,12 @@ namespace BluePLM.SolidWorksService
                     // Try GetCustomProperty2 if available (newer interface)
                     try
                     {
+                        // These names are guesses, not an enumeration, so unlike ReadProperties there
+                        // is nothing here to say whether the property exists. An empty answer has to
+                        // keep meaning "not in this drawing": recording it as a present-but-empty
+                        // property would invent all seven of them on every drawing that has none,
+                        // and inventing properties is the opposite of the distinction the empty
+                        // values elsewhere in this file are there to preserve.
                         Console.Error.WriteLine($"[DM] Trying GetCustomProperty2 for known property names...");
                         string[] knownProps = { "Revision", "Rev", "Description", "Number", "PartNumber", "Part Number", "DrawnBy" };
                         foreach (var propName in knownProps)
@@ -1088,14 +1228,15 @@ namespace BluePLM.SolidWorksService
                                     catch { }
                                 }
                                 
-                                if (!string.IsNullOrEmpty(value) && !string.IsNullOrEmpty(name))
+                                // The name came from GetCustomPropertyNames, so the property is in
+                                // the file whatever its value reads back as. Dropping the empty ones
+                                // made "the user cleared this field" and "the file never had this
+                                // property" the same answer, which is the distinction a read-back
+                                // verification and the divergence scan both turn on.
+                                if (!string.IsNullOrEmpty(name))
                                 {
                                     Console.Error.WriteLine($"[DM] Property '{name}' = '{value}'");
-                                    props[name] = value!;
-                                }
-                                else
-                                {
-                                    Console.Error.WriteLine($"[DM] Property '{name}' returned empty/null");
+                                    props[name] = value ?? string.Empty;
                                 }
                             }
                             catch (Exception propEx)
@@ -1234,9 +1375,11 @@ namespace BluePLM.SolidWorksService
                                             catch { }
                                         }
                                         
-                                        if (!string.IsNullOrEmpty(value) && !string.IsNullOrEmpty(name))
+                                        // As above: the name is the evidence the property exists, so
+                                        // an empty value is kept rather than treated as absent.
+                                        if (!string.IsNullOrEmpty(name))
                                         {
-                                            props[name] = value!;
+                                            props[name] = value ?? string.Empty;
                                             Console.Error.WriteLine($"[DM] Config property '{name}' = '{value}'");
                                         }
                                     }
@@ -1444,10 +1587,8 @@ namespace BluePLM.SolidWorksService
                 }
 
                 dynamic dynDoc = doc;
-                int propsSet = 0;
-                int propsFailed = 0;
-                var failedProps = new List<string>();
-                
+                var writeReport = new PropertyWriteReport();
+
                 var swDmCustomInfoTextEnum = TryGetCustomInfoTextEnum();
                 if (swDmCustomInfoTextEnum == null)
                 {
@@ -1465,47 +1606,9 @@ namespace BluePLM.SolidWorksService
                     
                     foreach (var kvp in properties)
                     {
-                        try
-                        {
-                            // Empty value = clear the property entirely (decisive delete).
-                            // SetCustomProperty("", ...) is unreliable and reads drop empty values,
-                            // so the old value would otherwise survive and "bounce back".
-                            if (string.IsNullOrWhiteSpace(kvp.Value))
-                            {
-                                try { dynDoc.DeleteCustomProperty(kvp.Key); } catch { }
-                                propsSet++;
-                                Console.Error.WriteLine($"[DM] Deleted file property '{kvp.Key}' (empty value)");
-                                continue;
-                            }
-                            // Try SetCustomProperty first (works if property exists)
-                            // This is safer than Delete+Add which can lose data if Add fails
-                            try 
-                            { 
-                                dynDoc.SetCustomProperty(kvp.Key, kvp.Value);
-                                propsSet++;
-                                Console.Error.WriteLine($"[DM] Set file property '{kvp.Key}' via SetCustomProperty");
-                            } 
-                            catch 
-                            {
-                                if (InvokeAddCustomProperty(doc, kvp.Key, swDmCustomInfoTextEnum, kvp.Value))
-                                {
-                                    propsSet++;
-                                    Console.Error.WriteLine($"[DM] Added file property '{kvp.Key}' via AddCustomProperty");
-                                }
-                                else
-                                {
-                                    propsFailed++;
-                                    failedProps.Add(kvp.Key);
-                                    Console.Error.WriteLine($"[DM] AddCustomProperty refused file property '{kvp.Key}'");
-                                }
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            propsFailed++;
-                            failedProps.Add(kvp.Key);
-                            Console.Error.WriteLine($"[DM] Failed to set file property '{kvp.Key}': {ex.Message}");
-                        }
+                        var status = WriteProperty(doc, kvp.Key, kvp.Value, swDmCustomInfoTextEnum, out var detail);
+                        writeReport.Record(FileLevelScope, kvp.Key, status, detail);
+                        LogPropertyOutcome(FileLevelScope, kvp.Key, kvp.Value, status, detail);
                     }
                 }
                 else
@@ -1523,75 +1626,26 @@ namespace BluePLM.SolidWorksService
                     
                     foreach (var kvp in properties)
                     {
-                        try
-                        {
-                            // Empty value = clear the property entirely (decisive delete).
-                            // SetCustomProperty("", ...) is unreliable and reads drop empty values,
-                            // so the old value would otherwise survive and "bounce back".
-                            if (string.IsNullOrWhiteSpace(kvp.Value))
-                            {
-                                try { config.DeleteCustomProperty(kvp.Key); } catch { }
-                                propsSet++;
-                                Console.Error.WriteLine($"[DM] Deleted config property '{kvp.Key}' (empty value)");
-                                continue;
-                            }
-                            // Try SetCustomProperty first (works if property exists)
-                            // This is safer than Delete+Add which can lose data if Add fails
-                            try 
-                            { 
-                                config.SetCustomProperty(kvp.Key, kvp.Value);
-                                propsSet++;
-                                Console.Error.WriteLine($"[DM] Set config property '{kvp.Key}' via SetCustomProperty");
-                            } 
-                            catch 
-                            {
-                                if (InvokeAddCustomProperty((object)config, kvp.Key, swDmCustomInfoTextEnum, kvp.Value))
-                                {
-                                    propsSet++;
-                                    Console.Error.WriteLine($"[DM] Added config property '{kvp.Key}' via AddCustomProperty");
-                                }
-                                else
-                                {
-                                    propsFailed++;
-                                    failedProps.Add(kvp.Key);
-                                    Console.Error.WriteLine($"[DM] AddCustomProperty refused config property '{kvp.Key}'");
-                                }
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            propsFailed++;
-                            failedProps.Add(kvp.Key);
-                            Console.Error.WriteLine($"[DM] Failed to set config property '{kvp.Key}': {ex.Message}");
-                        }
+                        var status = WriteProperty((object)config, kvp.Key, kvp.Value, swDmCustomInfoTextEnum, out var detail);
+                        writeReport.Record(configuration!, kvp.Key, status, detail);
+                        LogPropertyOutcome(configuration!, kvp.Key, kvp.Value, status, detail);
                     }
 
-                    // FIX: Also write Number to file-level to ensure consistency
-                    // This prevents race conditions where concurrent reads miss the config-level Number
-                    if (properties.TryGetValue("Number", out var numberValue) && !string.IsNullOrEmpty(numberValue))
-                    {
-                        Console.Error.WriteLine($"[DM] Also writing Number to file-level: {numberValue}");
-                        try
-                        {
-                            try { dynDoc.DeleteCustomProperty("Number"); } catch { }
-                            if (!InvokeAddCustomProperty(doc, "Number", swDmCustomInfoTextEnum, numberValue))
-                                throw new InvalidOperationException("AddCustomProperty refused the file-level Number");
-                        }
-                        catch
-                        {
-                            try { dynDoc.SetCustomProperty("Number", numberValue); } catch { }
-                        }
-                    }
+                    // Number is mirrored to file level so a concurrent read cannot miss the
+                    // config-level one. A cleared Number is mirrored too: leaving the file-level
+                    // copy behind is how a value the user deleted comes back.
+                    if (properties.TryGetValue("Number", out var numberValue))
+                        MirrorNumberToFileLevel(doc, numberValue, swDmCustomInfoTextEnum, writeReport);
                 }
 
                 // If ALL property writes failed, report failure so the SW API fallback is triggered
-                if (propsSet == 0 && propsFailed > 0)
+                if (writeReport.AllFailed)
                 {
-                    Console.Error.WriteLine($"[DM-API] All {propsFailed} property writes failed for {filePath}: {string.Join(", ", failedProps)}");
+                    Console.Error.WriteLine($"[DM-API] All {writeReport.Failed} property writes failed for {filePath}: {writeReport.DescribeFailures()}");
                     return new CommandResult 
                     { 
                         Success = false, 
-                        Error = $"Failed to write all {propsFailed} properties via Document Manager: {string.Join(", ", failedProps)}" 
+                        Error = $"Failed to write all {writeReport.Failed} properties via Document Manager: {string.Join(", ", writeReport.FailedProperties)}" 
                     };
                 }
 
@@ -1612,10 +1666,10 @@ namespace BluePLM.SolidWorksService
                     Data = new
                     {
                         filePath,
-                        propertiesSet = propsSet,
-                        propertiesFailed = propsFailed,
-                        failedProperties = failedProps.Count > 0 ? failedProps : null,
-                        configuration = configuration ?? "file-level"
+                        propertiesSet = writeReport.Written,
+                        propertiesFailed = writeReport.Failed,
+                        failedProperties = writeReport.AnyFailed ? writeReport.FailedProperties : null,
+                        configuration = configuration ?? FileLevelScope
                     }
                 };
             }
@@ -1633,6 +1687,110 @@ namespace BluePLM.SolidWorksService
                     if (!string.IsNullOrEmpty(filePath)) LogDocClose(filePath!);
                 }
                 // Release per-file lock
+                fileLock.Release();
+            }
+        }
+
+        /// <summary>
+        /// Remove named custom properties from a file, taking the names out of the document rather
+        /// than emptying them.
+        ///
+        /// This is the only way to ask for a delete. An empty value used to mean one, which left a
+        /// caller that meant "the user cleared this field" and a caller that meant "this property
+        /// should not exist" writing the identical request; they want opposite things.
+        /// </summary>
+        public CommandResult DeleteCustomProperties(string? filePath, List<string>? propertyNames, string? configuration = null)
+        {
+            if (!Initialize() || _dmApp == null)
+                return new CommandResult { Success = false, Error = _initError ?? "Document Manager not available" };
+
+            if (string.IsNullOrEmpty(filePath))
+                return new CommandResult { Success = false, Error = "Missing 'filePath'" };
+
+            if (!File.Exists(filePath))
+                return new CommandResult { Success = false, Error = $"File not found: {filePath}" };
+
+            if (propertyNames == null || propertyNames.Count == 0)
+                return new CommandResult { Success = false, Error = "Missing or empty 'propertyNames'" };
+
+            var fileLock = GetFileLock(filePath!);
+            fileLock.Wait();
+
+            object? doc = null;
+            try
+            {
+                doc = OpenDocumentForWrite(filePath!, out var openError);
+                if (doc == null)
+                    return new CommandResult { Success = false, Error = $"Failed to open file for writing: error code {openError}" };
+
+                dynamic dynDoc = doc;
+                object owner = doc;
+
+                if (!string.IsNullOrEmpty(configuration))
+                {
+                    var config = dynDoc.ConfigurationManager.GetConfigurationByName(configuration);
+                    if (config == null)
+                        return new CommandResult { Success = false, Error = $"Configuration not found: {configuration}" };
+                    owner = (object)config;
+                }
+
+                var scope = configuration ?? FileLevelScope;
+                var report = new PropertyWriteReport();
+                foreach (var name in propertyNames)
+                {
+                    var status = DeleteProperty(owner, name, out var detail);
+                    report.Record(scope, name, status, detail);
+                    Console.Error.WriteLine($"[DM] {status} {scope} property '{name}'{(detail == null ? "" : $": {detail}")}");
+                }
+
+                if (report.AllFailed)
+                {
+                    return new CommandResult
+                    {
+                        Success = false,
+                        Error = $"Failed to delete all {report.Failed} properties via Document Manager: {string.Join(", ", report.FailedProperties)}"
+                    };
+                }
+
+                // Nothing was removed, so there is nothing to save. Saving anyway would rewrite the
+                // file for no change, which in a vault is a modification a user has to explain.
+                if (report.CountOf(PropertyWriteStatus.Deleted) == 0)
+                {
+                    return new CommandResult
+                    {
+                        Success = true,
+                        Data = PropertyDeleteResult.Build(filePath, report, configuration)
+                    };
+                }
+
+                var saveError = SaveDocument(doc);
+                if (saveError != SwDmDocumentSaveError.None)
+                {
+                    return new CommandResult
+                    {
+                        Success = false,
+                        Error = $"Document Manager could not save {Path.GetFileName(filePath)}: {DescribeSaveError(saveError)}"
+                    };
+                }
+
+                return new CommandResult
+                {
+                    Success = true,
+                    Data = PropertyDeleteResult.Build(filePath, report, configuration)
+                };
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[DM-API] DeleteCustomProperties exception: {ex.Message}");
+                return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
+            }
+            finally
+            {
+                if (doc != null)
+                {
+                    try { ((dynamic)doc).CloseDoc(); } catch { }
+                    if (!string.IsNullOrEmpty(filePath)) LogDocClose(filePath!);
+                }
                 fileLock.Release();
             }
         }
@@ -1700,15 +1858,11 @@ namespace BluePLM.SolidWorksService
                     };
                 }
                 
-                int totalPropsSet = 0;
-                int totalPropsFailed = 0;
-                int totalPropsAttempted = 0;
+                var writeReport = new PropertyWriteReport();
                 int configsProcessed = 0;
                 var errors = new List<string>();
-                var failedProps = new List<string>();
-                
-                // Track the last Number value written (for file-level backup)
-                string? lastNumberValue = null;
+
+                var numberToMirror = ResolveNumberToMirror(configProperties);
 
                 // Write properties to each configuration
                 foreach (var configEntry in configProperties)
@@ -1728,63 +1882,17 @@ namespace BluePLM.SolidWorksService
                             continue;
                         }
 
-                        int propsSetForConfig = 0;
+                        var configReport = new PropertyWriteReport();
                         foreach (var kvp in properties)
                         {
-                            totalPropsAttempted++;
-                            try
-                            {
-                                // Empty value = clear the property entirely (decisive delete),
-                                // matching SetCustomProperties. SetCustomProperty("", ...) is
-                                // unreliable and reads drop empty values, so the old value would
-                                // otherwise survive and "bounce back".
-                                if (string.IsNullOrWhiteSpace(kvp.Value))
-                                {
-                                    try { config.DeleteCustomProperty(kvp.Key); } catch { }
-                                    propsSetForConfig++;
-                                    Console.Error.WriteLine($"[DM] Deleted config property '{kvp.Key}' on '{configName}' (empty value)");
-                                    continue;
-                                }
-                                // Try SetCustomProperty first (works if property exists)
-                                // This is safer than Delete+Add which can lose data if Add fails
-                                try 
-                                { 
-                                    config.SetCustomProperty(kvp.Key, kvp.Value);
-                                    propsSetForConfig++;
-                                    Console.Error.WriteLine($"[DM] Set config property '{kvp.Key}' via SetCustomProperty");
-                                } 
-                                catch 
-                                {
-                                    if (InvokeAddCustomProperty((object)config, kvp.Key, swDmCustomInfoTextEnum, kvp.Value))
-                                    {
-                                        propsSetForConfig++;
-                                        Console.Error.WriteLine($"[DM] Added config property '{kvp.Key}' via AddCustomProperty");
-                                    }
-                                    else
-                                    {
-                                        totalPropsFailed++;
-                                        failedProps.Add($"{configName}:{kvp.Key}");
-                                        Console.Error.WriteLine($"[DM] AddCustomProperty refused config property '{kvp.Key}' on '{configName}'");
-                                        continue;
-                                    }
-                                }
-                                
-                                if (kvp.Key == "Number" && !string.IsNullOrEmpty(kvp.Value))
-                                {
-                                    lastNumberValue = kvp.Value;
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                totalPropsFailed++;
-                                failedProps.Add($"{configName}:{kvp.Key}");
-                                Console.Error.WriteLine($"[DM] Failed to set property '{kvp.Key}' on config '{configName}': {ex.Message}");
-                            }
+                            var status = WriteProperty((object)config, kvp.Key, kvp.Value, swDmCustomInfoTextEnum, out var detail);
+                            configReport.Record(configName, kvp.Key, status, detail);
+                            LogPropertyOutcome(configName, kvp.Key, kvp.Value, status, detail);
                         }
-                        
-                        totalPropsSet += propsSetForConfig;
+
+                        writeReport.Absorb(configReport);
                         configsProcessed++;
-                        Console.Error.WriteLine($"[DM] Config '{configName}': set {propsSetForConfig} properties");
+                        Console.Error.WriteLine($"[DM] Config '{configName}': wrote {configReport.Written} of {configReport.Attempted} properties");
                     }
                     catch (Exception configEx)
                     {
@@ -1792,31 +1900,17 @@ namespace BluePLM.SolidWorksService
                     }
                 }
 
-                // FIX: Also write Number to file-level to ensure consistency
-                // This prevents race conditions where concurrent reads miss the config-level Number
-                if (!string.IsNullOrEmpty(lastNumberValue))
-                {
-                    Console.Error.WriteLine($"[DM] Also writing Number to file-level: {lastNumberValue}");
-                    try
-                    {
-                        try { dynDoc.DeleteCustomProperty("Number"); } catch { }
-                        if (!InvokeAddCustomProperty(doc, "Number", swDmCustomInfoTextEnum, lastNumberValue))
-                            throw new InvalidOperationException("AddCustomProperty refused the file-level Number");
-                    }
-                    catch
-                    {
-                        try { dynDoc.SetCustomProperty("Number", lastNumberValue); } catch { }
-                    }
-                }
+                if (numberToMirror.Requested)
+                    MirrorNumberToFileLevel(doc, numberToMirror.Value, swDmCustomInfoTextEnum, writeReport);
 
                 // If ALL property writes failed, report failure so the SW API fallback is triggered
-                if (totalPropsSet == 0 && totalPropsFailed > 0)
+                if (writeReport.AllFailed)
                 {
-                    Console.Error.WriteLine($"[DM-API] All {totalPropsFailed} property writes failed in batch for {filePath}: {string.Join(", ", failedProps)}");
+                    Console.Error.WriteLine($"[DM-API] All {writeReport.Failed} property writes failed in batch for {filePath}: {writeReport.DescribeFailures()}");
                     return new CommandResult 
                     { 
                         Success = false, 
-                        Error = $"Failed to write all {totalPropsFailed} properties via Document Manager: {string.Join(", ", failedProps)}" 
+                        Error = $"Failed to write all {writeReport.Failed} properties via Document Manager: {string.Join(", ", writeReport.FailedProperties)}" 
                     };
                 }
 
@@ -1832,7 +1926,7 @@ namespace BluePLM.SolidWorksService
                         Error = $"Document Manager could not save {Path.GetFileName(filePath)}: {DescribeSaveError(saveError)}"
                     };
                 }
-                Console.Error.WriteLine($"[DM] Saved! {configsProcessed} configs, {totalPropsSet} properties total");
+                Console.Error.WriteLine($"[DM] Saved! {configsProcessed} configs, {writeReport.Written} properties total");
 
                 return new CommandResult
                 {
@@ -1841,9 +1935,9 @@ namespace BluePLM.SolidWorksService
                     {
                         filePath,
                         configurationsProcessed = configsProcessed,
-                        propertiesSet = totalPropsSet,
-                        propertiesFailed = totalPropsFailed,
-                        failedProperties = failedProps.Count > 0 ? failedProps : null,
+                        propertiesSet = writeReport.Written,
+                        propertiesFailed = writeReport.Failed,
+                        failedProperties = writeReport.AnyFailed ? writeReport.FailedProperties : null,
                         errors = errors.Count > 0 ? errors : null
                     }
                 };
