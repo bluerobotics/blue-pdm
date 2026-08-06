@@ -237,6 +237,27 @@ export function readWriteState(
   return map?.[address.configuration]
 }
 
+/**
+ * What the record says about an address, with absence spelled out as a state.
+ *
+ * Absence means `pending`: the address was edited and nothing has concluded anything about it, so
+ * it still owes the file a write and is certainly not confirmed in it. That is what
+ * `resolveFileWriteState` has always shown a user, but the two functions check-in runs each
+ * decided it for themselves and reached opposite answers - one counted an unrecorded address as
+ * owing a write, the other, twelve lines later, as confirmed. The confirmed reading won, because
+ * it ran last, and the value went to the database with the mark cleared and the file untouched.
+ *
+ * A caller that needs the timestamp or the reason still reads the entry. A caller asking what
+ * state an address is in must come through here, because `FieldWriteState | undefined` is a type
+ * with two ways to spell "nothing is known" and this one has only the five.
+ */
+export function writeStateOf(
+  record: MetadataWriteStateRecord | undefined,
+  address: MetadataWriteAddress,
+): MetadataWriteState {
+  return readWriteState(record, address)?.state ?? 'pending'
+}
+
 /** What a transition carries beyond the state itself. */
 export interface WriteStateDetail {
   reason?: string
@@ -497,7 +518,7 @@ export function resolveFileWriteState(
 ): MetadataWriteState | undefined {
   const summary = summarizeWriteState(record)
   const unrecorded = listWriteAddresses(pending).some(
-    (address) => readWriteState(record, address) === undefined,
+    (address) => writeStateOf(record, address) === 'pending',
   )
 
   if (!unrecorded) return summary.worst

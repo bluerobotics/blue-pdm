@@ -188,7 +188,16 @@ const DESCRIPTION_KEYS = [
   'PartDescription',
 ] as const
 
-const REVISION_KEYS = ['Revision', 'REVISION', 'revision', 'Rev', 'REV', 'rev', 'Rev.', 'REV.'] as const
+const REVISION_KEYS = [
+  'Revision',
+  'REVISION',
+  'revision',
+  'Rev',
+  'REV',
+  'rev',
+  'Rev.',
+  'REV.',
+] as const
 
 const TAB_NUMBER_KEYS = ['Tab Number', 'TabNumber', 'Tab No', 'Tab', 'TAB', 'Suffix'] as const
 
@@ -590,7 +599,26 @@ export function resolvedConfigurationProperties(
   file: FileMetadata,
   configuration: string,
 ): Readonly<Record<string, string>> {
-  return { ...file.fileProperties, ...configurationScopeProperties(file, configuration) }
+  return resolvedPropertyView(
+    file.fileProperties,
+    configurationScopeProperties(file, configuration),
+  )
+}
+
+/**
+ * The same resolution, for a caller holding the two bags rather than the whole document.
+ *
+ * The panels keep the selected configuration's properties in their own state and never assemble a
+ * `FileMetadata`, so without this they went on spreading the two maps by hand - which is how the
+ * split between the resolved view and the configuration's own came to be claimed as complete while
+ * five display readers bypassed it. The rule has one definition and this is it; both exported
+ * views are it under different arguments.
+ */
+export function resolvedPropertyView(
+  fileProperties: Readonly<Record<string, string>>,
+  configurationOwn: Readonly<Record<string, string>>,
+): Readonly<Record<string, string>> {
+  return { ...fileProperties, ...configurationOwn }
 }
 
 /** A map entry describes a configuration only when it holds something readable. */

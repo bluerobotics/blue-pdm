@@ -113,7 +113,7 @@ export interface FileContextMenuProps {
   stateSubmenuTimeoutRef: React.MutableRefObject<NodeJS.Timeout | null>
 
   // Files currently saving metadata
-  savingConfigsToSW?: Set<string>
+  savingConfigsToSW?: ReadonlySet<string>
 }
 
 export function FileContextMenu({

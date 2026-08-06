@@ -38,7 +38,7 @@ export interface FilePaneHandlersContextValue {
   canHaveConfigs: (file: LocalFile) => boolean
   toggleFileConfigExpansion: (file: LocalFile) => void
   hasPendingMetadataChanges: (file: LocalFile) => boolean
-  savingConfigsToSW: Set<string>
+  savingConfigsToSW: ReadonlySet<string>
   /** `edit` names the fields the write must report on - see useConfigHandlers. */
   saveConfigsToSWFile: (file: LocalFile, edit: PendingMetadataEdit) => void
 

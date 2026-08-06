@@ -64,6 +64,7 @@ import { COLUMN_TRANSLATION_KEYS } from './types'
 
 // Import hooks for folder metrics and sorting
 import { useFolderMetrics } from './hooks/useFolderMetrics'
+import { useMetadataWritesInFlight } from './hooks/useMetadataWritesInFlight'
 import { useSorting } from './hooks/useSorting'
 
 // Import state management hooks
@@ -347,8 +348,9 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
   // Current machine ID for multi-device checkout detection (loaded once)
   const [currentMachineId, setCurrentMachineId] = useState<string | null>(null)
 
-  // State for tracking files currently saving to SolidWorks (declared early for useFileOperations)
-  const [savingConfigsToSW, setSavingConfigsToSW] = useState<Set<string>>(new Set())
+  // The metadata writes running right now. Held outside React - see `lib/metadata/writeInFlight` -
+  // because check-in has to consult it too, and a command handler cannot read component state.
+  const savingConfigsToSW = useMetadataWritesInFlight()
 
   // File operations (checkout, checkin, download, upload, etc.)
   const {
@@ -614,7 +616,6 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
     configContextMenu,
     setConfigContextMenu,
     setIsExportingConfigs,
-    setSavingConfigsToSW,
     setSelectedFiles,
     organization,
     addToast,

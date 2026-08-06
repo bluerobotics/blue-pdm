@@ -86,6 +86,14 @@
  *                   wrong. ReadProperties no longer drops a property whose value is empty, so the
  *                   app can tell a cleared field from one that was never set. Delete is still
  *                   expressible, through a new deleteProperties command rather than a magic value
+ * - Version 1.20.0: setPropertiesBatch reports acceptance per configuration, not only per property.
+ *                   The Document Manager path now returns failedConfigurations - the same field the
+ *                   SolidWorks COM path has always returned - naming every configuration it could
+ *                   not enter. A configuration it skipped used to be mentioned only in a prose
+ *                   errors entry, so the app could count the shortfall but not attribute it, and
+ *                   nothing outside the service can: a stale value equal to the intended one reads
+ *                   exactly like one the write put there. The app now refuses to confirm any scope
+ *                   in a batch reporting a shortfall, which on this service is never
  *
  * When making service changes:
  * 1. Increment SERVICE_VERSION in Program.cs
@@ -95,7 +103,7 @@
 
 // The SolidWorks service version this app version expects
 // Uses semver: MAJOR.MINOR.PATCH
-export const EXPECTED_SW_SERVICE_VERSION = '1.19.0'
+export const EXPECTED_SW_SERVICE_VERSION = '1.20.0'
 
 // Minimum service version that will still work (for soft warnings vs hard errors)
 // Breaking changes should bump the major version and update this
@@ -146,6 +154,8 @@ export const SW_SERVICE_VERSION_DESCRIPTIONS: Record<string, string> = {
     'A read triggered by the file watcher can no longer open a document or start SolidWorks by any route, rather than being kept away from one by timing. Starting SolidWorks no longer takes ownership of an instance that was already running, so your own window cannot be hidden or closed by BluePLM. The built-in diagnostic keeps the read-only promise it makes: without --allow-write it now deletes, moves and restores nothing, it leaves hand-made .bak files alone, two of them running at once can no longer destroy each other\'s only copy, and it refuses a test folder too broad to confine anything instead of treating a whole drive as fair game',
   '1.19.0':
     'Clearing a metadata field now empties the custom property in the file instead of removing it, so a title block or note linked to that property keeps showing blank rather than breaking or falling back to the old value. The service also reports a property that exists and is empty, which it used to hide, so BluePLM can tell a field you cleared from one that was never filled in. Removing a property outright is still possible, but a caller now has to ask for it explicitly',
+  '1.20.0':
+    'When BluePLM writes several configurations at once, the service now names any configuration it could not write instead of only saying how many it got to. BluePLM could previously tell that one had been missed but not which, so it had no honest way to mark the file - and a configuration that still happened to hold the right value could be reported as written when it had not been touched. Those configurations are now marked as unconfirmed and retried rather than quietly accepted',
 }
 
 export interface SwServiceVersionCheckResult {

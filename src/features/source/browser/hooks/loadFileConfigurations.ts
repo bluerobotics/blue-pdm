@@ -11,10 +11,8 @@
  */
 
 import { log } from '@/lib/logger'
-import {
-  resolveConfigurationDescriptions,
-  resolveConfigurationTabs,
-} from '@/lib/metadata/overlay'
+import { resolvedConfigurationProperties } from '@/lib/metadata/divergence'
+import { resolveConfigurationDescriptions, resolveConfigurationTabs } from '@/lib/metadata/overlay'
 import type { LocalFile } from '@/stores/pdmStore'
 
 import type { ConfigWithDepth } from '../types'
@@ -29,8 +27,7 @@ interface SwConfiguration {
 
 /** Pull a tab out of a configuration's `Number`, for documents that carry no `Tab Number`. */
 function tabFromNumber(properties: Record<string, string>): string {
-  const number =
-    properties['Number'] || properties['Part Number'] || properties['PartNumber'] || ''
+  const number = properties['Number'] || properties['Part Number'] || properties['PartNumber'] || ''
   const parts = number.split('-')
   if (parts.length < 2) return ''
 
@@ -47,17 +44,21 @@ async function readFromDocument(
     const result = await window.electronAPI?.solidworks?.getProperties(filePath, configuration)
     if (!result?.success || !result.data) return { description: '', tabNumber: '' }
 
-    const properties = {
-      ...(result.data.fileProperties || {}),
-      ...(result.data.configurationProperties?.[configuration] || {}),
-    }
+    // The resolved view, deliberately: this is a display reader, and what a row should show is
+    // what SolidWorks resolves in the configuration's context. Through the shared helper rather
+    // than spread by hand, so the display view and the write-verification view cannot drift.
+    const properties = resolvedConfigurationProperties(
+      {
+        configurations: result.data.configurations ?? [],
+        fileProperties: result.data.fileProperties ?? {},
+        configurationProperties: result.data.configurationProperties ?? {},
+      },
+      configuration,
+    )
 
     return {
       description:
-        properties['Description'] ||
-        properties['DESCRIPTION'] ||
-        properties['description'] ||
-        '',
+        properties['Description'] || properties['DESCRIPTION'] || properties['description'] || '',
       tabNumber: tabFromNumber(properties),
     }
   } catch (error) {
@@ -71,9 +72,7 @@ async function readFromDocument(
 /**
  * Load a document's configurations as tree rows, or null when they could not be read.
  */
-export async function loadFileConfigurations(
-  file: LocalFile,
-): Promise<ConfigWithDepth[] | null> {
+export async function loadFileConfigurations(file: LocalFile): Promise<ConfigWithDepth[] | null> {
   let configurations: SwConfiguration[]
   try {
     const result = await window.electronAPI?.solidworks?.getConfigurations(file.path)

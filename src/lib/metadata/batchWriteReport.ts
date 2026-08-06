@@ -14,29 +14,30 @@
  *
  * The service answers a batch from whichever path is available, and they report differently:
  *
- * - **SolidWorks COM** loops one write per configuration and returns `failedConfigurations`, a map
- *   from configuration name to reason. That is a refusal stated outright, so it is taken as one.
- * - **Document Manager** writes every configuration inside one open/save cycle and returns
- *   `failedProperties` as `configuration:property` identifiers. A configuration counts as refused
- *   when *every* property sent to it is named there, which is the same rule the per-scope call
- *   applied: `SetCustomProperties` reports failure for a scope only when nothing in it landed.
- *   Recognition is by exact match against identifiers rebuilt from what was sent, not by parsing
- *   the service's strings apart, so a configuration name containing a colon cannot be mis-read.
+ * - **Both paths** return `failedConfigurations`, a map from configuration name to reason. That is
+ *   a refusal stated outright, so it is taken as one. The SolidWorks COM path has always reported
+ *   it; service 1.20.0 added it to the Document Manager path, which is what closed the gap
+ *   described below.
+ * - **Document Manager** also returns `failedProperties` as `configuration:property` identifiers.
+ *   A configuration counts as refused when *every* property sent to it is named there, which is
+ *   the same rule the per-scope call applied: `SetCustomProperties` reports failure for a scope
+ *   only when nothing in it landed. Recognition is by exact match against identifiers rebuilt from
+ *   what was sent, not by parsing the service's strings apart, so a configuration name containing
+ *   a colon cannot be mis-read.
  *
- * A configuration the Document Manager path skipped entirely is named only in `errors`, in prose,
- * and the response still says `success`. Sending four configurations to the fixture with one of
- * them misspelt returns `configurationsProcessed: 3`, `propertiesFailed: 0`, `failedProperties:
- * null`, and one `errors` entry reading `Error writing to config 'NO-SUCH-CONFIGURATION': ...`.
- * Those are counted rather than named, because matching a configuration name against a sentence
- * would attribute a refusal to `-01` on the strength of a message about `-014`, and a wrong
- * `failed` is as damaging as a wrong `verified`.
+ * Before 1.20.0 a configuration the Document Manager path skipped entirely was named only in
+ * `errors`, in prose, and the response still said `success`. Sending four configurations to the
+ * fixture with one of them misspelt returned `configurationsProcessed: 3`, `propertiesFailed: 0`,
+ * `failedProperties: null`, and one `errors` entry reading `Error writing to config
+ * 'NO-SUCH-CONFIGURATION': ...`. Those are still counted rather than named, because matching a
+ * configuration name against a sentence would attribute a refusal to `-01` on the strength of a
+ * message about `-014`, and a wrong `failed` is as damaging as a wrong `verified`.
  *
- * `unaccountedFor` is what the caller logs so the shortfall is visible; those addresses still get
- * their verdict from the read-back. For the case above the read-back is decisive - `verifyWrite`
- * fails an address whose configuration the file does not have, by name - so the only gap left is a
- * configuration that exists, whose write threw, and whose stale value happens to equal the one
- * intended. Closing that needs the service to return acceptance per configuration rather than per
- * property.
+ * `unaccountedFor` is that shortfall. Nothing here can say which configurations it covers and the
+ * read-back cannot settle them either - a stale value equal to the intended one is
+ * indistinguishable from one the write put there - so `writeMetadataToFile.ts` refuses to confirm
+ * any scope in a batch that reports one. On a current service it is always zero, because a
+ * skipped configuration is now named.
  *
  * Pure: no I/O, no store access, no React.
  */
@@ -45,7 +46,7 @@
 export interface BatchWriteData {
   /** Configurations the service says it entered. Both paths report this. */
   configurationsProcessed?: number
-  /** SolidWorks COM path only: configuration name to the reason it failed. */
+  /** Configuration name to the reason it was not written. Both paths since service 1.20.0. */
   failedConfigurations?: Record<string, string> | null
   /** Document Manager path only, as `configuration:property`. */
   failedProperties?: string[] | null
@@ -112,10 +113,12 @@ export function readBatchWriteReport(
     typeof reportedProcessed === 'number' && Number.isFinite(reportedProcessed)
       ? reportedProcessed
       : sent.length
-  const namedByCom = Object.keys(failedConfigurations).length
+  // A configuration the service named as refused is accounted for, however it was reported: it is
+  // one of the ones the processed count leaves out, and it is not a mystery.
+  const named = Object.keys(failedConfigurations).length
 
   return {
     refused,
-    unaccountedFor: Math.max(sent.length - processed - namedByCom, 0),
+    unaccountedFor: Math.max(sent.length - processed - named, 0),
   }
 }

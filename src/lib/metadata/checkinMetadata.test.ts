@@ -53,6 +53,7 @@ function installService(options: {
   writeSucceeds?: boolean
   readBack?: Record<string, string> | 'throw'
   configurations?: string[]
+  configurationReadBack?: Record<string, Record<string, string>>
 }): Stub {
   const configurations = options.configurations ?? []
   const service: Stub = {
@@ -70,7 +71,7 @@ function installService(options: {
         data: {
           configurations,
           fileProperties: options.readBack ?? {},
-          configurationProperties: {},
+          configurationProperties: options.configurationReadBack ?? {},
         },
       }
     }),
@@ -263,6 +264,104 @@ describe('an unconfirmed value is promoted and marked', () => {
 
     expect(outcome.promotedUnconfirmed).toHaveLength(2)
     expect(Object.keys(outcome.writeState?.config_tabs ?? {})).toEqual(['AS568-066', 'AS568-067'])
+  })
+})
+
+describe('an address the write never reached is not a confirmed one', () => {
+  // `keepOnlyUnconfirmed` used to read an unrecorded address as confirmed, twelve lines after
+  // `unwrittenAddresses` had read the same absence as owing a write. The confirmed reading ran
+  // last, so the value went to the database, the mark was cleared and the file was never touched.
+  // Each of these is an ordinary edit that produced no verdict at all.
+
+  it('does not confirm a pending edit for a configuration the document no longer has', async () => {
+    stub = installService({ configurations: ['Default'] })
+
+    const outcome = await settleMetadataForCheckin(
+      file({ pendingMetadata: { config_descriptions: { 'AS568-014': 'O-ring, Viton' } } }),
+      { organizationId: null, serviceAvailable: true },
+    )
+
+    expect(outcome.promotedUnconfirmed.map(addressKey)).toEqual([
+      'configuration:config_description:AS568-014',
+    ])
+    expect(outcome.writeState?.config_descriptions?.['AS568-014']).toMatchObject({
+      state: 'unattempted',
+      promoted: true,
+    })
+  })
+
+  it('writes a file-scope tab number on a multi-configuration document rather than dropping it', async () => {
+    // Reachable through the Sync Metadata pull. The plan emitted no group for it, so nothing was
+    // written and nothing was recorded.
+    stub = installService({ configurations: ['Default', 'AS568-014'] })
+
+    const outcome = await settleMetadataForCheckin(
+      file({ pendingMetadata: { tab_number: '014' } }),
+      { organizationId: null, serviceAvailable: true },
+    )
+
+    expect(stub.setProperties).toHaveBeenCalledTimes(1)
+    expect(outcome.promotedUnconfirmed.map(addressKey)).toEqual(['file:tab_number'])
+  })
+
+  it('confirms the file-level description separately from the base configuration’s own', async () => {
+    // Editing both took the per-configuration branch and never emitted the file-scope intent, so
+    // the file-level description reached the database unwritten and unmarked.
+    stub = installService({
+      configurations: ['Default'],
+      readBack: {},
+      configurationReadBack: { Default: { Description: 'Viton, 014' } },
+    })
+
+    const outcome = await settleMetadataForCheckin(
+      file({
+        pendingMetadata: {
+          description: 'Viton o-ring',
+          config_descriptions: { Default: 'Viton, 014' },
+        },
+      }),
+      { organizationId: null, serviceAvailable: true },
+    )
+
+    expect(outcome.promotedUnconfirmed.map(addressKey)).toEqual(['file:description'])
+    expect(outcome.writeState?.config_descriptions?.['Default']).toBeUndefined()
+  })
+
+  it('writes nothing when the document’s configurations could not be read', async () => {
+    // An empty list and a failed call used to be the same value. Planning a file-scope write off a
+    // failed call is the worst available answer: the read-back finds what the write just put at
+    // file level and reports `verified`, while the configurations keep the old number.
+    const service = installService({ readBack: { Number: 'BR-202020' } })
+    service.getConfigurations = vi.fn(async () => ({
+      success: false,
+      error: 'the document is locked',
+    }))
+    stub = service
+
+    const outcome = await settleMetadataForCheckin(
+      file({ pendingMetadata: { part_number: 'BR-202020' } }),
+      { organizationId: null, serviceAvailable: true },
+    )
+
+    expect(stub.setProperties).not.toHaveBeenCalled()
+    expect(outcome.writeState?.fields?.part_number).toMatchObject({
+      state: 'unattempted',
+      promoted: true,
+    })
+  })
+
+  it('still writes a drawing, which has no configurations to read', async () => {
+    const service = installService({ readBack: { Revision: 'B' } })
+    service.getConfigurations = vi.fn(async () => ({ success: false, error: 'not a model' }))
+    stub = service
+
+    const outcome = await settleMetadataForCheckin(
+      file({ name: 'ORING.SLDDRW', extension: '.slddrw', pendingMetadata: { revision: 'B' } }),
+      { organizationId: null, serviceAvailable: true },
+    )
+
+    expect(stub.getConfigurations).not.toHaveBeenCalled()
+    expect(outcome.writeState).toBeUndefined()
   })
 })
 

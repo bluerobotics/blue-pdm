@@ -17,7 +17,7 @@ import { usePDMStore } from '@/stores/pdmStore'
 import { resolveRevision, resolvedText } from '@/lib/metadata/overlay'
 import { MetadataWriteStateMarker } from '@/components/MetadataWriteStateMarker'
 import { useFilePaneContext, useFilePaneHandlers } from '../../../context'
-import { isFileWriteInFlight } from '../../../utils/metadataWriteInFlight'
+import { isFileWriteInFlight } from '@/lib/metadata/writeInFlight'
 import type { CellRendererBaseProps } from './types'
 
 export function RevisionCell({ file }: CellRendererBaseProps): React.ReactNode {

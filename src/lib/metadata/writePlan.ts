@@ -20,6 +20,25 @@
  * nothing to it. This is the same rule the read layer settled on, applied at the write layer, and it
  * is what makes a full clear expressible as a write instead of as an absence of one.
  *
+ * ## A file-scope field lives in the document's own bag
+ *
+ * A document with configurations used to receive no file-scope group at all. Its file-scope intents
+ * were redirected into the base configuration, so `verifyWrite` looked for the new part number in
+ * the configuration that had just been written, found it, and reported `verified` while the
+ * document's own property bag still held the value from before the edit. Nothing marked the file,
+ * check-in forgot it, and a `$PRP:"Description"` title block went on rendering the old text.
+ *
+ * The scanner never agreed: `compareOwnedMetadata` reads every file-scope field out of
+ * `file.fileProperties` whatever the document's configuration count, so it reported as divergent
+ * exactly what the write had just called confirmed. Two modules held different beliefs about where
+ * a file-scope field lives, and the plan is where the disagreement started.
+ *
+ * So the file-scope group is emitted for every document, and its intents are confirmed where the
+ * scanner looks for them. The configurations still receive the same properties - SolidWorks
+ * resolves a file-scope field from the configuration's bag when one is active, which is what makes
+ * a configuration-specific title block right - but they are copies, and the address they answer for
+ * is the document's.
+ *
  * Pure: no I/O, no store access, no React.
  */
 
@@ -86,9 +105,11 @@ function fullNumber(base: string, tab: string, serialization: PlanSerialization 
 /**
  * Build the properties and intents for every scope this edit touches.
  *
- * Configuration-scope groups come first and the file-scope group last, so a document with
- * configurations never receives a file-scope write for a field a configuration is about to set - the
- * two would disagree and the last one would win by accident.
+ * The document's own group comes first and the configurations follow, because the service mirrors
+ * a configuration write's `Number` back to file level inside the same open. Writing the document
+ * bag afterwards would undo that mirror on some paths and not others depending on how many
+ * configurations happened to be in the batch, and a document whose file-level number depends on
+ * the shape of the last write is the kind of thing nobody can reason about later.
  */
 export function buildMetadataWritePlan(input: MetadataWritePlanInput): MetadataWriteGroup[] {
   const { pending, committed, configurations, serialization } = input
@@ -114,13 +135,58 @@ export function buildMetadataWritePlan(input: MetadataWritePlanInput): MetadataW
   const pendingTabs = pending.config_tabs ?? {}
   const pendingDescriptions = pending.config_descriptions ?? {}
 
-  const groups: MetadataWriteGroup[] = []
+  // The document's own property bag. Every file-scope address is established here and confirmed
+  // here, which is also where the divergence scanner reads a file-scope field from.
+  const documentProperties: Record<string, string> = {}
+  const documentIntents: MetadataWriteIntent[] = []
+  const fileTab = sanitizeTabNumber(pending.tab_number, validation)
+
+  if (baseNumber) {
+    documentProperties['Number'] = fullNumber(baseNumber, fileTab, serialization)
+    documentProperties['Base Item Number'] = baseNumber
+  } else if (partNumberEdited) {
+    documentProperties['Number'] = ''
+    documentProperties['Base Item Number'] = ''
+  }
+  if (partNumberEdited && includes({ scope: 'file', field: 'part_number' })) {
+    documentIntents.push({ address: { scope: 'file', field: 'part_number' }, expected: baseNumber })
+  }
+
+  if (fileTab || tabNumberEdited) documentProperties['Tab Number'] = fileTab
+  if (tabNumberEdited && includes({ scope: 'file', field: 'tab_number' })) {
+    documentIntents.push({ address: { scope: 'file', field: 'tab_number' }, expected: fileTab })
+  }
+
+  if (descriptionEdited || baseDescription) documentProperties['Description'] = baseDescription
+  if (descriptionEdited && includes({ scope: 'file', field: 'description' })) {
+    documentIntents.push({
+      address: { scope: 'file', field: 'description' },
+      expected: baseDescription,
+    })
+  }
+
+  if (revisionEdited || revision) documentProperties['Revision'] = revision
+  if (revisionEdited && includes({ scope: 'file', field: 'revision' })) {
+    documentIntents.push({ address: { scope: 'file', field: 'revision' }, expected: revision })
+  }
+
+  if (input.parity) {
+    documentProperties['Date'] = input.parity.date
+    if (input.parity.drawnBy) documentProperties['DrawnBy'] = input.parity.drawnBy
+  }
+
+  const documentGroup: MetadataWriteGroup = {
+    properties: documentProperties,
+    intents: documentIntents,
+  }
+
+  const configurationGroups: MetadataWriteGroup[] = []
 
   if (configurations.length > 0) {
     const baseConfiguration = (configurations.find((c) => c.isActive) ?? configurations[0]).name
 
     // Configurations this write has anything to say to: the ones edited, plus the one that carries
-    // the file-scope fields when those changed.
+    // the copies of the file-scope fields when those changed.
     const touched = new Set<string>()
     for (const name of Object.keys(pendingTabs)) {
       if (includes({ scope: 'configuration', field: 'config_tab', configuration: name })) {
@@ -141,10 +207,6 @@ export function buildMetadataWritePlan(input: MetadataWritePlanInput): MetadataW
     for (const configuration of configurations.filter((c) => touched.has(c.name))) {
       const properties: Record<string, string> = {}
       const intents: MetadataWriteIntent[] = []
-      const isBase = configuration.name === baseConfiguration
-      // A file-scope field on a multi-configuration document is written into the configuration
-      // SolidWorks resolves it from, so its read-back has to look there too.
-      const verifyIn = { configuration: configuration.name }
 
       const tabAddress: MetadataWriteAddress = {
         scope: 'configuration',
@@ -169,13 +231,6 @@ export function buildMetadataWritePlan(input: MetadataWritePlanInput): MetadataW
       if (tab || tabEdited) properties['Tab Number'] = tab
 
       if (tabEdited) intents.push({ address: tabAddress, expected: tab })
-      if (partNumberEdited && isBase && includes({ scope: 'file', field: 'part_number' })) {
-        intents.push({
-          address: { scope: 'file', field: 'part_number' },
-          expected: baseNumber,
-          verifyIn,
-        })
-      }
 
       const descriptionAddress: MetadataWriteAddress = {
         scope: 'configuration',
@@ -195,68 +250,26 @@ export function buildMetadataWritePlan(input: MetadataWritePlanInput): MetadataW
       }
       if (configDescriptionEdited) {
         intents.push({ address: descriptionAddress, expected: description })
-      } else if (descriptionEdited && isBase && includes({ scope: 'file', field: 'description' })) {
-        intents.push({
-          address: { scope: 'file', field: 'description' },
-          expected: description,
-          verifyIn,
-        })
       }
 
       if (revisionEdited || revision) properties['Revision'] = revision
-      if (revisionEdited && isBase && includes({ scope: 'file', field: 'revision' })) {
-        intents.push({ address: { scope: 'file', field: 'revision' }, expected: revision, verifyIn })
-      }
 
       if (input.parity) {
         properties['Date'] = input.parity.date
         if (input.parity.drawnBy) properties['DrawnBy'] = input.parity.drawnBy
       }
 
-      groups.push({ configuration: configuration.name, properties, intents })
+      configurationGroups.push({ configuration: configuration.name, properties, intents })
     }
-
-    return groups
   }
 
-  // No configurations: everything goes to file scope.
-  const properties: Record<string, string> = {}
-  const intents: MetadataWriteIntent[] = []
-  const tab = sanitizeTabNumber(pending.tab_number, validation)
+  // The document's bag is written when this edit has a file-scope address to establish there, and
+  // on a document with no configurations, where it is the only place anything can go. It is not
+  // written for a configuration-only edit: no file-scope field changed, so the extra open and save
+  // - paid on every committed keystroke in the inline configuration editors - would buy nothing.
+  const documentGroupWanted =
+    documentIntents.length > 0 ||
+    (configurationGroups.length === 0 && Object.keys(documentProperties).length > 0)
 
-  if (baseNumber) {
-    properties['Number'] = fullNumber(baseNumber, tab, serialization)
-    properties['Base Item Number'] = baseNumber
-  } else if (partNumberEdited) {
-    properties['Number'] = ''
-    properties['Base Item Number'] = ''
-  }
-  if (partNumberEdited && includes({ scope: 'file', field: 'part_number' })) {
-    intents.push({ address: { scope: 'file', field: 'part_number' }, expected: baseNumber })
-  }
-
-  if (tab || tabNumberEdited) properties['Tab Number'] = tab
-  if (tabNumberEdited && includes({ scope: 'file', field: 'tab_number' })) {
-    intents.push({ address: { scope: 'file', field: 'tab_number' }, expected: tab })
-  }
-
-  if (descriptionEdited || baseDescription) properties['Description'] = baseDescription
-  if (descriptionEdited && includes({ scope: 'file', field: 'description' })) {
-    intents.push({ address: { scope: 'file', field: 'description' }, expected: baseDescription })
-  }
-
-  if (revisionEdited || revision) properties['Revision'] = revision
-  if (revisionEdited && includes({ scope: 'file', field: 'revision' })) {
-    intents.push({ address: { scope: 'file', field: 'revision' }, expected: revision })
-  }
-
-  if (input.parity) {
-    properties['Date'] = input.parity.date
-    if (input.parity.drawnBy) properties['DrawnBy'] = input.parity.drawnBy
-  }
-
-  if (intents.length === 0 && Object.keys(properties).length === 0) return []
-
-  groups.push({ properties, intents })
-  return groups
+  return documentGroupWanted ? [documentGroup, ...configurationGroups] : configurationGroups
 }

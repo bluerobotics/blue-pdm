@@ -20,6 +20,15 @@
  * non-empty. A number the user cleared is named with an empty string and is written empty; a number
  * neither side ever held is left out, and the document keeps whatever it has.
  *
+ * ## Why `only` is passed
+ *
+ * Naming the item number and establishing it are different claims, and the plan builder now writes
+ * the document's own bag for every file-scope address a plan establishes. Without `only`, the
+ * number supplied here as context would read as a file-scope edit: each committed keystroke in a
+ * configuration editor would open the document to rewrite a number nobody touched, and would record
+ * a file-scope verdict for it. `only` says what this edit is actually establishing - one
+ * configuration address - and leaves the number to do its job in the properties, where it belongs.
+ *
  * Pure: no I/O, no store access, no React.
  */
 
@@ -62,6 +71,7 @@ export function buildConfigurationTabWritePlan(
     pending: { ...number, config_tabs: { [configuration]: tabNumber } },
     committed: { partNumber: number.part_number },
     configurations: [{ name: configuration, isActive: true }],
+    only: [{ scope: 'configuration', field: 'config_tab', configuration }],
     serialization,
     parity,
   })
@@ -82,6 +92,7 @@ export function buildConfigurationDescriptionWritePlan(
     pending: { ...number, config_descriptions: { [configuration]: description } },
     committed: { partNumber: number.part_number },
     configurations: [{ name: configuration, isActive: true, tabNumber }],
+    only: [{ scope: 'configuration', field: 'config_description', configuration }],
     serialization,
     parity,
   })

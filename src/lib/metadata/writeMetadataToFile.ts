@@ -43,6 +43,13 @@
  * that never happened. `batchWriteReport.ts` recovers that from the response, and says there what
  * it can and cannot recover.
  *
+ * What it cannot recover is a configuration the service neither entered nor named, which it
+ * reports only as a shortfall in the count. That used to be logged and then dropped, leaving the
+ * read-back to confirm scopes nobody claimed to have written. It now downgrades them to
+ * `unverified`, because "nobody knows" is what is true. Service 1.20.0 names the configurations it
+ * refused, so on a current service the shortfall is zero and nothing is downgraded; the downgrade
+ * is what keeps an older service honest rather than optimistic.
+ *
  * ## Clearing a field
  *
  * A cleared field is written as an empty property, not removed. A drawing title block linked with
@@ -68,6 +75,7 @@ import {
   type MetadataWriteIntent,
   type VerifiedAddress,
 } from './verifyWrite'
+import { addressKey } from './writeState'
 
 /** Properties destined for one scope, and what they are meant to establish there. */
 export interface MetadataWriteGroup {
@@ -93,11 +101,26 @@ export interface MetadataWriteRequest {
   useLiveApi?: boolean
 }
 
+/** A scope whose write failed while naming no address, so no verdict can carry the news. */
+export interface UnrecordedScopeFailure {
+  /** The configuration name, or `(file scope)` for the document's own bag. */
+  scope: string
+  reason: string
+}
+
 export interface MetadataWriteResult {
   /** The whole write's outcome, rounded from the per-address verdicts for callers that need one. */
   outcome: MetadataWriteOutcome
   /** The per-address verdicts, which are what gets recorded and what the UI marks. */
   addresses: VerifiedAddress[]
+  /**
+   * Writes that failed and could not be blamed on an address, because their group named none.
+   *
+   * Nothing in the per-address verdicts can express this, and rounding it away is what let a
+   * failed write of the document's own property bag finish as `verified`. No plan emits an
+   * intent-less group any more; this is what makes the next one say so rather than pass.
+   */
+  unrecordedFailures: UnrecordedScopeFailure[]
   /** Time in the service's write calls, milliseconds. */
   writeMs: number
   /** Time in the read-back, or null when none was made. */
@@ -132,6 +155,50 @@ export function summarizeOutcome(addresses: readonly VerifiedAddress[]): Metadat
     if (only === 'failed') return 'failed'
   }
   return 'partial'
+}
+
+/**
+ * The outcome, once a failure no address speaks for is taken into account.
+ *
+ * A write that failed is not a write that succeeded, whether or not the group it belonged to
+ * named an address. With addresses present the honest answer is `partial` - something landed and
+ * something did not - and with none it is simply `failed`.
+ */
+function roundOutcome(
+  addresses: readonly VerifiedAddress[],
+  unrecordedFailures: readonly UnrecordedScopeFailure[],
+): MetadataWriteOutcome {
+  if (unrecordedFailures.length === 0) return summarizeOutcome(addresses)
+  return addresses.length === 0 ? 'failed' : 'partial'
+}
+
+/** The name a file-scope group goes by in a log line or a failure. */
+const FILE_SCOPE = '(file scope)'
+
+const UNACCOUNTED = 'the service did not say whether this configuration was written'
+
+/**
+ * Refuse to confirm an address the service could not account for.
+ *
+ * The read-back is the more authoritative half of every other verdict, and deliberately so - it
+ * looks at the file. It is not authoritative about a scope that may never have been written,
+ * because a stale value equal to the intended one reads exactly like a value the write just put
+ * there. `verified` stops the retry and check-in forgets it, so this is the one direction where
+ * the read-back must be overruled.
+ *
+ * Only `verified` is downgraded. A read-back that found the value missing is decisive whatever the
+ * service said, so a `failed` verdict is left as it is.
+ */
+function withDoubtKept(
+  verified: readonly VerifiedAddress[],
+  unaccountedFor: ReadonlySet<string>,
+): VerifiedAddress[] {
+  if (unaccountedFor.size === 0) return [...verified]
+  return verified.map((entry) =>
+    entry.state === 'verified' && unaccountedFor.has(addressKey(entry.address))
+      ? { address: entry.address, state: 'unverified' as const, reason: UNACCOUNTED }
+      : entry,
+  )
 }
 
 async function readBack(path: string): Promise<FileMetadata> {
@@ -201,13 +268,30 @@ function canBatch(groups: readonly ConfigurationGroup[]): boolean {
   return new Set(groups.map((group) => group.configuration)).size === groups.length
 }
 
+interface BatchWriteOutcome {
+  ok: boolean
+  error?: string
+  refused: ReadonlyMap<string, string>
+  /**
+   * Configurations the service neither entered nor named, so nothing can say whether they were
+   * written. Carried out of here rather than only logged: the read-back cannot settle it either,
+   * and letting it decide is how a scope that was skipped reported `verified` off a stale value.
+   */
+  unaccountedFor: number
+}
+
 async function writeConfigurationBatch(
   path: string,
   groups: readonly ConfigurationGroup[],
-): Promise<{ ok: boolean; error?: string; refused: ReadonlyMap<string, string> }> {
+): Promise<BatchWriteOutcome> {
   const api = window.electronAPI?.solidworks
   if (!api?.setPropertiesBatch) {
-    return { ok: false, error: 'The SolidWorks service is not available', refused: new Map() }
+    return {
+      ok: false,
+      error: 'The SolidWorks service is not available',
+      refused: new Map(),
+      unaccountedFor: 0,
+    }
   }
 
   const configProperties: Record<string, Record<string, string>> = {}
@@ -227,6 +311,7 @@ async function writeConfigurationBatch(
         ok: false,
         error: result?.error ?? 'The write returned no result',
         refused: new Map(),
+        unaccountedFor: 0,
       }
     }
 
@@ -238,12 +323,13 @@ async function writeConfigurationBatch(
         unaccountedFor: report.unaccountedFor,
       })
     }
-    return { ok: true, refused: report.refused }
+    return { ok: true, refused: report.refused, unaccountedFor: report.unaccountedFor }
   } catch (error) {
     return {
       ok: false,
       error: error instanceof Error ? error.message : String(error),
       refused: new Map(),
+      unaccountedFor: 0,
     }
   }
 }
@@ -257,21 +343,37 @@ async function writeConfigurationBatch(
  *
  * Configuration groups go in one `setPropertiesBatch`; the file-scope group keeps its own
  * `setProperties`, because the batch addresses configurations by name and has no file scope to
- * send to. Groups are still visited in the order the plan gave them, and the batch is issued where
- * its first group sat, so a plan that writes the document bag before the configurations - the sync
- * command's, whose configuration writes mirror `Number` back to file scope - still does.
+ * send to. Groups are visited in the order the plan gave them, and the batch is issued where its
+ * first group sat, so the document bag is written before the configurations - which matters,
+ * because the service mirrors a configuration write's `Number` back to file level inside the same
+ * open.
+ *
+ * A group that carries properties, names no address and fails is reported in `unrecordedFailures`
+ * rather than rounded away. No plan emits that shape now; before, Sync Metadata emitted one per
+ * part and a read-only file took it silently.
  */
 export async function writeMetadataWithVerification(
   request: MetadataWriteRequest,
 ): Promise<MetadataWriteResult> {
   const allIntents = request.groups.flatMap((group) => group.intents)
   if (allIntents.length === 0) {
-    return { outcome: 'not-applicable', addresses: [], writeMs: 0, readBackMs: null, document: null }
+    return {
+      outcome: 'not-applicable',
+      addresses: [],
+      unrecordedFailures: [],
+      writeMs: 0,
+      readBackMs: null,
+      document: null,
+    }
   }
 
   const writeStarted = performance.now()
   const accepted: MetadataWriteIntent[] = []
   const rejected: VerifiedAddress[] = []
+  const unrecordedFailures: UnrecordedScopeFailure[] = []
+  // Addresses the service neither confirmed nor refused. The read-back cannot settle them: a stale
+  // value equal to the intended one is indistinguishable from a value the write put there.
+  const unaccountedFor = new Set<string>()
 
   const sendable: MetadataWriteGroup[] = []
   for (const group of request.groups) {
@@ -286,7 +388,7 @@ export async function writeMetadataWithVerification(
     if (group.intents.length > 0) {
       log.warn('[MetadataWrite]', 'A write group named addresses but carried no properties', {
         path: request.path,
-        configuration: group.configuration ?? '(file scope)',
+        configuration: group.configuration ?? FILE_SCOPE,
         intents: group.intents.length,
       })
       rejected.push(
@@ -311,23 +413,40 @@ export async function writeMetadataWithVerification(
       const wholeBatchRefused = batch.ok ? undefined : (batch.error ?? 'the write failed')
       for (const configurationGroup of configurationGroups) {
         const refusal = wholeBatchRefused ?? batch.refused.get(configurationGroup.configuration)
-        if (refusal === undefined) accepted.push(...configurationGroup.intents)
-        else rejected.push(...failedWrite(configurationGroup.intents, refusal))
+        if (refusal !== undefined) {
+          rejected.push(...failedWrite(configurationGroup.intents, refusal))
+          continue
+        }
+        accepted.push(...configurationGroup.intents)
+        // The service entered fewer configurations than it was sent and named none of the ones it
+        // skipped, so which of these landed is unknowable from here. Every scope in the batch
+        // inherits the doubt, because nothing distinguishes them.
+        if (batch.unaccountedFor > 0) {
+          for (const intent of configurationGroup.intents) {
+            unaccountedFor.add(addressKey(intent.address))
+          }
+        }
       }
       continue
     }
 
     const result = await writeGroup(request.path, group, useLiveApi)
-    if (result.ok) accepted.push(...group.intents)
-    else rejected.push(...failedWrite(group.intents, result.error ?? 'the write failed'))
+    if (result.ok) {
+      accepted.push(...group.intents)
+      continue
+    }
+    const reason = result.error ?? 'the write failed'
+    if (group.intents.length > 0) rejected.push(...failedWrite(group.intents, reason))
+    else unrecordedFailures.push({ scope: group.configuration ?? FILE_SCOPE, reason })
   }
   const writeMs = Math.round(performance.now() - writeStarted)
 
   if (accepted.length === 0) {
     const addresses = rejected
     return {
-      outcome: summarizeOutcome(addresses),
+      outcome: roundOutcome(addresses, unrecordedFailures),
       addresses,
+      unrecordedFailures,
       writeMs,
       readBackMs: null,
       document: null,
@@ -351,7 +470,7 @@ export async function writeMetadataWithVerification(
     verified = unverifiedWrite(accepted, reason)
   }
 
-  const addresses = [...verified, ...rejected]
+  const addresses = [...withDoubtKept(verified, unaccountedFor), ...rejected]
 
   log.info('[MetadataWrite]', 'Verified write complete', {
     path: request.path,
@@ -360,7 +479,15 @@ export async function writeMetadataWithVerification(
     verified: addresses.filter((entry) => entry.state === 'verified').length,
     unverified: addresses.filter((entry) => entry.state === 'unverified').length,
     failed: addresses.filter((entry) => entry.state === 'failed').length,
+    unrecordedFailures: unrecordedFailures.length,
   })
 
-  return { outcome: summarizeOutcome(addresses), addresses, writeMs, readBackMs, document }
+  return {
+    outcome: roundOutcome(addresses, unrecordedFailures),
+    addresses,
+    unrecordedFailures,
+    writeMs,
+    readBackMs,
+    document,
+  }
 }

@@ -395,6 +395,94 @@ describe('a group that names addresses but carries no properties', () => {
   })
 })
 
+describe('a configuration the batch neither entered nor named', () => {
+  // The Document Manager path skips a configuration it cannot open, mentions it only in a prose
+  // `errors` entry, and still returns success. `readBatchWriteReport` refuses to guess which one
+  // and counts it; that count used to be logged and then dropped, leaving the read-back to decide
+  // - and a stale value equal to the intended one reads exactly like one the write just put there.
+
+  const skipped: BatchOutcome = {
+    success: true,
+    data: {
+      configurationsProcessed: 1,
+      errors: ["Error writing to config 'AS568-015': the configuration could not be opened"],
+    },
+  }
+
+  it('refuses to confirm any scope in the batch, since nothing says which was skipped', async () => {
+    install({
+      batchOutcome: skipped,
+      configurationProperties: {
+        'AS568-014': { 'Tab Number': '014' },
+        'AS568-015': { 'Tab Number': '015' },
+      },
+    })
+
+    const result = await writeMetadataWithVerification({
+      path: PATH,
+      groups: [configurationGroup('AS568-014', '014'), configurationGroup('AS568-015', '015')],
+    })
+
+    expect(result.addresses.map((entry) => entry.state)).toEqual(['unverified', 'unverified'])
+    expect(result.outcome).toBe('unverified')
+  })
+
+  it('leaves a scope the read-back found empty as failed, which is decisive either way', async () => {
+    install({
+      batchOutcome: skipped,
+      configurationProperties: { 'AS568-014': { 'Tab Number': '014' }, 'AS568-015': {} },
+    })
+
+    const result = await writeMetadataWithVerification({
+      path: PATH,
+      groups: [configurationGroup('AS568-014', '014'), configurationGroup('AS568-015', '015')],
+    })
+
+    expect(result.addresses.map((entry) => entry.state)).toEqual(['unverified', 'failed'])
+  })
+
+  it('confirms normally when the service accounted for every configuration', async () => {
+    install({
+      configurationProperties: {
+        'AS568-014': { 'Tab Number': '014' },
+        'AS568-015': { 'Tab Number': '015' },
+      },
+    })
+
+    const result = await writeMetadataWithVerification({
+      path: PATH,
+      groups: [configurationGroup('AS568-014', '014'), configurationGroup('AS568-015', '015')],
+    })
+
+    expect(result.outcome).toBe('verified')
+  })
+})
+
+describe('a group that carries properties but names no address', () => {
+  it('reports a failure nothing else can carry, rather than rounding it away', async () => {
+    // Sync Metadata emitted this shape on every part it touched: the document's own bag, written
+    // with its intents stripped. A read-only file refused the write, no address was named, and the
+    // command logged "PUSH complete - confirmed in the file".
+    install({
+      writeSucceeds: (configuration) => configuration !== undefined,
+      configurationProperties: { Default: { 'Tab Number': '014' } },
+    })
+
+    const result = await writeMetadataWithVerification({
+      path: PATH,
+      groups: [
+        { properties: { Number: 'BR-202020' }, intents: [] },
+        configurationGroup('Default', '014'),
+      ],
+    })
+
+    expect(result.unrecordedFailures).toEqual([
+      { scope: '(file scope)', reason: 'the property is read-only' },
+    ])
+    expect(result.outcome).toBe('partial')
+  })
+})
+
 describe('rounding many verdicts into one outcome', () => {
   const at = (state: VerifiedAddress['state']): VerifiedAddress => ({
     address: { scope: 'file', field: 'part_number' },

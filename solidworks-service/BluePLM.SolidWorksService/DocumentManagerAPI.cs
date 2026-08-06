@@ -1799,6 +1799,12 @@ namespace BluePLM.SolidWorksService
         /// Set custom properties on MULTIPLE configurations in one document open/save cycle.
         /// MUCH faster than calling SetCustomProperties multiple times!
         /// Also writes Number to file-level for consistency (prevents race conditions).
+        ///
+        /// Acceptance is reported per configuration, in failedConfigurations, as well as per
+        /// property. The two answer different questions: a property can be refused by a
+        /// configuration that was written, and a configuration can be skipped entirely without any
+        /// of its properties being named. Only the caller's read-back can settle the first; nothing
+        /// can settle the second from outside, which is why it is stated here.
         /// </summary>
         /// <param name="filePath">Path to the SolidWorks file</param>
         /// <param name="configProperties">Dictionary mapping configuration name -> property dictionary</param>
@@ -1861,6 +1867,12 @@ namespace BluePLM.SolidWorksService
                 var writeReport = new PropertyWriteReport();
                 int configsProcessed = 0;
                 var errors = new List<string>();
+                // Every configuration this batch did not write, named. A configuration skipped here
+                // used to appear only in the prose below, and the caller cannot match a name
+                // against a sentence without risking blaming '-01' for a message about '-014'. It
+                // therefore had to count the shortfall and distrust the whole batch. Naming the
+                // scope is what lets one configuration be failed and the other 67 confirmed.
+                var failedConfigurations = new Dictionary<string, string>();
 
                 var numberToMirror = ResolveNumberToMirror(configProperties);
 
@@ -1879,6 +1891,7 @@ namespace BluePLM.SolidWorksService
                         if (config == null)
                         {
                             errors.Add($"Configuration not found: {configName}");
+                            failedConfigurations[configName] = "the document has no configuration by this name";
                             continue;
                         }
 
@@ -1897,6 +1910,7 @@ namespace BluePLM.SolidWorksService
                     catch (Exception configEx)
                     {
                         errors.Add($"Error writing to config '{configName}': {configEx.Message}");
+                        failedConfigurations[configName] = configEx.Message;
                     }
                 }
 
@@ -1935,6 +1949,7 @@ namespace BluePLM.SolidWorksService
                     {
                         filePath,
                         configurationsProcessed = configsProcessed,
+                        failedConfigurations = failedConfigurations.Count > 0 ? failedConfigurations : null,
                         propertiesSet = writeReport.Written,
                         propertiesFailed = writeReport.Failed,
                         failedProperties = writeReport.AnyFailed ? writeReport.FailedProperties : null,

@@ -502,8 +502,7 @@ export const en: TranslationDict = {
       failed: 'Your edit is saved here but is not in the file yet — retry to write it',
       serviceOffline:
         'Your edit is saved here. Start the SolidWorks service to write it into the file',
-      partial:
-        'Wrote {{saved}} of {{total}} — the rest is kept here and marked as not in the file',
+      partial: 'Wrote {{saved}} of {{total}} — the rest is kept here and marked as not in the file',
       unverified: 'Written, but the file could not be read back to confirm it',
       saved: 'Saved metadata to file',
       retry: 'Write to file',
@@ -1034,6 +1033,10 @@ export const en: TranslationDict = {
       'File-level properties were written, but the configurations were not: {{reason}}',
     fieldsUnwritten:
       'Only part of the file was written: {{failed}} of {{total}} fields did not reach the file',
+    stillWriting:
+      'A metadata write is still running against this file, so it was not checked in. Try again once it finishes',
+    promotedUnconfirmed:
+      '{{count}} field(s) were saved to BluePLM but could not be confirmed in the file. The rows are marked; open the file and save again to settle them',
   },
 
   // Context menu translations

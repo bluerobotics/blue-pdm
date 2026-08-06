@@ -183,6 +183,55 @@ namespace BluePLM.SolidWorksService.Tests
 
         #endregion
 
+        #region Saying which configuration was not written
+
+        [DocumentManagerFixtureFact(Oring)]
+        public void A_batch_names_the_configuration_it_could_not_enter()
+        {
+            // The caller cannot attribute a shortfall it is only given the size of, and matching a
+            // configuration name against a prose error would blame 'AS568-01' for a message about
+            // 'AS568-014'. Without a name the caller has to distrust the whole batch, so the 67
+            // configurations that were written cannot be confirmed either.
+            var part = WritableCopyOf(OringPart);
+            var configuration = FirstConfiguration(part);
+            var name = PropertyName("BatchNaming");
+
+            var batch = Batch(configuration, name, "written");
+            batch["NO-SUCH-CONFIGURATION"] = new Dictionary<string, string> { [name] = "nowhere" };
+
+            var result = _fixtures.Api.SetCustomPropertiesBatch(part, batch);
+
+            Assert.True(result.Success, result.Error);
+            Assert.Equal(1, DataValue<int>(result, "configurationsProcessed"));
+
+            var failed = JObject.FromObject(result.Data!)["failedConfigurations"]
+                ?.ToObject<Dictionary<string, string>>();
+
+            Assert.NotNull(failed);
+            Assert.True(failed!.ContainsKey("NO-SUCH-CONFIGURATION"));
+            Assert.False(failed.ContainsKey(configuration));
+            Assert.Equal("written", ReadConfigurationProperty(part, configuration, name));
+        }
+
+        [DocumentManagerFixtureFact(Oring)]
+        public void A_batch_that_wrote_everything_names_nothing()
+        {
+            // The count and the names have to agree, or every ordinary write would report a scope
+            // as unwritten and the app would stop confirming any of them.
+            var part = WritableCopyOf(OringPart);
+            var configuration = FirstConfiguration(part);
+
+            var result = _fixtures.Api.SetCustomPropertiesBatch(
+                part,
+                Batch(configuration, PropertyName("BatchClean"), "written"));
+
+            Assert.True(result.Success, result.Error);
+            Assert.Equal(1, DataValue<int>(result, "configurationsProcessed"));
+            Assert.Null(JObject.FromObject(result.Data!)["failedConfigurations"]?.ToObject<object>());
+        }
+
+        #endregion
+
         #region Helpers
 
         /// <summary>

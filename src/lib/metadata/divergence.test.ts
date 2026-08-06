@@ -4,11 +4,14 @@ import {
   classifyPair,
   classifyRecoverability,
   compareOwnedMetadata,
+  configurationScopeProperties,
   isPropertyReference,
   ownerOf,
   readCanonicalProperty,
   readDatabaseMetadata,
   readProperty,
+  resolvedConfigurationProperties,
+  resolvedPropertyView,
   summarizeDivergence,
   type DatabaseMetadata,
   type FileDivergence,
@@ -63,6 +66,41 @@ function configurationsAll(
   return Object.fromEntries(names.map((name) => [name, properties]))
 }
 
+describe('the two views of a configuration, and the one rule under both', () => {
+  // The split was declared complete while `resolvedConfigurationProperties` had no production
+  // caller at all: every display reader spread the two bags by hand, so nothing forced the choice
+  // and nothing kept the two definitions the same. Both exports now come from one rule.
+  const document = file({
+    configurations: ['Default', 'AS568-014'],
+    fileProperties: { Description: 'O-ring', Number: 'BR-202020' },
+    configurationProperties: { Default: {}, 'AS568-014': { Description: '' } },
+  })
+
+  it('shows the file-level value through a configuration that holds no property of its own', () => {
+    expect(resolvedConfigurationProperties(document, 'Default')).toEqual({
+      Description: 'O-ring',
+      Number: 'BR-202020',
+    })
+  })
+
+  it('shows a deliberately emptied configuration description as empty, not as the file’s', () => {
+    expect(resolvedConfigurationProperties(document, 'AS568-014')).toMatchObject({
+      Description: '',
+      Number: 'BR-202020',
+    })
+  })
+
+  it('keeps the scope view literal, which is what a write is judged against', () => {
+    expect(configurationScopeProperties(document, 'Default')).toEqual({})
+  })
+
+  it('resolves the same way for a caller holding the two bags rather than the document', () => {
+    expect(resolvedPropertyView(document.fileProperties, { Description: '' })).toEqual(
+      resolvedConfigurationProperties(document, 'AS568-014'),
+    )
+  })
+})
+
 describe('isPropertyReference', () => {
   it('rejects a leading $ reference', () => {
     expect(isPropertyReference('$PRP:"Number"')).toBe(true)
@@ -82,19 +120,27 @@ describe('isPropertyReference', () => {
 
 describe('readProperty', () => {
   it('takes the first key in priority order', () => {
-    expect(readProperty({ Number: 'BR-100', 'Base Item Number': 'BR-999' }, ['Number', 'Base Item Number'])).toBe(
-      'BR-100',
-    )
+    expect(
+      readProperty({ Number: 'BR-100', 'Base Item Number': 'BR-999' }, [
+        'Number',
+        'Base Item Number',
+      ]),
+    ).toBe('BR-100')
   })
 
   it('skips a property reference and keeps looking', () => {
-    expect(readProperty({ Number: '$PRP:"x"', 'Base Item Number': 'BR-100' }, ['Number', 'Base Item Number'])).toBe(
-      'BR-100',
-    )
+    expect(
+      readProperty({ Number: '$PRP:"x"', 'Base Item Number': 'BR-100' }, [
+        'Number',
+        'Base Item Number',
+      ]),
+    ).toBe('BR-100')
   })
 
   it('skips a whitespace-only value', () => {
-    expect(readProperty({ Description: '   ', Desc: 'O-ring' }, ['Description', 'Desc'])).toBe('O-ring')
+    expect(readProperty({ Description: '   ', Desc: 'O-ring' }, ['Description', 'Desc'])).toBe(
+      'O-ring',
+    )
   })
 
   it('returns null when nothing is readable', () => {
@@ -203,13 +249,13 @@ describe('classifyRecoverability', () => {
   })
 
   it('calls a value neither side holds unrecoverable only where the database once held it', () => {
-    expect(
-      classifyRecoverability('both-empty', context({ databaseEverHeldField: true })),
-    ).toEqual({ recoverability: 'unrecoverable' })
+    expect(classifyRecoverability('both-empty', context({ databaseEverHeldField: true }))).toEqual({
+      recoverability: 'unrecoverable',
+    })
 
-    expect(
-      classifyRecoverability('both-empty', context({ databaseEverHeldField: false })),
-    ).toEqual({ recoverability: 'no-evidence' })
+    expect(classifyRecoverability('both-empty', context({ databaseEverHeldField: false }))).toEqual(
+      { recoverability: 'no-evidence' },
+    )
   })
 
   it('never auto-classifies a genuine conflict as repairable', () => {
@@ -606,9 +652,7 @@ describe('the reserved map key, absent versus emptied', () => {
   })
 
   it('recovers every configuration from the file when the map was emptied', () => {
-    const summary = summarizeDivergence([
-      compareOwnedMetadata(identity, emptied, documentWithTabs),
-    ])
+    const summary = summarizeDivergence([compareOwnedMetadata(identity, emptied, documentWithTabs)])
     expect(summary.recoverableValues).toBe(configurations.length)
     expect(summary.unattributedValues).toBe(0)
   })

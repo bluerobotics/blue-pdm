@@ -11,7 +11,7 @@ import { usePDMStore } from '@/stores/pdmStore'
 import { validateTabInput, getTabPlaceholder, getTabValidationOptions } from '@/lib/tabValidation'
 import { resolveTabNumber, resolvedText } from '@/lib/metadata/overlay'
 import { MetadataWriteStateMarker } from '@/components/MetadataWriteStateMarker'
-import { isFileWriteInFlight } from '../../../utils/metadataWriteInFlight'
+import { isFileWriteInFlight } from '@/lib/metadata/writeInFlight'
 import type { CellRendererBaseProps } from './types'
 
 export function TabNumberCell({ file }: CellRendererBaseProps): React.ReactNode {

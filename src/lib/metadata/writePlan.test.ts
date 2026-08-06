@@ -165,7 +165,10 @@ describe('a multi-configuration file', () => {
     expect(groups.map((group) => group.configuration)).toEqual(['AS568-014'])
   })
 
-  it('puts the file-scope fields into the active configuration and verifies them there', () => {
+  it('writes the file-scope fields into the document bag and copies them into the active configuration', () => {
+    // The copy is what SolidWorks resolves for that configuration; the document's own bag is what
+    // the address means and what the divergence scanner reads. The plan used to emit only the copy,
+    // so the write reported `verified` against a document whose own bag still held the old value.
     const groups = buildMetadataWritePlan({
       pending: { part_number: 'BR-202020' },
       committed: COMMITTED,
@@ -173,9 +176,13 @@ describe('a multi-configuration file', () => {
       serialization: null,
     })
 
-    expect(groups.map((group) => group.configuration)).toEqual(['Default'])
-    expect(groups[0].intents[0].address).toEqual({ scope: 'file', field: 'part_number' })
-    expect(groups[0].intents[0].verifyIn).toEqual({ configuration: 'Default' })
+    expect(groups.map((group) => group.configuration)).toEqual([undefined, 'Default'])
+    expect(groups[0].intents.map((intent) => intent.address)).toEqual([
+      { scope: 'file', field: 'part_number' },
+    ])
+    expect(groups[0].properties['Base Item Number']).toBe('BR-202020')
+    expect(groups[1].properties['Base Item Number']).toBe('BR-202020')
+    expect(groups[1].intents).toHaveLength(0)
   })
 
   it('does not claim the file-scope field twice when several configurations are written', () => {
@@ -191,6 +198,56 @@ describe('a multi-configuration file', () => {
     )
 
     expect(fileScoped).toHaveLength(1)
+  })
+
+  it('writes no document group for a configuration-only edit', () => {
+    // The inline configuration editors write on every committed keystroke. Nothing at file scope
+    // changed, so a second open and save per keystroke would buy nothing.
+    const groups = buildMetadataWritePlan({
+      pending: { config_tabs: { 'AS568-014': '014' } },
+      committed: COMMITTED,
+      configurations,
+      serialization: null,
+    })
+
+    expect(groups.map((group) => group.configuration)).toEqual(['AS568-014'])
+  })
+
+  it('names the file-scope tab number, which a multi-configuration document used to drop', () => {
+    // Reachable through the Sync Metadata pull. The plan produced no group for it at all, so no
+    // intent, no verdict, and check-in read the silence as confirmation.
+    const groups = buildMetadataWritePlan({
+      pending: { tab_number: '014' },
+      committed: COMMITTED,
+      configurations,
+      serialization: null,
+    })
+
+    expect(groups[0].configuration).toBeUndefined()
+    expect(groups[0].intents.map((intent) => intent.address)).toEqual([
+      { scope: 'file', field: 'tab_number' },
+    ])
+    expect(groups[0].properties['Tab Number']).toBe('014')
+  })
+
+  it('names the file-level description as well as the base configuration’s own', () => {
+    // Editing both used to lose the file-level one: the per-configuration intent took the branch
+    // and the file-scope intent was never emitted, so its address left check-in unrecorded.
+    const groups = buildMetadataWritePlan({
+      pending: { description: 'Viton o-ring', config_descriptions: { Default: 'Viton, 014' } },
+      committed: COMMITTED,
+      configurations,
+      serialization: null,
+    })
+
+    expect(groups[0].intents.map((intent) => intent.address)).toEqual([
+      { scope: 'file', field: 'description' },
+    ])
+    expect(groups[0].properties['Description']).toBe('Viton o-ring')
+    expect(groups[1].intents.map((intent) => intent.address)).toEqual([
+      { scope: 'configuration', field: 'config_description', configuration: 'Default' },
+    ])
+    expect(groups[1].properties['Description']).toBe('Viton, 014')
   })
 })
 

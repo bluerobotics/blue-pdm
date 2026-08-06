@@ -117,23 +117,14 @@ export function buildPartAssemblyPushPlan(
     revision: pending.revision,
   }
 
-  // The document's own property bag, written as well as the configurations rather than instead of
-  // them. A drawing whose parent could only be found by name reads the parent's file-level
-  // properties, and `$PRP:` references in a title block resolve against them, so leaving them at
-  // their old values would leave both reading a number the configurations no longer carry. It
-  // carries no intents: the same addresses are confirmed inside the configuration SolidWorks
-  // resolves them from, and verifying them twice would only record the same verdict twice.
-  const [documentGroup] = buildMetadataWritePlan({
-    pending,
-    committed,
-    configurations: [],
-    serialization,
-    parity,
-  })
-
-  if (configurations.length === 0) return documentGroup ? [documentGroup] : []
-
-  const configurationGroups = buildMetadataWritePlan({
+  // One call, document bag and configurations together. This module used to ask the planner twice -
+  // once with no configurations for the document's own group, once with them for the rest - and
+  // strip the intents off the first, because the planner of the day gave a multi-configuration
+  // document no file-scope group and confirmed its file-scope fields inside a configuration
+  // instead. A group carrying properties and no intents is a write whose failure nothing records,
+  // and this command produced one on every part it touched. The planner now emits the document
+  // group itself, with the intents that make its failure visible.
+  return buildMetadataWritePlan({
     pending: {
       ...pending,
       config_tabs: configurationTabs,
@@ -144,8 +135,4 @@ export function buildPartAssemblyPushPlan(
     serialization,
     parity,
   })
-
-  return documentGroup
-    ? [{ ...documentGroup, intents: [] }, ...configurationGroups]
-    : configurationGroups
 }

@@ -205,6 +205,36 @@ describe('editing a configuration description', () => {
 })
 
 describe('both editors', () => {
+  it('open the document once, for the configuration, and not for the number they carry', () => {
+    // The number is named so `Number` can be rebuilt from base and tab; it is not what this edit
+    // establishes. Once the plan builder started writing the document's own bag for every
+    // file-scope address a plan claimed, that distinction became the difference between one
+    // service call per committed keystroke and two - the second one rewriting a number nobody
+    // touched and recording a file-scope verdict for it.
+    const tabPlan = buildConfigurationTabWritePlan({
+      file: NUMBERED,
+      configuration: 'AS568-014',
+      tabNumber: '014',
+      serialization: SERIALIZATION,
+      parity: PARITY,
+    })
+    const descriptionPlan = buildConfigurationDescriptionWritePlan({
+      file: NUMBERED,
+      configuration: 'AS568-014',
+      description: 'O-ring, NBR 70A',
+      serialization: SERIALIZATION,
+      parity: PARITY,
+    })
+
+    for (const groups of [tabPlan, descriptionPlan]) {
+      expect(groups).toHaveLength(1)
+      expect(groups[0].configuration).toBe('AS568-014')
+      expect(groups[0].intents.every((intent) => intent.address.scope === 'configuration')).toBe(
+        true,
+      )
+    }
+  })
+
   it('carry the parity properties', () => {
     for (const [group] of [
       buildConfigurationTabWritePlan({

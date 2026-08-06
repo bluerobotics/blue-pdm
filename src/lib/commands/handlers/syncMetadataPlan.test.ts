@@ -229,7 +229,7 @@ describe('the write says what it is meant to establish', () => {
     ])
   })
 
-  it('names the file-scope fields once, verified in the configuration they resolve from', () => {
+  it('names the file-scope fields once, on the document group that establishes them', () => {
     const groups = buildPartAssemblyPushPlan({
       file: ORING,
       configurations: ORING_CONFIGURATIONS,
@@ -246,7 +246,10 @@ describe('the write says what it is meant to establish', () => {
       { scope: 'file', field: 'description' },
       { scope: 'file', field: 'revision' },
     ])
-    expect(fileScope.every((intent) => intent.verifyIn)).toBe(true)
+    // On the document group, not on a configuration: a failed write of the document's own bag used
+    // to name no address at all, so Sync Metadata could log "confirmed in the file" having failed
+    // to write it.
+    expect(group(groups).intents).toHaveLength(3)
   })
 
   it('carries the parity properties into every scope it writes', () => {

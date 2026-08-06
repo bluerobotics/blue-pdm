@@ -20,6 +20,15 @@
  * The service is not required to be running. If it is not, nothing is written and the unconfirmed
  * addresses are marked `unattempted` - blocking a check-in because SolidWorks is closed would be a
  * worse failure than a marked file.
+ *
+ * ## No record is not a confirmation
+ *
+ * The rule above only holds while every address has something recorded against it. `verified` is
+ * the one state that stops a retry and that check-in forgets, and an unrecorded address used to be
+ * treated as though it were one, twelve lines after the same absence had been read as owing a
+ * write. Both readings now come through `writeStateOf`, where absence is `pending`, and every
+ * address the plan does not name is given an explicit `unattempted` before the promotion runs. So
+ * the promotion can no longer meet an address it knows nothing about.
  */
 
 import { log } from '@/lib/logger'
@@ -30,18 +39,37 @@ import type { LocalFile } from '@/stores/types'
 import { writeMetadataWithVerification } from './writeMetadataToFile'
 import { buildMetadataWritePlan } from './writePlan'
 import {
+  addressKey,
   applyWriteStates,
   clearWriteState,
+  isConfirmed,
   isEmptyRecord,
   listWriteAddresses,
   needsWrite,
   readWriteState,
+  writeStateOf,
   type MetadataWriteAddress,
   type MetadataWriteState,
   type MetadataWriteStateRecord,
 } from './writeState'
 
 const SOLIDWORKS_EXTENSIONS = ['.sldprt', '.sldasm', '.slddrw']
+
+/** The two that can hold per-configuration metadata. A drawing has sheets, not configurations. */
+const CONFIGURABLE_EXTENSIONS = ['.sldprt', '.sldasm']
+
+/** One address's outcome, as `applyWriteStates` takes it. */
+interface AddressOutcome {
+  address: MetadataWriteAddress
+  state: MetadataWriteState
+  reason?: string
+}
+
+/** Why an address the plan never named ends up `unattempted` rather than unrecorded. */
+const NOTHING_PLANNED = 'the write plan had nothing to send for this field'
+
+/** Why nothing is written when the document's configurations cannot be listed. */
+const CONFIGURATIONS_UNREADABLE = 'the file’s configurations could not be read'
 
 /** What check-in learned, and the record it must carry forward. */
 export interface CheckinMetadataOutcome {
@@ -61,10 +89,36 @@ export interface CheckinMetadataOutcome {
  * something may already be in the file, and a second write could not tell us which.
  */
 export function unwrittenAddresses(file: LocalFile): MetadataWriteAddress[] {
-  return listWriteAddresses(file.pendingMetadata).filter((address) => {
-    const entry = readWriteState(file.metadataWriteState, address)
-    return entry === undefined || needsWrite(entry.state)
-  })
+  return listWriteAddresses(file.pendingMetadata).filter((address) =>
+    needsWrite(writeStateOf(file.metadataWriteState, address)),
+  )
+}
+
+/**
+ * Give every owed address a verdict, so an unrecorded one never reaches the promotion.
+ *
+ * An address the plan has nothing to send for produces no intent, the write returns no verdict for
+ * it, and the record stays empty - which `keepOnlyUnconfirmed` used to read as confirmation on the
+ * way out. The plan builder no longer drops a file-scope field on a multi-configuration document,
+ * so the case left is a pending edit naming a configuration the document does not have; this is
+ * what keeps the next one from being silent too.
+ *
+ * `unattempted` is the honest verdict: nothing was written and we know it, so a retry picks the
+ * address up at the next save or check-in. `failed` would be a claim about the document that
+ * nobody made.
+ */
+function withVerdictForEvery(
+  owed: readonly MetadataWriteAddress[],
+  decided: readonly AddressOutcome[],
+  reason: string,
+): AddressOutcome[] {
+  const named = new Set(decided.map((outcome) => addressKey(outcome.address)))
+  return [
+    ...decided,
+    ...owed
+      .filter((address) => !named.has(addressKey(address)))
+      .map((address) => ({ address, state: 'unattempted' as MetadataWriteState, reason })),
+  ]
 }
 
 /**
@@ -82,8 +136,7 @@ function keepOnlyUnconfirmed(
   const confirmed: MetadataWriteAddress[] = []
 
   for (const address of addresses) {
-    const entry = readWriteState(record, address)
-    if (entry === undefined || entry.state === 'verified') confirmed.push(address)
+    if (isConfirmed(writeStateOf(record, address))) confirmed.push(address)
     else unconfirmed.push(address)
   }
 
@@ -91,14 +144,11 @@ function keepOnlyUnconfirmed(
   if (unconfirmed.length > 0) {
     next = applyWriteStates(
       next,
-      unconfirmed.map((address) => {
-        const entry = readWriteState(record, address)
-        return {
-          address,
-          state: entry?.state ?? ('failed' as MetadataWriteState),
-          reason: entry?.reason,
-        }
-      }),
+      unconfirmed.map((address) => ({
+        address,
+        state: writeStateOf(record, address),
+        reason: readWriteState(record, address)?.reason,
+      })),
       { promoted: true },
     )
   }
@@ -150,21 +200,30 @@ export async function settleMetadataForCheckin(
   const owed = unwrittenAddresses(file)
   if (owed.length === 0) return settle(file.metadataWriteState)
 
+  const settleAll = (decided: readonly AddressOutcome[], reason: string): CheckinMetadataOutcome =>
+    settle(applyWriteStates(file.metadataWriteState, withVerdictForEvery(owed, decided, reason)))
+
   if (!options.serviceAvailable) {
-    return settle(
-      applyWriteStates(
-        file.metadataWriteState,
-        owed.map((address) => ({
-          address,
-          state: 'unattempted' as MetadataWriteState,
-          reason: 'the SolidWorks service was not running at check-in',
-        })),
-      ),
-    )
+    return settleAll([], 'the SolidWorks service was not running at check-in')
   }
 
   try {
-    const configurations = (await readConfigurations(file.path)).map((name) => ({ name }))
+    const names = CONFIGURABLE_EXTENSIONS.includes(extension)
+      ? await readConfigurations(file.path)
+      : []
+    if (names === null) {
+      // Without the configuration list there is no way to know whether this document keeps its
+      // metadata in a configuration, so any plan built now would be a guess. Guessing produced the
+      // worst available answer: the file-scope write went ahead, the read-back found the value it
+      // had just written, and a document whose configurations still held the old number reported
+      // as confirmed.
+      log.warn('[CheckinMetadata]', 'Could not list the configurations, so nothing was written', {
+        path: file.relativePath,
+      })
+      return settleAll([], CONFIGURATIONS_UNREADABLE)
+    }
+
+    const configurations = names.map((name) => ({ name }))
     const serialization = options.organizationId
       ? await getSerializationSettings(options.organizationId)
       : null
@@ -189,8 +248,9 @@ export async function settleMetadataForCheckin(
       // attribute it to whoever happened to run the check-in.
     })
 
-    if (groups.length === 0) return settle(file.metadataWriteState)
-
+    // No early return on an empty plan: `writeMetadataWithVerification` does no I/O when there is
+    // nothing to establish, and returning here is how an owed address used to leave with no
+    // verdict at all.
     const result = await writeMetadataWithVerification({ path: file.path, groups })
 
     log.info('[CheckinMetadata]', 'Wrote pending metadata before promoting it', {
@@ -201,16 +261,7 @@ export async function settleMetadataForCheckin(
       readBackMs: result.readBackMs,
     })
 
-    return settle(
-      applyWriteStates(
-        file.metadataWriteState,
-        result.addresses.map((entry) => ({
-          address: entry.address,
-          state: entry.state,
-          reason: entry.reason,
-        })),
-      ),
-    )
+    return settleAll(result.addresses, NOTHING_PLANNED)
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
     log.warn('[CheckinMetadata]', 'Could not write pending metadata before check-in', {
@@ -226,11 +277,18 @@ export async function settleMetadataForCheckin(
   }
 }
 
-async function readConfigurations(path: string): Promise<string[]> {
+/**
+ * The document's configurations, or null when the service could not say.
+ *
+ * Null rather than an empty list, because the two mean opposite things: an empty list is a
+ * document that keeps its metadata at file level, and a failed call is a document that may keep
+ * all of it somewhere this write is about to ignore.
+ */
+async function readConfigurations(path: string): Promise<string[] | null> {
   const api = window.electronAPI?.solidworks
-  if (!api?.getConfigurations) return []
+  if (!api?.getConfigurations) return null
 
   const result = await api.getConfigurations(path)
-  if (!result?.success || !result.data?.configurations) return []
+  if (!result?.success || !result.data?.configurations) return null
   return result.data.configurations.map((configuration) => configuration.name)
 }

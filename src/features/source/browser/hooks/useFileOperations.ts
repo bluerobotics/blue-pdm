@@ -31,7 +31,7 @@ import { moveFileOnServer, updateFolderPath, updateFolderServerPath } from '@/li
 import { getFilesInFolder } from '@/lib/commands/types'
 import { buildFullPath } from '@/lib/utils/path'
 
-import { isFileWriteInFlight } from '../utils/metadataWriteInFlight'
+import { isFileWriteInFlight } from '@/lib/metadata/writeInFlight'
 import { beginWatcherSuppression } from '@/lib/fileWatcherSuppression'
 import type { CustomConfirmState } from './useDialogState'
 
@@ -56,8 +56,8 @@ export interface UseFileOperationsOptions {
     moved?: boolean,
   ) => void
   resetHoverStates?: () => void
-  /** Keys of the metadata writes currently running - see `utils/metadataWriteInFlight`. */
-  savingConfigsToSW?: Set<string>
+  /** Keys of the metadata writes currently running - see `lib/metadata/writeInFlight`. */
+  savingConfigsToSW?: ReadonlySet<string>
 }
 
 export interface UseFileOperationsReturn {

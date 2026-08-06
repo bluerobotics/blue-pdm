@@ -18,7 +18,7 @@ import { resolvePartNumber, resolvedText } from '@/lib/metadata/overlay'
 import { MetadataWriteStateMarker } from '@/components/MetadataWriteStateMarker'
 import { useCellSlowHighlight } from '../../../hooks/useCellSlowHighlight'
 import { CopyHighlightInput } from './CopyHighlightInput'
-import { isFileWriteInFlight } from '../../../utils/metadataWriteInFlight'
+import { isFileWriteInFlight } from '@/lib/metadata/writeInFlight'
 import type { CellRendererBaseProps } from './types'
 
 export function ItemNumberCell({ file }: CellRendererBaseProps): React.ReactNode {

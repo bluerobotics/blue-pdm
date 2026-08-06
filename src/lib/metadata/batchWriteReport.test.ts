@@ -15,7 +15,7 @@ const sent: BatchWriteScope[] = [
   { configuration: 'AS568-015', propertyNames: ['Number', 'Tab Number'] },
 ]
 
-describe('a configuration the SolidWorks COM path named', () => {
+describe('a configuration either path named', () => {
   it('is refused, carrying the reason the service gave', () => {
     const report = readBatchWriteReport(sent, {
       configurationsProcessed: 1,
@@ -24,6 +24,19 @@ describe('a configuration the SolidWorks COM path named', () => {
 
     expect(report.refused.get('AS568-015')).toBe('the configuration is read-only')
     expect(report.refused.has('AS568-014')).toBe(false)
+    expect(report.unaccountedFor).toBe(0)
+  })
+
+  it('leaves nothing unaccounted for when Document Manager names the one it skipped', () => {
+    // Service 1.20.0. The same response before it carried the name only in `errors`, in prose, so
+    // the shortfall was a number and the whole batch had to be distrusted.
+    const report = readBatchWriteReport(sent, {
+      configurationsProcessed: 1,
+      failedConfigurations: { 'AS568-015': 'the document has no configuration by this name' },
+      errors: ['Configuration not found: AS568-015'],
+    })
+
+    expect(report.refused.get('AS568-015')).toBe('the document has no configuration by this name')
     expect(report.unaccountedFor).toBe(0)
   })
 })

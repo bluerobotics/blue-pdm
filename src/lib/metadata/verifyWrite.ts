@@ -75,24 +75,24 @@ function mustFind(
   return { readKeys: spec.readKeys, acceptKeys: spec.acceptKeys }
 }
 
-/** Where a value was actually written, when that is not where its address lives. */
-export type VerifyScope = 'file' | { configuration: string }
+/** The property bag one address is established in, and read back from. */
+type WriteScope = 'file' | { configuration: string }
 
-/** One value the write asked the file to hold. */
+/**
+ * One value the write asked the file to hold.
+ *
+ * An intent used to be able to name a scope to read back from that was not its address's own.
+ * That existed for one case - a file-scope field on a multi-configuration document, which the plan
+ * wrote into the base configuration and nowhere else - and it is what let a write report `verified`
+ * against a bag the divergence scanner never looks at. The plan now writes every file-scope field
+ * into the document's own bag, so the address names the scope and there is nothing left to point
+ * elsewhere. Not having the field is the point: two modules cannot disagree about where a value
+ * lives when only one of them can say.
+ */
 export interface MetadataWriteIntent {
   address: MetadataWriteAddress
   /** What the user asked for. An empty string is a deliberate clear, not an absence. */
   expected: string
-  /**
-   * The scope to read the value back from, when it differs from the address.
-   *
-   * A multi-configuration file takes its file-scope fields - part number, revision, the file-level
-   * description - into the active configuration's property bag rather than the document's, because
-   * that is where SolidWorks resolves them from for that configuration. The state still belongs to
-   * the file-scope field, so the address and the place to look come apart, and pretending they do
-   * not would fail every base-metadata write on a multi-configuration part.
-   */
-  verifyIn?: VerifyScope
 }
 
 /** One address's verdict, ready to be recorded against the file. */
@@ -130,30 +130,26 @@ function acceptedValues(
  * The resolved value is a different question from whether the write landed, and conflating them
  * broke verification in both directions.
  *
- * A file-scope field on a multi-configuration document is written *into* a configuration's bag - see
- * `MetadataWriteIntent.verifyIn` - so a stale file-level `Base Item Number` left over from an
- * earlier release would satisfy an intent whose configuration write had written nothing at all. That
- * reported `verified`, the one state a retry skips and check-in forgets, while the configuration's
- * composite `Number` was never set and the title block was wrong. In the other direction, clearing
- * one configuration's description on a document that also has a file-level `Description` read the
- * file-level value as a survivor and reported `failed` forever: every check-in re-issued the write,
- * paid for the read-back, failed again and promoted the value unconfirmed.
+ * A stale file-level `Base Item Number` left over from an earlier release would satisfy an intent
+ * whose configuration write had written nothing at all. That reported `verified`, the one state a
+ * retry skips and check-in forgets, while the configuration's composite `Number` was never set and
+ * the title block was wrong. In the other direction, clearing one configuration's description on a
+ * document that also has a file-level `Description` read the file-level value as a survivor and
+ * reported `failed` forever: every check-in re-issued the write, paid for the read-back, failed
+ * again and promoted the value unconfirmed.
  *
  * `divergence.ts` owns the definition and the scanner uses the same one, so the two can no longer
  * disagree about what a configuration holds. `resolvedConfigurationProperties` is the display view
  * and lives beside it, named apart.
  */
-function scopeProperties(file: FileMetadata, scope: VerifyScope): Readonly<Record<string, string>> {
+function scopeProperties(file: FileMetadata, scope: WriteScope): Readonly<Record<string, string>> {
   if (scope === 'file') return file.fileProperties
   return configurationScopeProperties(file, scope.configuration)
 }
 
-/** Where an intent's value should be read from: its own instruction, else its address. */
-function verifyScopeOf(intent: MetadataWriteIntent): VerifyScope {
-  if (intent.verifyIn) return intent.verifyIn
-  return intent.address.scope === 'file'
-    ? 'file'
-    : { configuration: intent.address.configuration }
+/** The bag an address lives in. */
+function scopeOf(address: MetadataWriteAddress): WriteScope {
+  return address.scope === 'file' ? 'file' : { configuration: address.configuration }
 }
 
 function specFor(address: MetadataWriteAddress): Pick<FieldSpec, 'readKeys' | 'acceptKeys'> {
@@ -172,7 +168,7 @@ export function verifyIntent(
   file: FileMetadata,
 ): { verified: boolean; found: string | null } {
   const expected = normalizeValue(intent.expected)
-  const properties = scopeProperties(file, verifyScopeOf(intent))
+  const properties = scopeProperties(file, scopeOf(intent.address))
   const spec = specFor(intent.address)
   const accepted = acceptedValues(properties, spec.acceptKeys)
 
@@ -195,7 +191,7 @@ export function verifyWrite(
   file: FileMetadata,
 ): VerifiedAddress[] {
   return intents.map((intent) => {
-    const scope = verifyScopeOf(intent)
+    const scope = scopeOf(intent.address)
     if (scope !== 'file' && !file.configurations.includes(scope.configuration)) {
       return {
         address: intent.address,

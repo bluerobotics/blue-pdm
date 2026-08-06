@@ -17,6 +17,8 @@ import {
   resolveRevision,
   resolvedText,
 } from '@/lib/metadata/overlay'
+import { propertiesToMirror } from '@/lib/metadata/configurationMirror'
+import { configurationScopeProperties } from '@/lib/metadata/divergence'
 import { reportMetadataWrite } from '@/lib/metadata/reportMetadataWrite'
 import { writeMetadataWithVerification } from '@/lib/metadata/writeMetadataToFile'
 import { buildMetadataWritePlan } from '@/lib/metadata/writePlan'
@@ -383,7 +385,8 @@ export function DetailsPanel() {
           //
           // A configuration that already holds its own value keeps it, on a clear as much as on a
           // set: a per-configuration description has its own address and its own editor, and
-          // clearing the file-level one is not a request to wipe 68 of them.
+          // clearing the file-level one is not a request to wipe 68 of them. `propertiesToMirror`
+          // is where that rule lives and is tested.
           if (ext !== '.slddrw' && result.document) {
             const configs = result.document.configurations
             const activeConfig =
@@ -392,29 +395,37 @@ export function DetailsPanel() {
               configs[0]
 
             if (activeConfig) {
-              const existingConfigProps = result.document.configurationProperties[activeConfig] || {}
-              const missingProps: Record<string, string> = {}
-              for (const [key, value] of Object.entries(props)) {
-                if (
-                  !existingConfigProps[key] ||
-                  existingConfigProps[key].trim() === '' ||
-                  existingConfigProps[key].startsWith('$')
-                ) {
-                  missingProps[key] = value
-                }
-              }
-              if (Object.keys(missingProps).length > 0) {
-                if (isOpenInSW) {
-                  await window.electronAPI?.solidworks?.setDocumentProperties?.(
-                    targetFile.path,
-                    missingProps,
-                    activeConfig,
-                  )
-                } else {
-                  await window.electronAPI?.solidworks?.setProperties(
-                    targetFile.path,
-                    missingProps,
-                    activeConfig,
+              const mirrored = propertiesToMirror(
+                props,
+                configurationScopeProperties(result.document, activeConfig),
+              )
+              if (Object.keys(mirrored).length > 0) {
+                const mirror = isOpenInSW
+                  ? await window.electronAPI?.solidworks?.setDocumentProperties?.(
+                      targetFile.path,
+                      mirrored,
+                      activeConfig,
+                    )
+                  : await window.electronAPI?.solidworks?.setProperties(
+                      targetFile.path,
+                      mirrored,
+                      activeConfig,
+                    )
+
+                // The copy's own outcome used to be dropped on the floor, so a mirror that failed
+                // left a title block resolving to the old text with nothing anywhere saying so.
+                // Not a reason to fail the edit - the addresses the user named are confirmed above,
+                // and these are copies - but it is a reason to say so.
+                if (!mirror?.success) {
+                  log.warn(
+                    '[DetailsPanel]',
+                    'File-scope values were not copied into the active configuration',
+                    {
+                      path: targetFile.path,
+                      configuration: activeConfig,
+                      fields: Object.keys(mirrored),
+                      error: mirror?.error,
+                    },
                   )
                 }
               }
@@ -784,12 +795,18 @@ export function DetailsPanel() {
                       {isFolder ? (
                         // Folder properties
                         <>
-                          <PropertyItem icon={<Info size={14} />} label={t('common.type')} value={t('common.folder')} />
+                          <PropertyItem
+                            icon={<Info size={14} />}
+                            label={t('common.type')}
+                            value={t('common.folder')}
+                          />
                           <PropertyItem
                             icon={<Info size={14} />}
                             label={t('common.size')}
                             value={
-                              folderStats ? formatFileSize(folderStats.size) : t('source.details.calculating')
+                              folderStats
+                                ? formatFileSize(folderStats.size)
+                                : t('source.details.calculating')
                             }
                           />
                           <PropertyItem
@@ -912,7 +929,9 @@ export function DetailsPanel() {
                                   color: file.pdmData.workflow_state.color,
                                 }}
                                 title={
-                                  file.pdmData.workflow_state.is_editable ? t('source.details.editable') : t('source.details.locked')
+                                  file.pdmData.workflow_state.is_editable
+                                    ? t('source.details.editable')
+                                    : t('source.details.locked')
                                 }
                               >
                                 {file.pdmData.workflow_state.label ||
@@ -992,7 +1011,9 @@ export function DetailsPanel() {
               {detailsPanelTab === 'preview' && !(isSolidWorksFile && !isFolder) && (
                 <div className="flex flex-col items-center justify-center h-full py-4">
                   {!file ? (
-                    <div className="text-sm text-plm-fg-muted">{t('source.details.selectFileToPreview')}</div>
+                    <div className="text-sm text-plm-fg-muted">
+                      {t('source.details.selectFileToPreview')}
+                    </div>
                   ) : isPDFFile ? (
                     // PDF preview with annotation support + comment sidebar
                     <PdfWithComments file={file} />
@@ -1031,7 +1052,9 @@ export function DetailsPanel() {
                         ) : (
                           <div className="flex-1 flex flex-col items-center justify-center text-center">
                             <Eye size={48} className="mb-4 text-plm-fg-muted opacity-50" />
-                            <div className="text-lg font-medium mb-2">{t('source.details.eDrawingsNotFound')}</div>
+                            <div className="text-lg font-medium mb-2">
+                              {t('source.details.eDrawingsNotFound')}
+                            </div>
                             <div className="text-sm text-plm-fg-muted mb-4 max-w-xs">
                               {t('source.details.installEDrawings')}
                             </div>
@@ -1140,7 +1163,9 @@ export function DetailsPanel() {
                         // No thumbnail, no eDrawings
                         <div className="flex-1 flex flex-col items-center justify-center text-center">
                           <Eye size={48} className="mb-4 text-plm-fg-muted opacity-50" />
-                          <div className="text-lg font-medium mb-2">{t('source.details.noPreviewAvailable')}</div>
+                          <div className="text-lg font-medium mb-2">
+                            {t('source.details.noPreviewAvailable')}
+                          </div>
                           <div className="text-sm text-plm-fg-muted mb-4 max-w-xs">
                             {t('source.details.installEDrawings')}
                           </div>
@@ -1423,7 +1448,9 @@ function EditablePropertyItem({
       <span
         className={`px-1 rounded ${editable ? 'cursor-text hover:bg-plm-bg-light' : ''} ${!value || value === '-' || !editable ? 'text-plm-fg-muted' : 'text-plm-fg'}`}
         onClick={editable ? onStartEdit : undefined}
-        title={editable ? t('source.details.clickToEdit') : tooltip || t('source.details.checkOutToEdit')}
+        title={
+          editable ? t('source.details.clickToEdit') : tooltip || t('source.details.checkOutToEdit')
+        }
       >
         {value || placeholder}
       </span>

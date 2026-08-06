@@ -13,7 +13,7 @@ import { ContextSubmenu } from '../components'
 import { useSolidWorksStatus } from '@/hooks/useSolidWorksStatus'
 import { isSolidWorksUsable } from '@/types/solidworks'
 import { ChangeStateSubmenu } from './ChangeStateSubmenu'
-import { isFileWriteInFlight } from '../../../utils/metadataWriteInFlight'
+import { isFileWriteInFlight } from '@/lib/metadata/writeInFlight'
 
 interface CheckoutActionsProps extends RefreshableActionProps {
   counts: SelectionCounts
@@ -26,7 +26,7 @@ interface CheckoutActionsProps extends RefreshableActionProps {
   setShowStateSubmenu: (show: boolean) => void
   stateSubmenuTimeoutRef: React.MutableRefObject<NodeJS.Timeout | null>
   /** Keys of the metadata writes currently running - blocks operations on the files they touch */
-  savingConfigsToSW?: Set<string>
+  savingConfigsToSW?: ReadonlySet<string>
 }
 
 export function CheckoutActions({

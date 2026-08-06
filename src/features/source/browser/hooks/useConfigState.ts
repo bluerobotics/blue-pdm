@@ -30,9 +30,9 @@ export interface UseConfigStateReturn {
   isExportingConfigs: boolean
   setIsExportingConfigs: (exporting: boolean) => void
 
-  // Saving configs to SW file
-  savingConfigsToSW: Set<string>
-  setSavingConfigsToSW: (saving: Set<string> | ((prev: Set<string>) => Set<string>)) => void
+  // Which metadata writes are running is no longer state here. It lives in
+  // `lib/metadata/writeInFlight`, because check-in has to consult it too and a command handler
+  // cannot read component state. React reads it through `useMetadataWritesInFlight`.
 
   // Helper functions
   toggleConfigExpansion: (filePath: string) => void
@@ -53,7 +53,6 @@ export function useConfigState(): UseConfigStateReturn {
   const lastClickedConfigRef = useRef<string | null>(null)
 
   const [isExportingConfigs, setIsExportingConfigs] = useState(false)
-  const [savingConfigsToSW, setSavingConfigsToSW] = useState<Set<string>>(new Set())
 
   const toggleConfigExpansion = useCallback((filePath: string) => {
     setExpandedConfigFiles((prev) => {
@@ -105,8 +104,6 @@ export function useConfigState(): UseConfigStateReturn {
     lastClickedConfigRef,
     isExportingConfigs,
     setIsExportingConfigs,
-    savingConfigsToSW,
-    setSavingConfigsToSW,
     toggleConfigExpansion,
     clearConfigSelection,
     isConfigSelected,

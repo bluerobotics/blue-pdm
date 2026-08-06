@@ -37,6 +37,17 @@ import type { LocalFile } from '../../../stores/pdmStore'
 import { usePDMStore } from '../../../stores/pdmStore'
 import { resolveRevision, resolvedText } from '@/lib/metadata/overlay'
 import { settleMetadataForCheckin } from '@/lib/metadata/checkinMetadata'
+import type { CheckinMetadataOutcome } from '@/lib/metadata/checkinMetadata'
+import { hasPendingMetadata } from '@/lib/metadata/pendingEdits'
+import {
+  awaitFileWritesSettled,
+  beginMetadataWrite,
+  endMetadataWrite,
+  fileWriteKey,
+  isFileWriteInFlight,
+  metadataWritesInFlight,
+} from '@/lib/metadata/writeInFlight'
+import { t } from '@/lib/i18n'
 import { log } from '@/lib/logger'
 import { isRetryableError, getBackoffDelay, sleep } from '../../network'
 import { FileOperationTracker } from '../../fileOperationTracker'
@@ -68,6 +79,16 @@ const DRAWING_EXTENSIONS = ['.slddrw']
  */
 const FLUSH_INTERVAL = 25 // Flush every 25 files
 const FLUSH_TIME_MS = 500 // Flush at least every 500ms
+
+/**
+ * How long check-in waits for a metadata write already running against the same file.
+ *
+ * Generous, because the wait is only reached when a write is genuinely in flight and finishing it
+ * is always better than racing it: a write covering many configurations goes one service call per
+ * configuration. If it is still running after this, something is wrong with the write rather than
+ * with the wait, and check-in declines rather than proceeding against a document mid-write.
+ */
+const METADATA_WRITE_WAIT_MS = 120_000
 
 /**
  * Pre-cached SolidWorks service status to avoid redundant IPC calls per file
@@ -836,6 +857,16 @@ export const checkinCommand: Command<CheckinParams> = {
     const driftedFiles: string[] = []
 
     /**
+     * Values that reached the database without being confirmed in the file.
+     *
+     * The per-address record and the row marker already carry this, but neither is something a
+     * user sees while watching a check-in: `settleMetadataForCheckin` could report sixty-eight
+     * unconfirmed addresses and the operation would still end on a green "Checked in 1 file".
+     * Collected here so the summary can say so, in the same shape the drift warning uses.
+     */
+    const unconfirmed: Array<{ name: string; count: number }> = []
+
+    /**
      * Detect post-check-in drift: re-hash the file after readonly is set
      * and compare to the hash that was uploaded. SolidWorks can modify open
      * files (e.g., reference rebuild) between upload and readonly, leaving
@@ -871,8 +902,11 @@ export const checkinCommand: Command<CheckinParams> = {
      * Extracted to avoid code duplication between phases
      */
     const processFile = async (
-      file: LocalFile,
+      selected: LocalFile,
     ): Promise<{ success: boolean; error?: string; file?: LocalFile }> => {
+      // Rebindable, because waiting for an in-flight metadata write below leaves the copy that was
+      // selected stale: the write records its own per-address marks as it finishes.
+      let file = selected
       const fileCtx = getFileContext(file)
       const isSolidWorksFile = SW_EXTENSIONS.includes(file.extension.toLowerCase())
       const swOpStartTime = isSolidWorksFile ? Date.now() : null
@@ -886,7 +920,8 @@ export const checkinCommand: Command<CheckinParams> = {
           file.name.toLowerCase() !== file.pdmData.file_name.toLowerCase()
 
         // Skip path update if user declined the confirmation dialog
-        if ((file as any)._skipPathUpdate) { // TODO: type this
+        if ((file as any)._skipPathUpdate) {
+          // TODO: type this
           wasFileMoved = false
           wasFileRenamed = false
         }
@@ -950,7 +985,28 @@ export const checkinCommand: Command<CheckinParams> = {
         //
         // Then we can skip the file upload (but we still needed to compute the hash).
         // ========================================
-        const hasPendingMetadata = !!file.pendingMetadata
+        // An empty pending object owes the server nothing, and `!!file.pendingMetadata` counted it
+        // as an edit - which cost the fast path on a file where nothing had actually changed.
+        const filePendingMetadata = hasPendingMetadata(file.pendingMetadata)
+
+        // Wait for any metadata write already running against this document. The UI disables the
+        // check-in button while one is in flight, but a button is not a guard: a `ci` from the
+        // command line during an inline configuration edit used to start its own write against a
+        // document mid-write, with neither knowing about the other.
+        if (isFileWriteInFlight(metadataWritesInFlight(), file.path)) {
+          logCheckin('info', 'Waiting for a metadata write already running against this file', {
+            operationId,
+            ...fileCtx,
+          })
+          const settled = await awaitFileWritesSettled(file.path, METADATA_WRITE_WAIT_MS)
+          if (!settled) {
+            progress.update()
+            return { success: false, error: `${file.name}: ${t('metadataWrite.stillWriting')}` }
+          }
+          // The write that just finished recorded its own marks and may have changed the document,
+          // so the copy in hand is stale. Re-read it before deciding anything about it.
+          file = usePDMStore.getState().files.find((f) => f.path === file.path) ?? file
+        }
 
         // Get the pending values into the file before the database takes them.
         //
@@ -963,13 +1019,30 @@ export const checkinCommand: Command<CheckinParams> = {
         //
         // Before the hash, deliberately: this write changes the document, so hashing first would
         // record a hash the file no longer has and the fast path would compare against it.
+        // Declared in the same registry it just consulted, so the guard runs both ways: an inline
+        // configuration edit started while this settle is writing waits for it, rather than the
+        // wait only ever protecting check-in from the UI.
         const metadataSettleStart = performance.now()
         const swStatus = usePDMStore.getState().integrations.solidworks.status
-        const metadataSettlement = await settleMetadataForCheckin(file, {
-          organizationId: orgId,
-          serviceAvailable: swStatus === 'online' || swStatus === 'partial',
-        })
+        const writeKey = fileWriteKey(file.path)
+        beginMetadataWrite(writeKey)
+        let metadataSettlement: CheckinMetadataOutcome
+        try {
+          metadataSettlement = await settleMetadataForCheckin(file, {
+            organizationId: orgId,
+            serviceAvailable: swStatus === 'online' || swStatus === 'partial',
+          })
+        } finally {
+          endMetadataWrite(writeKey)
+        }
         recordSubstepTiming('settleMetadata', performance.now() - metadataSettleStart)
+
+        if (metadataSettlement.promotedUnconfirmed.length > 0) {
+          unconfirmed.push({
+            name: file.name,
+            count: metadataSettlement.promotedUnconfirmed.length,
+          })
+        }
 
         // CRITICAL: Always compute fresh hash - cached localHash may be stale
         // This fixes a bug where files modified in SolidWorks were not detected
@@ -996,7 +1069,7 @@ export const checkinCommand: Command<CheckinParams> = {
 
         const contentUnchanged = freshHash === file.pdmData?.content_hash
         const canTakeFastPath =
-          contentUnchanged && !hasPendingMetadata && !wasFileMoved && !wasFileRenamed
+          contentUnchanged && !filePendingMetadata && !wasFileMoved && !wasFileRenamed
 
         logCheckin('debug', 'Checking in file', {
           operationId,
@@ -1006,7 +1079,7 @@ export const checkinCommand: Command<CheckinParams> = {
           oldPath: wasFileMoved ? file.pdmData?.file_path : undefined,
           oldName: wasFileRenamed ? file.pdmData?.file_name : undefined,
           canTakeFastPath,
-          hasPendingMetadata,
+          hasPendingMetadata: filePendingMetadata,
         })
 
         // ========================================
@@ -2001,14 +2074,35 @@ export const checkinCommand: Command<CheckinParams> = {
     // Build success message
     const checkinMsg = `Checked in ${succeeded} file${succeeded > 1 ? 's' : ''}`
 
+    // Values the database now holds that the file could not be shown to hold. Not a failure - the
+    // check-in did happen, and the addresses keep their marks so a later save can settle them -
+    // but a green toast alone said the opposite of what the write state records.
+    const unconfirmedCount = unconfirmed.reduce((sum, entry) => sum + entry.count, 0)
+    const unconfirmedDetails = unconfirmed.map(
+      (entry) => `${entry.name}: ${t('metadataWrite.promotedUnconfirmed', { count: entry.count })}`,
+    )
+
     // Show result
     if (failed > 0) {
       // Show first error in toast for visibility
       const firstError = errors[0] || 'Unknown error'
       const moreText = errors.length > 1 ? ` (+${errors.length - 1} more)` : ''
       ctx.addToast('error', `Check-in failed: ${firstError}${moreText}`)
+    } else if (unconfirmedCount > 0) {
+      ctx.addToast(
+        'warning',
+        `${checkinMsg}. ${t('metadataWrite.promotedUnconfirmed', { count: unconfirmedCount })}`,
+      )
     } else {
       ctx.addToast('success', checkinMsg)
+    }
+
+    if (unconfirmedCount > 0) {
+      logCheckin('warn', 'Promoted values that are not confirmed in the file', {
+        operationId,
+        count: unconfirmedCount,
+        files: unconfirmed.map((entry) => entry.name),
+      })
     }
 
     // Warn about post-check-in drift (SolidWorks modified files after upload)
@@ -2038,6 +2132,7 @@ export const checkinCommand: Command<CheckinParams> = {
       total,
       succeeded,
       failed,
+      details: unconfirmedDetails.length > 0 ? unconfirmedDetails : undefined,
       errors: errors.length > 0 ? errors : undefined,
       duration,
     }

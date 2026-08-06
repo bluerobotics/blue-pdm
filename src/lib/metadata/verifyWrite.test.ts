@@ -152,15 +152,17 @@ describe('a partial write across configurations', () => {
     expect(outcomes.map((outcome) => outcome.state)).toEqual(['verified', 'failed'])
   })
 
-  it('reads a file-scope field from the configuration it was written into', () => {
-    // A multi-configuration part takes its base metadata into the active configuration's bag, so
-    // verifying against the document's own bag would fail every base write on such a part.
+  it('reads a file-scope field from the document, not from a configuration holding a copy', () => {
+    // The plan writes a file-scope field into the document's own bag and copies it into the
+    // configurations, so the copy is not the evidence. An intent used to be able to name the
+    // configuration as the place to look, and a document whose own bag was never written reported
+    // `verified` off the copy while a `$PRP:` title block rendered the old value.
     const outcomes = verifyWrite(
-      [{ ...partNumber, verifyIn: { configuration: 'Default' } }],
+      [partNumber],
       document({}, { Default: { 'Base Item Number': 'BR-101010' } }),
     )
 
-    expect(outcomes[0].state).toBe('verified')
+    expect(outcomes[0].state).toBe('failed')
   })
 
   it('lets a configuration value override the file value it shadows', () => {
@@ -188,25 +190,27 @@ describe('a configuration is judged on its own bag, not on the document undernea
   // reader resolves and what a write established are different questions, and the fallback got
   // both of these wrong.
 
-  it('does not verify a base write off a stale file-level Base Item Number', () => {
-    // The write plan sends the part number into the configuration's bag on a multi-configuration
-    // document, so an empty configuration bag means nothing landed - however familiar the string
-    // sitting at file level from some earlier release looks. This reported `verified`, the one
-    // state a retry skips and check-in forgets, while the configuration's composite `Number`
-    // was never written and the title block stayed wrong.
+  it('does not verify a configuration write off a value the document holds at file level', () => {
+    // An empty configuration bag means nothing landed there, however familiar the string sitting
+    // at file level looks. Read through the fallback this reported `verified`, the one state a
+    // retry skips and check-in forgets, while the configuration's composite `Number` was never
+    // written and the title block stayed wrong.
     const outcomes = verifyWrite(
       [
-        {
-          address: { scope: 'file', field: 'part_number' },
-          expected: 'PN-100',
-          verifyIn: { configuration: 'Default' },
-        },
         {
           address: { scope: 'configuration', field: 'config_tab', configuration: 'Default' },
           expected: '014',
         },
+        {
+          address: {
+            scope: 'configuration',
+            field: 'config_description',
+            configuration: 'Default',
+          },
+          expected: 'O-ring, NBR 70A',
+        },
       ],
-      document({ 'Base Item Number': 'PN-100' }, { Default: {} }),
+      document({ 'Tab Number': '014', Description: 'O-ring, NBR 70A' }, { Default: {} }),
     )
 
     expect(outcomes.map((outcome) => outcome.state)).toEqual(['failed', 'failed'])

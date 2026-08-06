@@ -29,6 +29,12 @@ import { beginWatcherSuppression } from '@/lib/fileWatcherSuppression'
 import { log } from '@/lib/logger'
 import { resolvePartNumber, resolvedText } from '@/lib/metadata/overlay'
 import { reportMetadataWrite, unattemptedWrite } from '@/lib/metadata/reportMetadataWrite'
+import {
+  beginMetadataWrite,
+  configurationWriteKey,
+  endMetadataWrite,
+  fileWriteKey,
+} from '@/lib/metadata/writeInFlight'
 import { writeMetadataWithVerification } from '@/lib/metadata/writeMetadataToFile'
 import { buildMetadataWritePlan, type PlanSerialization } from '@/lib/metadata/writePlan'
 import { listWriteAddresses } from '@/lib/metadata/writeState'
@@ -40,12 +46,6 @@ import { usePDMStore } from '@/stores/pdmStore'
 import type { Organization, PendingMetadataEdit } from '@/stores/types'
 
 import type { ConfigWithDepth } from '../types'
-import {
-  configurationWriteKey,
-  fileWriteKey,
-  withWriteInFlight,
-  withoutWriteInFlight,
-} from '../utils/metadataWriteInFlight'
 
 import { buildConfigurationExportMetadata } from './configExportMetadata'
 import {
@@ -121,7 +121,6 @@ export interface ConfigHandlersDeps {
 
   // Exporting state (local UI state)
   setIsExportingConfigs: (exporting: boolean) => void
-  setSavingConfigsToSW: (saving: Set<string> | ((prev: Set<string>) => Set<string>)) => void
 
   // File selection (uses store action)
   setSelectedFiles: (paths: string[]) => void
@@ -196,7 +195,6 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
     configContextMenu,
     setConfigContextMenu,
     setIsExportingConfigs,
-    setSavingConfigsToSW,
     setSelectedFiles,
     organization,
     addToast,
@@ -290,7 +288,7 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
       const releaseWatcher = beginWatcherSuppression([file.relativePath])
       // The row shows a spinner while this runs, and the check-in guards see the file as busy.
       const inFlightKey = configurationWriteKey(filePath, configName)
-      setSavingConfigsToSW((prev) => withWriteInFlight(prev, inFlightKey))
+      beginMetadataWrite(inFlightKey)
 
       try {
         const groups = buildConfigurationTabWritePlan({
@@ -329,10 +327,10 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
         })
       } finally {
         releaseWatcher()
-        setSavingConfigsToSW((prev) => withoutWriteInFlight(prev, inFlightKey))
+        endMetadataWrite(inFlightKey)
       }
     },
-    [addToast, organization, setSavingConfigsToSW],
+    [addToast, organization],
   )
 
   // Update config description
@@ -383,7 +381,7 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
       const releaseWatcher = beginWatcherSuppression([file.relativePath])
       // The row shows a spinner while this runs, and the check-in guards see the file as busy.
       const inFlightKey = configurationWriteKey(filePath, configName)
-      setSavingConfigsToSW((prev) => withWriteInFlight(prev, inFlightKey))
+      beginMetadataWrite(inFlightKey)
 
       try {
         const groups = buildConfigurationDescriptionWritePlan({
@@ -427,10 +425,10 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
         })
       } finally {
         releaseWatcher()
-        setSavingConfigsToSW((prev) => withoutWriteInFlight(prev, inFlightKey))
+        endMetadataWrite(inFlightKey)
       }
     },
-    [addToast, organization, setSavingConfigsToSW],
+    [addToast, organization],
   )
 
   // Check if file can have configurations (sldprt or sldasm)
@@ -491,7 +489,7 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
       const configs = fileConfigurations.get(file.path) || []
 
       const inFlightKey = fileWriteKey(file.path)
-      setSavingConfigsToSW((prev) => withWriteInFlight(prev, inFlightKey))
+      beginMetadataWrite(inFlightKey)
 
       // Mark file as processing to suppress file watcher refreshes during save.
       // This only covers events that arrive while the write runs; the watcher's own
@@ -635,10 +633,10 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
         usePDMStore.getState().removeProcessingFolder(file.relativePath)
         releaseWatcher()
 
-        setSavingConfigsToSW((prev) => withoutWriteInFlight(prev, inFlightKey))
+        endMetadataWrite(inFlightKey)
       }
     },
-    [fileConfigurations, setSavingConfigsToSW, justSavedConfigs, addToast],
+    [fileConfigurations, justSavedConfigs, addToast],
   )
 
   // Handle config row click with multi-select support (Ctrl/Cmd + Shift)

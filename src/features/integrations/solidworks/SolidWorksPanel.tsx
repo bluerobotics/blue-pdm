@@ -4,6 +4,7 @@ import { syncSolidWorksFileMetadata, getWhereUsed } from '@/lib/supabase'
 import { log } from '@/lib/logger'
 import { beginWatcherSuppression } from '@/lib/fileWatcherSuppression'
 import { refreshLocalFileFacts } from '@/lib/refreshLocalFileFacts'
+import { resolvedPropertyView } from '@/lib/metadata/divergence'
 import { resolveFileMetadata } from '@/lib/metadata/overlay'
 import {
   FileBox,
@@ -749,7 +750,7 @@ export function SWPropertiesPanel({ file }: { file: LocalFile }) {
     )
   }
 
-  const allProperties = { ...fileProperties, ...configProperties }
+  const allProperties = resolvedPropertyView(fileProperties, configProperties)
   const propertyEntries = Object.entries(allProperties).filter(([key]) => key && key.trim())
 
   if (propertyEntries.length === 0) {
@@ -1145,7 +1146,7 @@ export function SWPropertiesTab({ file }: { file: LocalFile }) {
 
   // Match properties to loaded data
   const getPropertyValue = (key: string, aliases?: string[]): string | null => {
-    const allProps = { ...fileProperties, ...configProperties }
+    const allProps = resolvedPropertyView(fileProperties, configProperties)
     if (allProps[key]) return allProps[key]
     if (aliases) {
       for (const alias of aliases) {
@@ -1160,7 +1161,7 @@ export function SWPropertiesTab({ file }: { file: LocalFile }) {
   }
 
   const hasData =
-    status.running && Object.keys({ ...fileProperties, ...configProperties }).length > 0
+    status.running && Object.keys(resolvedPropertyView(fileProperties, configProperties)).length > 0
   const mockConfigs = ['Default', 'Machined', 'As-Cast']
   const displayConfigs =
     hasData && configurations.length > 0
@@ -1181,7 +1182,7 @@ export function SWPropertiesTab({ file }: { file: LocalFile }) {
   ]
 
   // All properties for expanded view
-  const allProps = { ...fileProperties, ...configProperties }
+  const allProps = resolvedPropertyView(fileProperties, configProperties)
   const allPropEntries = Object.entries(allProps).filter(([k]) => k && k.trim())
 
   return (
