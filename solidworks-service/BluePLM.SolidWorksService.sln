@@ -1,9 +1,11 @@
-
+﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BluePLM.SolidWorksService", "BluePLM.SolidWorksService\BluePLM.SolidWorksService.csproj", "{B2C3D4E5-F6A7-8901-BCDE-F12345678901}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BluePLM.SolidWorksService.Tests", "BluePLM.SolidWorksService.Tests\BluePLM.SolidWorksService.Tests.csproj", "{16243304-8674-4CBE-AE31-FCF9B4332F25}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -15,6 +17,10 @@ Global
 		{B2C3D4E5-F6A7-8901-BCDE-F12345678901}.Debug|x64.Build.0 = Debug|x64
 		{B2C3D4E5-F6A7-8901-BCDE-F12345678901}.Release|x64.ActiveCfg = Release|x64
 		{B2C3D4E5-F6A7-8901-BCDE-F12345678901}.Release|x64.Build.0 = Release|x64
+		{16243304-8674-4CBE-AE31-FCF9B4332F25}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{16243304-8674-4CBE-AE31-FCF9B4332F25}.Debug|x64.Build.0 = Debug|Any CPU
+		{16243304-8674-4CBE-AE31-FCF9B4332F25}.Release|x64.ActiveCfg = Release|Any CPU
+		{16243304-8674-4CBE-AE31-FCF9B4332F25}.Release|x64.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
