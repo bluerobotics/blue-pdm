@@ -4689,6 +4689,35 @@ export type Database = {
           },
         ]
       }
+      rfq_number_counters: {
+        Row: {
+          last_number: number
+          org_id: string
+          updated_at: string | null
+          year: number
+        }
+        Insert: {
+          last_number?: number
+          org_id: string
+          updated_at?: string | null
+          year: number
+        }
+        Update: {
+          last_number?: number
+          org_id?: string
+          updated_at?: string | null
+          year?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "rfq_number_counters_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       rfq_quotes: {
         Row: {
           created_at: string | null
@@ -7585,6 +7614,7 @@ export type Database = {
         }
         Returns: Json
       }
+      generate_rfq_number: { Args: { p_org_id: string }; Returns: string }
       generate_share_token: { Args: never; Returns: string }
       get_available_transitions: {
         Args: { p_file_id: string; p_user_id: string }

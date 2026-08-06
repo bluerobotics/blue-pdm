@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 -- Insert initial version for new installations
 INSERT INTO schema_version (id, version, description, applied_at, applied_by)
-VALUES (1, 87, 'checkin_file merges the reserved per-configuration maps in custom_properties entry by entry instead of replacing them, so checking in one edited configuration no longer erases every configuration the user did not touch', NOW(), 'migration')
+VALUES (1, 88, 'generate_rfq_number exists again: RFQ creation called it over RPC but no module had created it since schema.sql was split, so every attempt failed. It allocates RFQ-<year>-<sequence> from a per-organization counter table instead of deriving the number from existing rows, which two clients could otherwise read as the same value', NOW(), 'migration')
 ON CONFLICT (id) DO UPDATE SET 
   version = EXCLUDED.version,
   description = EXCLUDED.description,

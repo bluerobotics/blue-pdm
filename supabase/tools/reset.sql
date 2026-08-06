@@ -76,6 +76,7 @@ DROP TABLE IF EXISTS integration_sync_log CASCADE;
 DROP TABLE IF EXISTS organization_integrations CASCADE;
 
 -- RFQ system
+DROP TABLE IF EXISTS rfq_number_counters CASCADE;
 DROP TABLE IF EXISTS rfq_activity CASCADE;
 DROP TABLE IF EXISTS rfq_quotes CASCADE;
 DROP TABLE IF EXISTS rfq_suppliers CASCADE;

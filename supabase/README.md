@@ -128,12 +128,11 @@ Run `tools/verify-schema.sql` after installation to check:
 - RLS is enabled on all tables
 - Current schema version
 
-> **Known false alarm:** on a complete, correct install this script still reports
-> `Missing functions: generate_rfq_number`. No module creates that function — it is named
-> only by this script and by `tools/reset.sql`. `src/features/supply-chain/rfq/RFQView.tsx`
-> calls it over RPC when creating an RFQ, so this is a real gap in `30-supply-chain.sql`
-> rather than a stale check, and it is not caused by install order. Every other check
-> passes.
+On a complete, correct install every check passes. The `Missing functions:
+generate_rfq_number` report this script used to produce was real rather than stale —
+`30-supply-chain.sql` had not created that function since `schema.sql` was split into
+modules, so creating an RFQ failed on every correctly installed database. The function
+is back in that module as of schema version 88.
 
 ## Module Summary
 
@@ -146,7 +145,7 @@ install.
 | 10-source-files.sql | Yes | 32 | 38 | File management, workflows, backups |
 | 15-inspection.sql | Yes | 3 | 0 | Inspection characteristics + per-version snapshots |
 | 20-change-control.sql | No | 12 | 6 | ECOs, reviews, deviations |
-| 30-supply-chain.sql | No | 10 + 1 view | 4 | Suppliers, RFQs, pricing |
+| 30-supply-chain.sql | No | 11 + 1 view | 5 | Suppliers, RFQs, pricing |
 | 40-integrations.sql | No | 8 | 13 | Webhooks, Odoo, credential store |
 | 50-extensions.sql | No | 7 | 5 | Extension system, extension secret store |
 | 60-customers.sql | No | 10 | 23 | Customer sync, AI enrichment |

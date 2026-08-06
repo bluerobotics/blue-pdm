@@ -26,7 +26,7 @@ import { supabase } from './supabase'
 
 // The schema version this app version expects
 // Increment this when releasing app updates that require schema changes
-export const EXPECTED_SCHEMA_VERSION = 87
+export const EXPECTED_SCHEMA_VERSION = 88
 
 // Minimum schema version that will still work (for soft warnings vs hard errors)
 // Set this to allow some backwards compatibility
@@ -120,6 +120,7 @@ export const VERSION_DESCRIPTIONS: Record<number, string> = {
   85: 'The customers date range governs the whole module: customer_rfm, customer_channel_counts, customer_partner_coverage, customer_detail and customer_cohort_retention take the selected window and report it, instead of the roster and the detail panel showing lifetime totals beside a windowed dashboard',
   86: 'Workflow diagrams save their layout: node size on workflow_states, endpoint anchors, waypoints and label placement on workflow_transitions, plus execute_workflow_transition/complete_gate_review as the single atomic path a file takes through a workflow, an auditable workflow_history and file_state_entries, and the removal of ten never-wired advanced workflow tables',
   87: 'checkin_file merges the reserved per-configuration maps in custom_properties entry by entry instead of replacing them wholesale, so checking in one edited configuration no longer erases every configuration the user did not touch',
+  88: 'generate_rfq_number exists again: creating an RFQ called it over RPC but no module had created it since schema.sql was split into modules, so every attempt failed on a correctly installed database. It allocates RFQ-<year>-<sequence> from a per-organization counter table rather than deriving the number from existing RFQs, which two clients could otherwise read as the same value before either had inserted anything',
   // Note: Process templates module (v26+) is optional - see modules/process-templates.sql
 }
 

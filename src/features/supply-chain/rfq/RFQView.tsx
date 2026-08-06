@@ -1984,10 +1984,9 @@ function NewRFQDialog({
     setLoading(true)
     try {
       // Generate RFQ number
-      const { data: rfqNumber, error: numError } = await supabase.rpc(
-        'generate_rfq_number' as never,
-        { p_org_id: organization.id } as never,
-      )
+      const { data: rfqNumber, error: numError } = await supabase.rpc('generate_rfq_number', {
+        p_org_id: organization.id,
+      })
 
       if (numError) throw numError
 

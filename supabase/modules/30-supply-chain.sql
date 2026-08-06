@@ -13,6 +13,7 @@
 --   - RFQs (Request for Quote)
 --   - RFQ Items, Suppliers, Quotes
 --   - RFQ Activity log
+--   - RFQ number counters + generate_rfq_number()
 --
 -- DEPENDENCIES: 
 --   - core.sql must be installed first
@@ -453,6 +454,24 @@ EXCEPTION WHEN others THEN NULL;
 END $$;
 
 -- ===========================================
+-- RFQ NUMBER COUNTERS
+-- ===========================================
+-- Backs generate_rfq_number(). The counter lives in its own table rather than in
+-- organizations.rfq_settings because the settings screen saves that column with a
+-- whole-object UPDATE, which would reset the counter and hand out RFQ numbers that
+-- already exist. serialization_settings needs update_serialization_settings_safe()
+-- for exactly that reason; a separate table avoids the problem instead of guarding it.
+
+CREATE TABLE IF NOT EXISTS rfq_number_counters (
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  year INTEGER NOT NULL,
+  last_number INTEGER NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+
+  PRIMARY KEY (org_id, year)
+);
+
+-- ===========================================
 -- RFQ ITEMS
 -- ===========================================
 
@@ -588,6 +607,11 @@ ALTER TABLE rfq_suppliers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE rfq_quotes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE rfq_activity ENABLE ROW LEVEL SECURITY;
 
+-- rfq_number_counters is deliberately left without policies. Clients never read or
+-- write it directly; generate_rfq_number() is SECURITY DEFINER and so bypasses RLS.
+-- Enabling RLS with no policy is what denies every direct client access to it.
+ALTER TABLE rfq_number_counters ENABLE ROW LEVEL SECURITY;
+
 -- Suppliers
 DROP POLICY IF EXISTS "Users can view org suppliers" ON suppliers;
 CREATE POLICY "Users can view org suppliers"
@@ -710,6 +734,56 @@ CREATE POLICY "Engineers can log RFQ activity"
 -- ===========================================
 -- HELPER FUNCTIONS
 -- ===========================================
+
+-- Allocate the next RFQ number for an organization, as RFQ-<year>-<4-digit sequence>.
+-- The format predates the split of schema.sql into modules and is preserved here so
+-- that numbering continues unbroken on databases that already hold RFQs.
+--
+-- The sequence is consumed, not derived: the caller runs this in one transaction and
+-- INSERTs the RFQ in a later one, so deriving MAX(rfq_number) would hand the same
+-- number to two clients that both call this before either has inserted anything. The
+-- UPDATE ... RETURNING below takes a row lock and increments in a single statement, so
+-- a second caller blocks until the first commits and then reads the incremented value.
+-- Numbers are therefore allocated once each and may be skipped if a create is abandoned.
+DROP FUNCTION IF EXISTS generate_rfq_number(UUID) CASCADE;
+CREATE OR REPLACE FUNCTION generate_rfq_number(p_org_id UUID)
+RETURNS TEXT
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_year INTEGER := EXTRACT(YEAR FROM NOW())::INTEGER;
+  v_seq INTEGER;
+BEGIN
+  -- Seed the counter from any RFQs the organization already has for this year, so that
+  -- installing this function on a populated database does not reissue existing numbers.
+  IF NOT EXISTS (
+    SELECT 1 FROM rfq_number_counters WHERE org_id = p_org_id AND year = v_year
+  ) THEN
+    INSERT INTO rfq_number_counters (org_id, year, last_number)
+    SELECT
+      p_org_id,
+      v_year,
+      COALESCE(MAX(SUBSTRING(rfq_number FROM '^RFQ-' || v_year || '-(\d+)$')::INTEGER), 0)
+    FROM rfqs
+    WHERE org_id = p_org_id
+    ON CONFLICT (org_id, year) DO NOTHING;
+  END IF;
+
+  UPDATE rfq_number_counters
+  SET last_number = last_number + 1,
+      updated_at = NOW()
+  WHERE org_id = p_org_id AND year = v_year
+  RETURNING last_number INTO v_seq;
+
+  -- LPAD truncates rather than widens once the sequence outgrows the pad width, which
+  -- would silently reissue a number from earlier in the year.
+  RETURN 'RFQ-' || v_year || '-' ||
+    CASE WHEN v_seq < 10000 THEN LPAD(v_seq::TEXT, 4, '0') ELSE v_seq::TEXT END;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION generate_rfq_number(UUID) TO authenticated;
 
 -- Get best price for a part at a given quantity
 CREATE OR REPLACE FUNCTION get_best_price(p_file_id UUID, p_quantity INT DEFAULT 1)
@@ -844,6 +918,7 @@ COMMENT ON TABLE supplier_contacts IS 'Portal users who work at supplier compani
 COMMENT ON TABLE supplier_invitations IS 'Invitations sent to suppliers to join the portal';
 COMMENT ON TABLE part_suppliers IS 'Links parts to suppliers with pricing information';
 COMMENT ON TABLE rfqs IS 'Request for Quote documents';
+COMMENT ON TABLE rfq_number_counters IS 'Per-organization, per-year RFQ number sequence consumed by generate_rfq_number()';
 COMMENT ON TABLE rfq_items IS 'Line items within an RFQ';
 COMMENT ON TABLE rfq_suppliers IS 'Suppliers associated with an RFQ';
 COMMENT ON TABLE rfq_quotes IS 'Quotes received from suppliers for RFQ items';
@@ -852,6 +927,11 @@ COMMENT ON TABLE rfq_activity IS 'Activity/audit log for RFQs';
 -- ===========================================
 -- END OF SUPPLY CHAIN MODULE
 -- ===========================================
+
+-- Stamped here as well as in core.sql so that re-running this module alone - the usual
+-- way a single RPC fix is applied - advances the recorded version. update_schema_version
+-- is monotonic, so this can never roll a newer database backwards.
+SELECT update_schema_version(88, 'generate_rfq_number exists again: RFQ creation called it over RPC but no module had created it since schema.sql was split, so every attempt failed. It allocates RFQ-<year>-<sequence> from a per-organization counter table instead of deriving the number from existing rows, which two clients could otherwise read as the same value');
 
 DO $$
 BEGIN

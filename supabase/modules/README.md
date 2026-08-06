@@ -98,6 +98,15 @@ Contains supplier and purchasing features:
 - **Supplier Contacts** - Portal users for suppliers
 - **Part-Suppliers** - Pricing information per part per supplier
 - **RFQs** - Request for Quote workflow (items, quotes, awards)
+- **RFQ Numbering** - `generate_rfq_number()` hands out `RFQ-<year>-<sequence>` from a
+  per-organization counter in `rfq_number_counters`
+
+The counter is a table rather than a key in `organizations.rfq_settings` because the RFQ
+settings screen saves that column with a whole-object `UPDATE`, which would reset the
+sequence and reissue numbers that already exist. It is also consumed rather than derived
+from `MAX(rfq_number)`: the client allocates a number in one transaction and inserts the
+RFQ in a later one, so a derived number is handed to every client that asks before the
+first one has inserted anything.
 
 ### 40-integrations.sql (Integrations)
 
