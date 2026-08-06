@@ -34,4 +34,15 @@
     <PackageReference Include="Microsoft.CSharp" Version="4.7.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!--
+      The reference reads are typed internally (ExternalReferenceRead, DrawingViewReference) and the
+      wire shape is anonymous objects. The test suite asserts against the typed results rather than
+      reflecting over anonymous types, which is what makes the fixture tests readable.
+    -->
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>BluePLM.SolidWorksService.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
 </Project>

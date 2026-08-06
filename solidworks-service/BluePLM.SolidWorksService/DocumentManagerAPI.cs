@@ -21,7 +21,7 @@ namespace BluePLM.SolidWorksService
     /// Note: This feature dynamically loads the Document Manager DLL at runtime
     /// from the user's SolidWorks installation. Works on any machine with SolidWorks installed.
     /// </summary>
-    public class DocumentManagerAPI : IDisposable
+    public partial class DocumentManagerAPI : IDisposable
     {
         private object? _dmApp;
         private Assembly? _dmAssembly;
@@ -286,63 +286,17 @@ namespace BluePLM.SolidWorksService
         }
 
         /// <summary>
-        /// Read all external references from a Document Manager document, preferring
-        /// GetAllExternalReferences4 (available on ISwDMDocument19 and above) and falling back
-        /// to the original GetAllExternalReferences.
-        ///
-        /// Reflection is required because the search option object's runtime type does not match
-        /// the declared SwDMSearchOption parameter, which makes dynamic binding fail.
+        /// Resolved external reference paths, for the callers that only need the paths and treat an
+        /// unanswered read the same as an empty one.
         ///
         /// Callers must invoke this before ISwDMDocument.ReplaceReference; the replacement is a
         /// silent no-op unless the reference list has been resolved on the same document instance.
+        ///
+        /// The full read, including per-reference broken status and whether the read was answered at
+        /// all, is in <see cref="ReadExternalReferences"/>.
         /// </summary>
-        private string[]? InvokeGetAllExternalReferences(object doc, object searchOpt)
-        {
-            var interfaceVersionsToTry = new[]
-            {
-                "ISwDMDocument19", "ISwDMDocument20", "ISwDMDocument21",
-                "ISwDMDocument22", "ISwDMDocument23", "ISwDMDocument24", "ISwDMDocument25"
-            };
-
-            foreach (var ifaceName in interfaceVersionsToTry)
-            {
-                var ifaceType = GetDmType(ifaceName);
-                var method = ifaceType?.GetMethod("GetAllExternalReferences4");
-                if (ifaceType == null || method == null) continue;
-                if (!ifaceType.IsInstanceOfType(doc)) continue;
-
-                try
-                {
-                    // GetAllExternalReferences4(searchOpt, out brokenRefs, out virtualComps, out timestamps)
-                    var parameters = new object?[] { searchOpt, null, null, null };
-                    var refs = method.Invoke(doc, parameters) as string[];
-                    Console.Error.WriteLine($"[DM-API] GetAllExternalReferences4 via {ifaceName} returned {refs?.Length ?? 0} refs");
-                    if (refs != null) return refs;
-                }
-                catch (Exception ex)
-                {
-                    Console.Error.WriteLine($"[DM-API] GetAllExternalReferences4 via {ifaceName} failed: {ex.Message}");
-                }
-                break;
-            }
-
-            var legacyMethod = doc.GetType().GetMethod("GetAllExternalReferences");
-            if (legacyMethod != null)
-            {
-                try
-                {
-                    var refs = legacyMethod.Invoke(doc, new object[] { searchOpt }) as string[];
-                    Console.Error.WriteLine($"[DM-API] GetAllExternalReferences returned {refs?.Length ?? 0} refs");
-                    return refs;
-                }
-                catch (Exception ex)
-                {
-                    Console.Error.WriteLine($"[DM-API] GetAllExternalReferences failed: {ex.Message}");
-                }
-            }
-
-            return null;
-        }
+        private string[] InvokeGetAllExternalReferences(object doc, object searchOpt) =>
+            ReadExternalReferences(doc, searchOpt).References.Select(r => r.Path).ToArray();
 
         /// <summary>
         /// Invoke ISwDMDocument.ReplaceReference, which swaps one resolved external reference
@@ -2501,193 +2455,75 @@ namespace BluePLM.SolidWorksService
             }
         }
 
+        /// <summary>
+        /// Read a document's external references headlessly.
+        ///
+        /// For a drawing this prefers the per-view read, which carries the referenced configuration;
+        /// the SolidWorks view traversal is the only other way to obtain it and that one needs a
+        /// window. Everything else uses the plain reference list.
+        ///
+        /// The result always reports <c>resolved</c>. An empty list with <c>resolved: true</c> means
+        /// the document has no external references; <c>resolved: false</c> means Document Manager
+        /// could not answer and the caller should escalate rather than record "no references".
+        /// </summary>
         public CommandResult GetExternalReferences(string? filePath)
         {
-            if (!Initialize() || _dmApp == null)
-                return new CommandResult { Success = false, Error = _initError ?? "Document Manager not available" };
-
             if (string.IsNullOrEmpty(filePath))
                 return new CommandResult { Success = false, Error = "Missing 'filePath'" };
 
-            if (!File.Exists(filePath))
-                return new CommandResult { Success = false, Error = $"File not found: {filePath}" };
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            var read = ReadReferences(filePath!);
+            stopwatch.Stop();
 
-            object? doc = null;
-            try
+            if (read.Failure != null) return read.Failure;
+
+            var external = read.External;
+            Console.Error.WriteLine(
+                $"[DM-API] Reference read of {Path.GetFileName(filePath)} took {stopwatch.ElapsedMilliseconds}ms " +
+                $"via {external.Method}: {external.Status}, {external.References.Count} refs");
+
+            if (!external.IsResolved)
+                return UnresolvedReferences(filePath!, external.Detail ?? "Document Manager did not answer");
+
+            // A drawing's views carry the referenced configuration, which the flat reference list does
+            // not. Prefer them, and fall back to the flat list when this Document Manager version
+            // cannot read views.
+            if (read.ViewReferences != null && read.ViewReferences.Count > 0)
             {
-                doc = OpenDocument(filePath!, out var openError);
-                if (doc == null)
-                    return new CommandResult { Success = false, Error = $"Failed to open file: error code {openError}" };
-
-                dynamic dynDoc = doc;
-                var references = new List<object>();
-                
-                // #region agent log - Hypothesis A/B: Check document type and drawing-specific info
-                try
-                {
-                    var docTypeName = doc.GetType().Name;
-                    Console.Error.WriteLine($"[DM-API-DEBUG] GetExternalReferences: docType={docTypeName}, file={Path.GetFileName(filePath)}");
-                    
-                    // Log assembly version info
-                    if (_dmAssembly != null)
-                    {
-                        var asmName = _dmAssembly.GetName();
-                        Console.Error.WriteLine($"[DM-API-DEBUG] DM Assembly: {asmName.Name} v{asmName.Version}");
-                        
-                        // Look for drawing-specific types in the assembly
-                        var drawingTypes = _dmAssembly.GetTypes()
-                            .Where(t => t.Name.Contains("Drawing") || t.Name.Contains("Sheet") || t.Name.Contains("View"))
-                            .Select(t => t.Name)
-                            .ToArray();
-                        Console.Error.WriteLine($"[DM-API-DEBUG] Drawing-related types in assembly ({drawingTypes.Length}): {string.Join(", ", drawingTypes.Take(15))}");
-                        
-                        // Look for ISwDMDocument10 and higher
-                        var docInterfaces = _dmAssembly.GetTypes()
-                            .Where(t => t.Name.StartsWith("ISwDMDocument") && t.IsInterface)
-                            .Select(t => t.Name)
-                            .OrderBy(n => n)
-                            .ToArray();
-                        Console.Error.WriteLine($"[DM-API-DEBUG] ISwDMDocument interfaces in assembly: {string.Join(", ", docInterfaces)}");
-                    }
-                    
-                    // List all available methods on the document for debugging
-                    var methods = doc.GetType().GetMethods().Select(m => m.Name).Distinct().OrderBy(n => n).ToArray();
-                    Console.Error.WriteLine($"[DM-API-DEBUG] Available methods ({methods.Length}): {string.Join(", ", methods.Take(30))}...");
-                    
-                    // For drawings, try to get sheet/view info to verify it has model references
-                    if (filePath!.EndsWith(".SLDDRW", StringComparison.OrdinalIgnoreCase))
-                    {
-                        Console.Error.WriteLine($"[DM-API-DEBUG] This is a drawing file, checking for drawing-specific methods...");
-                        
-                        // Check what interfaces the doc implements
-                        var interfaces = doc.GetType().GetInterfaces();
-                        Console.Error.WriteLine($"[DM-API-DEBUG] Document implements {interfaces.Length} interfaces: {string.Join(", ", interfaces.Select(i => i.Name))}");
-                        
-                        try
-                        {
-                            // Try to find and cast to ISwDMDrawing interface
-                            var iDrawingType = GetDmType("ISwDMDrawing");
-                            Console.Error.WriteLine($"[DM-API-DEBUG] ISwDMDrawing type found in assembly: {iDrawingType != null}");
-                            if (iDrawingType != null)
-                            {
-                                var castSuccess = iDrawingType.IsInstanceOfType(doc);
-                                Console.Error.WriteLine($"[DM-API-DEBUG] Can cast doc to ISwDMDrawing: {castSuccess}");
-                                
-                                // List ISwDMDrawing methods
-                                var drawingMethods = iDrawingType.GetMethods().Select(m => m.Name).Distinct().ToArray();
-                                Console.Error.WriteLine($"[DM-API-DEBUG] ISwDMDrawing interface methods: {string.Join(", ", drawingMethods)}");
-                            }
-                            
-                            // Try to find SwDMDrawing class
-                            var drawingClass = GetDmType("SwDMDrawing");
-                            Console.Error.WriteLine($"[DM-API-DEBUG] SwDMDrawing class found: {drawingClass != null}");
-                            
-                            // Try to get sheet names - this tells us if the drawing has sheets
-                            var getSheetNamesMethod = doc.GetType().GetMethod("GetSheetNames");
-                            Console.Error.WriteLine($"[DM-API-DEBUG] GetSheetNames method found: {getSheetNamesMethod != null}");
-                            if (getSheetNamesMethod != null)
-                            {
-                                var sheetNames = getSheetNamesMethod.Invoke(doc, null) as string[];
-                                Console.Error.WriteLine($"[DM-API-DEBUG] Drawing has {sheetNames?.Length ?? 0} sheets: {string.Join(", ", sheetNames ?? Array.Empty<string>())}");
-                            }
-                            
-                            // Try to get the drawing document interface for more details
-                            var getDrawingDocMethod = doc.GetType().GetMethod("GetDrawingDoc");
-                            Console.Error.WriteLine($"[DM-API-DEBUG] GetDrawingDoc method found: {getDrawingDocMethod != null}");
-                            if (getDrawingDocMethod != null)
-                            {
-                                var drawingDoc = getDrawingDocMethod.Invoke(doc, null);
-                                if (drawingDoc != null)
-                                {
-                                    Console.Error.WriteLine($"[DM-API-DEBUG] Got drawing doc interface: {drawingDoc.GetType().Name}");
-                                    // List drawing doc methods
-                                    var drawMethods = drawingDoc.GetType().GetMethods().Select(m => m.Name).Distinct().OrderBy(n => n).ToArray();
-                                    Console.Error.WriteLine($"[DM-API-DEBUG] Drawing doc methods: {string.Join(", ", drawMethods.Take(20))}...");
-                                }
-                                else
-                                {
-                                    Console.Error.WriteLine($"[DM-API-DEBUG] GetDrawingDoc returned null");
-                                }
-                            }
-                            
-                            // Try GetAllExternalReferences2/3/4/5 if available on doc type
-                            var allRefMethods = doc.GetType().GetMethods()
-                                .Where(m => m.Name.StartsWith("GetAllExternalReferences"))
-                                .Select(m => $"{m.Name}({string.Join(",", m.GetParameters().Select(p => p.ParameterType.Name))})")
-                                .ToArray();
-                            Console.Error.WriteLine($"[DM-API-DEBUG] All GetAllExternalReferences* methods: {string.Join(", ", allRefMethods)}");
-                            
-                            // Try alternative: GetAllExternalReferences2 or GetAllExternalReferences3
-                            var altRefMethods = doc.GetType().GetMethods()
-                                .Where(m => m.Name.Contains("Reference") || m.Name.Contains("Depend"))
-                                .Select(m => $"{m.Name}({string.Join(",", m.GetParameters().Select(p => p.ParameterType.Name))})")
-                                .ToArray();
-                            Console.Error.WriteLine($"[DM-API-DEBUG] Reference-related methods: {string.Join(", ", altRefMethods)}");
-                        }
-                        catch (Exception drawEx)
-                        {
-                            Console.Error.WriteLine($"[DM-API-DEBUG] Drawing-specific check failed: {drawEx.Message}");
-                        }
-                    }
-                }
-                catch (Exception typeEx)
-                {
-                    Console.Error.WriteLine($"[DM-API-DEBUG] Type check failed: {typeEx.Message}");
-                }
-                // #endregion
-                
-                var searchOpt = CreateReferenceSearchOption(new[] { Path.GetDirectoryName(filePath) });
-                if (searchOpt != null)
-                {
-                    var swGetRefs = System.Diagnostics.Stopwatch.StartNew();
-                    var dependencies = InvokeGetAllExternalReferences(doc, searchOpt);
-                    swGetRefs.Stop();
-                    Console.Error.WriteLine($"[DM-API] GetAllExternalReferences took {swGetRefs.ElapsedMilliseconds}ms, found {dependencies?.Length ?? 0} refs");
-
-                    if (dependencies != null)
-                    {
-                        var processed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                        foreach (var depPath in dependencies)
-                        {
-                            if (string.IsNullOrEmpty(depPath) || processed.Contains(depPath)) continue;
-                            processed.Add(depPath);
-
-                            var depExt = Path.GetExtension(depPath).ToLowerInvariant();
-                            references.Add(new
-                            {
-                                path = depPath,
-                                fileName = Path.GetFileName(depPath),
-                                exists = true, // Skip File.Exists() check for performance - frontend handles missing files
-                                fileType = depExt == ".sldprt" ? "Part" : depExt == ".sldasm" ? "Assembly" : depExt == ".slddrw" ? "Drawing" : "Other"
-                            });
-                        }
-                    }
-                }
-
                 return new CommandResult
                 {
                     Success = true,
                     Data = new
                     {
                         filePath,
-                        references,
-                        count = references.Count
+                        references = read.ViewReferences.Select(DescribeDrawingViewReference).ToList(),
+                        count = read.ViewReferences.Count,
+                        resolved = true,
+                        source = "documentManagerViews",
                     }
                 };
             }
-            catch (Exception ex)
+
+            var brokenCount = external.References.Count(r => r.IsBroken);
+            if (brokenCount > 0)
             {
-                return new CommandResult { Success = false, Error = ex.Message, ErrorDetails = ex.ToString() };
+                Console.Error.WriteLine(
+                    $"[DM-API] {brokenCount} of {external.References.Count} references are broken in {Path.GetFileName(filePath)}");
             }
-            finally
+
+            return new CommandResult
             {
-                // ALWAYS close the document to release file locks
-                if (doc != null)
+                Success = true,
+                Data = new
                 {
-                    try { ((dynamic)doc).CloseDoc(); } catch { }
-                    if (!string.IsNullOrEmpty(filePath)) LogDocClose(filePath!);
+                    filePath,
+                    references = external.References.Select(DescribeExternalReference).ToList(),
+                    count = external.References.Count,
+                    brokenCount,
+                    resolved = true,
+                    source = "documentManager",
                 }
-            }
+            };
         }
 
         #endregion
@@ -2795,7 +2631,7 @@ namespace BluePLM.SolidWorksService
                     return false;
                 }
 
-                var references = InvokeGetAllExternalReferences(doc, searchOpt) ?? Array.Empty<string>();
+                var references = InvokeGetAllExternalReferences(doc, searchOpt);
                 var expectedName = Path.GetFileName(expectedModelPath);
                 var matched = references.Any(r =>
                     string.Equals(Path.GetFileName(r), expectedName, StringComparison.OrdinalIgnoreCase));
@@ -2900,7 +2736,7 @@ namespace BluePLM.SolidWorksService
                     throw new DuplicateFailedException("Could not create Document Manager search options");
 
                 var references = InvokeGetAllExternalReferences(doc, searchOpt);
-                if (references == null || references.Length == 0)
+                if (references.Length == 0)
                     throw new DuplicateFailedException("The copied drawing reported no external references");
 
                 // Match against the string the API returned rather than a reconstructed path;

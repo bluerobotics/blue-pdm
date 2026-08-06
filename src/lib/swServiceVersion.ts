@@ -61,6 +61,14 @@
  *                   property writes through Document Manager as well as file-level ones now that
  *                   the create bug is fixed; and make setPropertiesBatch one Document Manager
  *                   open/save cycle for every configuration instead of one per configuration
+ * - Version 1.17.0: Report a reference read that could not be answered as REFERENCES_UNRESOLVED
+ *                   rather than as an empty list, so "no references" and "could not read" stop
+ *                   being the same wire value; carry the broken-reference flags Document Manager
+ *                   returns; probe ISwDMDocument from 13 rather than 19; add
+ *                   getDrawingViewReferences, which reads each view's referenced configuration
+ *                   headlessly; and take an origin so a background read is answered without
+ *                   SolidWorks or not at all, escalating through GetDocumentDependencies2 before
+ *                   anything may open a document
  *
  * When making service changes:
  * 1. Increment SERVICE_VERSION in Program.cs
@@ -70,7 +78,7 @@
 
 // The SolidWorks service version this app version expects
 // Uses semver: MAJOR.MINOR.PATCH
-export const EXPECTED_SW_SERVICE_VERSION = '1.16.0'
+export const EXPECTED_SW_SERVICE_VERSION = '1.17.0'
 
 // Minimum service version that will still work (for soft warnings vs hard errors)
 // Breaking changes should bump the major version and update this
@@ -113,6 +121,8 @@ export const SW_SERVICE_VERSION_DESCRIPTIONS: Record<string, string> = {
     'Writing a new property no longer needs SolidWorks open, and a file\'s references are found at last: the service was asking the Document Manager library to create properties of a type that does not exist and to search for references without ever asking it to look for references. It also now reports a refused write as a failure instead of as success, and names the real reason a file could not be opened',
   '1.16.0':
     'A property write that SolidWorks refuses is now reported as a failure on every path, not just the Document Manager one, and writing to a part with many configurations is a single pass over the file instead of one open-and-save per configuration',
+  '1.17.0':
+    'Drawing references are read without opening SolidWorks, including which configuration each view shows, and a file whose references genuinely cannot be read now says so instead of looking like a file with none. Reads triggered by the file watcher never open a SolidWorks window; only a read you asked for can',
 }
 
 export interface SwServiceVersionCheckResult {

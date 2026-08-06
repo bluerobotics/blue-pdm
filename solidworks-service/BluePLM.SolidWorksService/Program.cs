@@ -35,7 +35,7 @@ namespace BluePLM.SolidWorksService
         /// Service version - bump this when making changes that affect functionality.
         /// The app checks this version and warns if there's a mismatch.
         /// </summary>
-        private const string SERVICE_VERSION = "1.16.0";
+        private const string SERVICE_VERSION = "1.17.0";
 
         /// <summary>
         /// JSON settings for all stdout responses. EscapeNonAscii forces every non-ASCII character
@@ -335,7 +335,7 @@ namespace BluePLM.SolidWorksService
                     "getBom" => GetBomFast(filePath, command),
                     "getProperties" => GetPropertiesFast(filePath, command),
                     "getConfigurations" => GetConfigurationsFast(filePath),
-                    "getReferences" => GetReferencesFast(filePath),
+                    "getReferences" => GetReferencesFast(filePath, ReadReferenceOrigin(command)),
                     "getPreview" => GetPreviewFast(filePath, command["configuration"]?.ToString()),
                     "getShellThumbnail" => WindowsShellThumbnail.GetThumbnail(filePath!, 
                         command["size"]?.Value<int>() ?? 256),
@@ -642,129 +642,115 @@ namespace BluePLM.SolidWorksService
             return result;  // Return DM result - no fallback to SW API!
         }
 
-        static CommandResult GetReferencesFast(string? filePath)
+        /// <summary>
+        /// Who asked for a reference read. Opening a document window in the user's SolidWorks is a
+        /// privileged act; only a request the user initiated may do it.
+        /// </summary>
+        enum ReferenceOrigin
         {
-            // If SolidWorks has this file open, use full SW API to avoid DM API conflict
-            // (DM API accessing a file open in SW can cause SW to close the file)
-            var swResult = TryReadWhileOpenInSolidWorks(filePath, path => _swApi!.GetExternalReferences(path));
-            if (swResult != null) return swResult;
-            
-            // Use Document Manager API ONLY - NEVER fall back to full SW API
-            // Launching SolidWorks just for reference extraction is too slow/disruptive
-            // Note: We only check for null here. The DM methods internally call Initialize()
-            // which handles reinitialization after ReleaseHandles() was called.
+            /// <summary>The watcher, a sync, a poll. Must never make a window appear.</summary>
+            Background,
+
+            /// <summary>A click. May escalate all the way to opening the document.</summary>
+            Foreground,
+        }
+
+        /// <summary>
+        /// Read the request's origin, defaulting to background so a caller that has not been migrated
+        /// cannot open a window by omission.
+        /// </summary>
+        static ReferenceOrigin ReadReferenceOrigin(JObject command) =>
+            string.Equals(command["origin"]?.ToString(), "foreground", StringComparison.OrdinalIgnoreCase)
+                ? ReferenceOrigin.Foreground
+                : ReferenceOrigin.Background;
+
+        /// <summary>
+        /// Resolve a document's references through the cheapest tier that can answer.
+        ///
+        /// Tier 1 - Document Manager. Headless, needs no SolidWorks process, shows nothing.
+        /// Tier 2 - ISldWorks.GetDocumentDependencies2 against an already-running SolidWorks. Reads an
+        ///          unopened file, so still no window. Skipped when SolidWorks is not running.
+        /// Tier 3 - OpenDoc6, which puts a window on the user's screen. Foreground requests only, or a
+        ///          document SolidWorks already has open, where the existing handle is reused.
+        ///
+        /// A background request that exhausts tier 2 returns REFERENCES_UNRESOLVED. That is a distinct
+        /// state from "this file has no references", and the app records and surfaces it rather than
+        /// writing an empty reference list it cannot distinguish from a real one.
+        /// </summary>
+        static CommandResult GetReferencesFast(string? filePath, ReferenceOrigin origin)
+        {
+            // A document SolidWorks already has open cannot be read by Document Manager, and reusing
+            // the handle the user already has costs nothing and shows nothing.
+            var openHandleResult = TryReadWhileOpenInSolidWorks(filePath, path => _swApi!.GetExternalReferences(path));
+            if (openHandleResult != null) return openHandleResult;
+
             if (_dmApi == null)
             {
                 Console.Error.WriteLine($"[Service] Document Manager API not created for: {Path.GetFileName(filePath)}");
-                return new CommandResult 
-                { 
-                    Success = false, 
-                    Error = "Document Manager not available. Configure DM license in Settings -> Integrations -> SOLIDWORKS." 
+                return new CommandResult
+                {
+                    Success = false,
+                    Error = "Document Manager not available. Configure DM license in Settings -> Integrations -> SOLIDWORKS."
                 };
             }
-            
-            var result = _dmApi.GetExternalReferences(filePath);
-            if (!result.Success)
+
+            var documentManagerResult = _dmApi.GetExternalReferences(filePath);
+            if (documentManagerResult.Success) return documentManagerResult;
+
+            var unresolved = documentManagerResult.ErrorCode == DocumentManagerAPI.ReferencesUnresolvedCode;
+            Console.Error.WriteLine(
+                $"[References] Tier 1 (Document Manager) declined for {Path.GetFileName(filePath)}: {documentManagerResult.Error}");
+
+            // A Document Manager failure that is not "could not resolve" - a missing licence, an
+            // unreadable file - is the caller's answer. Escalating would hide it behind a window.
+            if (!unresolved) return documentManagerResult;
+
+            if (_swApi == null)
             {
-                Console.Error.WriteLine($"[Service] DM API failed for getReferences: {result.Error}");
+                Console.Error.WriteLine("[References] Tier 2 unavailable: SolidWorks is not installed");
+                return documentManagerResult;
             }
-            
-            // #region agent log - FIX: Fallback to full SW API for drawings when DM API returns 0 refs
-            // The DM API cannot parse drawing references in SolidWorks 2024 format (ISwDMDrawing not available)
-            // Only use fallback if:
-            // 1. DM API returned success but 0 references
-            // 2. File is a drawing (.SLDDRW)
-            // 3. SolidWorks is already RUNNING (we DON'T want to launch it just for this)
-            
-            // Hypothesis F/H/I: Comprehensive logging to trace fallback flow
-            Console.Error.WriteLine($"[Service-Fallback] Checking fallback conditions for: {Path.GetFileName(filePath ?? "null")}");
-            Console.Error.WriteLine($"[Service-Fallback] result.Success={result.Success}, filePath!=null={filePath != null}");
-            
-            bool isDrawing = filePath != null && filePath.EndsWith(".SLDDRW", StringComparison.OrdinalIgnoreCase);
-            Console.Error.WriteLine($"[Service-Fallback] isDrawing={isDrawing}");
-            
-            if (result.Success && filePath != null && isDrawing)
+
+            var dependenciesResult = _swApi.GetDependenciesWithoutOpening(filePath);
+            if (dependenciesResult != null)
             {
-                // Hypothesis H: Log data object details before casting
-                Console.Error.WriteLine($"[Service-Fallback] result.Data type: {result.Data?.GetType()?.FullName ?? "null"}");
-                
-                // Check if DM API returned 0 references
-                int refCount = 0;
-                try
-                {
-                    var data = result.Data as dynamic;
-                    refCount = data?.count ?? 0;
-                    Console.Error.WriteLine($"[Service-Fallback] Extracted refCount={refCount} from result.Data");
-                }
-                catch (Exception ex)
-                {
-                    Console.Error.WriteLine($"[Service-Fallback] Failed to extract count: {ex.Message}");
-                }
-                
-                // For drawings with 0 refs from DM API, try full SW API if SW is running
-                // SW must already be running - don't auto-launch (creates zombie processes and long hangs)
-                bool swApiAvailable = _swApi != null;
-                string swStatus = swApiAvailable ? _swApi!.GetSolidWorksRunStatus() : "not_running";
-                Console.Error.WriteLine($"[Service-Fallback] refCount={refCount}, _swApi!=null={swApiAvailable}, swStatus={swStatus}");
-                
-                if (refCount == 0 && swApiAvailable)
-                {
-                    if (swStatus == "not_running")
-                    {
-                        // SolidWorks is not running at all - ask user to start it
-                        Console.Error.WriteLine($"[Service-Fallback] SolidWorks not running - skipping fallback (user must open SW manually)");
-                        return new CommandResult 
-                        { 
-                            Success = false, 
-                            Error = "SOLIDWORKS_NOT_RUNNING",
-                            Data = new { message = "SolidWorks must be running to read drawing references from parent model" }
-                        };
-                    }
-                    
-                    if (swStatus == "process_only")
-                    {
-                        // SolidWorks process is running but COM is inaccessible
-                        // (likely integrity level mismatch - e.g. SW running as admin, BluePLM not)
-                        Console.Error.WriteLine($"[Service-Fallback] SolidWorks process running but COM inaccessible - possible permissions mismatch");
-                        return new CommandResult 
-                        { 
-                            Success = false, 
-                            Error = "SOLIDWORKS_COM_INACCESSIBLE",
-                            Data = new { message = "SolidWorks is running but not accessible via COM. Try running both applications with the same permissions." }
-                        };
-                    }
-                    
-                    // swStatus == "running" - SW is running and COM accessible
-                    Console.Error.WriteLine($"[Service-Fallback] SW is running - Attempting SW API fallback: {Path.GetFileName(filePath)}");
-                    var swFallbackResult = _swApi!.GetExternalReferences(filePath);
-                    if (swFallbackResult.Success)
-                    {
-                        int swRefCount = 0;
-                        try
-                        {
-                            var swData = swFallbackResult.Data as dynamic;
-                            swRefCount = swData?.count ?? 0;
-                        }
-                        catch { }
-                        Console.Error.WriteLine($"[Service-Fallback] SW API fallback returned {swRefCount} refs");
-                        if (swRefCount > 0)
-                        {
-                            return swFallbackResult;  // Use SW API result if it has refs
-                        }
-                    }
-                    else
-                    {
-                        Console.Error.WriteLine($"[Service-Fallback] SW API fallback failed: {swFallbackResult.Error}");
-                    }
-                }
-                else if (refCount == 0 && !swApiAvailable)
-                {
-                    Console.Error.WriteLine($"[Service-Fallback] NOT using fallback: _swApi is null (SolidWorks not installed?)");
-                }
+                Console.Error.WriteLine($"[References] Tier 2 (GetDocumentDependencies2) answered for {Path.GetFileName(filePath)}");
+                return dependenciesResult;
             }
-            // #endregion
-            
-            return result;  // Return DM result
+
+            if (origin != ReferenceOrigin.Foreground)
+            {
+                Console.Error.WriteLine(
+                    $"[References] Background request exhausted the headless tiers for {Path.GetFileName(filePath)}; not opening SolidWorks");
+                return documentManagerResult;
+            }
+
+            var swStatus = _swApi.GetSolidWorksRunStatus();
+            if (swStatus == "not_running")
+            {
+                return new CommandResult
+                {
+                    Success = false,
+                    Error = "SOLIDWORKS_NOT_RUNNING",
+                    ErrorCode = "SOLIDWORKS_NOT_RUNNING",
+                    Data = new { message = "SolidWorks must be running to read this drawing's references" }
+                };
+            }
+
+            if (swStatus == "process_only")
+            {
+                return new CommandResult
+                {
+                    Success = false,
+                    Error = "SOLIDWORKS_COM_INACCESSIBLE",
+                    ErrorCode = "SOLIDWORKS_COM_INACCESSIBLE",
+                    Data = new { message = "SolidWorks is running but not accessible via COM. Try running both applications with the same permissions." }
+                };
+            }
+
+            Console.Error.WriteLine($"[References] Tier 3 (OpenDoc6) for foreground request: {Path.GetFileName(filePath)}");
+            var openedResult = _swApi.GetExternalReferences(filePath);
+            return openedResult.Success ? openedResult : documentManagerResult;
         }
 
         /// <summary>

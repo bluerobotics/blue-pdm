@@ -1105,6 +1105,88 @@ namespace BluePLM.SolidWorksService
         }
 
         /// <summary>
+        /// Read a document's dependencies through an already-running SolidWorks without opening it.
+        ///
+        /// ISldWorks.GetDocumentDependencies2 reads an unopened file, so no window appears and the
+        /// user's session is not disturbed. It carries no per-view configuration - only OpenDoc6 and
+        /// the Document Manager view read do - so this is the tier between "Document Manager could
+        /// not answer" and "put a window on the user's screen".
+        ///
+        /// Never launches SolidWorks. Returns null when there is no running instance to ask, which
+        /// the caller reads as "this tier declined" rather than "there are no references".
+        /// </summary>
+        public CommandResult? GetDependenciesWithoutOpening(string? filePath)
+        {
+            if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath)) return null;
+
+            try
+            {
+                var sw = GetRunningSwInstanceOrNull();
+                if (sw == null)
+                {
+                    Console.Error.WriteLine(
+                        $"[SW-API] GetDependenciesWithoutOpening: no running SolidWorks to ask about {Path.GetFileName(filePath)}");
+                    return null;
+                }
+
+                // traverseFlag false: only this document's own references, matching what Document
+                // Manager returns. searchFlag true: use the search rules, so a moved component still
+                // resolves. addReadOnlyInfo false: keeps the returned array to clean name/path pairs.
+                var raw = sw.GetDocumentDependencies2(filePath!, false, true, false) as object[];
+                if (raw == null)
+                {
+                    Console.Error.WriteLine(
+                        $"[SW-API] GetDocumentDependencies2 returned nothing for {Path.GetFileName(filePath)}");
+                    return null;
+                }
+
+                var references = new List<object>();
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                // The array is [name, fullPath, name, fullPath, ...]; only the paths are of use here.
+                for (var i = 1; i < raw.Length; i += 2)
+                {
+                    var referencePath = raw[i] as string;
+                    if (string.IsNullOrWhiteSpace(referencePath) || !seen.Add(referencePath!)) continue;
+
+                    references.Add(new
+                    {
+                        path = referencePath,
+                        fileName = Path.GetFileName(referencePath),
+                        exists = File.Exists(referencePath),
+                        fileType = GetFileType(referencePath!),
+                        configuration = (string?)null,
+                    });
+                }
+
+                Console.Error.WriteLine(
+                    $"[SW-API] GetDocumentDependencies2 found {references.Count} refs for {Path.GetFileName(filePath)} without opening it");
+
+                return new CommandResult
+                {
+                    Success = true,
+                    Data = new
+                    {
+                        filePath,
+                        references,
+                        count = references.Count,
+                        resolved = true,
+                        source = "documentDependencies",
+                    },
+                };
+            }
+            catch (SolidWorksComInaccessibleException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[SW-API] GetDocumentDependencies2 failed: {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
         /// Get all external references from a file
         /// </summary>
         public CommandResult GetExternalReferences(string? filePath)

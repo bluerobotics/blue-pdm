@@ -358,6 +358,14 @@ export interface DrawingRefItem {
   /** Per-config revisions (from pdmData.configuration_revisions) */
   configuration_revisions?: Record<string, string>
   in_database: boolean
+  /**
+   * Placeholder row standing in for a reference read that could not be answered.
+   *
+   * A drawing whose references are unreadable and a drawing with no references used to look
+   * identical — both showed nothing — which is how a reference resolution that never worked went
+   * unnoticed. This row says so, and offers a retry that is allowed to open SolidWorks.
+   */
+  unresolved?: boolean
 }
 
 // Orphaned checkout - file was force-checked-in from another machine
