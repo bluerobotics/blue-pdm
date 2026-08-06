@@ -10,7 +10,7 @@ globs:
 
 ## Change Protocol (All 3 Steps Required)
 
-1. `supabase/schema.sql` ← source of truth, bump version
+1. `supabase/core.sql` ← source of truth, bump version
 2. `src/lib/schemaVersion.ts` ← sync EXPECTED_SCHEMA_VERSION
 3. `src/types/supabase.ts` ← regenerate with `npm run gen:types`
 

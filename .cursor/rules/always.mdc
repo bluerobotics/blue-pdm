@@ -39,7 +39,7 @@ Terminal is also for: `git`, `npm`, `npx`, build scripts.
 
 ## Schema Versioning (BOTH files, every time)
 
-1. `supabase/schema.sql` → bump INSERT version
+1. `supabase/core.sql` → bump INSERT version
 2. `src/lib/schemaVersion.ts` → bump EXPECTED_SCHEMA_VERSION
 
 Mismatch = users see "database newer/older than app" warnings.
