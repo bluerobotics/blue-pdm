@@ -39,6 +39,22 @@
 -- =====================================================================
 
 -- ===========================================
+-- DEPENDENCY CHECK (must stay first)
+-- ===========================================
+-- This file ends by calling enforce_anon_execute_posture(), defined in core.sql.
+-- Under `psql \i` a module used to apply in full against an older core and fail
+-- on its last line, reporting a line number rather than the missing dependency.
+-- Fail here instead, before anything has been created.
+DO $$
+BEGIN
+  IF to_regprocedure('public.require_org_member(uuid)') IS NULL
+     OR to_regprocedure('public.enforce_anon_execute_posture()') IS NULL THEN
+    RAISE EXCEPTION 'core.sql is absent or predates this release - run supabase/core.sql first, then run this file again'
+      USING HINT = 'require_org_member(uuid) and enforce_anon_execute_posture() must both exist before any module is applied.';
+  END IF;
+END $$;
+
+-- ===========================================
 -- CUSTOMER CATEGORIES (taxonomy)
 -- ===========================================
 -- The fixed classification taxonomy the AI must choose from. The API and the
@@ -2438,7 +2454,7 @@ COMMENT ON FUNCTION customer_rfm(UUID, TIMESTAMPTZ, TIMESTAMPTZ, INTEGER) IS
 -- SCHEMA VERSION
 -- ===========================================
 
-SELECT revoke_public_execute_on_org_rpcs();
+SELECT enforce_anon_execute_posture();
 
 -- No stamp. A module speaks for its own objects and nothing else, and the schema
 -- version is a statement about the whole database, so it is written only by

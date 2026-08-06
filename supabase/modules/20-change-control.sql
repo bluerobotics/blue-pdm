@@ -19,6 +19,27 @@
 -- =====================================================================
 
 -- ===========================================
+-- DEPENDENCY CHECK (must stay first)
+-- ===========================================
+-- This file ends by calling enforce_anon_execute_posture(), defined in core.sql,
+-- and its tables reference files from 10-source-files.sql. Under `psql \i` a
+-- module used to apply in full against an older core and fail on its last line,
+-- reporting a line number rather than the missing dependency. Fail here instead.
+DO $$
+BEGIN
+  IF to_regprocedure('public.require_org_member(uuid)') IS NULL
+     OR to_regprocedure('public.enforce_anon_execute_posture()') IS NULL THEN
+    RAISE EXCEPTION 'core.sql is absent or predates this release - run supabase/core.sql first, then run this file again'
+      USING HINT = 'require_org_member(uuid) and enforce_anon_execute_posture() must both exist before any module is applied.';
+  END IF;
+
+  IF to_regclass('public.files') IS NULL THEN
+    RAISE EXCEPTION '10-source-files.sql must be installed before this module'
+      USING HINT = 'This module''s tables reference files(id). Run supabase/modules/10-source-files.sql first.';
+  END IF;
+END $$;
+
+-- ===========================================
 -- CHANGE CONTROL ENUMS
 -- ===========================================
 
@@ -639,6 +660,45 @@ CREATE TRIGGER trigger_sync_eco_tags_on_eco_update
   AFTER UPDATE ON ecos
   FOR EACH ROW EXECUTE FUNCTION sync_eco_tags_on_eco_update();
 
+-- ===========================================
+-- ENTITY GATE
+-- ===========================================
+-- The ECO equivalent of require_file_access() in 10-source-files.sql: resolve
+-- the organization from the ECO being addressed and apply the membership rule to
+-- it. instantiate_process_template() and check_gate_requirements() took an ECO id
+-- and acted on whatever row it named - the first of them deletes that ECO's
+-- checklist and gate approvals, which as an unauthenticated endpoint is a way to
+-- erase another organization's change-control record.
+--
+-- An ECO that does not exist and one belonging to another organization produce
+-- the same refusal, so this is not a way to find out which ECO ids are real.
+CREATE OR REPLACE FUNCTION require_eco_access(p_eco_id UUID)
+RETURNS UUID AS $$
+DECLARE
+  v_org_id UUID;
+BEGIN
+  IF p_eco_id IS NULL THEN
+    RAISE EXCEPTION 'ECO is required'
+      USING ERRCODE = 'invalid_parameter_value';
+  END IF;
+
+  PERFORM current_actor_id();
+
+  SELECT e.org_id INTO v_org_id FROM ecos e WHERE e.id = p_eco_id;
+
+  IF v_org_id IS NULL OR NOT EXISTS (
+    SELECT 1 FROM users u WHERE u.id = auth.uid() AND u.org_id = v_org_id
+  ) THEN
+    RAISE EXCEPTION 'Not authorized for this ECO'
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
+
+  RETURN v_org_id;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION require_eco_access(UUID) TO authenticated;
+
 -- Instantiate process template for an ECO
 CREATE OR REPLACE FUNCTION instantiate_process_template(
   p_eco_id UUID,
@@ -647,7 +707,21 @@ CREATE OR REPLACE FUNCTION instantiate_process_template(
 DECLARE
   v_phase RECORD;
   v_item RECORD;
+  v_org_id UUID;
 BEGIN
+  v_org_id := require_eco_access(p_eco_id);
+
+  -- The template has to belong to the same organization as the ECO, or this
+  -- becomes a way to read another organization's process templates by copying
+  -- one into an ECO of your own.
+  IF NOT EXISTS (
+    SELECT 1 FROM process_templates pt
+    WHERE pt.id = p_template_id AND pt.org_id = v_org_id
+  ) THEN
+    RAISE EXCEPTION 'Not authorized for this process template'
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
+
   -- Update ECO to reference the template
   UPDATE ecos SET process_template_id = p_template_id WHERE id = p_eco_id;
   
@@ -704,6 +778,8 @@ DECLARE
   v_completed INTEGER;
   v_incomplete TEXT[];
 BEGIN
+  PERFORM require_eco_access(p_eco_id);
+
   SELECT 
     COUNT(*),
     COUNT(*) FILTER (WHERE status = 'complete' OR status = 'na'),
@@ -838,7 +914,7 @@ COMMENT ON TABLE eco_checklist_activity IS 'Audit trail for ECO checklist change
 -- END OF CHANGE CONTROL MODULE
 -- ===========================================
 
-SELECT revoke_public_execute_on_org_rpcs();
+SELECT enforce_anon_execute_posture();
 
 DO $$
 BEGIN

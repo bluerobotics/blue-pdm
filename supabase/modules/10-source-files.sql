@@ -19,6 +19,103 @@
 -- =====================================================================
 
 -- ===========================================
+-- DEPENDENCY CHECK (must stay first)
+-- ===========================================
+-- The org-scoped functions below call require_org_member(), and the file ends
+-- by calling enforce_anon_execute_posture(). Both are defined in core.sql.
+--
+-- The Supabase SQL editor wraps a run in a transaction and rolls the whole thing
+-- back on error, but the `psql \i` path documented in modules/README.md does
+-- not. Against an older core, a module used to apply in full and then fail on
+-- its very last line - leaving every object created, no revoke ever run, and the
+-- operator reading an error about line 944 instead of about the missing
+-- dependency. Fail here, before anything has been changed, and say why.
+DO $$
+BEGIN
+  IF to_regprocedure('public.require_org_member(uuid)') IS NULL
+     OR to_regprocedure('public.enforce_anon_execute_posture()') IS NULL THEN
+    RAISE EXCEPTION 'core.sql is absent or predates this release - run supabase/core.sql first, then run this file again'
+      USING HINT = 'require_org_member(uuid) and enforce_anon_execute_posture() must both exist before any module is applied.';
+  END IF;
+END $$;
+
+-- ===========================================
+-- ENTITY GATES
+-- ===========================================
+-- require_org_member() closed the functions that take an organization id. It did
+-- nothing for the ones that take a file id, a vault id or an ECO id, because
+-- those never mention an organization at all - and those are most of the ones
+-- that matter. checkout_file, checkin_file, move_file, rename_folder_files and
+-- the workflow entry points each accepted an entity id, looked the row up
+-- without reference to who was asking, and acted on it. As anon with no JWT,
+-- checkout_file on another organization's file returned {"success": true} with
+-- the whole row in it, and move_file then renamed that file.
+--
+-- The organization is not absent from these calls, only implicit: it is a column
+-- on the row being addressed. Resolve it and the same membership rule applies.
+--
+-- A file that does not exist and a file in another organization produce the
+-- identical refusal, for the reason require_org_member() gives: the alternative
+-- is an endpoint that reports which ids are real. The JSON-returning RPCs
+-- convert that refusal into their existing {"success": false, "error": "... not
+-- found"} shape so that api/routes/files.ts keeps answering 404 rather than 500,
+-- and so that the two cases stay indistinguishable from outside.
+
+CREATE OR REPLACE FUNCTION require_file_access(p_file_id UUID)
+RETURNS UUID AS $$
+DECLARE
+  v_org_id UUID;
+BEGIN
+  IF p_file_id IS NULL THEN
+    RAISE EXCEPTION 'File is required'
+      USING ERRCODE = 'invalid_parameter_value';
+  END IF;
+
+  PERFORM current_actor_id();
+
+  SELECT f.org_id INTO v_org_id FROM files f WHERE f.id = p_file_id;
+
+  IF v_org_id IS NULL OR NOT EXISTS (
+    SELECT 1 FROM users u WHERE u.id = auth.uid() AND u.org_id = v_org_id
+  ) THEN
+    RAISE EXCEPTION 'Not authorized for this file'
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
+
+  RETURN v_org_id;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION require_file_access(UUID) TO authenticated;
+
+CREATE OR REPLACE FUNCTION require_vault_access(p_vault_id UUID)
+RETURNS UUID AS $$
+DECLARE
+  v_org_id UUID;
+BEGIN
+  IF p_vault_id IS NULL THEN
+    RAISE EXCEPTION 'Vault is required'
+      USING ERRCODE = 'invalid_parameter_value';
+  END IF;
+
+  PERFORM current_actor_id();
+
+  SELECT v.org_id INTO v_org_id FROM vaults v WHERE v.id = p_vault_id;
+
+  IF v_org_id IS NULL OR NOT EXISTS (
+    SELECT 1 FROM users u WHERE u.id = auth.uid() AND u.org_id = v_org_id
+  ) THEN
+    RAISE EXCEPTION 'Not authorized for this vault'
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
+
+  RETURN v_org_id;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION require_vault_access(UUID) TO authenticated;
+
+-- ===========================================
 -- SOURCE FILES ENUMS
 -- ===========================================
 
@@ -1689,7 +1786,13 @@ RETURNS TABLE (
 ) AS $$
 DECLARE
   v_current_state_id UUID;
+  v_actor UUID;
 BEGIN
+  -- p_user_id is ignored: the answer is "what may *you* do to this file", and
+  -- letting the caller name the subject turned it into "what may anyone do".
+  v_actor := current_actor_id();
+  PERFORM require_file_access(p_file_id);
+
   SELECT fwa.current_state_id INTO v_current_state_id
   FROM file_workflow_assignments fwa WHERE fwa.file_id = p_file_id;
   
@@ -1699,7 +1802,7 @@ BEGIN
   SELECT 
     wt.id, wt.name, ws.id, ws.name, ws.color,
     EXISTS(SELECT 1 FROM workflow_gates wg WHERE wg.transition_id = wt.id),
-    user_can_run_transition(p_user_id, wt.id)
+    user_can_run_transition(v_actor, wt.id)
   FROM workflow_transitions wt
   JOIN workflow_states ws ON wt.to_state_id = ws.id
   WHERE wt.from_state_id = v_current_state_id;
@@ -2003,6 +2106,11 @@ DROP FUNCTION IF EXISTS get_user_vault_access(UUID) CASCADE;
 CREATE OR REPLACE FUNCTION get_user_vault_access(p_user_id UUID)
 RETURNS TABLE (vault_id UUID) AS $$
 BEGIN
+  -- Asking which vaults someone can reach is a question about that person, so
+  -- the caller has to share an organization with them. Unauthenticated callers
+  -- were previously enumerating this for any user id they cared to name.
+  PERFORM require_same_org_user(p_user_id);
+
   RETURN QUERY
   SELECT DISTINCT va.vault_id
   FROM (
@@ -2041,7 +2149,18 @@ DECLARE
   v_checked_out_user RECORD;
   v_result JSONB;
   v_user_email TEXT;
+  v_actor UUID;
 BEGIN
+  -- p_user_id is ignored. It used to decide who the lock and the activity row
+  -- were attributed to, which made the audit trail a field in the request body.
+  v_actor := current_actor_id();
+
+  BEGIN
+    PERFORM require_file_access(p_file_id);
+  EXCEPTION WHEN insufficient_privilege THEN
+    RETURN jsonb_build_object('success', false, 'error', 'File not found');
+  END;
+
   -- Lock the row and check status atomically
   SELECT id, file_name, checked_out_by, org_id
   INTO v_file
@@ -2054,7 +2173,7 @@ BEGIN
   END IF;
   
   -- Check if already checked out by someone else
-  IF v_file.checked_out_by IS NOT NULL AND v_file.checked_out_by != p_user_id THEN
+  IF v_file.checked_out_by IS NOT NULL AND v_file.checked_out_by != v_actor THEN
     -- Get the other user's info
     SELECT email, full_name INTO v_checked_out_user
     FROM users WHERE id = v_file.checked_out_by;
@@ -2069,12 +2188,12 @@ BEGIN
   -- Perform the checkout
   UPDATE files
   SET 
-    checked_out_by = p_user_id,
+    checked_out_by = v_actor,
     checked_out_at = NOW(),
     lock_message = p_lock_message,
     checked_out_by_machine_id = p_machine_id,
     checked_out_by_machine_name = p_machine_name,
-    updated_by = p_user_id,
+    updated_by = v_actor,
     updated_at = NOW()
   WHERE id = p_file_id;
   
@@ -2087,13 +2206,13 @@ BEGIN
   WHERE f.id = p_file_id;
   
   -- Log activity
-  SELECT email INTO v_user_email FROM users WHERE id = p_user_id;
+  SELECT email INTO v_user_email FROM users WHERE id = v_actor;
   
   INSERT INTO activity (org_id, file_id, user_id, user_email, action, details)
   VALUES (
     v_file.org_id, 
     p_file_id, 
-    p_user_id, 
+    v_actor, 
     COALESCE(v_user_email, 'unknown'),
     'checkout',
     jsonb_build_object(
@@ -2225,7 +2344,18 @@ DECLARE
   v_user_email TEXT;
   v_merged_custom_props JSONB;
   v_versions_created_during_checkout INT;
+  v_actor UUID;
 BEGIN
+  -- p_user_id is ignored; the acting user comes from the JWT. It used to decide
+  -- both whose checkout was honoured and whose name went on the new version.
+  v_actor := current_actor_id();
+
+  BEGIN
+    PERFORM require_file_access(p_file_id);
+  EXCEPTION WHEN insufficient_privilege THEN
+    RETURN jsonb_build_object('success', false, 'error', 'File not found');
+  END;
+
   -- Lock and verify ownership
   SELECT * INTO v_file
   FROM files
@@ -2236,7 +2366,7 @@ BEGIN
     RETURN jsonb_build_object('success', false, 'error', 'File not found');
   END IF;
   
-  IF v_file.checked_out_by IS NULL OR v_file.checked_out_by != p_user_id THEN
+  IF v_file.checked_out_by IS NULL OR v_file.checked_out_by != v_actor THEN
     RETURN jsonb_build_object('success', false, 'error', 'You do not have this file checked out');
   END IF;
   
@@ -2375,7 +2505,7 @@ BEGIN
     version = v_new_version,
     file_path = COALESCE(p_new_file_path, file_path),
     file_name = COALESCE(p_new_file_name, file_name),
-    updated_by = p_user_id,
+    updated_by = v_actor,
     updated_at = NOW()
   WHERE id = p_file_id;
   
@@ -2388,7 +2518,7 @@ BEGIN
            COALESCE(p_new_file_size, v_file.file_size),
            v_file.workflow_state_id,
            COALESCE(v_file.state, 'not_tracked'), 
-           p_user_id, 
+           v_actor, 
            p_comment,
            COALESCE(p_part_number, v_file.part_number),  -- Snapshot current or new part_number
            COALESCE(p_description, v_file.description),  -- Snapshot current or new description
@@ -2413,13 +2543,13 @@ BEGIN
   END IF;
   
   -- Log activity
-  SELECT email INTO v_user_email FROM users WHERE id = p_user_id;
+  SELECT email INTO v_user_email FROM users WHERE id = v_actor;
   
   INSERT INTO activity (org_id, file_id, user_id, user_email, action, details)
   VALUES (
     v_file.org_id, 
     p_file_id, 
-    p_user_id, 
+    v_actor, 
     COALESCE(v_user_email, 'unknown'),
     'checkin',
     jsonb_build_object(
@@ -2441,7 +2571,7 @@ BEGIN
     VALUES (
       v_file.org_id, 
       p_file_id, 
-      p_user_id, 
+      v_actor, 
       COALESCE(v_user_email, 'unknown'),
       'revision_change',
       jsonb_build_object('from', v_file.revision, 'to', p_revision)
@@ -3149,7 +3279,17 @@ DECLARE
   v_user_email TEXT;
   v_old_path TEXT;
   v_old_name TEXT;
+  v_actor UUID;
 BEGIN
+  -- p_user_id is ignored; the acting user comes from the JWT.
+  v_actor := current_actor_id();
+
+  BEGIN
+    PERFORM require_file_access(p_file_id);
+  EXCEPTION WHEN insufficient_privilege THEN
+    RETURN jsonb_build_object('success', false, 'error', 'File not found');
+  END;
+
   -- Lock the row and check status atomically
   SELECT id, file_path, file_name, checked_out_by, org_id
   INTO v_file
@@ -3166,7 +3306,7 @@ BEGIN
   v_old_name := v_file.file_name;
   
   -- Check if file is checked out by another user (block the move)
-  IF v_file.checked_out_by IS NOT NULL AND v_file.checked_out_by != p_user_id THEN
+  IF v_file.checked_out_by IS NOT NULL AND v_file.checked_out_by != v_actor THEN
     -- Get the other user's info
     SELECT email, full_name INTO v_checked_out_user
     FROM users WHERE id = v_file.checked_out_by;
@@ -3183,7 +3323,7 @@ BEGIN
   SET 
     file_path = p_new_file_path,
     file_name = COALESCE(p_new_file_name, file_name),
-    updated_by = p_user_id,
+    updated_by = v_actor,
     updated_at = NOW()
   WHERE id = p_file_id;
   
@@ -3196,13 +3336,13 @@ BEGIN
   WHERE f.id = p_file_id;
   
   -- Log activity
-  SELECT email INTO v_user_email FROM users WHERE id = p_user_id;
+  SELECT email INTO v_user_email FROM users WHERE id = v_actor;
   
   INSERT INTO activity (org_id, file_id, user_id, user_email, action, details)
   VALUES (
     v_file.org_id, 
     p_file_id, 
-    p_user_id, 
+    v_actor, 
     COALESCE(v_user_email, 'unknown'),
     'move',
     jsonb_build_object(
@@ -3293,19 +3433,39 @@ DECLARE
   v_updated INT;
   v_old_prefix TEXT;
   v_new_prefix TEXT;
+  v_actor UUID;
+  v_org_id UUID;
 BEGIN
+  -- p_user_id is ignored; the acting user comes from the JWT.
+  v_actor := current_actor_id();
+
+  -- p_vault_id defaulted to NULL and NULL meant "every vault", so a single call
+  -- rewrote matching paths across every organization in the database. There is
+  -- no caller that wants that and no way to authorize it, so the argument is now
+  -- required and the vault decides which organization this may touch.
+  IF p_vault_id IS NULL THEN
+    RETURN jsonb_build_object(
+      'success', false,
+      'error', 'A vault is required',
+      'updated', 0
+    );
+  END IF;
+
+  v_org_id := require_vault_access(p_vault_id);
+
   v_old_prefix := RTRIM(p_old_folder_path, '/');
   v_new_prefix := RTRIM(p_new_folder_path, '/');
 
   UPDATE files
   SET
     file_path = v_new_prefix || SUBSTRING(file_path FROM LENGTH(v_old_prefix) + 1),
-    updated_by = p_user_id,
+    updated_by = v_actor,
     updated_at = NOW()
   WHERE
     LOWER(file_path) LIKE LOWER(v_old_prefix) || '/%'
     AND deleted_at IS NULL
-    AND (p_vault_id IS NULL OR vault_id = p_vault_id);
+    AND vault_id = p_vault_id
+    AND org_id = v_org_id;
 
   GET DIAGNOSTICS v_updated = ROW_COUNT;
 
@@ -3398,6 +3558,11 @@ RETURNS BOOLEAN AS $$
 DECLARE
   v_roles UUID[];
 BEGIN
+  -- A predicate about another person's authority is still information about
+  -- them. Callers inside this schema pass the acting user; nobody has a reason
+  -- to ask about a user in another organization.
+  PERFORM require_same_org_user(p_user_id);
+
   SELECT allowed_workflow_roles INTO v_roles
   FROM workflow_transitions WHERE id = p_transition_id;
 
@@ -3440,13 +3605,28 @@ DECLARE
   v_scheme revision_scheme;
   v_new_revision TEXT;
   v_legacy_state TEXT;
+  v_actor UUID;
 BEGIN
+  -- The comment above says this is not granted to clients, and it was not
+  -- granted to authenticated - but Supabase's default privileges granted it to
+  -- anon regardless, so "internal" described the intent rather than the ACL.
+  -- It gates for itself now: p_user_id is ignored and the file decides the org.
+  v_actor := current_actor_id();
+  PERFORM require_file_access(p_file_id);
+
   SELECT * INTO v_file FROM files WHERE id = p_file_id;
   SELECT * INTO v_transition FROM workflow_transitions WHERE id = p_transition_id;
   SELECT * INTO v_to_state FROM workflow_states WHERE id = v_transition.to_state_id;
   SELECT * INTO v_from_state FROM workflow_states WHERE id = v_transition.from_state_id;
   SELECT name INTO v_workflow_name FROM workflow_templates WHERE id = v_transition.workflow_id;
-  SELECT email INTO v_user_email FROM users WHERE id = p_user_id;
+  SELECT email INTO v_user_email FROM users WHERE id = v_actor;
+
+  -- A transition belonging to another organization's workflow is not a
+  -- transition of this file.
+  IF v_transition.id IS NULL OR v_to_state.id IS NULL THEN
+    RAISE EXCEPTION 'Transition not found'
+      USING ERRCODE = 'invalid_parameter_value';
+  END IF;
 
   v_new_revision := v_file.revision;
   IF COALESCE(v_to_state.auto_increment_revision, false) THEN
@@ -3466,18 +3646,18 @@ BEGIN
       state = COALESCE(v_legacy_state, state),
       revision = v_new_revision,
       state_changed_at = NOW(),
-      state_changed_by = p_user_id,
+      state_changed_by = v_actor,
       updated_at = NOW(),
-      updated_by = p_user_id
+      updated_by = v_actor
   WHERE id = p_file_id;
 
   UPDATE file_state_entries
-  SET exited_at = NOW(), exited_by = p_user_id,
+  SET exited_at = NOW(), exited_by = v_actor,
       duration_seconds = GREATEST(0, EXTRACT(EPOCH FROM (NOW() - entered_at))::integer)
   WHERE file_id = p_file_id AND exited_at IS NULL;
 
   INSERT INTO file_state_entries (file_id, state_id, entered_by)
-  VALUES (p_file_id, v_to_state.id, p_user_id);
+  VALUES (p_file_id, v_to_state.id, v_actor);
 
   INSERT INTO workflow_history (
     org_id, file_id, file_path, file_name,
@@ -3491,7 +3671,7 @@ BEGIN
     v_transition.workflow_id, COALESCE(v_workflow_name, ''),
     v_from_state.id, COALESCE(v_from_state.name, ''), v_to_state.id, COALESCE(v_to_state.name, ''),
     p_transition_id, v_transition.name,
-    p_user_id, COALESCE(v_user_email, ''), p_comment,
+    v_actor, COALESCE(v_user_email, ''), p_comment,
     v_file.revision, v_new_revision, p_approvals
   );
 
@@ -3626,6 +3806,17 @@ DECLARE
   v_current_state_id UUID;
   v_matches UUID[];
 BEGIN
+  -- execute_workflow_transition() at the end of this function does check the
+  -- caller, but everything above it - which transitions exist out of this file's
+  -- current state, and whether the file has a workflow at all - answered for any
+  -- file id given to it. Gate before reading rather than before writing.
+  BEGIN
+    PERFORM require_file_access(p_file_id);
+  EXCEPTION WHEN insufficient_privilege THEN
+    RETURN jsonb_build_object('success', false, 'error_code', 'FILE_NOT_FOUND',
+      'error_message', 'File not found');
+  END;
+
   SELECT current_state_id INTO v_current_state_id
   FROM file_workflow_assignments WHERE file_id = p_file_id;
 
@@ -3922,7 +4113,7 @@ ALTER TABLE files ADD COLUMN IF NOT EXISTS configuration_revisions JSONB DEFAULT
 -- END OF SOURCE FILES MODULE
 -- ===========================================
 
-SELECT revoke_public_execute_on_org_rpcs();
+SELECT enforce_anon_execute_posture();
 
 -- This module used to stamp the schema version, on the reasoning that re-running
 -- one module - the usual way a single RPC fix is applied - should advance the

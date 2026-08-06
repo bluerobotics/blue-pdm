@@ -81,21 +81,32 @@ ON CONFLICT (id) DO NOTHING;
 -- what a database must contain to be allowed to claim it.
 
 CREATE OR REPLACE FUNCTION schema_release_version() RETURNS INTEGER
-LANGUAGE sql IMMUTABLE AS $$ SELECT 89 $$;
+LANGUAGE sql IMMUTABLE AS $$ SELECT 90 $$;
 
 CREATE OR REPLACE FUNCTION schema_release_description() RETURNS TEXT
 LANGUAGE sql IMMUTABLE AS $$ SELECT
-  'SECURITY DEFINER RPCs that take a p_org_id check membership through require_org_member() '
-  'instead of trusting the argument, and the schema version is stamped by verification '
-  'rather than by the act of running a file'
+  'EXECUTE is withdrawn from anon by name rather than through PUBLIC, which on Supabase '
+  'removed nothing; functions reached through an entity id resolve the organization from '
+  'that entity and take the acting user from auth.uid(); and verification calls each '
+  'org-scoped function with a foreign organization id rather than reading its source'
 $$;
 
 -- One row per object this release requires, scoped to the module that creates it.
 --
 --   module  - label used in reports
---   probe   - a table whose presence means the module is installed. NULL for core,
---             which is never optional. A module that is not installed is skipped
---             rather than failed, so an optional module stays optional.
+--   probe   - a table whose presence means the module is installed, for OPTIONAL
+--             modules only. A module that is not installed is skipped rather
+--             than failed, so an optional module stays optional.
+--
+--             NULL for core and for the two modules the README calls required,
+--             10-source-files and 15-inspection. Giving a required module a
+--             probe made it self-excusing: the probe table is created by the
+--             very file whose absence is the problem, so not installing the
+--             module made every requirement of that module 'skipped' rather
+--             than 'missing'. A database holding core.sql alone - 18 of 76
+--             tables - passed every check and was stamped 89. A required module
+--             must be able to fail, which means its requirements must be probed
+--             unconditionally.
 --   kind    - 'table' or 'function'
 --   identity- table name, or function signature as regprocedure accepts it
 --   requires- substring that must appear in the function source, or NULL to only
@@ -110,26 +121,47 @@ LANGUAGE sql IMMUTABLE AS $$
     ('core', NULL, 'function', 'verify_and_stamp_schema()', NULL),
     ('core', NULL, 'function', 'schema_release_version()', NULL),
 
-    -- 10-source-files.sql
-    ('10-source-files', 'files', 'function', 'merge_custom_properties(jsonb,jsonb)', NULL),
-    ('10-source-files', 'files', 'function', 'checkin_file(uuid,uuid,text,bigint,text,text,text,text,integer,jsonb,text,text,text)', 'merge_custom_properties'),
-    ('10-source-files', 'files', 'function', 'get_vault_files_fast(uuid,uuid)', 'require_org_member'),
-    ('10-source-files', 'files', 'function', 'get_vault_files_delta(uuid,uuid,timestamptz)', 'require_org_member'),
-    ('10-source-files', 'files', 'function', 'get_next_serial_number(uuid)', 'require_org_member'),
-    ('10-source-files', 'files', 'function', 'preview_next_serial_number(uuid)', 'require_org_member'),
-    ('10-source-files', 'files', 'function', 'update_serialization_settings_safe(uuid,jsonb)', 'require_org_member'),
-    ('10-source-files', 'files', 'function', 'get_item_definition_settings(uuid)', 'require_org_member'),
-    ('10-source-files', 'files', 'function', 'update_item_definition_settings(uuid,jsonb)', 'require_org_member'),
-    ('10-source-files', 'files', 'function', 'get_item_images(uuid)', 'require_org_member'),
-    ('10-source-files', 'files', 'function', 'create_default_workflow(uuid,uuid)', 'require_org_member'),
-    ('10-source-files', 'files', 'function', 'create_file_share_link(uuid,uuid,uuid,integer,integer,boolean)', 'require_org_member'),
+    -- 10-source-files.sql - REQUIRED, so probe is NULL
+    ('10-source-files', NULL, 'table', 'files', NULL),
+    ('10-source-files', NULL, 'function', 'merge_custom_properties(jsonb,jsonb)', NULL),
+    ('10-source-files', NULL, 'function', 'checkin_file(uuid,uuid,text,bigint,text,text,text,text,integer,jsonb,text,text,text)', 'merge_custom_properties'),
+    ('10-source-files', NULL, 'function', 'get_vault_files_fast(uuid,uuid)', 'require_org_member'),
+    ('10-source-files', NULL, 'function', 'get_vault_files_delta(uuid,uuid,timestamptz)', 'require_org_member'),
+    ('10-source-files', NULL, 'function', 'get_next_serial_number(uuid)', 'require_org_member'),
+    ('10-source-files', NULL, 'function', 'preview_next_serial_number(uuid)', 'require_org_member'),
+    ('10-source-files', NULL, 'function', 'update_serialization_settings_safe(uuid,jsonb)', 'require_org_member'),
+    ('10-source-files', NULL, 'function', 'get_item_definition_settings(uuid)', 'require_org_member'),
+    ('10-source-files', NULL, 'function', 'update_item_definition_settings(uuid,jsonb)', 'require_org_member'),
+    ('10-source-files', NULL, 'function', 'get_item_images(uuid)', 'require_org_member'),
+    ('10-source-files', NULL, 'function', 'create_default_workflow(uuid,uuid)', 'require_org_member'),
+    ('10-source-files', NULL, 'function', 'create_file_share_link(uuid,uuid,uuid,integer,integer,boolean)', 'require_org_member'),
+    -- Entity-scoped: these resolve the organization from the id they are given
+    -- and gate on that. They took no p_org_id, so the old sweep never saw them.
+    ('10-source-files', NULL, 'function', 'checkout_file(uuid,uuid,text,text,text)', 'require_file_access'),
+    ('10-source-files', NULL, 'function', 'move_file(uuid,uuid,text,text)', 'require_file_access'),
+    ('10-source-files', NULL, 'function', 'rename_folder_files(text,text,uuid,uuid)', 'require_vault_access'),
+    ('10-source-files', NULL, 'function', 'get_available_transitions(uuid,uuid)', 'require_file_access'),
+    ('10-source-files', NULL, 'function', 'apply_workflow_transition(uuid,uuid,uuid,text,jsonb)', 'require_file_access'),
+    ('10-source-files', NULL, 'function', 'execute_transition_to_legacy_state(uuid,text,text)', 'require_file_access'),
+    ('10-source-files', NULL, 'function', 'get_user_vault_access(uuid)', 'require_same_org_user'),
 
-    -- 15-inspection.sql
-    ('15-inspection', 'inspection_characteristics', 'table', 'inspection_characteristic_versions', NULL),
+    -- 15-inspection.sql - REQUIRED, so probe is NULL
+    ('15-inspection', NULL, 'table', 'inspection_characteristics', NULL),
+    ('15-inspection', NULL, 'table', 'inspection_characteristic_versions', NULL),
+
+    -- 20-change-control.sql
+    ('20-change-control', 'ecos', 'table', 'eco_gate_approvals', NULL),
+    ('20-change-control', 'ecos', 'function', 'instantiate_process_template(uuid,uuid)', 'require_eco_access'),
+    ('20-change-control', 'ecos', 'function', 'check_gate_requirements(uuid,text)', 'require_eco_access'),
 
     -- 30-supply-chain.sql
     ('30-supply-chain', 'rfqs', 'table', 'rfq_number_counters', NULL),
     ('30-supply-chain', 'rfqs', 'function', 'generate_rfq_number(uuid)', 'require_org_member'),
+
+    -- 40-integrations.sql
+    ('40-integrations', 'webhooks', 'table', 'integration_credentials', NULL),
+    -- Trigger-only; its protection is its ACL, which verify-schema.sql checks.
+    ('40-integrations', 'webhooks', 'function', 'apply_pending_license_assignments(uuid)', NULL),
 
     -- 50-extensions.sql
     ('50-extensions', 'org_installed_extensions', 'function', 'get_extension_config(uuid,text)', 'require_org_member'),
@@ -140,8 +172,84 @@ LANGUAGE sql IMMUTABLE AS $$
   ) AS m(module, probe, kind, identity, requires);
 $$;
 
+-- Return a function's source with comments and string literals removed, so that
+-- a `requires` substring test is answered by code and not by prose.
+--
+-- The manifest's whole purpose is to notice that an authorization check went
+-- missing, and `position('require_org_member' IN pg_get_functiondef(oid))`
+-- cannot tell the call from a note about the call. Both of these passed:
+--
+--   -- this used to call require_org_member(p_org_id) and no longer does
+--   RAISE NOTICE 'require_org_member';
+--
+-- A regex cannot do this reliably - a comment may contain an apostrophe and a
+-- literal may contain a double dash - so this walks the string once, tracking
+-- which of the four states it is in. Dollar-quoted sections are kept: the
+-- function body itself arrives dollar-quoted from pg_get_functiondef, and
+-- dropping it would leave nothing to test.
+--
+-- It closes the cheap half of the hole. A check inside `IF false THEN` is still
+-- code and still passes; check_org_gates() below is what catches that, by
+-- calling the function and seeing whether it actually refuses.
+CREATE OR REPLACE FUNCTION strip_sql_noise(p_src TEXT)
+RETURNS TEXT
+LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE
+  v_out TEXT := '';
+  v_len INTEGER := length(p_src);
+  i INTEGER := 1;
+  c TEXT;
+  c2 TEXT;
+  v_state TEXT := 'normal';   -- normal | line | block | quote
+  v_depth INTEGER := 0;       -- block comment nesting
+BEGIN
+  WHILE i <= v_len LOOP
+    c := substr(p_src, i, 1);
+    c2 := substr(p_src, i, 2);
+
+    IF v_state = 'normal' THEN
+      IF c2 = '--' THEN
+        v_state := 'line'; i := i + 2; CONTINUE;
+      ELSIF c2 = '/*' THEN
+        v_state := 'block'; v_depth := 1; i := i + 2; CONTINUE;
+      ELSIF c = '''' THEN
+        v_state := 'quote'; i := i + 1; CONTINUE;
+      ELSE
+        v_out := v_out || c; i := i + 1; CONTINUE;
+      END IF;
+
+    ELSIF v_state = 'line' THEN
+      IF c = E'\n' THEN
+        v_state := 'normal'; v_out := v_out || c;
+      END IF;
+      i := i + 1; CONTINUE;
+
+    ELSIF v_state = 'block' THEN
+      IF c2 = '/*' THEN
+        v_depth := v_depth + 1; i := i + 2; CONTINUE;
+      ELSIF c2 = '*/' THEN
+        v_depth := v_depth - 1; i := i + 2;
+        IF v_depth = 0 THEN v_state := 'normal'; END IF;
+        CONTINUE;
+      END IF;
+      i := i + 1; CONTINUE;
+
+    ELSE -- quote
+      IF c2 = '''''' THEN
+        i := i + 2; CONTINUE;          -- '' is an escaped quote, still inside
+      ELSIF c = '''' THEN
+        v_state := 'normal'; i := i + 1; CONTINUE;
+      END IF;
+      i := i + 1; CONTINUE;
+    END IF;
+  END LOOP;
+
+  RETURN v_out;
+END;
+$$;
+
 -- Evaluate the manifest. One row per requirement, status 'ok', 'missing',
--- 'stale' or 'skipped'. Read-only, so it is safe to run at any time.
+-- 'stale', 'extra' or 'skipped'. Read-only, so it is safe to run at any time.
 CREATE OR REPLACE FUNCTION check_schema_release()
 RETURNS TABLE (module TEXT, identity TEXT, status TEXT, detail TEXT)
 LANGUAGE plpgsql STABLE AS $$
@@ -149,6 +257,7 @@ DECLARE
   m RECORD;
   v_oid OID;
   v_src TEXT;
+  v_extra RECORD;
 BEGIN
   FOR m IN SELECT * FROM schema_release_manifest() LOOP
     IF m.probe IS NOT NULL AND to_regclass('public.' || m.probe) IS NULL THEN
@@ -177,7 +286,7 @@ BEGIN
     IF v_oid IS NULL THEN
       status := 'missing'; detail := 'function does not exist';
     ELSIF m.requires IS NOT NULL THEN
-      v_src := pg_get_functiondef(v_oid);
+      v_src := strip_sql_noise(pg_get_functiondef(v_oid));
       IF position(m.requires IN v_src) = 0 THEN
         status := 'stale';
         detail := 'function exists but does not reference ' || m.requires
@@ -190,27 +299,278 @@ BEGIN
     END IF;
 
     RETURN NEXT;
+
+    -- An overload the manifest does not know about is a finding in its own
+    -- right. Modules drop a function by its exact signature before re-creating
+    -- it, so a previous release's version with a different argument list is not
+    -- dropped - it sits alongside the current one, ungated, and the manifest
+    -- looking only at the signature it expects reports 'ok'. PostgREST picks an
+    -- overload by the argument *names* in the request body, so a client can ask
+    -- for the old one by name and get it.
+    FOR v_extra IN
+      SELECT p.oid::regprocedure::TEXT AS signature
+      FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = 'public'
+        AND p.proname = split_part(m.identity, '(', 1)
+        AND p.oid <> v_oid
+        AND NOT EXISTS (
+          SELECT 1 FROM schema_release_manifest() m2
+          WHERE m2.kind = 'function'
+            AND to_regprocedure('public.' || m2.identity) = p.oid
+        )
+      ORDER BY 1
+    LOOP
+      module := m.module;
+      identity := v_extra.signature;
+      status := 'extra';
+      detail := 'an overload of ' || split_part(m.identity, '(', 1)
+             || ' that this release does not define - almost certainly a previous '
+             || 'release''s copy that DROP ... (exact signature) did not remove. '
+             || 'Drop it: DROP FUNCTION public.' || v_extra.signature || ';';
+      RETURN NEXT;
+    END LOOP;
   END LOOP;
 END;
 $$;
+
+-- Call every org-scoped RPC with an organization id the caller has nothing to do
+-- with, and report the ones that do not refuse.
+--
+-- Reading the source for the string 'require_org_member' proves that the words
+-- are present, not that they run. A check inside `IF false THEN ... END IF;`
+-- survives comment-stripping and satisfies the manifest, and so would a call
+-- placed after the work it is supposed to guard. This asks the function instead.
+--
+-- Each call is made inside a subtransaction that is always rolled back, so a
+-- function that fails to refuse does not get to keep whatever it did. The
+-- rollback is forced by raising a sentinel immediately after the call returns;
+-- catching the sentinel is precisely the signal that no gate fired.
+--
+-- Run this as a role with no JWT - the Supabase SQL editor connects as postgres,
+-- where auth.uid() is NULL - so require_org_member() raises 'Not authenticated'
+-- and the probe never depends on inventing a plausible organization id.
+--
+-- Refusal takes two forms here and both count. Most functions raise; the older
+-- ones return `{"success": false, "error": ...}` or, if they return a set, the
+-- empty set. What is being looked for is a function that goes ahead and answers.
+--
+-- A gate placed after the work it guards reads as gated, and that is right: the
+-- raise aborts the statement, so neither the writes nor the rows reach the
+-- caller. It is fragile rather than broken.
+--
+-- Scope is the p_org_id class, where the organization is an argument and the
+-- call can be synthesized. Functions that reach an organization through an
+-- entity id are covered by the manifest's `requires` column instead, because
+-- probing those would mean creating a foreign file to aim at.
+CREATE OR REPLACE FUNCTION check_org_gates()
+RETURNS TABLE (signature TEXT, status TEXT, detail TEXT)
+LANGUAGE plpgsql AS $$
+DECLARE
+  c_trigger_only TEXT[] := ARRAY[
+    'create_default_job_titles',
+    'create_default_permission_teams',
+    'seed_customer_categories'
+  ];
+  r RECORD;
+  v_args TEXT;
+  v_sqlstate TEXT;
+  v_message TEXT;
+  v_rows TEXT[];
+BEGIN
+  FOR r IN
+    SELECT p.oid,
+           p.proname,
+           p.oid::regprocedure::TEXT AS sig,
+           pg_get_function_identity_arguments(p.oid) AS ident_args
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public'
+      AND p.prosecdef
+      AND p.prokind = 'f'
+      AND pg_get_function_identity_arguments(p.oid) ~ '\mp_org_id\M'
+      AND NOT (p.proname = ANY (c_trigger_only))
+    ORDER BY 1
+  LOOP
+    -- A random organization id for p_org_id, NULL for everything else. A
+    -- correctly gated function refuses before it looks at any other argument.
+    SELECT string_agg(
+             CASE WHEN a.arg ~ '\mp_org_id\M'
+                  THEN quote_literal(gen_random_uuid()::text) || '::uuid'
+                  ELSE 'NULL::' || regexp_replace(a.arg, '^\S+\s+', '') END,
+             ', ' ORDER BY a.ord)
+      INTO v_args
+      FROM unnest(string_to_array(r.ident_args, ', ')) WITH ORDINALITY AS a(arg, ord);
+
+    BEGIN
+      -- The FROM form works for scalar and set-returning functions alike, and
+      -- array_agg keeps every row rather than the first, so a set-returning
+      -- function that leaked rows cannot be mistaken for one that returned none.
+      EXECUTE format(
+        'SELECT array_agg(probe.*::text) FROM (SELECT * FROM %s(%s)) probe',
+        r.proname, v_args)
+        INTO v_rows;
+      -- It answered. Undo anything it did and carry the verdict out on the
+      -- sentinel's message, since the rollback discards v_rows with everything
+      -- else the call touched.
+      RAISE EXCEPTION 'blueplm_gate_probe_sentinel'
+        USING ERRCODE = 'raise_exception',
+              DETAIL = COALESCE(array_to_string(v_rows, ' | '), '');
+    EXCEPTION
+      WHEN OTHERS THEN
+        GET STACKED DIAGNOSTICS v_sqlstate = RETURNED_SQLSTATE, v_message = MESSAGE_TEXT;
+
+        IF v_message = 'blueplm_gate_probe_sentinel' THEN
+          GET STACKED DIAGNOSTICS v_message = PG_EXCEPTION_DETAIL;
+          signature := r.sig;
+
+          IF v_message = '' THEN
+            -- The empty set: a set-returning function that bailed with a bare
+            -- RETURN rather than raising.
+            status := 'gated';
+            detail := 'returned no rows';
+          -- record::text doubles the quotes inside a JSON column, so
+          -- {"success" : false} arrives as ("{""success"" : false}").
+          ELSIF replace(v_message, '""', '"') ~ '"success"\s*:\s*false' THEN
+            -- The older convention: refusal reported in the JSON payload.
+            status := 'gated';
+            detail := left(v_message, 200);
+          ELSE
+            status := 'ungated';
+            detail := 'ran to completion against an organization the caller does '
+                   || 'not belong to, returning: ' || left(v_message, 160);
+          END IF;
+          RETURN NEXT;
+        ELSIF v_sqlstate IN ('42501', '28000', '22023', 'P0001') THEN
+          -- insufficient_privilege / invalid_authorization_specification /
+          -- invalid_parameter_value, and P0001, which nothing but a deliberate
+          -- RAISE in the function's own body produces: the gate refused.
+          signature := r.sig;
+          status := 'gated';
+          detail := v_message;
+          RETURN NEXT;
+        ELSE
+          -- Something else went wrong - a missing table from a module that is
+          -- not installed, a NULL argument the function dereferenced before
+          -- reaching its gate. Not a pass and not a failure; say so rather than
+          -- score it either way.
+          signature := r.sig;
+          status := 'inconclusive';
+          detail := v_sqlstate || ': ' || v_message;
+          RETURN NEXT;
+        END IF;
+    END;
+  END LOOP;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION check_org_gates() FROM PUBLIC, anon, authenticated;
+
+-- Everything an unauthenticated caller can still reach.
+--
+-- Supabase's bootstrap runs ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL
+-- ON FUNCTIONS TO postgres, anon, authenticated, service_role, so every function
+-- created in public is born with an explicit anon grant and stays that way
+-- unless something takes it away. enforce_anon_execute_posture() is what takes
+-- it away; this is the check that it did, and the one that notices the next
+-- function somebody adds without running it.
+CREATE OR REPLACE FUNCTION check_anon_reach()
+RETURNS TABLE (kind TEXT, identity TEXT, detail TEXT)
+LANGUAGE plpgsql AS $$
+BEGIN
+  RETURN QUERY
+  SELECT 'function'::TEXT,
+         p.oid::regprocedure::TEXT,
+         'executable by anon and not in anon_execute_allowlist(). '
+           || 'Run: SELECT enforce_anon_execute_posture();'
+  FROM pg_proc p
+  JOIN pg_namespace n ON n.oid = p.pronamespace
+  WHERE n.nspname = 'public'
+    AND has_function_privilege('anon', p.oid, 'EXECUTE')
+    AND NOT EXISTS (
+      SELECT 1 FROM anon_execute_allowlist() a
+      WHERE a.signature = p.oid::regprocedure::TEXT
+         OR a.signature = p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')'
+    )
+  ORDER BY 2;
+
+  -- A table without RLS is readable by anon directly, no function needed.
+  RETURN QUERY
+  SELECT 'table'::TEXT,
+         c.relname::TEXT,
+         'has no row-level security, so anon reads it directly over PostgREST'
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname = 'public'
+    AND c.relkind = 'r'
+    AND NOT c.relrowsecurity
+    AND c.relname <> 'schema_version'
+  ORDER BY 2;
+
+  -- The default privileges themselves, which is what makes this recur.
+  RETURN QUERY
+  SELECT 'default_privilege'::TEXT,
+         COALESCE(pg_get_userbyid(d.defaclrole), '?') || ' on functions',
+         'ALTER DEFAULT PRIVILEGES still grants EXECUTE to anon, so the next '
+           || 'function created in public will be anon-executable. Run: '
+           || 'SELECT enforce_anon_execute_posture();'
+  FROM pg_default_acl d
+  JOIN pg_namespace n ON n.oid = d.defaclnamespace
+  WHERE n.nspname = 'public'
+    AND d.defaclobjtype = 'f'
+    AND EXISTS (
+      SELECT 1 FROM aclexplode(d.defaclacl) x
+      WHERE x.grantee = 'anon'::regrole AND x.privilege_type = 'EXECUTE'
+    );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION check_anon_reach() FROM PUBLIC, anon, authenticated;
 
 -- The only writer of schema_version. Stamps the release number if and only if
 -- every requirement of every installed module is satisfied; on failure it
 -- leaves the recorded version exactly as it was and reports what is wrong,
 -- because a half-applied database is still whatever it was before, not zero.
+--
+-- "Every requirement" now includes the two security checks. They used to sit in
+-- verify-schema.sql as RAISE NOTICE beside a stamp that consulted only the
+-- manifest, so a database could be told it was reachable by anon and stamped
+-- verified in the same run - which is what happened, and why the exposure
+-- survived a passing verification. A check that cannot withhold the stamp is
+-- commentary.
 CREATE OR REPLACE FUNCTION verify_and_stamp_schema()
 RETURNS JSON
 LANGUAGE plpgsql AS $$
 DECLARE
   v_problems JSON;
   v_count INTEGER;
+  v_updated INTEGER;
 BEGIN
-  SELECT COALESCE(json_agg(json_build_object(
-           'module', module, 'object', identity, 'status', status, 'detail', detail
-         )), '[]'::json), COUNT(*)
+  SELECT COALESCE(json_agg(p ORDER BY p->>'module', p->>'object'), '[]'::json),
+         COUNT(*)
     INTO v_problems, v_count
-  FROM check_schema_release()
-  WHERE status IN ('missing', 'stale');
+  FROM (
+    SELECT json_build_object(
+             'module', module, 'object', identity, 'status', status, 'detail', detail
+           ) AS p
+    FROM check_schema_release()
+    WHERE status IN ('missing', 'stale', 'extra')
+
+    UNION ALL
+    SELECT json_build_object(
+             'module', 'security', 'object', signature, 'status', 'ungated',
+             'detail', detail
+           )
+    FROM check_org_gates()
+    WHERE status = 'ungated'
+
+    UNION ALL
+    SELECT json_build_object(
+             'module', 'security', 'object', identity, 'status', 'anon-reachable',
+             'detail', detail
+           )
+    FROM check_anon_reach()
+  ) s;
 
   IF v_count > 0 THEN
     RETURN json_build_object(
@@ -228,6 +588,19 @@ BEGIN
       applied_by = 'verify-schema'
   WHERE id = 1;
 
+  GET DIAGNOSTICS v_updated = ROW_COUNT;
+
+  -- schema_version has RLS and only service_role may UPDATE it, so for anyone
+  -- else the statement above matches no row and succeeds. Without this check the
+  -- function returned {"stamped": true} with the recorded version untouched -
+  -- reported as verified twice over, by a caller who could not write it and by a
+  -- script that believed the caller. A write that did not happen is a failure,
+  -- and saying so is the whole point of this function existing.
+  IF v_updated = 0 THEN
+    RAISE EXCEPTION 'Could not write schema_version: % is not permitted to update it. Run this from the Supabase SQL editor, which connects as postgres.', current_user
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
+
   RETURN json_build_object(
     'stamped', true,
     'version', schema_release_version(),
@@ -237,8 +610,13 @@ BEGIN
 END;
 $$;
 
--- Only the schema owner (the Supabase SQL editor runs as postgres) may stamp.
-REVOKE ALL ON FUNCTION verify_and_stamp_schema() FROM PUBLIC;
+-- Stamping is an administrative act, not an endpoint: it is reached by pasting
+-- tools/verify-schema.sql into the Supabase SQL editor, which connects as
+-- postgres. Naming the roles matters - REVOKE ... FROM PUBLIC on its own leaves
+-- the explicit anon and authenticated grants that Supabase's ALTER DEFAULT
+-- PRIVILEGES puts on every new function, which is how anon came to be able to
+-- call this at all.
+REVOKE ALL ON FUNCTION verify_and_stamp_schema() FROM PUBLIC, anon, authenticated;
 
 -- Superseded by verify_and_stamp_schema(). Kept as a no-op so that an old copy
 -- of a module file - which calls this at the end - neither fails halfway
@@ -1071,47 +1449,237 @@ $$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
 
 GRANT EXECUTE ON FUNCTION require_org_member(UUID) TO authenticated;
 
--- Withdraw PUBLIC EXECUTE from every SECURITY DEFINER RPC that takes a p_org_id.
+-- Who is acting. The only honest answer to that question inside a SECURITY
+-- DEFINER function.
 --
--- A function is created with EXECUTE already granted to PUBLIC, and PUBLIC
--- includes anon. `GRANT EXECUTE ON FUNCTION f TO authenticated` written next to
--- a new function therefore reads as a restriction but grants a privilege the
--- world already had: proacl for such a function is
--- `=X/postgres,postgres=X/postgres,authenticated=X/postgres`, where the leading
--- `=X` is the grant to everyone. PostgREST exposes it to anon accordingly.
+-- Several RPCs took the acting user as a p_user_id argument and wrote it into
+-- files.checked_out_by, activity.user_id and workflow_history.performed_by. The
+-- caller therefore chose what the audit trail said, and could name anyone: the
+-- record of who locked a file was whatever the request body claimed. Every one
+-- of those functions now derives the actor here and ignores the argument, which
+-- is kept only so that existing callers - api/routes/files.ts and the renderer -
+-- keep compiling and keep working. They already pass the signed-in user's id, so
+-- nothing changes for them except that it is no longer load-bearing.
+CREATE OR REPLACE FUNCTION current_actor_id()
+RETURNS UUID AS $$
+DECLARE
+  v_uid UUID;
+BEGIN
+  v_uid := auth.uid();
+
+  IF v_uid IS NULL THEN
+    RAISE EXCEPTION 'Not authenticated'
+      USING ERRCODE = 'invalid_authorization_specification';
+  END IF;
+
+  RETURN v_uid;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION current_actor_id() TO authenticated;
+
+-- Gate for a function that takes some other user's id and answers questions
+-- about them: the two must share an organization. Same reasoning as
+-- require_org_member - an id that belongs to nobody gets the same refusal as one
+-- that belongs to another organization, so the function is not a directory of
+-- which user ids exist.
+CREATE OR REPLACE FUNCTION require_same_org_user(p_user_id UUID)
+RETURNS VOID AS $$
+DECLARE
+  v_actor UUID;
+BEGIN
+  IF p_user_id IS NULL THEN
+    RAISE EXCEPTION 'User is required'
+      USING ERRCODE = 'invalid_parameter_value';
+  END IF;
+
+  v_actor := current_actor_id();
+
+  IF p_user_id = v_actor THEN
+    RETURN;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM users target
+    JOIN users actor ON actor.org_id = target.org_id
+    WHERE target.id = p_user_id AND actor.id = v_actor
+  ) THEN
+    RAISE EXCEPTION 'Not authorized for this user'
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION require_same_org_user(UUID) TO authenticated;
+
+-- ===========================================
+-- WHO MAY EXECUTE WHAT
+-- ===========================================
+-- The single list of functions an unauthenticated caller is allowed to reach.
+-- Everything else in public is withdrawn from anon by
+-- enforce_anon_execute_posture() below.
 --
--- Doing this by class rather than one REVOKE per function is deliberate. These
--- modules use `DROP FUNCTION` + `CREATE` to avoid overload ambiguity, and DROP
--- discards the ACL, so the privileges are rebuilt from default on every install
--- and a REVOKE has to be part of the install to mean anything. Applying the rule
--- by class also covers org-scoped RPCs added later, which is the failure this
--- keeps having. Every function in the class is org-scoped and none is
--- anon-facing; an anon-facing RPC (get_org_auth_providers) takes a slug, not an
--- org id, and is untouched by this. core.sql and each module call it at the end
--- of their own file.
-CREATE OR REPLACE FUNCTION revoke_public_execute_on_org_rpcs()
+-- Keep this short and justify every entry. A function here is reachable over
+-- PostgREST by anyone on the internet holding the publishable anon key.
+CREATE OR REPLACE FUNCTION anon_execute_allowlist()
+RETURNS TABLE (signature TEXT, reason TEXT)
+LANGUAGE sql IMMUTABLE AS $$
+  SELECT * FROM (VALUES
+    -- The sign-in screen calls this before anyone has signed in, to decide which
+    -- sign-in buttons to show. It takes an org slug, not an org id, and returns
+    -- only which auth methods are enabled.
+    ('get_org_auth_providers(text)', 'sign-in screen, pre-login'),
+    -- File share links are opened by recipients who are not BluePLM users. The
+    -- unguessable token in the link is the credential.
+    ('validate_share_link(text)', 'share link recipients, pre-login')
+  ) AS a(signature, reason);
+$$;
+
+-- Withdraw EXECUTE from anon on everything in public except that allowlist.
+--
+-- The previous version of this did the wrong thing in two ways, and the
+-- combination is why 149 functions were reachable by anon on a stock Supabase
+-- project while the verification script printed an all-clear.
+--
+-- First, it revoked FROM PUBLIC. Supabase's bootstrap runs
+--
+--   ALTER DEFAULT PRIVILEGES IN SCHEMA public
+--     GRANT ALL ON FUNCTIONS TO postgres, anon, authenticated, service_role;
+--
+-- which *adds* to the built-in default rather than replacing it, so a new
+-- function's proacl is
+-- `{=X/postgres,postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}`.
+-- REVOKE ... FROM PUBLIC strips only the leading `=X/postgres`. The explicit
+-- `anon=X/postgres` survives untouched and PostgREST keeps exposing the
+-- function to anon. The only thing that removes it is naming the role.
+--
+-- Second, it asked `has_function_privilege('public', ...)` to decide whether
+-- there was anything to do. On a database where the bootstrap had run, that is
+-- false for a function that anon can nonetheless execute, so the loop selected
+-- nothing and the function returned 0 - a clean bill of health over a fully
+-- open schema.
+--
+-- The scope is also wider than before. It used to cover only SECURITY DEFINER
+-- functions taking a p_org_id, which missed every function that reaches an
+-- organization through an entity id instead - checkout_file, move_file and the
+-- rest. anon has no business executing anything here, so the rule is now
+-- "nothing except the allowlist" rather than an attempt to enumerate the
+-- dangerous ones.
+--
+-- Doing this by class rather than one REVOKE per function is still deliberate:
+-- these modules DROP and re-CREATE functions, which discards the ACL, so the
+-- privileges are rebuilt from default on every install and the revoke has to be
+-- part of the install to mean anything. core.sql and each module call this at
+-- the end of their own file.
+--
+-- Where a function is reachable through PUBLIC as well as through the explicit
+-- anon grant, both have to go. Withdrawing PUBLIC would also take the privilege
+-- from any other role that only held it that way, so every such role's access
+-- is first pinned down as an explicit grant. No role but anon loses anything.
+CREATE OR REPLACE FUNCTION enforce_anon_execute_posture()
 RETURNS INTEGER AS $$
 DECLARE
+  v_preserve TEXT[];
+  v_allowed TEXT[];
+  v_keep TEXT[];
+  v_role TEXT;
   r RECORD;
+  d RECORD;
   v_count INTEGER := 0;
 BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+    RETURN 0;
+  END IF;
+
+  -- Roles an ACL can actually constrain. Superusers ignore ACLs, pg_* are
+  -- built-in, and anon is the role being withdrawn.
+  v_preserve := ARRAY(
+    SELECT rolname FROM pg_roles
+    WHERE NOT rolsuper AND rolname <> 'anon' AND rolname NOT LIKE 'pg\_%'
+  );
+  v_allowed := ARRAY(SELECT signature FROM anon_execute_allowlist());
+
   FOR r IN
-    SELECT p.oid::regprocedure AS signature
+    SELECT p.oid, p.oid::regprocedure::TEXT AS signature
     FROM pg_proc p
     JOIN pg_namespace n ON n.oid = p.pronamespace
     WHERE n.nspname = 'public'
-      AND p.prosecdef
-      AND pg_get_function_identity_arguments(p.oid) ~ '\mp_org_id\M'
-      AND has_function_privilege('public', p.oid, 'EXECUTE')
+      AND p.prokind = 'f'
+      AND has_function_privilege('anon', p.oid, 'EXECUTE')
+      AND NOT (p.oid::regprocedure::TEXT = ANY (v_allowed))
   LOOP
-    EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC', r.signature);
+    SELECT ARRAY(
+      SELECT role_name FROM unnest(v_preserve) AS role_name
+      WHERE has_function_privilege(role_name, r.oid, 'EXECUTE')
+    ) INTO v_keep;
+
+    EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM anon', r.signature);
+
+    IF has_function_privilege('anon', r.oid, 'EXECUTE') THEN
+      FOREACH v_role IN ARRAY v_keep LOOP
+        EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO %I', r.signature, v_role);
+      END LOOP;
+      EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC', r.signature);
+    END IF;
+
     v_count := v_count + 1;
   END LOOP;
+
+  -- Sweeping after the fact is not enough on its own: the bootstrap's default
+  -- privilege re-grants EXECUTE to anon on every function created from here on,
+  -- so a function added by a later module - or by a migration written after this
+  -- release - would be born open again and stay that way until someone
+  -- remembered to re-run the sweep. Cancelling the default makes the safe
+  -- posture the one you get by doing nothing.
+  --
+  -- Default privileges are recorded per granting role, so each role that has one
+  -- needs its own statement. Supabase sets them for postgres and may set them
+  -- for supabase_admin too; a role we cannot alter is skipped rather than fatal,
+  -- because the sweep above still closes what already exists.
+  FOR d IN
+    SELECT DISTINCT pg_get_userbyid(a.defaclrole) AS grantor
+    FROM pg_default_acl a
+    JOIN pg_namespace n ON n.oid = a.defaclnamespace
+    WHERE n.nspname = 'public'
+      AND a.defaclobjtype = 'f'
+      AND EXISTS (
+        SELECT 1 FROM aclexplode(a.defaclacl) x
+        WHERE x.grantee = 'anon'::regrole AND x.privilege_type = 'EXECUTE'
+      )
+  LOOP
+    BEGIN
+      EXECUTE format(
+        'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM anon',
+        d.grantor
+      );
+    EXCEPTION WHEN insufficient_privilege THEN
+      RAISE WARNING 'Could not cancel the anon default privilege held by %. Functions created later will be anon-executable until enforce_anon_execute_posture() is re-run as a member of that role.', d.grantor;
+    END;
+  END LOOP;
+
+  -- The allowlist has to be granted back explicitly, because cancelling the
+  -- default privilege means a re-created allowlisted function no longer gets
+  -- anon from the bootstrap.
+  FOR r IN SELECT signature FROM anon_execute_allowlist() LOOP
+    IF to_regprocedure('public.' || r.signature) IS NOT NULL THEN
+      EXECUTE format('GRANT EXECUTE ON FUNCTION public.%s TO anon', r.signature);
+    END IF;
+  END LOOP;
+
   RETURN v_count;
 END;
 $$ LANGUAGE plpgsql;
 
-REVOKE ALL ON FUNCTION revoke_public_execute_on_org_rpcs() FROM PUBLIC;
+REVOKE ALL ON FUNCTION enforce_anon_execute_posture() FROM PUBLIC, anon;
+
+-- Kept under its old name so that an older copy of a module file - which calls
+-- this at the end - still applies the current posture rather than failing.
+CREATE OR REPLACE FUNCTION revoke_public_execute_on_org_rpcs()
+RETURNS INTEGER AS $$
+  SELECT enforce_anon_execute_posture();
+$$ LANGUAGE sql;
+
+REVOKE ALL ON FUNCTION revoke_public_execute_on_org_rpcs() FROM PUBLIC, anon;
 
 -- Full is_org_admin implementation
 CREATE OR REPLACE FUNCTION is_org_admin()
@@ -1170,6 +1738,15 @@ BEGIN
   IF v_user_org_id IS NULL THEN
     RETURN false;
   END IF;
+
+  -- Whether some other organization's user is an admin is not a question this
+  -- answers. `false` rather than a raise, because RLS policies call this and a
+  -- policy wants a predicate; the effect either way is that the caller learns
+  -- nothing about a user outside their own organization.
+  IF auth.uid() IS NOT NULL AND v_user_id <> auth.uid()
+     AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = auth.uid() AND u.org_id = v_user_org_id) THEN
+    RETURN false;
+  END IF;
   
   -- Same dual definition as the no-argument overload above; keep them in step.
   RETURN EXISTS(
@@ -1201,6 +1778,9 @@ RETURNS TABLE (
   actions permission_action[]
 ) AS $$
 BEGIN
+  -- The full permission map of any user in the database, for whoever asked.
+  PERFORM require_same_org_user(p_user_id);
+
   RETURN QUERY
   SELECT 
     tp.resource,
@@ -1229,6 +1809,19 @@ CREATE OR REPLACE FUNCTION user_has_permission(
 DECLARE
   v_has_permission BOOLEAN := false;
 BEGIN
+  -- RLS policies on files and elsewhere reach this through
+  -- user_has_team_permission(auth.uid(), ...), so it has to stay a predicate:
+  -- an unauthenticated caller has no permissions, and that is `false`, not an
+  -- error. Raising here would turn a policy denial into a failed statement.
+  IF p_user_id IS NULL OR auth.uid() IS NULL THEN
+    RETURN false;
+  END IF;
+
+  -- Asking about somebody else is only allowed within your own organization.
+  IF p_user_id <> auth.uid() THEN
+    PERFORM require_same_org_user(p_user_id);
+  END IF;
+
   IF is_org_admin(p_user_id) THEN
     RETURN true;
   END IF;
@@ -1679,7 +2272,16 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 -- creating an organization impossible. Withdrawing the endpoint is the fix
 -- instead - the trigger function is SECURITY DEFINER owned by the schema owner
 -- and can still call them, while PostgREST can no longer reach them.
-REVOKE ALL ON FUNCTION create_default_job_titles(UUID, UUID) FROM PUBLIC;
+--
+-- Withdrawing it needs the roles named. `REVOKE ALL ... FROM PUBLIC` was the
+-- only protection these three had, and on Supabase it removed the implicit
+-- PUBLIC grant while leaving the explicit `anon=X/postgres` that ALTER DEFAULT
+-- PRIVILEGES had put there. As anon with no JWT, create_default_job_titles,
+-- create_default_permission_teams and seed_customer_categories wrote 56 rows
+-- into an organization the caller had never heard of. enforce_anon_execute_posture()
+-- at the end of the file would catch this now, but a function whose entire
+-- defence is its ACL should carry that ACL next to its own definition.
+REVOKE ALL ON FUNCTION create_default_job_titles(UUID, UUID) FROM PUBLIC, anon, authenticated;
 
 -- Create default permission teams
 CREATE OR REPLACE FUNCTION create_default_permission_teams(p_org_id UUID, p_created_by UUID DEFAULT NULL)
@@ -1703,7 +2305,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
-REVOKE ALL ON FUNCTION create_default_permission_teams(UUID, UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION create_default_permission_teams(UUID, UUID) FROM PUBLIC, anon, authenticated;
 
 -- Apply pending team memberships
 CREATE OR REPLACE FUNCTION apply_pending_team_memberships(p_user_id UUID)
@@ -1758,6 +2360,21 @@ BEGIN
   WHERE id = v_pending.id;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Trigger-only, and withdrawn rather than gated.
+--
+-- It takes a user id and adds that user to whatever teams and vaults a pending
+-- invitation names - which, reachable by anon, is an endpoint for granting
+-- someone else's user account access to someone else's organization. It cannot
+-- take a membership check: it runs from claim_pending_membership() on the users
+-- table at the moment an invited account first gets its org_id, and it also runs
+-- under the API's service-role client during invite acceptance, where auth.uid()
+-- is NULL. There is no caller with a JWT, so there is nothing to check and no
+-- reason for it to be callable over PostgREST at all.
+--
+-- Naming the roles matters here for the same reason it did for
+-- create_default_job_titles: FROM PUBLIC alone leaves the explicit anon grant.
+REVOKE ALL ON FUNCTION apply_pending_team_memberships(UUID) FROM PUBLIC, anon, authenticated;
 
 -- Claim pending membership trigger function
 CREATE OR REPLACE FUNCTION claim_pending_membership()
@@ -2719,7 +3336,7 @@ END $$;
 -- END OF CORE SCHEMA
 -- ===========================================
 
-SELECT revoke_public_execute_on_org_rpcs();
+SELECT enforce_anon_execute_posture();
 
 -- No schema version stamp here. core.sql knows nothing about which modules are
 -- installed or how old they are, so anything it wrote about the database as a

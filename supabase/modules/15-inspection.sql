@@ -24,6 +24,27 @@
 -- =====================================================================
 
 -- ===========================================
+-- DEPENDENCY CHECK (must stay first)
+-- ===========================================
+-- This file ends by calling enforce_anon_execute_posture(), defined in core.sql,
+-- and its tables reference files from 10-source-files.sql. Under `psql \i` a
+-- module used to apply in full against an older core and fail on its last line,
+-- reporting a line number rather than the missing dependency. Fail here instead.
+DO $$
+BEGIN
+  IF to_regprocedure('public.require_org_member(uuid)') IS NULL
+     OR to_regprocedure('public.enforce_anon_execute_posture()') IS NULL THEN
+    RAISE EXCEPTION 'core.sql is absent or predates this release - run supabase/core.sql first, then run this file again'
+      USING HINT = 'require_org_member(uuid) and enforce_anon_execute_posture() must both exist before any module is applied.';
+  END IF;
+
+  IF to_regclass('public.files') IS NULL THEN
+    RAISE EXCEPTION '10-source-files.sql must be installed before this module'
+      USING HINT = 'This module''s tables reference files(id). Run supabase/modules/10-source-files.sql first.';
+  END IF;
+END $$;
+
+-- ===========================================
 -- INSPECTION CHARACTERISTICS (live / working set)
 -- ===========================================
 -- One row per inspection characteristic for the current head of a drawing file.
@@ -188,7 +209,7 @@ END $$;
 -- SCHEMA VERSION
 -- ===========================================
 
-SELECT revoke_public_execute_on_org_rpcs();
+SELECT enforce_anon_execute_posture();
 
 -- No stamp. A module speaks for its own objects and nothing else, and the schema
 -- version is a statement about the whole database, so it is written only by

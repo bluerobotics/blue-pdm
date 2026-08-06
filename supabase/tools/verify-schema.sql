@@ -13,6 +13,13 @@
 -- If it reports a problem, fix it by running the file it names and run this
 -- again. Until it passes, the recorded version stays where it was - which is
 -- what makes the app's "database out of date" warning worth acting on.
+--
+-- Three things withhold the stamp and end this script with an error: a manifest
+-- object missing, stale or duplicated by a leftover overload; an org-scoped RPC
+-- that acted on an organization the caller does not belong to; anything in
+-- public reachable without authentication. The table, function and RLS
+-- inventories near the top are advisory - the manifest covers the same ground
+-- and is the one that blocks.
 
 -- ===========================================
 -- CHECK TABLES
@@ -131,70 +138,72 @@ END $$;
 -- ===========================================
 -- CHECK ORG-SCOPED RPCs ARE GATED
 -- ===========================================
--- Standing guard rather than a one-off sweep. A SECURITY DEFINER function that
--- takes a p_org_id runs with RLS switched off and is reachable over PostgREST,
--- so p_org_id decides which organization it acts on. Unless the body consults
--- the caller's identity, that decision belongs to the caller.
+-- A SECURITY DEFINER function that takes a p_org_id runs with RLS switched off
+-- and is reachable over PostgREST, so p_org_id decides which organization it
+-- acts on. Unless the body consults the caller's identity, that decision belongs
+-- to the caller.
 --
--- What this proves is narrow and worth stating: that every such function looks
--- at who is calling, which is precisely the defect that let anon allocate
--- another organization's RFQ number and read another organization's file list.
--- It does not prove each check is correct. New functions should use
--- require_org_member(); the older `SELECT org_id INTO ... FROM users WHERE id =
--- auth.uid()` form is accepted because several of those functions answer with
--- `{"success": false}` rather than raising and their callers depend on it.
+-- This used to read the function's source for the words 'require_org_member' or
+-- 'auth.uid()'. Reading the source proves the words are present, not that they
+-- run: a check inside `IF false THEN ... END IF;` passed. check_org_gates()
+-- calls each function instead, with an organization id the caller has nothing to
+-- do with, inside a subtransaction that is always rolled back.
 --
--- The three exemptions run from AFTER INSERT triggers on organizations, at a
--- point where the new organization has no members and a membership check could
--- only fail. They are not endpoints - the query below also insists they are
--- unreachable by PUBLIC, which is what keeps the exemption honest.
+-- Run this as postgres - the Supabase SQL editor does - so auth.uid() is NULL
+-- and a working gate has something to refuse.
+
+SELECT signature, status, detail
+FROM check_org_gates()
+WHERE status <> 'gated'
+ORDER BY CASE status WHEN 'ungated' THEN 0 ELSE 1 END, signature;
+
 DO $$
 DECLARE
-  c_trigger_only TEXT[] := ARRAY[
-    'create_default_job_titles',
-    'create_default_permission_teams',
-    'seed_customer_categories'
-  ];
-  ungated TEXT[] := '{}';
-  reachable TEXT[] := '{}';
-  r RECORD;
+  v_ungated INTEGER;
+  v_unclear INTEGER;
 BEGIN
-  FOR r IN
-    SELECT p.proname,
-           p.oid::regprocedure::TEXT AS signature,
-           pg_get_functiondef(p.oid) AS src,
-           has_function_privilege('public', p.oid, 'EXECUTE') AS public_execute
-    FROM pg_proc p
-    JOIN pg_namespace n ON n.oid = p.pronamespace
-    WHERE n.nspname = 'public'
-      AND p.prosecdef
-      AND pg_get_function_identity_arguments(p.oid) ~ '\mp_org_id\M'
-  LOOP
-    IF r.public_execute THEN
-      reachable := array_append(reachable, r.signature);
-    END IF;
+  SELECT count(*) FILTER (WHERE status = 'ungated'),
+         count(*) FILTER (WHERE status = 'inconclusive')
+    INTO v_ungated, v_unclear
+  FROM check_org_gates();
 
-    IF NOT (r.proname = ANY (c_trigger_only))
-       AND position('require_org_member' IN r.src) = 0
-       AND position('auth.uid()' IN r.src) = 0 THEN
-      ungated := array_append(ungated, r.signature);
-    END IF;
-  END LOOP;
-
-  IF array_length(ungated, 1) > 0 THEN
-    RAISE NOTICE '❌ SECURITY DEFINER RPCs taking p_org_id without a membership check: %',
-      array_to_string(ungated, ', ');
+  IF v_ungated > 0 THEN
+    RAISE WARNING '❌ % org-scoped RPC(s) acted on an organization the caller does not belong to. Listed above; the stamp is withheld.', v_ungated;
   ELSE
-    RAISE NOTICE '✅ Every org-scoped SECURITY DEFINER RPC checks membership';
+    RAISE NOTICE '✅ Every org-scoped RPC refused a foreign organization when asked';
   END IF;
 
-  IF array_length(reachable, 1) > 0 THEN
-    RAISE NOTICE '❌ Org-scoped RPCs still executable by PUBLIC (so by anon): %',
-      array_to_string(reachable, ', ');
-  ELSE
-    RAISE NOTICE '✅ No org-scoped RPC is executable by PUBLIC';
+  IF v_unclear > 0 THEN
+    RAISE NOTICE 'ℹ️  % could not be judged either way (listed above) - usually a module that is not installed.', v_unclear;
   END IF;
 END $$;
+
+-- ===========================================
+-- CHECK NOTHING IS REACHABLE UNAUTHENTICATED
+-- ===========================================
+-- The probe that matters is has_function_privilege('anon', ...). This file used
+-- to ask about 'public', which is a different thing: Supabase grants EXECUTE to
+-- anon explicitly on every function in public, so PUBLIC holding nothing meant
+-- nothing at all, and this printed an all-clear over a schema whose every
+-- function anon could call.
+
+SELECT kind, identity, detail FROM check_anon_reach() ORDER BY kind, identity;
+
+DO $$
+DECLARE
+  v_count INTEGER;
+BEGIN
+  SELECT count(*) INTO v_count FROM check_anon_reach();
+
+  IF v_count > 0 THEN
+    RAISE WARNING '❌ % object(s) reachable without authentication. Listed above; the stamp is withheld.', v_count;
+  ELSE
+    RAISE NOTICE '✅ Nothing in public is reachable by anon outside the allowlist';
+  END IF;
+END $$;
+
+-- What anon is deliberately allowed, so the list above can be read against it.
+SELECT signature, reason FROM anon_execute_allowlist() ORDER BY signature;
 
 -- ===========================================
 -- RELEASE MANIFEST
@@ -209,6 +218,9 @@ ORDER BY CASE status WHEN 'missing' THEN 0 WHEN 'stale' THEN 1 WHEN 'ok' THEN 2 
 -- ===========================================
 -- VERIFY AND STAMP
 -- ===========================================
+-- Fails loudly rather than warning. A warning scrolls past and the script still
+-- reports success at the bottom, which is how a database with 62 of its 76
+-- tables missing came to be recorded as verified.
 
 DO $$
 DECLARE
@@ -219,16 +231,20 @@ BEGIN
 
   IF (v_result->>'stamped')::BOOLEAN THEN
     RAISE NOTICE '✅ Schema verified and stamped at version %', v_result->>'version';
-  ELSE
-    RAISE WARNING 'Schema NOT stamped. Recorded version stays at %, this release is %.',
-      v_result->>'version', v_result->>'target_version';
-    FOR v_problem IN SELECT * FROM json_array_elements(v_result->'problems') LOOP
-      RAISE WARNING '  [%] % - % %',
-        v_problem->>'module', v_problem->>'object', v_problem->>'status',
-        COALESCE(v_problem->>'detail', '');
-    END LOOP;
-    RAISE WARNING 'Re-run the module files named above, then run this script again.';
+    RETURN;
   END IF;
+
+  RAISE WARNING 'Schema NOT stamped. Recorded version stays at %, this release is %.',
+    v_result->>'version', v_result->>'target_version';
+  FOR v_problem IN SELECT * FROM json_array_elements(v_result->'problems') LOOP
+    RAISE WARNING '  [%] % - % %',
+      v_problem->>'module', v_problem->>'object', v_problem->>'status',
+      COALESCE(v_problem->>'detail', '');
+  END LOOP;
+
+  RAISE EXCEPTION 'Schema verification failed: % problem(s) listed above. Fix them - for a missing or stale object, re-run the module file named beside it - then run this script again.',
+    json_array_length(v_result->'problems')
+    USING ERRCODE = 'raise_exception';
 END $$;
 
 -- ===========================================

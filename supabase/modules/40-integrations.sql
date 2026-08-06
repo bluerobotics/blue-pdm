@@ -28,6 +28,22 @@
 -- =====================================================================
 
 -- ===========================================
+-- DEPENDENCY CHECK (must stay first)
+-- ===========================================
+-- This file ends by calling enforce_anon_execute_posture(), defined in core.sql.
+-- Under `psql \i` a module used to apply in full against an older core and fail
+-- on its last line, reporting a line number rather than the missing dependency.
+-- Fail here instead, before anything has been created.
+DO $$
+BEGIN
+  IF to_regprocedure('public.require_org_member(uuid)') IS NULL
+     OR to_regprocedure('public.enforce_anon_execute_posture()') IS NULL THEN
+    RAISE EXCEPTION 'core.sql is absent or predates this release - run supabase/core.sql first, then run this file again'
+      USING HINT = 'require_org_member(uuid) and enforce_anon_execute_posture() must both exist before any module is applied.';
+  END IF;
+END $$;
+
+-- ===========================================
 -- INTEGRATION ENUMS
 -- ===========================================
 
@@ -800,6 +816,16 @@ BEGIN
     RETURN json_build_object('success', false, 'error', 'License not found');
   END IF;
   
+  -- The comment below used to say "admin of the license org" while the code
+  -- asked only whether the caller was an admin of *some* organization - their
+  -- own. An admin anywhere could therefore hand out any other organization's
+  -- licences. Membership of the licence's organization is the missing half.
+  IF NOT EXISTS (
+    SELECT 1 FROM users u WHERE u.id = v_current_user_id AND u.org_id = v_license_org_id
+  ) THEN
+    RETURN json_build_object('success', false, 'error', 'License not found');
+  END IF;
+
   -- Verify current user is admin of the license org
   IF NOT is_org_admin() THEN
     RETURN json_build_object('success', false, 'error', 'Only admins can assign licenses');
@@ -846,6 +872,16 @@ BEGIN
     RETURN json_build_object('success', false, 'error', 'Assignment not found');
   END IF;
   
+  -- Being an admin somewhere is not being an admin here: without this, an admin
+  -- of any organization could revoke any other organization's licence
+  -- assignments. Same refusal as a nonexistent assignment, so this is not a way
+  -- to enumerate them.
+  IF NOT EXISTS (
+    SELECT 1 FROM users u WHERE u.id = auth.uid() AND u.org_id = v_license_org_id
+  ) THEN
+    RETURN json_build_object('success', false, 'error', 'Assignment not found');
+  END IF;
+
   -- Verify current user is admin
   IF NOT is_org_admin() THEN
     RETURN json_build_object('success', false, 'error', 'Only admins can unassign licenses');
@@ -869,13 +905,24 @@ CREATE OR REPLACE FUNCTION activate_solidworks_license(
 ) RETURNS JSON AS $$
 DECLARE
   v_user_id UUID;
+  v_license_org_id UUID;
 BEGIN
   -- Get the assignment user
-  SELECT user_id INTO v_user_id
-  FROM solidworks_license_assignments
-  WHERE id = p_assignment_id;
+  SELECT sla.user_id, sl.org_id INTO v_user_id, v_license_org_id
+  FROM solidworks_license_assignments sla
+  JOIN solidworks_licenses sl ON sl.id = sla.license_id
+  WHERE sla.id = p_assignment_id;
   
   IF v_user_id IS NULL THEN
+    RETURN json_build_object('success', false, 'error', 'Assignment not found');
+  END IF;
+
+  -- is_org_admin() answers "an admin of your own organization", so on its own it
+  -- let an admin anywhere activate any assignment. Scope it to this licence's
+  -- organization.
+  IF NOT EXISTS (
+    SELECT 1 FROM users u WHERE u.id = auth.uid() AND u.org_id = v_license_org_id
+  ) THEN
     RETURN json_build_object('success', false, 'error', 'Assignment not found');
   END IF;
   
@@ -907,13 +954,23 @@ CREATE OR REPLACE FUNCTION deactivate_solidworks_license(
 ) RETURNS JSON AS $$
 DECLARE
   v_user_id UUID;
+  v_license_org_id UUID;
 BEGIN
   -- Get the assignment user
-  SELECT user_id INTO v_user_id
-  FROM solidworks_license_assignments
-  WHERE id = p_assignment_id;
+  SELECT sla.user_id, sl.org_id INTO v_user_id, v_license_org_id
+  FROM solidworks_license_assignments sla
+  JOIN solidworks_licenses sl ON sl.id = sla.license_id
+  WHERE sla.id = p_assignment_id;
   
   IF v_user_id IS NULL THEN
+    RETURN json_build_object('success', false, 'error', 'Assignment not found');
+  END IF;
+
+  -- Scope the admin check to this licence's organization; is_org_admin() only
+  -- says the caller is an admin of their own.
+  IF NOT EXISTS (
+    SELECT 1 FROM users u WHERE u.id = auth.uid() AND u.org_id = v_license_org_id
+  ) THEN
     RETURN json_build_object('success', false, 'error', 'Assignment not found');
   END IF;
   
@@ -983,6 +1040,15 @@ BEGIN
   IF NOT FOUND THEN
     RETURN json_build_object('success', false, 'error', 'Pending member not found');
   END IF;
+
+  -- The admin check above is satisfied by being an admin of any organization,
+  -- so without this an admin elsewhere could edit this organization's pending
+  -- invitations. Same refusal as a nonexistent invitation.
+  IF NOT EXISTS (
+    SELECT 1 FROM users u WHERE u.id = auth.uid() AND u.org_id = v_pending.org_id
+  ) THEN
+    RETURN json_build_object('success', false, 'error', 'Pending member not found');
+  END IF;
   
   -- Verify license belongs to same org
   SELECT org_id INTO v_license_org_id FROM solidworks_licenses WHERE id = p_license_id;
@@ -1016,9 +1082,13 @@ BEGIN
     RETURN json_build_object('success', false, 'error', 'Only admins can unassign licenses');
   END IF;
   
+  -- ...of this invitation's organization. is_org_admin() alone let an admin
+  -- anywhere strip licences from anyone's pending invitations.
   UPDATE pending_org_members
   SET solidworks_license_ids = array_remove(solidworks_license_ids, p_license_id)
-  WHERE id = p_pending_member_id AND claimed_at IS NULL;
+  WHERE id = p_pending_member_id
+    AND claimed_at IS NULL
+    AND org_id = (SELECT u.org_id FROM users u WHERE u.id = auth.uid());
   
   RETURN json_build_object('success', true);
 END;
@@ -1069,7 +1139,14 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
-GRANT EXECUTE ON FUNCTION apply_pending_license_assignments(UUID) TO authenticated;
+-- Trigger-only, and withdrawn rather than gated, for the same reason as
+-- apply_pending_team_memberships() in core.sql: it runs from
+-- claim_pending_membership() and from the API's service-role invite path, where
+-- auth.uid() is NULL, so there is no caller identity to check. Granted to
+-- authenticated it was an endpoint that took a user id and handed that user
+-- whatever licences an invitation named; granted to anon - which Supabase's
+-- default privileges did - it was that without logging in.
+REVOKE ALL ON FUNCTION apply_pending_license_assignments(UUID) FROM PUBLIC, anon, authenticated;
 
 -- Update the claim_pending_membership trigger function to also apply license assignments
 CREATE OR REPLACE FUNCTION claim_pending_membership()
@@ -1217,7 +1294,7 @@ COMMENT ON TABLE integration_credentials IS
 -- END OF INTEGRATIONS MODULE
 -- ===========================================
 
-SELECT revoke_public_execute_on_org_rpcs();
+SELECT enforce_anon_execute_posture();
 
 DO $$
 BEGIN

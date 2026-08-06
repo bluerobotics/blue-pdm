@@ -19,6 +19,23 @@
 -- =====================================================================
 
 -- ===========================================
+-- DEPENDENCY CHECK (must stay first)
+-- ===========================================
+-- get_extension_config()/get_extension_stats() call require_org_member() and
+-- this file ends by calling enforce_anon_execute_posture(), both defined in
+-- core.sql. Under `psql \i` a module used to apply in full against an older core
+-- and fail on its last line, reporting a line number rather than the missing
+-- dependency. Fail here instead, before anything has been created.
+DO $$
+BEGIN
+  IF to_regprocedure('public.require_org_member(uuid)') IS NULL
+     OR to_regprocedure('public.enforce_anon_execute_posture()') IS NULL THEN
+    RAISE EXCEPTION 'core.sql is absent or predates this release - run supabase/core.sql first, then run this file again'
+      USING HINT = 'require_org_member(uuid) and enforce_anon_execute_posture() must both exist before any module is applied.';
+  END IF;
+END $$;
+
+-- ===========================================
 -- INSTALLED EXTENSIONS
 -- ===========================================
 -- Track which extensions are installed per organization
@@ -456,7 +473,7 @@ COMMENT ON COLUMN extension_secret_access.accessed_by IS
 -- END OF EXTENSIONS MODULE
 -- ===========================================
 
-SELECT revoke_public_execute_on_org_rpcs();
+SELECT enforce_anon_execute_posture();
 
 DO $$
 BEGIN

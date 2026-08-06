@@ -24,6 +24,31 @@
 -- =====================================================================
 
 -- ===========================================
+-- DEPENDENCY CHECK (must stay first)
+-- ===========================================
+-- generate_rfq_number() calls require_org_member() and this file ends by calling
+-- enforce_anon_execute_posture(), both defined in core.sql; the RFQ tables also
+-- reference files from 10-source-files.sql.
+--
+-- This is the module the failure was actually observed on. Under `psql \i`
+-- against an older core it applied in full, errored on line 944, and left RFQ
+-- numbering dead behind an error message that named a line rather than a cause.
+-- Fail here, before anything has been created.
+DO $$
+BEGIN
+  IF to_regprocedure('public.require_org_member(uuid)') IS NULL
+     OR to_regprocedure('public.enforce_anon_execute_posture()') IS NULL THEN
+    RAISE EXCEPTION 'core.sql is absent or predates this release - run supabase/core.sql first, then run this file again'
+      USING HINT = 'require_org_member(uuid) and enforce_anon_execute_posture() must both exist before any module is applied.';
+  END IF;
+
+  IF to_regclass('public.files') IS NULL THEN
+    RAISE EXCEPTION '10-source-files.sql must be installed before this module'
+      USING HINT = 'This module''s tables reference files(id). Run supabase/modules/10-source-files.sql first.';
+  END IF;
+END $$;
+
+-- ===========================================
 -- SUPPLY CHAIN ENUMS
 -- ===========================================
 
@@ -941,7 +966,7 @@ COMMENT ON TABLE rfq_activity IS 'Activity/audit log for RFQs';
 -- END OF SUPPLY CHAIN MODULE
 -- ===========================================
 
-SELECT revoke_public_execute_on_org_rpcs();
+SELECT enforce_anon_execute_posture();
 
 -- The stamp that used to be here is gone. Applying this file alone to a v86
 -- database recorded 88 while module 10's v87 work was absent, and the app,

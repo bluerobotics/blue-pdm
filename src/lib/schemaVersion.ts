@@ -25,6 +25,9 @@
  * half-applied schema. The comparison below is worth acting on because the number
  * it reads can now only be reached by verification.
  *
+ * Version 0 is the value core.sql seeds and means "never verified", which is not
+ * the same as "old" - see the dbVersion === 0 branch below.
+ *
  * When making schema changes:
  * 1. Increment EXPECTED_SCHEMA_VERSION here
  * 2. Update the appropriate module file in supabase/ (core.sql or modules/*.sql)
@@ -38,7 +41,7 @@ import { supabase } from './supabase'
 
 // The schema version this app version expects
 // Increment this when releasing app updates that require schema changes
-export const EXPECTED_SCHEMA_VERSION = 89
+export const EXPECTED_SCHEMA_VERSION = 90
 
 // Minimum schema version that will still work (for soft warnings vs hard errors)
 // Set this to allow some backwards compatibility
@@ -134,6 +137,7 @@ export const VERSION_DESCRIPTIONS: Record<number, string> = {
   87: 'checkin_file merges the reserved per-configuration maps in custom_properties entry by entry instead of replacing them wholesale, so checking in one edited configuration no longer erases every configuration the user did not touch',
   88: 'generate_rfq_number exists again: creating an RFQ called it over RPC but no module had created it since schema.sql was split into modules, so every attempt failed on a correctly installed database. It allocates RFQ-<year>-<sequence> from a per-organization counter table rather than deriving the number from existing RFQs, which two clients could otherwise read as the same value before either had inserted anything',
   89: 'A SECURITY DEFINER function that takes a p_org_id now proves the caller belongs to that organization instead of taking the argument at its word: RLS does not apply inside such a function and a new function is executable by PUBLIC, so anon could allocate another organization\u2019s next RFQ number or list its files by naming its id. Thirteen functions gained require_org_member(), three that run from organization-creation triggers were withdrawn from PUBLIC instead, and the schema version is now written only by supabase/tools/verify-schema.sql after it confirms the release\u2019s objects exist - running core.sql or a single module no longer stamps a version the database is not at',
+  90: 'Closes unauthenticated access. Supabase grants EXECUTE on every function in public to anon by default, so the REVOKE ... FROM PUBLIC that v89 relied on removed nothing and all 159 functions stayed callable without logging in; the roles are now named explicitly, the default privilege that recreates the grant is withdrawn, and supabase/tools/emergency-lockdown.sql applies the same closure to a running database without waiting for a schema upgrade. Functions that reach an organization through an entity id rather than a p_org_id argument - checkout_file, checkin_file, move_file, rename_folder_files, the workflow transitions, the licence and ECO functions - now resolve the organization from the entity and check membership against it, and take the acting user from auth.uid() instead of the p_user_id the caller supplies, so the audit trail records who actually called. Verification changed from advisory to blocking: it calls each org-scoped function with a foreign organization id and requires a refusal rather than reading the source for the words, notices leftover overloads that a DROP by exact signature missed, and refuses to stamp a database that is reachable by anon',
   // Note: Process templates module (v26+) is optional - see modules/process-templates.sql
 }
 
@@ -207,6 +211,26 @@ export async function checkSchemaCompatibility(): Promise<SchemaCheckResult> {
   }
 
   const { version: dbVersion } = versionInfo
+
+  // Version 0 is what core.sql seeds. It does not mean an old database - it
+  // means verify-schema.sql has never completed against this one, which is the
+  // state of every database in the ten minutes after it is created. Reported as
+  // 'incompatible' it produced a permanent error toast telling the admin their
+  // brand-new database was "too old", with a minimum version it already
+  // exceeded. It is missing a version, not behind on one.
+  if (dbVersion === 0) {
+    return {
+      status: 'missing',
+      dbVersion,
+      expectedVersion: EXPECTED_SCHEMA_VERSION,
+      message: 'Database not verified yet',
+      details:
+        'This database has never been verified. Ask your admin to run ' +
+        'supabase/tools/verify-schema.sql, which checks that the objects this ' +
+        `release needs are present and then records the version (v${EXPECTED_SCHEMA_VERSION}). ` +
+        'Until it does, the app cannot tell which features are available.',
+    }
+  }
 
   // Perfect match
   if (dbVersion === EXPECTED_SCHEMA_VERSION) {
