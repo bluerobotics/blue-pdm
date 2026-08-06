@@ -51,3 +51,7 @@ export type { AutoScrollOptions } from './useAutoScrollOnDrag'
 
 // Admin-restricted modules
 export { useDeniedModules } from './useDeniedModules'
+
+// Admin-only folder visibility (cosmetic decluttering, not access control)
+export { useHiddenFolders } from './useHiddenFolders'
+export type { UseHiddenFoldersResult } from './useHiddenFolders'

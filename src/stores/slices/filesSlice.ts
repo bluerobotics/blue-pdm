@@ -23,6 +23,7 @@ import type { PDMFile } from '../../types/pdm'
 import { buildFullPath } from '@/lib/utils/path'
 import { recordMetric } from '@/lib/performanceMetrics'
 import { log } from '@/lib/logger'
+import { isPathHidden, readHiddenFolderPaths } from '@/lib/hiddenFolders'
 import { dropCommittedPendingMetadata } from '@/lib/pendingMetadata'
 import { logExplorer } from '@/lib/userActionLogger'
 import { bumpFileMutationEpoch } from '@/lib/fileMutationEpoch'
@@ -2086,9 +2087,23 @@ export const createFilesSlice: StateCreator<
   },
 
   getVisibleFiles: () => {
-    const { files, expandedFolders, workflowStateFilter, extensionFilter, searchQuery } = get()
+    const {
+      files,
+      expandedFolders,
+      workflowStateFilter,
+      extensionFilter,
+      searchQuery,
+      organization,
+      getEffectiveRole,
+    } = get()
+
+    // Admins keep seeing folders they marked hidden so they can still manage them
+    const hiddenPaths =
+      getEffectiveRole() === 'admin' ? [] : readHiddenFolderPaths(organization?.settings)
 
     let visible = files.filter((file) => {
+      if (isPathHidden(file.relativePath, hiddenPaths)) return false
+
       // Check if parent folder is expanded
       const parts = file.relativePath.split('/')
       if (parts.length > 1) {

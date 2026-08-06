@@ -3,6 +3,7 @@
  * for the FilePane component
  */
 import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useHiddenFolders } from '@/hooks/useHiddenFolders'
 import { log } from '@/lib/logger'
 import { usePDMStore } from '@/stores/pdmStore'
 import type { FileMetadataColumn } from '@/types/database'
@@ -48,6 +49,8 @@ export function useFilePaneView() {
     updateTabFolder,
   } = usePDMStore()
 
+  const { enforcedHiddenPaths } = useHiddenFolders()
+
   // Context menu state
   const contextMenuState = useContextMenuState()
 
@@ -92,6 +95,7 @@ export function useFilePaneView() {
     searchQuery,
     searchType,
     hideSolidworksTempFiles,
+    hiddenFolderPaths: enforcedHiddenPaths,
     toggleSort,
   })
 

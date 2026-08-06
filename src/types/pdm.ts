@@ -616,6 +616,12 @@ export interface OrgSettings {
   // Revision policy (org-wide)
   /** When false, .sldprt/.sldasm files cannot have file-level revisions (config revisions from drawings still apply). Default: false */
   allow_file_level_revision_for_models?: boolean
+  /**
+   * Vault-relative folder paths hidden from non-admins in the interface, and skipped
+   * by the serial number vault scan. Cosmetic decluttering only — the rows remain
+   * readable through the API, so this is not an access restriction.
+   */
+  admin_only_folders?: string[]
 }
 
 /**

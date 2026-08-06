@@ -21,6 +21,7 @@ import {
   BulkAssemblyActions,
   DuplicateActions,
   FileSystemActions,
+  FolderVisibilityActions,
   ClipboardActions,
   SyncActions,
   CheckoutActions,
@@ -342,6 +343,12 @@ export function FileContextMenu({
             platform={platform}
             startRenaming={startRenaming}
             userId={user?.id}
+          />
+          <FolderVisibilityActions
+            contextFiles={contextFiles}
+            multiSelect={multiSelect}
+            firstFile={firstFile}
+            onClose={onClose}
           />
         </ContextMenuGroup>
 

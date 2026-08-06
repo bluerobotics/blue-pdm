@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Filter,
   FolderOpen,
@@ -12,6 +12,8 @@ import {
 } from 'lucide-react'
 
 import { usePDMStore } from '@/stores/pdmStore'
+import { useHiddenFolders } from '@/hooks/useHiddenFolders'
+import { isPathHidden } from '@/lib/hiddenFolders'
 import { t } from '@/lib/i18n'
 import {
   getItemDefinitionSettings,
@@ -43,6 +45,11 @@ import { useItems } from './hooks/useItems'
 
 export function ItemBrowserView() {
   const files = usePDMStore((s) => s.files)
+  const { enforcedHiddenPaths } = useHiddenFolders()
+  const visibleFiles = useMemo(
+    () => files.filter((f) => !isPathHidden(f.relativePath, enforcedHiddenPaths)),
+    [files, enforcedHiddenPaths],
+  )
   const organization = usePDMStore((s) => s.organization)
   const addToast = usePDMStore((s) => s.addToast)
   const itemDefinition = usePDMStore((s) => s.itemDefinition)
@@ -88,7 +95,7 @@ export function ItemBrowserView() {
   const uploadTargetRef = useRef<string | null>(null)
 
   const rows = useItems(
-    files,
+    visibleFiles,
     itemDefinition,
     stages,
     organization?.serialization_settings,

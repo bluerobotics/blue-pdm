@@ -1,6 +1,7 @@
 /**
  * File filtering utilities for the file browser
  */
+import { isPathHidden, type HiddenFolderPaths } from '@/lib/hiddenFolders'
 import type { LocalFile } from '@/stores/pdmStore'
 
 export interface FileFilter {
@@ -10,6 +11,8 @@ export interface FileFilter {
   states?: string[]
   showHidden?: boolean
   hideSolidworksTempFiles?: boolean
+  /** Admin-only folder paths to strip from the list (empty for admins) */
+  hiddenFolderPaths?: HiddenFolderPaths
 }
 
 /**
@@ -126,13 +129,14 @@ export function isSolidworksTempFile(file: LocalFile): boolean {
  */
 export function filterValidFiles(
   files: LocalFile[],
-  options: { hideSolidworksTempFiles?: boolean } = {},
+  options: { hideSolidworksTempFiles?: boolean; hiddenFolderPaths?: HiddenFolderPaths } = {},
 ): LocalFile[] {
-  const { hideSolidworksTempFiles = false } = options
+  const { hideSolidworksTempFiles = false, hiddenFolderPaths = [] } = options
 
   return files.filter((f) => {
     if (!isValidFile(f)) return false
     if (hideSolidworksTempFiles && isSolidworksTempFile(f)) return false
+    if (isPathHidden(f.relativePath, hiddenFolderPaths)) return false
     return true
   })
 }
@@ -190,6 +194,7 @@ export function filterBySearch(
 export function applyFilters(files: LocalFile[], filter: FileFilter): LocalFile[] {
   let result = filterValidFiles(files, {
     hideSolidworksTempFiles: filter.hideSolidworksTempFiles,
+    hiddenFolderPaths: filter.hiddenFolderPaths,
   })
 
   if (filter.search && filter.search.trim()) {

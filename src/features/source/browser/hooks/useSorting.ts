@@ -1,4 +1,5 @@
 import { useMemo, useCallback } from 'react'
+import type { HiddenFolderPaths } from '@/lib/hiddenFolders'
 import type { LocalFile } from '@/stores/pdmStore'
 import type { SortColumn, SortDirection } from '../types'
 import { sortFiles, sortByRelevance } from '../utils/sorting'
@@ -18,6 +19,8 @@ export interface UseSortingOptions {
   searchQuery?: string
   searchType?: 'all' | 'files' | 'folders'
   hideSolidworksTempFiles?: boolean
+  /** Admin-only folder paths to strip from the list (empty for admins) */
+  hiddenFolderPaths?: HiddenFolderPaths
   toggleSort: (columnId: string) => void
 }
 
@@ -38,6 +41,7 @@ export function useSorting({
   searchQuery,
   searchType = 'all',
   hideSolidworksTempFiles = false,
+  hiddenFolderPaths,
   toggleSort,
 }: UseSortingOptions): UseSortingReturn {
   const isSearching = !!(searchQuery && searchQuery.trim().length > 0)
@@ -54,7 +58,7 @@ export function useSorting({
     })
 
     // First filter out invalid files and optionally hide SolidWorks temp files
-    const validFiles = filterValidFiles(files, { hideSolidworksTempFiles })
+    const validFiles = filterValidFiles(files, { hideSolidworksTempFiles, hiddenFolderPaths })
     const t1 = performance.now()
 
     let resultFiles: LocalFile[]
@@ -90,6 +94,7 @@ export function useSorting({
     sortColumn,
     sortDirection,
     hideSolidworksTempFiles,
+    hiddenFolderPaths,
   ])
 
   // Toggle sort column (passed through from store)

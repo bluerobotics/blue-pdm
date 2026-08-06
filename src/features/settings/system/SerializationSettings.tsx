@@ -12,11 +12,13 @@ import {
   Layers,
   Search,
   SplitSquareHorizontal,
+  EyeOff,
 } from 'lucide-react'
 import { log } from '@/lib/logger'
+import { useTranslation } from '@/lib/i18n'
 import { usePDMStore } from '@/stores/pdmStore'
 import { supabase } from '@/lib/supabase'
-import { detectHighestSerialNumber } from '@/lib/serialization'
+import { detectHighestSerialNumber, type HighestSerialScanResult } from '@/lib/serialization'
 
 interface KeepoutZone {
   start: number
@@ -93,6 +95,7 @@ const DEFAULT_SERIALIZATION_SETTINGS: SerializationSettingsData = {
 
 export function SerializationSettings() {
   const { organization, addToast, getEffectiveRole } = usePDMStore()
+  const { t } = useTranslation()
   const isAdmin = getEffectiveRole() === 'admin'
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -114,11 +117,7 @@ export function SerializationSettings() {
 
   // Detect highest serial number
   const [detecting, setDetecting] = useState(false)
-  const [detectedResult, setDetectedResult] = useState<{
-    highestCounter: number
-    highestPartNumber: string
-    totalScanned: number
-  } | null>(null)
+  const [detectedResult, setDetectedResult] = useState<HighestSerialScanResult | null>(null)
 
   // Generate a live preview of what the serial number will look like
   const livePreview = useMemo(() => {
@@ -737,6 +736,12 @@ export function SerializationSettings() {
                     <span className="font-medium text-plm-fg">{detectedResult.totalScanned}</span>{' '}
                     files
                   </div>
+                  {detectedResult.skippedHidden > 0 && (
+                    <div className="text-xs text-plm-fg-muted mt-1 flex items-center gap-1">
+                      <EyeOff size={11} />
+                      {t('hiddenFolders.scanSkipped', { count: detectedResult.skippedHidden })}
+                    </div>
+                  )}
                   {detectedResult.highestCounter > 0 ? (
                     <div className="flex items-center justify-between mt-2">
                       <div>

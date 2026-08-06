@@ -3,6 +3,7 @@
 
 import { supabase } from './supabase'
 import { log } from './logger'
+import { isPathHidden, readHiddenFolderPaths } from './hiddenFolders'
 
 export interface SerializationSettings {
   enabled: boolean
@@ -604,19 +605,52 @@ export function findHighestSerialNumber(
   return { highestCounter, highestPartNumber }
 }
 
+export interface HighestSerialScanResult {
+  highestCounter: number
+  highestPartNumber: string
+  totalScanned: number
+  /** Files skipped because they live in an admin-only folder (regression fixtures and the like). */
+  skippedHidden: number
+}
+
 /**
- * Scan organization files and find the highest used serial number
+ * Fetch the vault-relative folder paths an org has marked admin-only.
+ * Stored in the `organizations.settings` JSONB column.
+ */
+async function getAdminOnlyFolders(orgId: string): Promise<string[]> {
+  const { data, error } = await supabase
+    .from('organizations')
+    .select('settings')
+    .eq('id', orgId)
+    .single()
+
+  if (error) {
+    log.error('[Serialization]', 'Failed to read admin-only folders', { error })
+    return []
+  }
+
+  return readHiddenFolderPaths(data?.settings)
+}
+
+/**
+ * Scan organization files and find the highest used serial number.
+ *
+ * Files inside admin-only folders are excluded: those hold regression fixtures whose
+ * realistic-looking part numbers would otherwise drag the counter forward.
  */
 export async function detectHighestSerialNumber(
   orgId: string,
-): Promise<{ highestCounter: number; highestPartNumber: string; totalScanned: number } | null> {
+): Promise<HighestSerialScanResult | null> {
   try {
-    const settings = await getSerializationSettings(orgId)
+    const [settings, hiddenPaths] = await Promise.all([
+      getSerializationSettings(orgId),
+      getAdminOnlyFolders(orgId),
+    ])
 
     // Fetch all part numbers from the organization
     const { data, error } = await supabase
       .from('files')
-      .select('part_number')
+      .select('part_number, file_path')
       .eq('org_id', orgId)
       .not('part_number', 'is', null)
 
@@ -625,20 +659,34 @@ export async function detectHighestSerialNumber(
       return null
     }
 
-    // Supabase v2 nested select type inference incomplete
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const partNumbers = ((data || []) as { part_number: string | null }[])
-      .map((f) => f.part_number)
-      .filter(Boolean) as string[]
+    const rows = (data || []) as { part_number: string | null; file_path: string | null }[]
+    const partNumbers: string[] = []
+    let skippedHidden = 0
+
+    for (const row of rows) {
+      if (!row.part_number) continue
+      if (isPathHidden(row.file_path, hiddenPaths)) {
+        skippedHidden++
+        continue
+      }
+      partNumbers.push(row.part_number)
+    }
+
     const result = findHighestSerialNumber(partNumbers, settings)
 
     if (!result) {
-      return { highestCounter: 0, highestPartNumber: '', totalScanned: partNumbers.length }
+      return {
+        highestCounter: 0,
+        highestPartNumber: '',
+        totalScanned: partNumbers.length,
+        skippedHidden,
+      }
     }
 
     return {
       ...result,
       totalScanned: partNumbers.length,
+      skippedHidden,
     }
   } catch (error) {
     log.error('[Serialization]', 'Error detecting highest serial', { error: error })

@@ -19,11 +19,15 @@ import {
   FolderCheckinButton,
 } from '@/components/shared/InlineActions'
 import { NotifiableCheckoutAvatar } from '@/components/shared/Avatar'
+import { HiddenFolderBadge } from '@/components/shared/HiddenFolder'
+import { useHiddenFolders } from '@/hooks/useHiddenFolders'
 import type { CheckoutUser } from '../../../types'
 import { useFilePaneContext, useFilePaneHandlers } from '../../../context'
 import type { CellRendererBaseProps } from './types'
 
 export function NameCell({ file }: CellRendererBaseProps): React.ReactNode {
+  const { isMarkedHidden } = useHiddenFolders()
+
   // UI state from FilePaneContext
   const {
     listRowSize,
@@ -305,6 +309,8 @@ export function NameCell({ file }: CellRendererBaseProps): React.ReactNode {
       >
         {displayFilename}
       </span>
+
+      {file.isDirectory && isMarkedHidden(file.relativePath) && <HiddenFolderBadge />}
 
       {/* Delete spinner for folders */}
       {file.isDirectory && operationType === 'delete' && (

@@ -1,5 +1,7 @@
 import { useMemo, useCallback, useDeferredValue, useRef } from 'react'
 import { usePDMStore, LocalFile } from '@/stores/pdmStore'
+import { useHiddenFolders } from '@/hooks/useHiddenFolders'
+import { isPathHidden } from '@/lib/hiddenFolders'
 import type { OperationType } from '@/stores/types'
 import {
   getFolderCheckoutStatus,
@@ -108,6 +110,7 @@ export function useVaultTree() {
   const hideCloudOnlyFolders = usePDMStore((s) => s.hideCloudOnlyFolders)
   const user = usePDMStore((s) => s.user)
   const processingOperations = usePDMStore((s) => s.processingOperations)
+  const { enforcedHiddenPaths } = useHiddenFolders()
 
   // ═══════════════════════════════════════════════════════════════════════════
   // PERFORMANCE OPTIMIZATION: useDeferredValue for folderMetrics
@@ -134,7 +137,7 @@ export function useVaultTree() {
 
   // Build folder tree structure
   const tree = useMemo<TreeMap>(() => {
-    const deps = [files, hideSolidworksTempFiles, hideCloudOnlyFolders] as const
+    const deps = [files, hideSolidworksTempFiles, hideCloudOnlyFolders, enforcedHiddenPaths] as const
     if (treeMemoCache && depsEqual(treeMemoCache.deps, deps)) {
       return treeMemoCache.result
     }
@@ -148,6 +151,8 @@ export function useVaultTree() {
       if (!f || !f.relativePath || !f.name) return false
       // Hide SolidWorks temp lock files (~$filename.sldxxx) when setting is enabled
       if (hideSolidworksTempFiles && f.name.startsWith('~$')) return false
+      // Folders an admin marked hidden, plus everything nested under them
+      if (isPathHidden(f.relativePath, enforcedHiddenPaths)) return false
       return true
     })
 
@@ -214,7 +219,7 @@ export function useVaultTree() {
 
     treeMemoCache = { deps, result: treeMap }
     return treeMap
-  }, [files, hideSolidworksTempFiles, hideCloudOnlyFolders])
+  }, [files, hideSolidworksTempFiles, hideCloudOnlyFolders, enforcedHiddenPaths])
 
   /**
    * Pre-computed folder metrics in a single O(N) pass.
@@ -240,6 +245,7 @@ export function useVaultTree() {
       user?.email,
       user?.avatar_url,
       hideSolidworksTempFiles,
+      enforcedHiddenPaths,
     ] as const
     if (folderMetricsMemoCache && depsEqual(folderMetricsMemoCache.deps, deps)) {
       return folderMetricsMemoCache.result
@@ -265,6 +271,7 @@ export function useVaultTree() {
       if (!f || !f.relativePath || !f.name) return false
       if (f.isDirectory) return false
       if (hideSolidworksTempFiles && f.name.startsWith('~$')) return false
+      if (isPathHidden(f.relativePath, enforcedHiddenPaths)) return false
       return true
     })
 
@@ -488,6 +495,7 @@ export function useVaultTree() {
     user?.email,
     user?.avatar_url,
     hideSolidworksTempFiles,
+    enforcedHiddenPaths,
   ])
 
   // Check if a file/folder is affected by any processing operation

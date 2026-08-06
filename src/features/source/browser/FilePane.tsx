@@ -18,6 +18,7 @@ import { LockedFilesModal, type LockedFileInfo } from '@/components/core/Dialog'
 
 // Shared hooks from Agent 1's foundation
 import { useClipboard } from '@/hooks/useClipboard'
+import { useHiddenFolders } from '@/hooks/useHiddenFolders'
 import { useSelectionCategories } from '@/hooks/useSelectionCategories'
 import { useSelectionBox } from '@/hooks/useSelectionBox'
 import { useSlowDoubleClick } from '@/hooks/useSlowDoubleClick'
@@ -103,6 +104,7 @@ interface FilePaneProps {
 
 export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
   const { t } = useTranslation()
+  const { enforcedHiddenPaths } = useHiddenFolders()
 
   // TODO(decompose): Extract to browser/hooks/useFilePaneSelectors.ts — all Zustand
   // selector calls (~130 lines). Returns a single object with all data, primitives,
@@ -957,6 +959,7 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
     searchQuery,
     searchType,
     hideSolidworksTempFiles,
+    hiddenFolderPaths: enforcedHiddenPaths,
     toggleSort,
   })
 

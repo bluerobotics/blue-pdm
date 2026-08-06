@@ -2,6 +2,8 @@ import { useState, useEffect, useMemo } from 'react'
 import { Search, File, FolderOpen, X, ClipboardList, Tag, Loader2 } from 'lucide-react'
 import { log } from '@/lib/logger'
 import { usePDMStore } from '@/stores/pdmStore'
+import { useHiddenFolders } from '@/hooks/useHiddenFolders'
+import { isPathHidden } from '@/lib/hiddenFolders'
 import { getSupabaseClient } from '@/lib/supabase'
 import { logSearch } from '@/lib/userActionLogger'
 
@@ -17,6 +19,8 @@ interface ECOSearchResult {
 export function SearchView() {
   const { files, searchQuery, setSearchQuery, toggleFileSelection, selectedFiles, organization } =
     usePDMStore()
+
+  const { enforcedHiddenPaths } = useHiddenFolders()
 
   const [localQuery, setLocalQuery] = useState(searchQuery)
   const [ecoResults, setEcoResults] = useState<ECOSearchResult[]>([])
@@ -141,12 +145,13 @@ export function SearchView() {
     const query = localQuery.toLowerCase()
     return files.filter(
       (f) =>
-        f.name.toLowerCase().includes(query) ||
-        f.relativePath.toLowerCase().includes(query) ||
-        f.pdmData?.part_number?.toLowerCase().includes(query) ||
-        f.pdmData?.description?.toLowerCase().includes(query),
+        !isPathHidden(f.relativePath, enforcedHiddenPaths) &&
+        (f.name.toLowerCase().includes(query) ||
+          f.relativePath.toLowerCase().includes(query) ||
+          f.pdmData?.part_number?.toLowerCase().includes(query) ||
+          f.pdmData?.description?.toLowerCase().includes(query)),
     )
-  }, [localQuery, files, isECOQuery])
+  }, [localQuery, files, isECOQuery, enforcedHiddenPaths])
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault()

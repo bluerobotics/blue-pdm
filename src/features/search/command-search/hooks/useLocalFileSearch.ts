@@ -1,5 +1,7 @@
 import { useMemo } from 'react'
 import { usePDMStore, LocalFile } from '@/stores/pdmStore'
+import { useHiddenFolders } from '@/hooks/useHiddenFolders'
+import { isPathHidden } from '@/lib/hiddenFolders'
 import type { SearchFilter, SearchScope } from '../types'
 
 /**
@@ -12,6 +14,7 @@ export function useLocalFileSearch(
   searchScope: SearchScope,
 ) {
   const { files } = usePDMStore()
+  const { enforcedHiddenPaths } = useHiddenFolders()
 
   // Filter files based on current query and filter
   const searchResults = useMemo(() => {
@@ -26,8 +29,9 @@ export function useLocalFileSearch(
       f.relativePath === currentFolder ||
       f.relativePath.startsWith(currentFolder + '/')
 
+    const visibleFiles = files.filter((f) => !isPathHidden(f.relativePath, enforcedHiddenPaths))
     const scopedFiles =
-      searchScope === 'current-folder' ? files.filter(inFolder) : files
+      searchScope === 'current-folder' ? visibleFiles.filter(inFolder) : visibleFiles
 
     return scopedFiles
       .filter((file: LocalFile) => {
@@ -67,7 +71,7 @@ export function useLocalFileSearch(
         }
       })
       .slice(0, 20) // Limit results
-  }, [searchTerm, filter, files, currentFolder, searchScope])
+  }, [searchTerm, filter, files, currentFolder, searchScope, enforcedHiddenPaths])
 
   return { searchResults }
 }

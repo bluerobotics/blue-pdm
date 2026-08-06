@@ -53,6 +53,7 @@ import {
   useSlowDoubleClick,
   useAutoScrollOnDrag,
 } from '@/hooks'
+import { useHiddenFolders } from '@/hooks/useHiddenFolders'
 // Logging
 import { logExplorer } from '@/lib/userActionLogger'
 // Constants
@@ -107,6 +108,9 @@ export function FileTree({ onRefresh }: FileTreeProps) {
   // ─── User Selectors ────────────────────────────────────────────────────────
   const user = usePDMStore((s) => s.user)
   const impersonatedUser = usePDMStore((s) => s.impersonatedUser)
+
+  // ─── Admin-only folder visibility ──────────────────────────────────────────
+  const { isMarkedHidden } = useHiddenFolders()
 
   // ─── Offline Mode & Staged Checkin Selectors ────────────────────────────────
   const isOfflineMode = usePDMStore((s) => s.isOfflineMode)
@@ -1044,6 +1048,9 @@ export function FileTree({ onRefresh }: FileTreeProps) {
                       operationType={operationType}
                       diffCounts={diffCounts}
                       folderMetrics={metrics}
+                      isHiddenFromNonAdmins={
+                        file.isDirectory && isMarkedHidden(file.relativePath)
+                      }
                       onRefresh={onRefresh}
                       selectedFiles={selectedFiles}
                       selectedDownloadableFiles={categories.downloadable}

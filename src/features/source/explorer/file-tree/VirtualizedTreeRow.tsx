@@ -9,6 +9,7 @@ import { memo, useCallback } from 'react'
 import { ChevronRight, ChevronDown, FolderOpen } from 'lucide-react'
 import { LocalFile } from '@/stores/pdmStore'
 import { FileIcon } from '@/components/shared/FileItem'
+import { HiddenFolderBadge } from '@/components/shared/HiddenFolder'
 import { FileActionButtons, FolderActionButtons } from './TreeItemActions'
 import {
   TREE_BASE_PADDING_PX,
@@ -70,6 +71,8 @@ interface VirtualizedTreeRowProps {
    * Provides stable references for memoization.
    */
   folderMetrics: FolderMetrics | null
+  /** Folder is marked hidden from non-admins — only ever true for admins, who still see it */
+  isHiddenFromNonAdmins: boolean
   /** Refresh callback */
   onRefresh?: (silent?: boolean) => void
   // Multi-select props for FileActionButtons
@@ -158,6 +161,7 @@ function arePropsEqual(
   if (prevProps.isRenaming !== nextProps.isRenaming) return false
   if (prevProps.isRenaming && prevProps.renameValue !== nextProps.renameValue) return false
   if (prevProps.isDragTarget !== nextProps.isDragTarget) return false
+  if (prevProps.isHiddenFromNonAdmins !== nextProps.isHiddenFromNonAdmins) return false
 
   // 4. Processing state
   if (prevProps.operationType !== nextProps.operationType) return false
@@ -256,6 +260,7 @@ export const VirtualizedTreeRow = memo(function VirtualizedTreeRow({
   operationType,
   diffCounts,
   folderMetrics,
+  isHiddenFromNonAdmins,
   onRefresh,
   selectedFiles,
   selectedDownloadableFiles,
@@ -471,6 +476,8 @@ export const VirtualizedTreeRow = memo(function VirtualizedTreeRow({
               (lowercaseExtensions !== false ? file.extension.toLowerCase() : file.extension)}
         </span>
       )}
+
+      {!isRenaming && isHiddenFromNonAdmins && <HiddenFolderBadge className="mr-1" />}
 
       {/* Folder action buttons */}
       {!isRenaming && file.isDirectory && folderStats && (
