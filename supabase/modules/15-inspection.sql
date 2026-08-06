@@ -188,6 +188,8 @@ END $$;
 -- SCHEMA VERSION
 -- ===========================================
 
--- Inspection module head (characteristics + version snapshots + methods). This is a
--- no-op via GREATEST() when core.sql has already stamped a higher head version.
-SELECT update_schema_version(66, 'Inspection module: inspection_characteristics + per-version snapshots + inspection_methods');
+SELECT revoke_public_execute_on_org_rpcs();
+
+-- No stamp. A module speaks for its own objects and nothing else, and the schema
+-- version is a statement about the whole database, so it is written only by
+-- supabase/tools/verify-schema.sql once every installed module has been checked.

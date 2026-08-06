@@ -1217,6 +1217,8 @@ COMMENT ON TABLE integration_credentials IS
 -- END OF INTEGRATIONS MODULE
 -- ===========================================
 
+SELECT revoke_public_execute_on_org_rpcs();
+
 DO $$
 BEGIN
   RAISE NOTICE 'Integrations module installed successfully';

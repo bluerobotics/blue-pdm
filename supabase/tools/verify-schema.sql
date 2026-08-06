@@ -1,5 +1,18 @@
--- BluePLM Schema Verification Script
--- Run this after applying core.sql + modules to verify everything is in place
+-- BluePLM Schema Verification
+--
+-- Run this LAST, after core.sql and every module you intend to install, and run
+-- it again after re-running any single file. It is the only thing that writes
+-- schema_version, and it writes it only if the release manifest in core.sql
+-- holds, so the number the app reads can never describe a database that does
+-- not exist.
+--
+-- Safe to run at any time and as often as you like: everything here is a read
+-- except the one UPDATE of schema_version, and that only happens on success.
+-- Paste the whole file into the Supabase SQL editor.
+--
+-- If it reports a problem, fix it by running the file it names and run this
+-- again. Until it passes, the recorded version stays where it was - which is
+-- what makes the app's "database out of date" warning worth acting on.
 
 -- ===========================================
 -- CHECK TABLES
@@ -26,6 +39,7 @@ DECLARE
     'process_template_items', 'eco_checklist_items', 'eco_gate_approvals',
     -- Supply chain
     'suppliers', 'part_suppliers', 'rfqs', 'rfq_items', 'rfq_suppliers', 'rfq_quotes',
+    'rfq_number_counters',
     -- Customers
     'customer_categories', 'customer_accounts', 'customers', 'customer_addresses',
     'customer_orders', 'customer_order_lines', 'customer_enrichments',
@@ -65,7 +79,7 @@ DECLARE
     'user_has_permission', 'get_best_price', 'calculate_bom_cost',
     'generate_rfq_number', 'instantiate_process_template', 'approve_eco_gate',
     'execute_workflow_transition', 'complete_gate_review', 'get_my_pending_reviews',
-    'import_workflow_graph'
+    'import_workflow_graph', 'require_org_member', 'verify_and_stamp_schema'
   ];
   missing_funcs TEXT[] := '{}';
   f TEXT;
@@ -81,17 +95,6 @@ BEGIN
   ELSE
     RAISE NOTICE '✅ All % key functions exist', array_length(expected_functions, 1);
   END IF;
-END $$;
-
--- ===========================================
--- CHECK SCHEMA VERSION
--- ===========================================
-DO $$
-DECLARE
-  v INT;
-BEGIN
-  SELECT version INTO v FROM schema_version ORDER BY applied_at DESC LIMIT 1;
-  RAISE NOTICE '📌 Current schema version: %', COALESCE(v::TEXT, 'NOT SET');
 END $$;
 
 -- ===========================================
@@ -126,9 +129,114 @@ BEGIN
 END $$;
 
 -- ===========================================
+-- CHECK ORG-SCOPED RPCs ARE GATED
+-- ===========================================
+-- Standing guard rather than a one-off sweep. A SECURITY DEFINER function that
+-- takes a p_org_id runs with RLS switched off and is reachable over PostgREST,
+-- so p_org_id decides which organization it acts on. Unless the body consults
+-- the caller's identity, that decision belongs to the caller.
+--
+-- What this proves is narrow and worth stating: that every such function looks
+-- at who is calling, which is precisely the defect that let anon allocate
+-- another organization's RFQ number and read another organization's file list.
+-- It does not prove each check is correct. New functions should use
+-- require_org_member(); the older `SELECT org_id INTO ... FROM users WHERE id =
+-- auth.uid()` form is accepted because several of those functions answer with
+-- `{"success": false}` rather than raising and their callers depend on it.
+--
+-- The three exemptions run from AFTER INSERT triggers on organizations, at a
+-- point where the new organization has no members and a membership check could
+-- only fail. They are not endpoints - the query below also insists they are
+-- unreachable by PUBLIC, which is what keeps the exemption honest.
+DO $$
+DECLARE
+  c_trigger_only TEXT[] := ARRAY[
+    'create_default_job_titles',
+    'create_default_permission_teams',
+    'seed_customer_categories'
+  ];
+  ungated TEXT[] := '{}';
+  reachable TEXT[] := '{}';
+  r RECORD;
+BEGIN
+  FOR r IN
+    SELECT p.proname,
+           p.oid::regprocedure::TEXT AS signature,
+           pg_get_functiondef(p.oid) AS src,
+           has_function_privilege('public', p.oid, 'EXECUTE') AS public_execute
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public'
+      AND p.prosecdef
+      AND pg_get_function_identity_arguments(p.oid) ~ '\mp_org_id\M'
+  LOOP
+    IF r.public_execute THEN
+      reachable := array_append(reachable, r.signature);
+    END IF;
+
+    IF NOT (r.proname = ANY (c_trigger_only))
+       AND position('require_org_member' IN r.src) = 0
+       AND position('auth.uid()' IN r.src) = 0 THEN
+      ungated := array_append(ungated, r.signature);
+    END IF;
+  END LOOP;
+
+  IF array_length(ungated, 1) > 0 THEN
+    RAISE NOTICE '❌ SECURITY DEFINER RPCs taking p_org_id without a membership check: %',
+      array_to_string(ungated, ', ');
+  ELSE
+    RAISE NOTICE '✅ Every org-scoped SECURITY DEFINER RPC checks membership';
+  END IF;
+
+  IF array_length(reachable, 1) > 0 THEN
+    RAISE NOTICE '❌ Org-scoped RPCs still executable by PUBLIC (so by anon): %',
+      array_to_string(reachable, ', ');
+  ELSE
+    RAISE NOTICE '✅ No org-scoped RPC is executable by PUBLIC';
+  END IF;
+END $$;
+
+-- ===========================================
+-- RELEASE MANIFEST
+-- ===========================================
+-- Anything not 'ok' or 'skipped' below is the reason the version was not stamped.
+
+SELECT module, identity AS object, status, detail
+FROM check_schema_release()
+ORDER BY CASE status WHEN 'missing' THEN 0 WHEN 'stale' THEN 1 WHEN 'ok' THEN 2 ELSE 3 END,
+         module, identity;
+
+-- ===========================================
+-- VERIFY AND STAMP
+-- ===========================================
+
+DO $$
+DECLARE
+  v_result JSON;
+  v_problem JSON;
+BEGIN
+  v_result := verify_and_stamp_schema();
+
+  IF (v_result->>'stamped')::BOOLEAN THEN
+    RAISE NOTICE '✅ Schema verified and stamped at version %', v_result->>'version';
+  ELSE
+    RAISE WARNING 'Schema NOT stamped. Recorded version stays at %, this release is %.',
+      v_result->>'version', v_result->>'target_version';
+    FOR v_problem IN SELECT * FROM json_array_elements(v_result->'problems') LOOP
+      RAISE WARNING '  [%] % - % %',
+        v_problem->>'module', v_problem->>'object', v_problem->>'status',
+        COALESCE(v_problem->>'detail', '');
+    END LOOP;
+    RAISE WARNING 'Re-run the module files named above, then run this script again.';
+  END IF;
+END $$;
+
+-- ===========================================
 -- SUMMARY
 -- ===========================================
 SELECT 
+  (SELECT version FROM schema_version WHERE id = 1) as recorded_version,
+  schema_release_version() as release_version,
   (SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public') as total_tables,
   (SELECT COUNT(*) FROM information_schema.routines WHERE routine_schema = 'public' AND routine_type = 'FUNCTION') as total_functions,
   (SELECT COUNT(*) FROM pg_policies WHERE schemaname = 'public') as total_policies;

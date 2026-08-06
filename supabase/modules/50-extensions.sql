@@ -273,13 +273,29 @@ CREATE POLICY "Service can write http log"
 -- ===========================================
 
 -- Get extension config (safe for UI)
+--
+-- "Safe for UI" was only ever true for the caller's own organization.
+-- update_extension_config below has always checked the caller's membership;
+-- these two read the same rows and did not, so an extension's configuration for
+-- any organization came back to anyone who named its id.
+-- plpgsql rather than sql so the membership check runs before the query and not
+-- as one more conjunct the planner is free to skip when no row matches.
 CREATE OR REPLACE FUNCTION get_extension_config(
   p_org_id UUID,
   p_extension_id TEXT
 ) RETURNS JSONB
-LANGUAGE sql STABLE SECURITY DEFINER AS $$
-  SELECT config FROM org_extension_config
+LANGUAGE plpgsql STABLE SECURITY DEFINER AS $$
+DECLARE
+  v_config JSONB;
+BEGIN
+  PERFORM require_org_member(p_org_id);
+
+  SELECT config INTO v_config
+  FROM org_extension_config
   WHERE org_id = p_org_id AND extension_id = p_extension_id;
+
+  RETURN v_config;
+END;
 $$;
 
 GRANT EXECUTE ON FUNCTION get_extension_config(UUID, TEXT) TO authenticated;
@@ -323,7 +339,11 @@ CREATE OR REPLACE FUNCTION get_extension_stats(
   http_requests_24h BIGINT,
   last_http_request TIMESTAMPTZ
 )
-LANGUAGE sql STABLE SECURITY DEFINER AS $$
+LANGUAGE plpgsql STABLE SECURITY DEFINER AS $$
+BEGIN
+  PERFORM require_org_member(p_org_id);
+
+  RETURN QUERY
   SELECT
     (SELECT COUNT(*) FROM extension_storage 
      WHERE org_id = p_org_id AND extension_id = p_extension_id),
@@ -334,6 +354,7 @@ LANGUAGE sql STABLE SECURITY DEFINER AS $$
      AND timestamp > NOW() - INTERVAL '24 hours'),
     (SELECT MAX(timestamp) FROM extension_http_log 
      WHERE org_id = p_org_id AND extension_id = p_extension_id);
+END;
 $$;
 
 GRANT EXECUTE ON FUNCTION get_extension_stats(UUID, TEXT) TO authenticated;
@@ -434,6 +455,8 @@ COMMENT ON COLUMN extension_secret_access.accessed_by IS
 -- ===========================================
 -- END OF EXTENSIONS MODULE
 -- ===========================================
+
+SELECT revoke_public_execute_on_org_rpcs();
 
 DO $$
 BEGIN

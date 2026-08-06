@@ -745,6 +745,14 @@ CREATE POLICY "Engineers can log RFQ activity"
 -- UPDATE ... RETURNING below takes a row lock and increments in a single statement, so
 -- a second caller blocks until the first commits and then reads the incremented value.
 -- Numbers are therefore allocated once each and may be skipped if a create is abandoned.
+--
+-- require_org_member() is what makes p_org_id a claim to be checked rather than an
+-- instruction to be followed. SECURITY DEFINER means the policies below are not
+-- consulted, and PostgREST reaches this function without a session, so an anonymous
+-- caller naming another organization's id used to get back that organization's next
+-- RFQ number - which reports how many RFQs it has raised this year, seeds the counter
+-- from rows RLS otherwise hides, burns numbers out of its sequence, and creates
+-- rfq_number_counters rows for organizations chosen by the caller.
 DROP FUNCTION IF EXISTS generate_rfq_number(UUID) CASCADE;
 CREATE OR REPLACE FUNCTION generate_rfq_number(p_org_id UUID)
 RETURNS TEXT
@@ -755,6 +763,8 @@ DECLARE
   v_year INTEGER := EXTRACT(YEAR FROM NOW())::INTEGER;
   v_seq INTEGER;
 BEGIN
+  PERFORM require_org_member(p_org_id);
+
   -- Seed the counter from any RFQs the organization already has for this year, so that
   -- installing this function on a populated database does not reissue existing numbers.
   IF NOT EXISTS (
@@ -783,6 +793,9 @@ BEGIN
 END;
 $$;
 
+-- This grant only means "authenticated and no one else" because
+-- revoke_public_execute_on_org_rpcs() runs at the end of this file. On its own it
+-- adds nothing: a newly created function already carries EXECUTE for PUBLIC.
 GRANT EXECUTE ON FUNCTION generate_rfq_number(UUID) TO authenticated;
 
 -- Get best price for a part at a given quantity
@@ -928,10 +941,13 @@ COMMENT ON TABLE rfq_activity IS 'Activity/audit log for RFQs';
 -- END OF SUPPLY CHAIN MODULE
 -- ===========================================
 
--- Stamped here as well as in core.sql so that re-running this module alone - the usual
--- way a single RPC fix is applied - advances the recorded version. update_schema_version
--- is monotonic, so this can never roll a newer database backwards.
-SELECT update_schema_version(88, 'generate_rfq_number exists again: RFQ creation called it over RPC but no module had created it since schema.sql was split, so every attempt failed. It allocates RFQ-<year>-<sequence> from a per-organization counter table instead of deriving the number from existing rows, which two clients could otherwise read as the same value');
+SELECT revoke_public_execute_on_org_rpcs();
+
+-- The stamp that used to be here is gone. Applying this file alone to a v86
+-- database recorded 88 while module 10's v87 work was absent, and the app,
+-- comparing 88 against its own 88, showed no mismatch warning at all. Nothing
+-- in this file can know what the rest of the database contains, so nothing in
+-- this file is entitled to speak for it. Run supabase/tools/verify-schema.sql.
 
 DO $$
 BEGIN

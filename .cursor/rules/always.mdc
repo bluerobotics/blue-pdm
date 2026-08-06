@@ -39,10 +39,14 @@ Terminal is also for: `git`, `npm`, `npx`, build scripts.
 
 ## Schema Versioning (BOTH files, every time)
 
-1. `supabase/core.sql` → bump INSERT version
-2. `src/lib/schemaVersion.ts` → bump EXPECTED_SCHEMA_VERSION
+1. `supabase/core.sql` → bump `schema_release_version()`, and add any new object to
+   `schema_release_manifest()` in the same file
+2. `src/lib/schemaVersion.ts` → bump EXPECTED_SCHEMA_VERSION and add a VERSION_DESCRIPTIONS entry
 
 Mismatch = users see "database newer/older than app" warnings.
+
+Never stamp `schema_version` from a module or from `core.sql`. Only
+`supabase/tools/verify-schema.sql` writes it, and only after the manifest checks out.
 
 ## API Versioning (BOTH files, every time)
 

@@ -1640,6 +1640,8 @@ DECLARE
   v_released_state_id UUID;
   v_obsolete_state_id UUID;
 BEGIN
+  PERFORM require_org_member(p_org_id);
+
   INSERT INTO workflow_templates (org_id, name, description, is_default, created_by)
   VALUES (p_org_id, 'Standard Release Process', 'Default workflow for releasing engineering files', true, p_created_by)
   RETURNING id INTO v_workflow_id;
@@ -1670,6 +1672,8 @@ BEGIN
   RETURN v_workflow_id;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION create_default_workflow(UUID, UUID) TO authenticated;
 
 -- Get available transitions
 DROP FUNCTION IF EXISTS get_available_transitions(UUID, UUID) CASCADE;
@@ -1883,6 +1887,8 @@ DECLARE
   v_expires_at TIMESTAMPTZ;
   v_link_id UUID;
 BEGIN
+  PERFORM require_org_member(p_org_id);
+
   LOOP
     v_token := generate_share_token();
     EXIT WHEN NOT EXISTS (SELECT 1 FROM file_share_links WHERE file_share_links.token = v_token);
@@ -1899,6 +1905,8 @@ BEGIN
   RETURN QUERY SELECT v_link_id, v_token, v_expires_at;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION create_file_share_link(UUID, UUID, UUID, INTEGER, INTEGER, BOOLEAN) TO authenticated;
 
 -- Validate share link
 DROP FUNCTION IF EXISTS validate_share_link(TEXT) CASCADE;
@@ -2161,6 +2169,14 @@ BEGIN
   RETURN v_result;
 END;
 $$;
+
+-- An internal helper for checkin_file, not an API. It was reachable as an RPC only
+-- because a new function is executable by PUBLIC, which is also why it never
+-- appeared in src/types/supabase.ts: it should not be an endpoint at all. Nothing
+-- is lost by withdrawing it - checkin_file is SECURITY DEFINER owned by the schema
+-- owner, and supabase/tools/test-merge-custom-properties.sql runs in the SQL editor
+-- as that same owner.
+REVOKE ALL ON FUNCTION merge_custom_properties(JSONB, JSONB) FROM PUBLIC;
 
 -- Atomic checkin: safely checks in a file with conditional version increment
 -- Only increments version when content, metadata, or version switch is detected
@@ -2490,6 +2506,12 @@ END $$;
 -- ===========================================
 -- SERIAL NUMBER FUNCTIONS
 -- ===========================================
+--
+-- These, like every SECURITY DEFINER function below that takes a p_org_id, open
+-- with require_org_member(p_org_id). Without it the argument is an
+-- unauthenticated instruction: SECURITY DEFINER means RLS is not consulted, and
+-- the function is reachable over PostgREST, so naming another organization's id
+-- read or advanced that organization's counter. See core.sql.
 
 -- Preview next serial number (returns what the next auto-generated serial will look like)
 -- Used by the SerializationSettings component to show a server-side preview
@@ -2509,6 +2531,8 @@ DECLARE
   letter_prefix TEXT;
   padding_digits INTEGER;
 BEGIN
+  PERFORM require_org_member(p_org_id);
+
   -- Get serialization settings for the organization
   SELECT serialization_settings INTO settings
   FROM organizations WHERE id = p_org_id;
@@ -2567,6 +2591,8 @@ DECLARE
   letter_prefix TEXT;
   padding_digits INTEGER;
 BEGIN
+  PERFORM require_org_member(p_org_id);
+
   -- Get serialization settings for the organization (with lock for update)
   SELECT serialization_settings INTO settings
   FROM organizations WHERE id = p_org_id
@@ -2631,6 +2657,8 @@ DECLARE
   preserved_counter INTEGER;
   merged_settings JSONB;
 BEGIN
+  PERFORM require_org_member(p_org_id);
+
   -- Get current settings with lock to prevent race conditions
   SELECT serialization_settings INTO current_settings
   FROM organizations WHERE id = p_org_id
@@ -2666,6 +2694,8 @@ RETURNS JSONB AS $$
 DECLARE
   settings JSONB;
 BEGIN
+  PERFORM require_org_member(p_org_id);
+
   SELECT item_definition_settings INTO settings
   FROM organizations WHERE id = p_org_id;
 
@@ -2690,6 +2720,8 @@ CREATE OR REPLACE FUNCTION update_item_definition_settings(
 )
 RETURNS BOOLEAN AS $$
 BEGIN
+  PERFORM require_org_member(p_org_id);
+
   UPDATE organizations
   SET item_definition_settings = p_settings
   WHERE id = p_org_id;
@@ -2749,6 +2781,8 @@ DROP FUNCTION IF EXISTS get_item_images(UUID) CASCADE;
 CREATE OR REPLACE FUNCTION get_item_images(p_org_id UUID)
 RETURNS SETOF item_images AS $$
 BEGIN
+  PERFORM require_org_member(p_org_id);
+
   RETURN QUERY
   SELECT * FROM item_images WHERE org_id = p_org_id;
 END;
@@ -3071,6 +3105,8 @@ RETURNS TABLE (
   custom_properties JSONB
 ) AS $$
 BEGIN
+  PERFORM require_org_member(p_org_id);
+
   RETURN QUERY
   SELECT 
     f.id, f.file_path, f.file_name, f.extension, f.file_type,
@@ -3214,6 +3250,8 @@ RETURNS TABLE (
   is_deleted BOOLEAN
 ) AS $$
 BEGIN
+  PERFORM require_org_member(p_org_id);
+
   RETURN QUERY
   SELECT 
     f.id, f.file_path, f.file_name, f.extension, f.file_type,
@@ -3884,10 +3922,14 @@ ALTER TABLE files ADD COLUMN IF NOT EXISTS configuration_revisions JSONB DEFAULT
 -- END OF SOURCE FILES MODULE
 -- ===========================================
 
--- Stamped here as well as in core.sql so that re-running this module alone - the usual way a
--- single RPC fix is applied - advances the recorded version. update_schema_version is monotonic,
--- so this can never roll a newer database backwards.
-SELECT update_schema_version(87, 'checkin_file merges the reserved per-configuration maps in custom_properties entry by entry instead of replacing them, so checking in one edited configuration no longer erases every configuration the user did not touch');
+SELECT revoke_public_execute_on_org_rpcs();
+
+-- This module used to stamp the schema version, on the reasoning that re-running
+-- one module - the usual way a single RPC fix is applied - should advance the
+-- recorded version. That is exactly what made the number untrustworthy: this file
+-- cannot know what state the other modules are in, so the number it wrote was a
+-- claim about a database it had only partly seen. Verification stamps now;
+-- see core.sql and supabase/tools/verify-schema.sql.
 
 DO $$
 BEGIN

@@ -12,6 +12,10 @@
 --   3. Every row of the result table must read PASS. The final statement raises an
 --      exception if any case failed, so a clean run ends with "ALL CASES PASSED".
 --
+--   As of schema 89 merge_custom_properties is REVOKEd from PUBLIC - it is a helper for
+--   checkin_file, not an endpoint. The SQL editor connects as the schema owner, so this
+--   file still runs there; it will not run over PostgREST or as anon, which is the point.
+--
 -- WHAT IS BEING PROTECTED
 --   `jsonb ||` is a top-level merge. `_config_tabs` is a top-level key, so `||` replaces the
 --   whole per-configuration map. A check-in that patched the one configuration the user edited

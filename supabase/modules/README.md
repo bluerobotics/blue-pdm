@@ -56,6 +56,23 @@ Always install in this order:
 
    ```
 
+5. **Verify (Required)**
+   ```sql
+   \i tools/verify-schema.sql
+   ```
+
+   No module records a schema version any more. This script is the only thing that
+   does, and it does so only after confirming the objects the release requires are
+   present, so a run that ends here is a run whose result the app can be told about.
+
+   Use `psql -v ON_ERROR_STOP=1` if you drive this from the command line. Plain `\i`
+   keeps going after an error, which used to mean a module that failed partway through
+   still reached its stamp at the end of the file and reported success. Nothing stamps
+   from a module now, so the worst case is a half-applied module that verification
+   catches — but stopping on the first error is still how you find out sooner. The
+   Supabase SQL editor wraps each run in a transaction and rolls the whole file back,
+   so this only applies to the CLI.
+
 ## Module Details
 
 ### 10-source-files.sql (Source Files)
@@ -99,7 +116,8 @@ Contains supplier and purchasing features:
 - **Part-Suppliers** - Pricing information per part per supplier
 - **RFQs** - Request for Quote workflow (items, quotes, awards)
 - **RFQ Numbering** - `generate_rfq_number()` hands out `RFQ-<year>-<sequence>` from a
-  per-organization counter in `rfq_number_counters`
+  per-organization counter in `rfq_number_counters`, for the caller's own organization
+  only
 
 The counter is a table rather than a key in `organizations.rfq_settings` because the RFQ
 settings screen saves that column with a whole-object `UPDATE`, which would reset the
@@ -107,6 +125,13 @@ sequence and reissue numbers that already exist. It is also consumed rather than
 from `MAX(rfq_number)`: the client allocates a number in one transaction and inserts the
 RFQ in a later one, so a derived number is handed to every client that asks before the
 first one has inserted anything.
+
+`generate_rfq_number()` opens with `require_org_member(p_org_id)`. Being `SECURITY
+DEFINER` it does not see the policies above, and it was reachable over PostgREST without
+a session, so naming another organization's id returned that organization's next number —
+which reports how many RFQs it has raised this year, seeds the counter from rows RLS
+otherwise hides, burns numbers out of its sequence and creates counter rows for
+organizations the caller picked. See [Org-scoped RPCs](../README.md#org-scoped-rpcs).
 
 ### 40-integrations.sql (Integrations)
 
@@ -157,6 +182,13 @@ All module files are designed to be **idempotent** - safe to run multiple times:
 - Uses `DROP POLICY IF EXISTS` before `CREATE POLICY`
 - Enum creation wrapped in exception handlers
 - FK additions use idempotent DO blocks
+
+Every module also depends on `core.sql` from the same release: each one calls
+`require_org_member()` in its org-scoped RPCs and `revoke_public_execute_on_org_rpcs()`
+at the end, both of which live in `core.sql`. Running a module from this release against
+an older `core.sql` fails with `function ... does not exist`, which is deliberate - it is
+the case that used to install quietly and leave the database in a state nobody had
+described.
 
 ## Migration from schema.sql
 

@@ -7341,14 +7341,6 @@ export type Database = {
       }
       cleanup_stale_sessions: { Args: never; Returns: number }
       clear_team_module_defaults: { Args: { p_team_id: string }; Returns: Json }
-      create_default_job_titles: {
-        Args: { p_created_by?: string; p_org_id: string }
-        Returns: undefined
-      }
-      create_default_permission_teams: {
-        Args: { p_created_by?: string; p_org_id: string }
-        Returns: undefined
-      }
       create_default_revision_scheme: {
         Args: { p_created_by: string; p_org_id: string }
         Returns: string
@@ -8004,10 +7996,6 @@ export type Database = {
       reset_item_image: {
         Args: { p_org_id: string; p_part_number: string }
         Returns: boolean
-      }
-      seed_customer_categories: {
-        Args: { p_org_id: string }
-        Returns: undefined
       }
       set_item_designation_assignment: {
         Args: {

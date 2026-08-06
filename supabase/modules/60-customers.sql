@@ -637,7 +637,14 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
-GRANT EXECUTE ON FUNCTION seed_customer_categories(UUID) TO authenticated;
+-- No require_org_member() and no grant. Like create_default_permission_teams in
+-- core.sql this runs from an AFTER INSERT trigger on organizations, before the
+-- organization has a single member, so a membership check would stop
+-- organizations being created. It also has no client caller: the trigger below
+-- covers new organizations and the backfill loop covers existing ones. The
+-- GRANT ... TO authenticated that used to sit here described an endpoint nobody
+-- calls, so it is withdrawn rather than guarded.
+REVOKE ALL ON FUNCTION seed_customer_categories(UUID) FROM PUBLIC;
 
 -- Seed every organization that already exists
 DO $$
@@ -2431,7 +2438,11 @@ COMMENT ON FUNCTION customer_rfm(UUID, TIMESTAMPTZ, TIMESTAMPTZ, INTEGER) IS
 -- SCHEMA VERSION
 -- ===========================================
 
-SELECT update_schema_version(85, 'Date range governs the whole customers module: the roster, channel revenue, partner coverage and the detail panel take p_from/p_to and report the window instead of lifetime totals, with lifecycle dates and segments left lifetime as of the range end');
+SELECT revoke_public_execute_on_org_rpcs();
+
+-- No stamp. A module speaks for its own objects and nothing else, and the schema
+-- version is a statement about the whole database, so it is written only by
+-- supabase/tools/verify-schema.sql once every installed module has been checked.
 
 -- ===========================================
 -- END OF CUSTOMERS MODULE

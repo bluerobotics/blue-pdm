@@ -15,18 +15,30 @@
  * - supabase/core.sql - Foundation (orgs, users, teams, permissions)
  * - supabase/modules/*.sql - Feature modules (source files, change control, etc.)
  *
+ * WHAT THE NUMBER IN THE DATABASE MEANS (schema 89 onwards):
+ * schema_version.version is written by one thing only - verify_and_stamp_schema(),
+ * called from supabase/tools/verify-schema.sql - and only after it has confirmed
+ * that the objects the release requires are actually present. Running a file no
+ * longer stamps anything. Before 89 both core.sql and each module stamped the
+ * head unconditionally, so applying one module to an old database recorded a
+ * version the database was not at and this check reported "up to date" over a
+ * half-applied schema. The comparison below is worth acting on because the number
+ * it reads can now only be reached by verification.
+ *
  * When making schema changes:
  * 1. Increment EXPECTED_SCHEMA_VERSION here
  * 2. Update the appropriate module file in supabase/ (core.sql or modules/*.sql)
- * 3. Add entry to VERSION_DESCRIPTIONS below
- * 4. Both this file and supabase/core.sql must have matching version numbers
+ * 3. Bump schema_release_version() in supabase/core.sql to match, and add any
+ *    new object to schema_release_manifest() there so verification can see it
+ * 4. Add entry to VERSION_DESCRIPTIONS below
+ * 5. This file and schema_release_version() in supabase/core.sql must agree
  */
 
 import { supabase } from './supabase'
 
 // The schema version this app version expects
 // Increment this when releasing app updates that require schema changes
-export const EXPECTED_SCHEMA_VERSION = 88
+export const EXPECTED_SCHEMA_VERSION = 89
 
 // Minimum schema version that will still work (for soft warnings vs hard errors)
 // Set this to allow some backwards compatibility
@@ -121,6 +133,7 @@ export const VERSION_DESCRIPTIONS: Record<number, string> = {
   86: 'Workflow diagrams save their layout: node size on workflow_states, endpoint anchors, waypoints and label placement on workflow_transitions, plus execute_workflow_transition/complete_gate_review as the single atomic path a file takes through a workflow, an auditable workflow_history and file_state_entries, and the removal of ten never-wired advanced workflow tables',
   87: 'checkin_file merges the reserved per-configuration maps in custom_properties entry by entry instead of replacing them wholesale, so checking in one edited configuration no longer erases every configuration the user did not touch',
   88: 'generate_rfq_number exists again: creating an RFQ called it over RPC but no module had created it since schema.sql was split into modules, so every attempt failed on a correctly installed database. It allocates RFQ-<year>-<sequence> from a per-organization counter table rather than deriving the number from existing RFQs, which two clients could otherwise read as the same value before either had inserted anything',
+  89: 'A SECURITY DEFINER function that takes a p_org_id now proves the caller belongs to that organization instead of taking the argument at its word: RLS does not apply inside such a function and a new function is executable by PUBLIC, so anon could allocate another organization\u2019s next RFQ number or list its files by naming its id. Thirteen functions gained require_org_member(), three that run from organization-creation triggers were withdrawn from PUBLIC instead, and the schema version is now written only by supabase/tools/verify-schema.sql after it confirms the release\u2019s objects exist - running core.sql or a single module no longer stamps a version the database is not at',
   // Note: Process templates module (v26+) is optional - see modules/process-templates.sql
 }
 
@@ -188,7 +201,8 @@ export async function checkSchemaCompatibility(): Promise<SchemaCheckResult> {
       message: 'Database schema version unknown',
       details:
         "Your organization's database was created before schema version tracking was added. " +
-        'Ask your admin to run the latest schema (core.sql + modules) to enable version tracking and get the latest features.',
+        'Ask your admin to run the latest schema (core.sql, then the modules, then tools/verify-schema.sql) ' +
+        'to enable version tracking and get the latest features.',
     }
   }
 
@@ -227,7 +241,8 @@ export async function checkSchemaCompatibility(): Promise<SchemaCheckResult> {
       message: 'Database schema update required',
       details:
         `Your organization's database (v${dbVersion}) is too old for this app version. ` +
-        `Required: v${MINIMUM_COMPATIBLE_VERSION}+. Ask your admin to run the latest schema (core.sql + modules).`,
+        `Required: v${MINIMUM_COMPATIBLE_VERSION}+. Ask your admin to run the latest schema ` +
+        '(core.sql, then the modules, then tools/verify-schema.sql).',
     }
   }
 
@@ -239,7 +254,8 @@ export async function checkSchemaCompatibility(): Promise<SchemaCheckResult> {
     message: 'Database schema update available',
     details:
       `Your organization's database is on v${dbVersion}, but v${EXPECTED_SCHEMA_VERSION} is available. ` +
-      'Some new features may not work until your admin runs the latest schema (core.sql + modules).',
+      'Some new features may not work until your admin runs the latest schema ' +
+      '(core.sql, then the modules, then tools/verify-schema.sql, which is what records the new version).',
   }
 }
 

@@ -838,6 +838,8 @@ COMMENT ON TABLE eco_checklist_activity IS 'Audit trail for ECO checklist change
 -- END OF CHANGE CONTROL MODULE
 -- ===========================================
 
+SELECT revoke_public_execute_on_org_rpcs();
+
 DO $$
 BEGIN
   RAISE NOTICE 'Change Control module installed successfully';

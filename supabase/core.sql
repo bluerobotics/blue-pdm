@@ -30,8 +30,33 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- ===========================================
 -- SCHEMA VERSION TRACKING
 -- ===========================================
--- This table tracks the database schema version to detect mismatches
--- between the app and database.
+-- schema_version.version is what the app reads to decide whether to show a
+-- "database out of date" warning. It is therefore a claim about the whole
+-- database, and the only useful property it can have is that it is never
+-- higher than the truth.
+--
+-- It used to be written in three places that could each lie:
+--
+--   1. core.sql stamped the head unconditionally with ON CONFLICT DO UPDATE.
+--      Re-running core.sql alone on an old database moved the number to the
+--      head while every module stayed where it was.
+--   2. Each module stamped the head as well, so that re-running one module -
+--      the usual way a single RPC fix is applied - advanced the version.
+--      Applying only 30-supply-chain.sql to a v86 database therefore reported
+--      88 with module 10's v87 work absent, and the app showed no warning.
+--   3. Under the documented `psql \i` path a module that errors partway
+--      through still reaches its stamp at the end of the file.
+--
+-- The common cause is that the number is global and monotonic while the files
+-- are per-module: no single number can express "30 applied, 10 not", so any
+-- scheme where one file sets it is guessing about the others.
+--
+-- So nothing sets the version as a side effect of being run any more. The
+-- version is a *result*, written only by verify_and_stamp_schema(), which
+-- checks that the objects this release requires actually exist first. Modules
+-- stamp nothing; core.sql seeds the row and never touches an existing one.
+-- Applying a subset of the files leaves the old number in place, which is a
+-- warning rather than a false all-clear. See supabase/README.md.
 
 CREATE TABLE IF NOT EXISTS schema_version (
   id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1), -- Only allow single row
@@ -41,32 +66,189 @@ CREATE TABLE IF NOT EXISTS schema_version (
   applied_by TEXT
 );
 
--- Insert initial version for new installations
+-- Seed only. DO NOTHING rather than DO UPDATE: on an existing database the
+-- recorded version belongs to whatever was last verified, and core.sql knows
+-- nothing about the modules, so it is in no position to overwrite it.
+-- Version 0 on a fresh install reads as "installed but not yet verified".
 INSERT INTO schema_version (id, version, description, applied_at, applied_by)
-VALUES (1, 88, 'generate_rfq_number exists again: RFQ creation called it over RPC but no module had created it since schema.sql was split, so every attempt failed. It allocates RFQ-<year>-<sequence> from a per-organization counter table instead of deriving the number from existing rows, which two clients could otherwise read as the same value', NOW(), 'migration')
-ON CONFLICT (id) DO UPDATE SET 
-  version = EXCLUDED.version,
-  description = EXCLUDED.description,
-  applied_at = EXCLUDED.applied_at,
-  applied_by = EXCLUDED.applied_by;
+VALUES (1, 0, 'Installed but not verified - run supabase/tools/verify-schema.sql', NOW(), 'core.sql')
+ON CONFLICT (id) DO NOTHING;
 
--- Function to update schema version (for use in migrations)
+-- ===========================================
+-- RELEASE MANIFEST
+-- ===========================================
+-- The single place the release number lives, and the single place that says
+-- what a database must contain to be allowed to claim it.
+
+CREATE OR REPLACE FUNCTION schema_release_version() RETURNS INTEGER
+LANGUAGE sql IMMUTABLE AS $$ SELECT 89 $$;
+
+CREATE OR REPLACE FUNCTION schema_release_description() RETURNS TEXT
+LANGUAGE sql IMMUTABLE AS $$ SELECT
+  'SECURITY DEFINER RPCs that take a p_org_id check membership through require_org_member() '
+  'instead of trusting the argument, and the schema version is stamped by verification '
+  'rather than by the act of running a file'
+$$;
+
+-- One row per object this release requires, scoped to the module that creates it.
+--
+--   module  - label used in reports
+--   probe   - a table whose presence means the module is installed. NULL for core,
+--             which is never optional. A module that is not installed is skipped
+--             rather than failed, so an optional module stays optional.
+--   kind    - 'table' or 'function'
+--   identity- table name, or function signature as regprocedure accepts it
+--   requires- substring that must appear in the function source, or NULL to only
+--             check existence. This is what lets the manifest catch a body change
+--             (an added authorization check) and not just a missing object.
+CREATE OR REPLACE FUNCTION schema_release_manifest()
+RETURNS TABLE (module TEXT, probe TEXT, kind TEXT, identity TEXT, requires TEXT)
+LANGUAGE sql IMMUTABLE AS $$
+  SELECT * FROM (VALUES
+    -- core.sql
+    ('core', NULL, 'function', 'require_org_member(uuid)', NULL),
+    ('core', NULL, 'function', 'verify_and_stamp_schema()', NULL),
+    ('core', NULL, 'function', 'schema_release_version()', NULL),
+
+    -- 10-source-files.sql
+    ('10-source-files', 'files', 'function', 'merge_custom_properties(jsonb,jsonb)', NULL),
+    ('10-source-files', 'files', 'function', 'checkin_file(uuid,uuid,text,bigint,text,text,text,text,integer,jsonb,text,text,text)', 'merge_custom_properties'),
+    ('10-source-files', 'files', 'function', 'get_vault_files_fast(uuid,uuid)', 'require_org_member'),
+    ('10-source-files', 'files', 'function', 'get_vault_files_delta(uuid,uuid,timestamptz)', 'require_org_member'),
+    ('10-source-files', 'files', 'function', 'get_next_serial_number(uuid)', 'require_org_member'),
+    ('10-source-files', 'files', 'function', 'preview_next_serial_number(uuid)', 'require_org_member'),
+    ('10-source-files', 'files', 'function', 'update_serialization_settings_safe(uuid,jsonb)', 'require_org_member'),
+    ('10-source-files', 'files', 'function', 'get_item_definition_settings(uuid)', 'require_org_member'),
+    ('10-source-files', 'files', 'function', 'update_item_definition_settings(uuid,jsonb)', 'require_org_member'),
+    ('10-source-files', 'files', 'function', 'get_item_images(uuid)', 'require_org_member'),
+    ('10-source-files', 'files', 'function', 'create_default_workflow(uuid,uuid)', 'require_org_member'),
+    ('10-source-files', 'files', 'function', 'create_file_share_link(uuid,uuid,uuid,integer,integer,boolean)', 'require_org_member'),
+
+    -- 15-inspection.sql
+    ('15-inspection', 'inspection_characteristics', 'table', 'inspection_characteristic_versions', NULL),
+
+    -- 30-supply-chain.sql
+    ('30-supply-chain', 'rfqs', 'table', 'rfq_number_counters', NULL),
+    ('30-supply-chain', 'rfqs', 'function', 'generate_rfq_number(uuid)', 'require_org_member'),
+
+    -- 50-extensions.sql
+    ('50-extensions', 'org_installed_extensions', 'function', 'get_extension_config(uuid,text)', 'require_org_member'),
+    ('50-extensions', 'org_installed_extensions', 'function', 'get_extension_stats(uuid,text)', 'require_org_member'),
+
+    -- 60-customers.sql
+    ('60-customers', 'customers', 'function', 'seed_customer_categories(uuid)', NULL)
+  ) AS m(module, probe, kind, identity, requires);
+$$;
+
+-- Evaluate the manifest. One row per requirement, status 'ok', 'missing',
+-- 'stale' or 'skipped'. Read-only, so it is safe to run at any time.
+CREATE OR REPLACE FUNCTION check_schema_release()
+RETURNS TABLE (module TEXT, identity TEXT, status TEXT, detail TEXT)
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+  m RECORD;
+  v_oid OID;
+  v_src TEXT;
+BEGIN
+  FOR m IN SELECT * FROM schema_release_manifest() LOOP
+    IF m.probe IS NOT NULL AND to_regclass('public.' || m.probe) IS NULL THEN
+      module := m.module; identity := m.identity; status := 'skipped';
+      detail := 'module not installed';
+      RETURN NEXT;
+      CONTINUE;
+    END IF;
+
+    module := m.module;
+    identity := m.identity;
+
+    IF m.kind = 'table' THEN
+      IF to_regclass('public.' || m.identity) IS NULL THEN
+        status := 'missing'; detail := 'table does not exist';
+      ELSE
+        status := 'ok'; detail := NULL;
+      END IF;
+      RETURN NEXT;
+      CONTINUE;
+    END IF;
+
+    -- to_regprocedure returns NULL rather than raising for an unknown signature
+    v_oid := to_regprocedure('public.' || m.identity);
+
+    IF v_oid IS NULL THEN
+      status := 'missing'; detail := 'function does not exist';
+    ELSIF m.requires IS NOT NULL THEN
+      v_src := pg_get_functiondef(v_oid);
+      IF position(m.requires IN v_src) = 0 THEN
+        status := 'stale';
+        detail := 'function exists but does not reference ' || m.requires
+               || ' - an older copy of this module is installed';
+      ELSE
+        status := 'ok'; detail := NULL;
+      END IF;
+    ELSE
+      status := 'ok'; detail := NULL;
+    END IF;
+
+    RETURN NEXT;
+  END LOOP;
+END;
+$$;
+
+-- The only writer of schema_version. Stamps the release number if and only if
+-- every requirement of every installed module is satisfied; on failure it
+-- leaves the recorded version exactly as it was and reports what is wrong,
+-- because a half-applied database is still whatever it was before, not zero.
+CREATE OR REPLACE FUNCTION verify_and_stamp_schema()
+RETURNS JSON
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_problems JSON;
+  v_count INTEGER;
+BEGIN
+  SELECT COALESCE(json_agg(json_build_object(
+           'module', module, 'object', identity, 'status', status, 'detail', detail
+         )), '[]'::json), COUNT(*)
+    INTO v_problems, v_count
+  FROM check_schema_release()
+  WHERE status IN ('missing', 'stale');
+
+  IF v_count > 0 THEN
+    RETURN json_build_object(
+      'stamped', false,
+      'version', (SELECT version FROM schema_version WHERE id = 1),
+      'target_version', schema_release_version(),
+      'problems', v_problems
+    );
+  END IF;
+
+  UPDATE schema_version
+  SET version = schema_release_version(),
+      description = schema_release_description(),
+      applied_at = NOW(),
+      applied_by = 'verify-schema'
+  WHERE id = 1;
+
+  RETURN json_build_object(
+    'stamped', true,
+    'version', schema_release_version(),
+    'target_version', schema_release_version(),
+    'problems', '[]'::json
+  );
+END;
+$$;
+
+-- Only the schema owner (the Supabase SQL editor runs as postgres) may stamp.
+REVOKE ALL ON FUNCTION verify_and_stamp_schema() FROM PUBLIC;
+
+-- Superseded by verify_and_stamp_schema(). Kept as a no-op so that an old copy
+-- of a module file - which calls this at the end - neither fails halfway
+-- through nor silently reinstates the false stamp it was written to make.
 CREATE OR REPLACE FUNCTION update_schema_version(
   new_version INTEGER,
   new_description TEXT DEFAULT NULL
 ) RETURNS VOID AS $$
 BEGIN
-  -- Monotonic: the recorded version only ever moves forward. Optional modules are
-  -- installed AFTER core.sql (which stamps the current head), and some modules call
-  -- this with their own lower version number. Without this guard, installing such a
-  -- module would roll schema_version backwards and trigger a false "database older
-  -- than app" mismatch warning. GREATEST() makes a lower stamp a no-op.
-  UPDATE schema_version
-  SET version = GREATEST(version, new_version),
-      description = CASE WHEN new_version >= version THEN COALESCE(new_description, description) ELSE description END,
-      applied_at = NOW(),
-      applied_by = 'migration'
-  WHERE id = 1;
+  RAISE WARNING 'update_schema_version() no longer records anything. Run supabase/tools/verify-schema.sql to verify and stamp the database.';
 END;
 $$ LANGUAGE plpgsql;
 
@@ -849,6 +1031,88 @@ CREATE POLICY "Users can manage their color swatches"
 -- CORE FUNCTIONS
 -- ===========================================
 
+-- The membership gate every SECURITY DEFINER RPC that takes a p_org_id must pass.
+--
+-- SECURITY DEFINER runs as the schema owner, so RLS does not apply and the
+-- policies on organizations, files and the rest are simply not consulted.
+-- p_org_id then becomes an unauthenticated instruction: whatever organization
+-- the caller names is the organization the function operates on. PostgREST
+-- exposes every function in the public schema that the calling role may
+-- execute, and a function created without an explicit REVOKE is executable by
+-- PUBLIC, which includes anon - so the argument is reachable without logging in
+-- at all. This raises instead, and every such function calls it first.
+--
+-- A caller who names an organization that does not exist gets the same
+-- authorization error as one who names an organization they are not in: the
+-- alternative is a probe that reports which organization IDs are real, and the
+-- caller has no business knowing either way. A NULL argument is a client bug
+-- rather than an attack, so it says so.
+CREATE OR REPLACE FUNCTION require_org_member(p_org_id UUID)
+RETURNS VOID AS $$
+BEGIN
+  IF p_org_id IS NULL THEN
+    RAISE EXCEPTION 'Organization is required'
+      USING ERRCODE = 'invalid_parameter_value';
+  END IF;
+
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Not authenticated'
+      USING ERRCODE = 'invalid_authorization_specification';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM users WHERE id = auth.uid() AND org_id = p_org_id
+  ) THEN
+    RAISE EXCEPTION 'Not authorized for this organization'
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
+
+GRANT EXECUTE ON FUNCTION require_org_member(UUID) TO authenticated;
+
+-- Withdraw PUBLIC EXECUTE from every SECURITY DEFINER RPC that takes a p_org_id.
+--
+-- A function is created with EXECUTE already granted to PUBLIC, and PUBLIC
+-- includes anon. `GRANT EXECUTE ON FUNCTION f TO authenticated` written next to
+-- a new function therefore reads as a restriction but grants a privilege the
+-- world already had: proacl for such a function is
+-- `=X/postgres,postgres=X/postgres,authenticated=X/postgres`, where the leading
+-- `=X` is the grant to everyone. PostgREST exposes it to anon accordingly.
+--
+-- Doing this by class rather than one REVOKE per function is deliberate. These
+-- modules use `DROP FUNCTION` + `CREATE` to avoid overload ambiguity, and DROP
+-- discards the ACL, so the privileges are rebuilt from default on every install
+-- and a REVOKE has to be part of the install to mean anything. Applying the rule
+-- by class also covers org-scoped RPCs added later, which is the failure this
+-- keeps having. Every function in the class is org-scoped and none is
+-- anon-facing; an anon-facing RPC (get_org_auth_providers) takes a slug, not an
+-- org id, and is untouched by this. core.sql and each module call it at the end
+-- of their own file.
+CREATE OR REPLACE FUNCTION revoke_public_execute_on_org_rpcs()
+RETURNS INTEGER AS $$
+DECLARE
+  r RECORD;
+  v_count INTEGER := 0;
+BEGIN
+  FOR r IN
+    SELECT p.oid::regprocedure AS signature
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public'
+      AND p.prosecdef
+      AND pg_get_function_identity_arguments(p.oid) ~ '\mp_org_id\M'
+      AND has_function_privilege('public', p.oid, 'EXECUTE')
+  LOOP
+    EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC', r.signature);
+    v_count := v_count + 1;
+  END LOOP;
+  RETURN v_count;
+END;
+$$ LANGUAGE plpgsql;
+
+REVOKE ALL ON FUNCTION revoke_public_execute_on_org_rpcs() FROM PUBLIC;
+
 -- Full is_org_admin implementation
 CREATE OR REPLACE FUNCTION is_org_admin()
 RETURNS BOOLEAN AS $$
@@ -1409,6 +1673,14 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
+-- No require_org_member() here, and none in create_default_permission_teams
+-- below: both run from the on_organization_created trigger, at an instant when
+-- the new organization has no members at all, so a membership check would make
+-- creating an organization impossible. Withdrawing the endpoint is the fix
+-- instead - the trigger function is SECURITY DEFINER owned by the schema owner
+-- and can still call them, while PostgREST can no longer reach them.
+REVOKE ALL ON FUNCTION create_default_job_titles(UUID, UUID) FROM PUBLIC;
+
 -- Create default permission teams
 CREATE OR REPLACE FUNCTION create_default_permission_teams(p_org_id UUID, p_created_by UUID DEFAULT NULL)
 RETURNS VOID AS $$
@@ -1430,6 +1702,8 @@ BEGIN
   WHERE id = p_org_id AND default_new_user_team_id IS NULL;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+REVOKE ALL ON FUNCTION create_default_permission_teams(UUID, UUID) FROM PUBLIC;
 
 -- Apply pending team memberships
 CREATE OR REPLACE FUNCTION apply_pending_team_memberships(p_user_id UUID)
@@ -2445,7 +2719,15 @@ END $$;
 -- END OF CORE SCHEMA
 -- ===========================================
 
+SELECT revoke_public_execute_on_org_rpcs();
+
+-- No schema version stamp here. core.sql knows nothing about which modules are
+-- installed or how old they are, so anything it wrote about the database as a
+-- whole would be a guess. Run supabase/tools/verify-schema.sql once the modules
+-- are in; that checks the release manifest and stamps the version if it holds.
+
 DO $$
 BEGIN
   RAISE NOTICE 'Core schema installed successfully';
+  RAISE NOTICE 'Run supabase/tools/verify-schema.sql after installing the modules to verify and stamp the schema version';
 END $$;
