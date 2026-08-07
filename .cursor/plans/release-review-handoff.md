@@ -75,8 +75,8 @@ Verified at the time of writing:
 
 - **52 commits** in `v3.23.0..HEAD`, 339 files changed, +44,440 / −4,484.
 - Branch `main` is **ahead of `origin/main` by 6 code commits** (`8e794f5`, `6c315e3`, `049a704`,
-  `73b80a1`, `cf3684d`, `7aca01f`), nothing behind. You will see seven: the commit adding this
-  document is the seventh, and it touches nothing but this file.
+  `73b80a1`, `cf3684d`, `7aca01f`), nothing behind. The total you see will be higher: the commits
+  adding and correcting this document sit on top and touch nothing but this file.
 - **Correction to what you may be told:** `origin/main` points at `255a2e4` (2026-08-06 14:39). The
   other **46 commits of today's work have already been pushed.** Only the last six are local. If a
   brief tells you "nothing has been pushed", it is wrong about the git remote; it is right about the
