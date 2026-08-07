@@ -119,11 +119,41 @@ function Trunc {
 
 $script:Results = @()
 
+# PostgREST's "no function matches that name and those arguments". On the
+# baseline half of the upgrade lane this is not a refusal and not a breakage:
+# it means the baseline predates the object the case is about.
+#
+# WHY THIS IS NEEDED, AND WHY IT IS SAFE
+#
+# The lane was built with a v90 baseline, where every object this suite touches
+# already exists. The owner's database is on 85, and execute_workflow_transition
+# and the five-argument apply_workflow_transition arrive in 86 - so against a
+# baseline older than that, three cases and one positive control ask for
+# functions that are simply not there. Scored as written, C8 reads BROKEN and
+# the run aborts with "the application is damaged", which is the one thing that
+# has definitely not happened.
+#
+# The leniency is confined to the baseline run. After the upgrade the release
+# under test has created every one of these, so PGRST202 there is a genuine
+# failure and is still scored as one - which is what stops this from becoming a
+# way for a missing function to pass unnoticed.
+function Test-ObjectAbsent {
+  param([string]$Evidence)
+  return ($Expect -eq 'vulnerable') -and ($Evidence -match 'PGRST202')
+}
+
 function Report {
-  param([string]$Id, [string]$What, [bool]$Breached, [string]$Evidence)
-  $script:Results += [pscustomobject]@{ Id = $Id; What = $What; Breached = $Breached; Evidence = $Evidence }
-  $verdict = if ($Breached) { 'BREACHED' } else { 'refused ' }
-  $colour  = if ($Breached) { 'Red' } else { 'Green' }
+  param(
+    [string]$Id, [string]$What, [bool]$Breached, [string]$Evidence,
+    # For a case that reads back what an earlier case wrote. If the write could
+    # not be attempted on this baseline there is nothing to read, and the empty
+    # answer is the absence of the first case rather than a refusal by this one.
+    [bool]$AbsentBecause = $false
+  )
+  $absent = (Test-ObjectAbsent -Evidence $Evidence) -or ($AbsentBecause -and $Expect -eq 'vulnerable')
+  $script:Results += [pscustomobject]@{ Id = $Id; What = $What; Breached = $Breached; Evidence = $Evidence; Absent = $absent }
+  $verdict = if ($Breached) { 'BREACHED' } elseif ($absent) { 'absent  ' } else { 'refused ' }
+  $colour  = if ($Breached) { 'Red' } elseif ($absent) { 'DarkGray' } else { 'Green' }
   Write-Host ("[{0}] {1}  {2}" -f $verdict, $Id.PadRight(6), $What) -ForegroundColor $colour
   if ($Evidence) { Write-Host ("         {0}" -f $Evidence) -ForegroundColor DarkGray }
 }
@@ -328,6 +358,10 @@ $r = Invoke-Rest -Path '/rpc/apply_workflow_transition' -Token $TOK_ALICE -Metho
   p_comment = 'crossing tenants'; p_approvals = @{}
 }
 $f6a = ($r.Status -eq 200 -and $r.Body -match '"success"\s*:\s*true')
+# Whether the write below has anything to disclose depends entirely on this
+# call having happened. The five-argument apply_workflow_transition arrives in
+# schema 86, so on an older baseline it does not.
+$f6aAbsent = ($r.Body -match 'PGRST202')
 Report -Id 'F6a' -What 'Acme member applies UMBRELLA''s transition to her own file' `
        -Breached $f6a -Evidence ("HTTP {0}: {1}" -f $r.Status, (Trunc $r.Body))
 
@@ -339,7 +373,9 @@ Report -Id 'F6a' -What 'Acme member applies UMBRELLA''s transition to her own fi
 $r = Invoke-Rest -Path "/workflow_history?select=workflow_name,to_state_name,transition_name&file_id=eq.$ACME_FILE2" -Token $TOK_ALICE
 $f6b = ($r.Status -eq 200 -and $r.Body -match 'UMBRELLA-')
 Report -Id 'F6b' -What 'Acme member reads Umbrella''s workflow/state/transition names out of her own history' `
-       -Breached $f6b -Evidence ("HTTP {0}: {1}" -f $r.Status, (Trunc $r.Body))
+       -Breached $f6b -AbsentBecause $f6aAbsent `
+       -Evidence ("HTTP {0}: {1}{2}" -f $r.Status, (Trunc $r.Body),
+                  $(if ($f6aAbsent) { '  <- empty because F6a could not run on this baseline' } else { '' }))
 
 # --------------------------------------------------------------- finding 7 ---
 # Two functions that must agree about admission, and did not.
@@ -386,9 +422,12 @@ function Control {
     # fix, so they are reported but not enforced in the vulnerable run.
     [switch]$FixedOnly
   )
-  $enforced = -not ($FixedOnly -and $Expect -eq 'vulnerable')
-  $script:Controls += [pscustomobject]@{ Id = $Id; What = $What; Ok = $Ok; Enforced = $enforced }
-  $verdict = if ($Ok) { 'works   ' } elseif (-not $enforced) { 'n/a yet ' } else { 'BROKEN  ' }
+  # A control cannot be broken by a function that does not exist yet. See
+  # Test-ObjectAbsent: baseline run only, and only for PGRST202.
+  $absent = Test-ObjectAbsent -Evidence $Evidence
+  $enforced = -not (($FixedOnly -and $Expect -eq 'vulnerable') -or $absent)
+  $script:Controls += [pscustomobject]@{ Id = $Id; What = $What; Ok = $Ok; Enforced = $enforced; Absent = $absent }
+  $verdict = if ($Ok) { 'works   ' } elseif ($absent) { 'absent  ' } elseif (-not $enforced) { 'n/a yet ' } else { 'BROKEN  ' }
   $colour  = if ($Ok) { 'Green' } elseif (-not $enforced) { 'DarkGray' } else { 'Red' }
   Write-Host ("[{0}] {1}  {2}" -f $verdict, $Id.PadRight(6), $What) -ForegroundColor $colour
   if ($Evidence) { Write-Host ("         {0}" -f $Evidence) -ForegroundColor DarkGray }
@@ -546,13 +585,26 @@ $mustBreachIds = @('F2a','F2b','F3a','F3b','F3c','F3d','F3e',
 $actualBreached = @($breached | ForEach-Object { $_.Id })
 
 if ($Expect -eq 'vulnerable') {
-  $missing = @($mustBreachIds | Where-Object { $_ -notin $actualBreached })
+  # An attack whose target does not exist on this baseline was never attempted.
+  # Counting it as a refusal would overstate the baseline's safety; counting it
+  # as a failure would stop the lane on a fact about the baseline's age. It is
+  # named instead, so the run's coverage is read correctly.
+  $absentIds = @($script:Results | Where-Object { $_.Absent } | ForEach-Object { $_.Id })
+  $absentCtl = @($script:Controls | Where-Object { $_.Absent } | ForEach-Object { $_.Id })
+  if ($absentIds.Count -gt 0 -or $absentCtl.Count -gt 0) {
+    Write-Host ""
+    Write-Host ("NOT APPLICABLE TO THIS BASELINE: the function these ask for does not exist yet - attacks {0}; controls {1}." `
+      -f (($absentIds -join ', '), ($absentCtl -join ', ') | ForEach-Object { if ($_) { $_ } else { 'none' } })) -ForegroundColor Yellow
+    Write-Host "They are neither reproduced nor refused here. After the upgrade the release creates them and they are scored normally." -ForegroundColor Yellow
+  }
+
+  $missing = @($mustBreachIds | Where-Object { $_ -notin $actualBreached -and $_ -notin $absentIds })
   if ($missing.Count -gt 0) {
     Write-Host ("FAIL: expected these to succeed against the current code but they did not: {0}" -f ($missing -join ', ')) -ForegroundColor Red
     Write-Host "An attack that does not reproduce cannot be used to show a fix works." -ForegroundColor Red
     exit 1
   }
-  Write-Host "OK: every attack reproduced against the current code, with all positive controls working." -ForegroundColor Green
+  Write-Host "OK: every attack that this baseline is old enough to have reproduced, with all applicable positive controls working." -ForegroundColor Green
   exit 0
 } else {
   if ($actualBreached.Count -gt 0) {
