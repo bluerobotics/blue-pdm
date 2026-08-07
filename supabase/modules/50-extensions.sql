@@ -325,10 +325,15 @@ CREATE OR REPLACE FUNCTION update_extension_config(
 ) RETURNS BOOLEAN
 LANGUAGE plpgsql SECURITY DEFINER AS $$
 BEGIN
-  -- Check if user is admin of org
+  -- Membership, then admin. The single conjunction this replaces admitted the
+  -- same callers and hand-wrote the organization binding out of auth.uid(),
+  -- which is what check_org_gates() had to be widened to accept - and that
+  -- widening certified a function with no authorization at all. See
+  -- c_gate_binding in core.sql.
+  PERFORM require_org_member(p_org_id);
+
   IF NOT EXISTS (
-    SELECT 1 FROM users 
-    WHERE id = auth.uid() AND org_id = p_org_id AND role = 'admin'
+    SELECT 1 FROM users WHERE id = current_actor_id() AND role = 'admin'
   ) THEN
     RAISE EXCEPTION 'Only admins can update extension config';
   END IF;

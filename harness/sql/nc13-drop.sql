@@ -1,0 +1,1 @@
+DROP FUNCTION IF EXISTS nc_actor_stamp_only(UUID, INTEGER);

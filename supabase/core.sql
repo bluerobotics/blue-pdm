@@ -113,22 +113,23 @@ ON CONFLICT (id) DO NOTHING;
 -- what a database must contain to be allowed to claim it.
 
 CREATE OR REPLACE FUNCTION schema_release_version() RETURNS INTEGER
-LANGUAGE sql IMMUTABLE AS $$ SELECT 92 $$;
+LANGUAGE sql IMMUTABLE AS $$ SELECT 93 $$;
 
 CREATE OR REPLACE FUNCTION schema_release_description() RETURNS TEXT
 LANGUAGE sql IMMUTABLE AS $$ SELECT
-  'Verification can no longer reach a state the operator cannot clear: the anon sweep '
-  'covers procedures as well as functions, an object nobody is permitted to revoke is '
-  'reported loudly but does not withhold the stamp, and nothing installs an extension '
-  'into public any more. Functions created by postgres after the sweep are born '
-  'unreachable by anon. apply_workflow_transition resolves its transition from the '
-  'file''s organization, and the check that looks for a gate on one argument and an '
-  'action on another now sees functions that gate on an entity rather than on a '
-  'p_org_id. require_auth on a share link means a member of the file''s own '
-  'organization, not any Supabase account. check_org_gates() calls each function with '
-  'usable arguments and only credits a refusal it can attribute to an authorization '
-  'check; materialized views are covered; and the NULL-unsafe membership test is '
-  'matched in every spelling it has, including LANGUAGE sql'
+  'Closing a hole and revoking what the hole produced now travel together. Applying a '
+  'release deactivates share links that grant access to a file in another organization '
+  'and redacts workflow history naming another organization''s workflow, recording both '
+  'verbatim in schema_remediation_log first; check_release_residue() withholds the stamp '
+  'while any remains, so a remediation cannot be forgotten. consume_share_link admits '
+  'exactly what validate_share_link admits, because both now call share_link_admission() '
+  'rather than restating the conditions - it used to spend a download on a file '
+  'validation refused. An org-scoped RPC is credited with a gate only for a call that '
+  'binds the caller to the organization named: auth.uid(), current_actor_id() and '
+  'is_org_admin() are who asked, not whether they may, and the ten RPCs that hand-wrote '
+  'the membership test with auth.uid() now call require_org_member or is_org_member. The '
+  'anon sweep sees partitioned and foreign tables, column-level grants, and a table whose '
+  'row-level security is enabled but whose policy admits anon to every row'
 $$;
 
 -- One row per object this release requires, scoped to the module that creates it.
@@ -174,7 +175,12 @@ LANGUAGE sql IMMUTABLE AS $$
     -- against advisory by asking who granted the privilege rather than treating
     -- every row as fatal, and that version is also the one that looks at
     -- procedures and at materialized views.
-    ('core', NULL, 'function', 'check_anon_reach()', 'anon_revoke_grantors'),
+    -- `has_any_column_privilege` only exists in the version that sees a grant
+    -- made on a single column: has_table_privilege(...,'SELECT') is false for
+    -- one, so a view with `GRANT SELECT (part_number)` to anon was read over
+    -- HTTP while this reported the schema clean.
+    ('core', NULL, 'function', 'check_anon_reach()',
+      'anon_revoke_grantors && has_any_column_privilege && anon_admitting_policies'),
     -- The sweep has to cover exactly what the check reports, or the check can
     -- report something the sweep cannot clear. anon_revoke_grantors is the call
     -- that makes the two agree; the version without it is the version where a
@@ -182,10 +188,24 @@ LANGUAGE sql IMMUTABLE AS $$
     -- the `ON ROUTINE` statement itself because `requires` is matched against
     -- the source with string literals removed, and every REVOKE in that
     -- function is built inside a format() literal.
-    ('core', NULL, 'function', 'enforce_anon_execute_posture()', 'anon_revoke_grantors'),
+    -- The same widening on the remedy side. A check that reports a column grant
+    -- while the sweep cannot see it is the v90 defect again: a blocking
+    -- condition the operator has no way to clear.
+    ('core', NULL, 'function', 'enforce_anon_execute_posture()',
+      'anon_revoke_grantors && has_any_column_privilege'),
     ('core', NULL, 'function', 'anon_revoke_grantors(oid)', NULL),
     ('core', NULL, 'function', 'anon_read_grantors(oid)', NULL),
+    -- Which policies let anon see a row. Enabling row-level security is not the
+    -- same act as excluding anon, and until this existed the check confused the
+    -- two: `relrowsecurity = true` was taken as safe, so a table carrying
+    -- `CREATE POLICY ... TO anon USING (true)` was read over HTTP.
+    ('core', NULL, 'function', 'anon_admitting_policies(oid)', NULL),
+    ('core', NULL, 'function', 'anon_read_allowlist()', NULL),
     ('core', NULL, 'function', 'probe_literal_for(text)', NULL),
+    -- The probe takes its text literals from the function's own source where
+    -- the source constrains them, so an argument validation stops being a free
+    -- way to refuse the probe without ever running the authorization check.
+    ('core', NULL, 'function', 'probe_literal_for_arg(oid,text,text)', NULL),
     -- strip_sql_noise, not a phrase from the pattern it looks for: `requires`
     -- is tested against the source with literals removed, and every mention of
     -- the pattern inside this function is inside a literal.
@@ -199,15 +219,36 @@ LANGUAGE sql IMMUTABLE AS $$
     -- `probe_literal_for` is the version that fills the non-org arguments with
     -- values a function can actually get past, instead of NULLs it refuses for
     -- reasons that have nothing to do with the organization.
-    ('core', NULL, 'function', 'check_org_gates()', 'probe_literal_for'),
+    --
+    -- `c_gate_binding` is the name the evidence pattern took when it stopped
+    -- accepting auth.uid(). A function whose only recognised token was
+    -- `v_actor UUID := auth.uid();` - a stamp of who asked, with no
+    -- authorization anywhere - scored gated, was stamped, and served another
+    -- tenant's parts over HTTP.
+    ('core', NULL, 'function', 'check_org_gates()',
+      'probe_literal_for_arg && c_gate_binding'),
     ('core', NULL, 'function', 'migrate_uuid_defaults()', NULL),
     ('core', NULL, 'function', 'like_escape(text)', NULL),
+    -- Closing a hole and revoking what the hole produced.
+    ('core', NULL, 'table', 'schema_remediation_log', NULL),
+    ('core', NULL, 'function', 'record_remediation(text,integer,jsonb,text)', NULL),
+    ('core', NULL, 'function', 'check_release_residue()', NULL),
+    -- The two org-scoped RPCs core.sql owns that used to hand-write the
+    -- membership test out of auth.uid().
+    ('core', NULL, 'function', 'get_org_module_defaults(uuid)', 'require_org_member'),
+    ('core', NULL, 'function', 'get_org_column_defaults(uuid)', 'require_org_member'),
+    ('core', NULL, 'function', 'set_org_module_defaults(uuid,jsonb,jsonb,jsonb,jsonb,jsonb,jsonb,jsonb)', 'is_org_member'),
+    ('core', NULL, 'function', 'force_org_module_defaults(uuid,jsonb,jsonb,jsonb,jsonb,jsonb,jsonb,jsonb)', 'is_org_member'),
+    ('core', NULL, 'function', 'set_org_column_defaults(uuid,jsonb)', 'is_org_member'),
+    ('core', NULL, 'function', 'force_org_column_defaults(uuid,jsonb)', 'is_org_member'),
+    ('core', NULL, 'function', 'update_org_branding(uuid,text,text,text,text,text)', 'is_org_member'),
     -- One row per identity: check_schema_release() also reports unknown
     -- overloads while walking the manifest, and a second row for the same
     -- function would report each of those twice. The probe names the newest of
     -- the checks this function has to call, which cannot be present in a build
     -- that predates the others.
-    ('core', NULL, 'function', 'verify_and_stamp_schema()', 'check_unbound_entity_args'),
+    ('core', NULL, 'function', 'verify_and_stamp_schema()',
+      'check_unbound_entity_args && check_release_residue'),
 
     -- 10-source-files.sql - REQUIRED, so probe is NULL
     ('10-source-files', NULL, 'table', 'files', NULL),
@@ -226,12 +267,21 @@ LANGUAGE sql IMMUTABLE AS $$
     -- then insert p_file_id without ever comparing them, so a member of any
     -- organization could mint a working token for another tenant's file.
     ('10-source-files', NULL, 'function', 'create_file_share_link(uuid,uuid,uuid,integer,integer,boolean)', 'require_file_access'),
-    -- require_auth on a link means a member of the file's organization, so both
-    -- of these have to consult is_org_member. A build where only one of them
-    -- does is a build where a link that refuses to validate can still be spent,
-    -- or the reverse.
-    ('10-source-files', NULL, 'function', 'validate_share_link(text)', 'require_auth && is_org_member'),
-    ('10-source-files', NULL, 'function', 'consume_share_link(text)', 'require_auth && is_org_member'),
+    -- Both must call share_link_admission() rather than restate the conditions.
+    --
+    -- Pinning 'require_auth && is_org_member' on each of them separately was an
+    -- attempt to make two hand-written condition lists agree by requiring the
+    -- same words in both, and it does not work: v92 satisfied it while consume
+    -- spent a download on a file validate refused, because only one of the two
+    -- tested that the file still exists and the other's file test sat inside
+    -- its require_auth branch. Two lists that must agree should be one list.
+    ('10-source-files', NULL, 'function', 'share_link_admission(text)',
+      'require_auth && is_org_member && deleted_at'),
+    ('10-source-files', NULL, 'function', 'validate_share_link(text)', 'share_link_admission'),
+    ('10-source-files', NULL, 'function', 'consume_share_link(text)', 'share_link_admission'),
+    -- What the holes above produced, on a database that ran an earlier release.
+    ('10-source-files', NULL, 'function', 'remediate_cross_tenant_share_links()', 'record_remediation'),
+    ('10-source-files', NULL, 'function', 'remediate_cross_tenant_workflow_history()', 'record_remediation'),
     -- Entity-scoped: these resolve the organization from the id they are given
     -- and gate on that. They took no p_org_id, so the old sweep never saw them.
     ('10-source-files', NULL, 'function', 'checkout_file(uuid,uuid,text,text,text)', 'require_file_access'),
@@ -268,15 +318,118 @@ LANGUAGE sql IMMUTABLE AS $$
     ('40-integrations', 'webhooks', 'table', 'integration_credentials', NULL),
     -- Trigger-only; its protection is its ACL, which verify-schema.sql checks.
     ('40-integrations', 'webhooks', 'function', 'apply_pending_license_assignments(uuid)', NULL),
+    -- Both hand-wrote the membership test out of auth.uid(). Correct, and the
+    -- reason check_org_gates() had to treat auth.uid() as evidence of a gate -
+    -- which is what let a function with no authorization at all be certified.
+    ('40-integrations', 'webhooks', 'function', 'get_google_drive_settings(uuid)', 'require_org_member'),
+    ('40-integrations', 'webhooks', 'function', 'update_google_drive_settings(uuid,text,text,boolean,text)', 'require_org_member'),
 
     -- 50-extensions.sql
     ('50-extensions', 'org_installed_extensions', 'function', 'get_extension_config(uuid,text)', 'require_org_member'),
     ('50-extensions', 'org_installed_extensions', 'function', 'get_extension_stats(uuid,text)', 'require_org_member'),
+    ('50-extensions', 'org_installed_extensions', 'function', 'update_extension_config(uuid,text,jsonb)', 'require_org_member'),
 
     -- 60-customers.sql
     ('60-customers', 'customers', 'function', 'seed_customer_categories(uuid)', NULL)
   ) AS m(module, probe, kind, identity, requires);
 $$;
+
+-- ===========================================
+-- WHAT A CLOSED HOLE LEFT BEHIND
+-- ===========================================
+-- CLOSING A HOLE AND REVOKING WHAT IT PRODUCED
+--
+-- Every release up to 92 was verified against a fresh install, so nothing had
+-- ever asked a release whether it cleans up after itself. It does not, and a
+-- fresh install cannot show that: there is no history for the fix to fail to
+-- undo. Applied over a database that had run v90 and been attacked, v92 left a
+-- share link minted by a member of one organization for another organization's
+-- file still answering is_valid: true to an unauthenticated caller, and
+-- consume_share_link still spending downloads against it. It survives BECAUSE
+-- of the fix - validate_share_link now resolves the organization from the file,
+-- and the file genuinely is in that organization - and verification returned
+-- stamped: true with all of it in place.
+--
+-- The general shape, which is worth naming because this will happen again: a
+-- security fix changes what the code will do next time. It does not change what
+-- the data records from what the code already did. A credential a hole minted
+-- outlives the hole, and so does a disclosure the hole performed.
+--
+-- The place where the two should always travel together is here, in the release
+-- manifest, which until now only described objects. It has a second half now:
+--
+--   schema_release_manifest()  what the code must BE
+--   check_release_residue()    what the data must no longer CONTAIN
+--
+-- Both are read by verify_and_stamp_schema() and both withhold the stamp. So a
+-- release that closes a hole and forgets the remediation cannot be recorded:
+-- verification names the residue and refuses, on the databases that have it and
+-- on no others. A fresh install has none and is unaffected.
+--
+-- The remediations themselves run from the module that owns the data, at the
+-- end of the file, next to enforce_anon_execute_posture() - so applying the
+-- schema performs them and there is no separate script to remember. They are
+-- idempotent, they deactivate and redact rather than delete, and they copy
+-- every row they touch into the ledger below verbatim first, so nothing an
+-- auditor might want is destroyed by the act of cleaning up.
+CREATE TABLE IF NOT EXISTS schema_remediation_log (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  remediation TEXT NOT NULL,
+  release INTEGER NOT NULL,
+  ran_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  ran_by TEXT NOT NULL DEFAULT CURRENT_USER,
+  rows_acted_on INTEGER NOT NULL,
+  -- The rows as they were, before anything was changed. This is the reason the
+  -- remediations are allowed to redact: the original is still here, and it is
+  -- here in the one place no tenant can read.
+  subjects JSONB NOT NULL DEFAULT '[]'::jsonb,
+  detail TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_schema_remediation_log_ran_at
+  ON schema_remediation_log (ran_at DESC);
+
+-- RLS on with no policies at all, deliberately.
+--
+-- Every other table in this schema is scoped to an organization. This one is
+-- not scopeable: a cross-tenant row names two organizations and belongs to
+-- neither, so there is no tenant it could be shown to without disclosing the
+-- other. RLS enabled and no policy means nothing reaches it over PostgREST
+-- under any role, while the operator reads it from the SQL editor as postgres,
+-- which holds BYPASSRLS. That is the correct audience for it.
+ALTER TABLE schema_remediation_log ENABLE ROW LEVEL SECURITY;
+
+-- Record that a remediation acted, and say out loud what it acted on.
+--
+-- Silence is the failure mode that matters here. A remediation that quietly
+-- deactivates a share link leaves somebody's link broken with no explanation
+-- and no way to find out which, so every call prints the subjects by name as it
+-- runs and stores them for afterwards. Nothing is written when a remediation
+-- found nothing to do, which is what keeps re-running a module from filling the
+-- ledger with rows saying no.
+CREATE OR REPLACE FUNCTION record_remediation(
+  p_name TEXT,
+  p_rows INTEGER,
+  p_subjects JSONB,
+  p_detail TEXT
+) RETURNS INTEGER
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF COALESCE(p_rows, 0) = 0 THEN
+    RETURN 0;
+  END IF;
+
+  INSERT INTO schema_remediation_log (remediation, release, rows_acted_on, subjects, detail)
+  VALUES (p_name, schema_release_version(), p_rows, COALESCE(p_subjects, '[]'::jsonb), p_detail);
+
+  RAISE WARNING E'REMEDIATION % acted on % row(s): %\n  The rows as they were are in schema_remediation_log. %',
+    p_name, p_rows, COALESCE(p_subjects, '[]'::jsonb)::text, COALESCE(p_detail, '');
+
+  RETURN p_rows;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION record_remediation(TEXT, INTEGER, JSONB, TEXT) FROM PUBLIC, anon, authenticated;
 
 -- Quote a value so that LIKE treats it as text rather than as a pattern.
 --
@@ -526,6 +679,77 @@ $$;
 
 REVOKE ALL ON FUNCTION probe_literal_for(TEXT) FROM PUBLIC, anon, authenticated;
 
+-- The same question, asked with the function in front of you.
+--
+-- probe_literal_for() answers from the type alone, so every text argument gets
+-- 'blueplm_gate_probe'. No argument validation anywhere accepts that string,
+-- which makes it easy for a function to refuse the probe for a reason that has
+-- nothing to do with authorization - and the probe's whole purpose is to reach
+-- the gate and watch it fire. A function whose first statement is
+--
+--   IF p_image_type NOT IN ('icon', 'image') THEN RAISE EXCEPTION ...
+--
+-- never executes another line while being probed, so the behavioural half of
+-- check_org_gates()'s conjunction is satisfied by an argument check and the
+-- source half carries the verdict alone. Reading the source alone is what the
+-- release before last did, and it certified a gate written inside `IF false`.
+--
+-- Where the function itself says which values it will take, take one of them.
+-- The literals are read from the raw source rather than from strip_sql_noise()'s
+-- output for the obvious reason that this is the one caller that wants the
+-- string literals kept. A literal quoted in a comment could mislead it; the
+-- consequence is a probe argument that is merely as bad as the old default.
+--
+-- NOT IN is deliberately not used as a source of values: it says what the
+-- function refuses, and 'blueplm_gate_probe' is already outside any such list.
+CREATE OR REPLACE FUNCTION probe_literal_for_arg(p_oid OID, p_arg TEXT, p_type TEXT)
+RETURNS TEXT
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+  v_base TEXT := lower(btrim(p_type));
+  v_src TEXT;
+  v_lit TEXT;
+BEGIN
+  -- Only text-shaped arguments. A uuid or an integer has no vocabulary to read
+  -- off, and enums are already handled by label in probe_literal_for().
+  IF p_arg IS NULL
+     OR v_base NOT IN ('text', 'character varying', 'varchar', 'name', 'citext',
+                       'char', 'character') THEN
+    RETURN probe_literal_for(p_type);
+  END IF;
+
+  SELECT lower(regexp_replace(p.prosrc, '\s+', ' ', 'g')) INTO v_src
+  FROM pg_proc p WHERE p.oid = p_oid;
+
+  IF v_src IS NULL THEN
+    RETURN probe_literal_for(p_type);
+  END IF;
+
+  -- x IN ('a', ...), but not x NOT IN ('a', ...). Captured rather than excluded
+  -- with a lookbehind so the intent is legible in the pattern.
+  SELECT m[2] INTO v_lit
+  FROM regexp_matches(v_src, '(not +)?\m' || p_arg || '\M *in *\( *''([^'']*)''', 'g') AS m
+  WHERE m[1] IS NULL
+  LIMIT 1;
+
+  -- x = 'a', and 'a' = x.
+  IF v_lit IS NULL THEN
+    v_lit := (regexp_match(v_src, '\m' || p_arg || '\M *= *''([^'']*)'''))[1];
+  END IF;
+  IF v_lit IS NULL THEN
+    v_lit := (regexp_match(v_src, '''([^'']*)'' *= *\m' || p_arg || '\M'))[1];
+  END IF;
+
+  IF v_lit IS NULL OR v_lit = '' THEN
+    RETURN probe_literal_for(p_type);
+  END IF;
+
+  RETURN quote_literal(v_lit) || '::' || v_base;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION probe_literal_for_arg(OID, TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+
 -- Call every org-scoped RPC with an organization id the caller has nothing to do
 -- with, and report the ones that do not refuse.
 --
@@ -567,16 +791,27 @@ REVOKE ALL ON FUNCTION probe_literal_for(TEXT) FROM PUBLIC, anon, authenticated;
 -- were scored gated and stamped, and then read another organization's data.
 --
 -- So: the other arguments are filled with values a function can get past -
--- probe_literal_for() below - which is what lets execution reach the gate; and
--- a refusal is only credited when it can be *attributed* to an authorization
--- check, meaning the function's own source calls one. The two tests are a
--- conjunction and each covers the other's blind spot:
+-- probe_literal_for_arg() below, which reads the function's own vocabulary
+-- where it has one - which is what lets execution reach the gate; and a refusal
+-- is only credited when it can be *attributed* to an authorization check,
+-- meaning the function's own source calls one. The two tests are a conjunction
+-- and each covers the other's blind spot:
 --
 --   a check inside `IF false THEN`  -> source has it, behaviour answers -> ungated
 --   a NOT NULL violation, no gate   -> behaviour refuses, source has none -> ungated
 --
 -- Neither test alone would catch both, and reading the source alone is what the
 -- release before last did.
+--
+-- AND ATTRIBUTION IS EXACTLY AS GOOD AS ITS TOKEN LIST
+--
+-- The conjunction is only as strong as what the source half counts. It counted
+-- `auth.uid()`, which is who is asking and not whether they may, so a function
+-- with no authorization whatsoever - one line, `v_actor UUID := auth.uid();` -
+-- was scored gated, stamped, and read another tenant's parts over HTTP. It
+-- counted `is_org_admin()` too, which is a real check about the wrong
+-- organization. See c_gate_binding below for what is left and why, and for the
+-- ten RPCs that had to change so that removing them cost nothing true.
 CREATE OR REPLACE FUNCTION check_org_gates()
 RETURNS TABLE (signature TEXT, status TEXT, detail TEXT)
 LANGUAGE plpgsql AS $$
@@ -586,22 +821,52 @@ DECLARE
     'create_default_permission_teams',
     'seed_customer_categories'
   ];
-  -- Predicates. Answering is what they are for, so the "did it answer?" test
-  -- below scores them ungated, wrongly. is_org_member(p_org_id) returning false
-  -- for a foreign organization is the gate working, not the gate missing; it is
-  -- the thing the callers in this list are gated *by*. It discloses nothing - a
-  -- caller learns only whether they themselves are a member - and it is granted
-  -- to authenticated, never to anon.
+  -- The gates themselves. Asking whether a gate is gated is a category error:
+  -- is_org_member(p_org_id) returning false for a foreign organization is the
+  -- gate working, and require_org_member(p_org_id) raising is the same thing
+  -- spelled with an exception. They are what every function below is gated
+  -- *by*. Neither discloses anything - a caller learns only whether they
+  -- themselves are a member - and neither is granted to anon.
+  --
+  -- Excluding them from the probe means nothing here watches them work, so
+  -- harness/sql/posture-checks.sql calls both directly, as four different
+  -- callers, and requires the answers a gate must give.
   c_predicate TEXT[] := ARRAY[
-    'is_org_member'
+    'is_org_member',
+    'require_org_member'
   ];
-  -- What makes a refusal attributable. Every one of these consults the caller's
-  -- identity; a function containing none of them cannot have refused *because
-  -- of who was asking*, whatever it raised.
-  c_gate_evidence CONSTANT TEXT :=
-    '(require_org_member|is_org_member|require_same_org_user|require_\w+_access'
-    '|is_org_admin|user_has_permission|user_has_team_permission|current_actor_id'
-    '|auth\s*\.\s*uid)\s*\(';
+  -- WHAT MAKES A REFUSAL ATTRIBUTABLE
+  --
+  -- A call that ties the caller to the organization the function was asked
+  -- about. Nothing weaker, and the list used to contain three weaker things.
+  --
+  -- `auth.uid()` was the worst of them. It answers "who is asking", which is a
+  -- stamp and not a gate, and a function whose only recognised token was
+  --
+  --   DECLARE v_actor UUID := auth.uid();
+  --
+  -- with no authorization of any kind anywhere in it scored gated, was stamped
+  -- by verify_and_stamp_schema(), and served one tenant another tenant's parts
+  -- over HTTP. `current_actor_id()` is the same answer that raises when the
+  -- answer is nobody: it establishes that somebody is signed in, and signing up
+  -- is free. `is_org_admin()`, `user_has_permission()` and
+  -- `user_has_team_permission()` are genuine authorization checks and still not
+  -- these: they ask what the caller may do in their OWN organization and take
+  -- no p_org_id, so an admin of one tenant passes them while naming another.
+  --
+  -- Removing them is only honest if the code stops depending on them, and ten
+  -- RPCs did - each hand-writing `SELECT org_id INTO v FROM users WHERE id =
+  -- auth.uid()` and comparing it to p_org_id. Every one was correct, and their
+  -- correctness is why this list had to be wrong: the checker was widened to
+  -- accommodate the convention instead of the convention being kept. They call
+  -- require_org_member() or is_org_member() now, which is what
+  -- check_null_unsafe_org_gates() has told people to do for two releases.
+  --
+  -- Named c_gate_binding rather than c_gate_evidence because the change is what
+  -- counts as evidence, and a build carrying the old copy should not satisfy the
+  -- manifest by accident.
+  c_gate_binding CONSTANT TEXT :=
+    '(require_org_member|is_org_member|require_same_org_user|require_\w+_access)\s*\(';
   r RECORD;
   v_args TEXT;
   v_sqlstate TEXT;
@@ -630,17 +895,20 @@ BEGIN
       AND NOT (p.proname = ANY (c_predicate))
     ORDER BY 1
   LOOP
-    v_attributable := r.src ~ c_gate_evidence;
+    v_attributable := r.src ~ c_gate_binding;
 
     -- A random organization id for p_org_id, and for every other argument a
     -- value of its own type that the function has some chance of accepting.
     -- NULLs here were how a function got certified without its org gate ever
     -- being reached: it rejected the NULL first and the probe called that a
-    -- refusal.
+    -- refusal. probe_literal_for_arg() goes one further and reads the function's
+    -- own vocabulary, so an argument the function only accepts from a fixed set
+    -- is filled from that set rather than with a string nothing accepts.
     SELECT string_agg(
              CASE WHEN a.arg ~ '\mp_org_id\M'
                   THEN quote_literal(gen_random_uuid()::text) || '::uuid'
-                  ELSE probe_literal_for(regexp_replace(a.arg, '^\S+\s+', '')) END,
+                  ELSE probe_literal_for_arg(r.oid, split_part(a.arg, ' ', 1),
+                                             regexp_replace(a.arg, '^\S+\s+', '')) END,
              ', ' ORDER BY a.ord)
       INTO v_args
       FROM unnest(string_to_array(r.ident_args, ', ')) WITH ORDINALITY AS a(arg, ord);
@@ -672,9 +940,10 @@ BEGIN
             -- RETURN rather than raising.
             status := CASE WHEN v_attributable THEN 'gated' ELSE 'ungated' END;
             detail := CASE WHEN v_attributable THEN 'returned no rows'
-                      ELSE 'returned no rows, but nothing in its source consults '
-                        || 'the caller''s identity, so the empty result is not a '
-                        || 'refusal - it is a query that happened to match nothing' END;
+                      ELSE 'returned no rows, but nothing in its source ties the '
+                        || 'caller to the organization it was asked about, so the '
+                        || 'empty result is not a refusal - it is a query that '
+                        || 'happened to match nothing' END;
           -- record::text doubles the quotes inside a JSON column, so
           -- {"success" : false} arrives as ("{""success"" : false}").
           ELSIF replace(v_message, '""', '"') ~ '"success"\s*:\s*false' THEN
@@ -682,9 +951,9 @@ BEGIN
             status := CASE WHEN v_attributable THEN 'gated' ELSE 'ungated' END;
             detail := CASE WHEN v_attributable THEN left(v_message, 200)
                       ELSE 'returned ' || left(v_message, 120) || ' - but nothing in '
-                        || 'its source consults the caller''s identity, so this is '
-                        || 'some other argument being rejected, not an authorization '
-                        || 'check' END;
+                        || 'its source ties the caller to the organization it was '
+                        || 'asked about, so this is some other argument being '
+                        || 'rejected, not an authorization check' END;
           ELSE
             status := 'ungated';
             detail := 'ran to completion against an organization the caller does '
@@ -707,11 +976,15 @@ BEGIN
           ELSE
             status := 'ungated';
             detail := 'refused with "' || left(v_message, 120) || '", but nothing in '
-                   || 'its source consults the caller''s identity - no '
-                   || 'require_org_member, is_org_member, require_..._access, '
-                   || 'is_org_admin or auth.uid(). The refusal is about some other '
-                   || 'argument, and a caller who supplies that argument correctly '
-                   || 'is served whatever organization they name.';
+                   || 'its source ties the caller to the organization it was asked '
+                   || 'about - no require_org_member, is_org_member, '
+                   || 'require_..._access or require_same_org_user. auth.uid(), '
+                   || 'current_actor_id() and is_org_admin() do not count: the first '
+                   || 'two say who is asking and the third says what they may do in '
+                   || 'their own organization, and none of them looks at p_org_id. '
+                   || 'The refusal is about some other argument, and a caller who '
+                   || 'supplies that argument correctly is served whatever '
+                   || 'organization they name.';
           END IF;
           RETURN NEXT;
         ELSE
@@ -828,6 +1101,151 @@ $$;
 
 REVOKE ALL ON FUNCTION anon_read_grantors(OID) FROM PUBLIC, anon, authenticated;
 
+-- Policies on this relation that let anon see every row.
+--
+-- ENABLING ROW-LEVEL SECURITY IS NOT EXCLUDING ANON
+--
+-- The table sweep below treats `relrowsecurity = true` as the end of the
+-- question, and it is not even the beginning of it. RLS decides that policies
+-- apply; the policies decide who sees what. A table with
+--
+--   ALTER TABLE t ENABLE ROW LEVEL SECURITY;
+--   CREATE POLICY p ON t FOR SELECT TO anon USING (true);
+--
+-- has row-level security switched on and is readable at GET /rest/v1/t with no
+-- JWT. That was verified over HTTP against this release's predecessor while
+-- check_anon_reach() returned nothing and the schema was stamped.
+--
+-- WHAT THIS CAN AND CANNOT SEE
+--
+-- "Does this policy exclude anon?" is not decidable from the expression in
+-- general - `USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()))`
+-- excludes anon only because auth.uid() is NULL for it, which is a fact about
+-- the platform and not about the text. So this asks the narrow, decidable
+-- question instead: is there a permissive SELECT policy, applying to anon
+-- directly or through PUBLIC, whose USING expression is the constant true? That
+-- is the shape that admits anon to everything, and it is the shape somebody
+-- writes by accident when they want a table readable by the sign-in screen.
+--
+-- A qual of `1 = 1`, or one that reduces to true through a function, is not
+-- caught. Stating that is better than implying a completeness this cannot have;
+-- the allowlist below is what makes the deliberate cases explicit, so anything
+-- else arriving is at least visible in a diff.
+--
+-- Restrictive policies are ignored: they can only subtract from what a
+-- permissive one grants, so one can never be the reason anon sees a row.
+CREATE OR REPLACE FUNCTION anon_admitting_policies(p_oid OID)
+RETURNS TEXT[]
+LANGUAGE sql STABLE AS $$
+  SELECT COALESCE(array_agg(pol.polname ORDER BY pol.polname), '{}'::TEXT[])
+  FROM pg_policy pol
+  WHERE pol.polrelid = p_oid
+    AND pol.polpermissive
+    -- 'r' is SELECT, '*' is ALL. The others cannot return a row to a reader.
+    AND pol.polcmd IN ('r', '*')
+    AND EXISTS (
+      SELECT 1 FROM unnest(pol.polroles) AS rid
+      -- 0 is PUBLIC, which anon holds through.
+      WHERE rid = 0 OR pg_has_role('anon', rid, 'MEMBER')
+    )
+    AND COALESCE(pg_get_expr(pol.polqual, pol.polrelid), 'true') = 'true';
+$$;
+
+REVOKE ALL ON FUNCTION anon_admitting_policies(OID) FROM PUBLIC, anon, authenticated;
+
+-- Relations an unauthenticated caller is deliberately allowed to read, the
+-- counterpart of anon_execute_allowlist() for tables and views.
+--
+-- Same rule: keep it short and justify every entry, because a relation here is
+-- readable over PostgREST by anyone on the internet holding the publishable
+-- key. It exists so that the deliberate case and the accidental case can be
+-- told apart at all - without it, the policy check above would report the one
+-- table that is meant to be public and an operator would learn to ignore it.
+CREATE OR REPLACE FUNCTION anon_read_allowlist()
+RETURNS TABLE (relname TEXT, reason TEXT)
+LANGUAGE sql IMMUTABLE AS $$
+  SELECT * FROM (VALUES
+    -- One row, holding an integer, a description of the release and when it was
+    -- stamped. It names no organization and no person, and the app compares it
+    -- against the version it was built for. Its SELECT policy is USING (true)
+    -- on purpose.
+    ('schema_version', 'the recorded schema version, which names no tenant')
+  ) AS a(relname, reason);
+$$;
+
+-- ANON HOLDS SELECT, INSERT, UPDATE AND DELETE ON EVERY TABLE IN public
+--
+-- Supabase's bootstrap runs ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL
+-- ON TABLES TO anon, so every table this schema creates is born with all four
+-- granted to the unauthenticated role. 101 of 102 hold it - schema_version is
+-- the exception only because it is on the allowlist above. Nothing but
+-- row-level security stands between an anonymous caller holding the publishable
+-- key and every row in the database.
+--
+-- That is stated here, in the schema, rather than left as an observation
+-- somewhere, because the question "should we revoke them?" has a measured
+-- answer and the answer has a sequence to it.
+--
+-- WHAT WAS MEASURED, IN THE HARNESS
+--
+-- harness/sql/anon-table-grants-experiment.sql revokes all four from anon on
+-- every relation in public except the allowlist, withdraws the default
+-- privilege, and then the full suite runs against it:
+--
+--   * 18 of 18 attacks refused - unchanged;
+--   * 12 of 12 positive controls still working - unchanged.
+--
+-- Nothing broke, because every path the product uses is either a SECURITY
+-- DEFINER function - which executes as its owner and does not consult the
+-- caller's table grants at all - or an authenticated request, which uses
+-- `authenticated`, untouched by any of this.
+--
+-- WHY IT IS NOT IN THIS RELEASE ANYWAY
+--
+-- The app makes exactly two unauthenticated table requests, both SELECT on
+-- organizations, and both already return nothing because that table's policies
+-- admit only authenticated. Both tolerate an error. So far so safe.
+--
+-- The API server makes a third. api/src/infrastructure/supabase.ts,
+-- checkDatabaseHealth(), does `client.from('organizations').select('id')` with
+-- the bare anon key and reports the database UNHEALTHY on any error. Measured
+-- over HTTP in the harness: with the grant, anon gets `200 []`; without it,
+-- `401 {"code":"42501","message":"permission denied for table organizations"}`.
+-- So revoking flips /health to unhealthy, and on a platform that reads that
+-- endpoint - Railway, Render, Fly - the API is pulled out of rotation. That is
+-- the silent breakage this kind of change is warned about, and it is silent in
+-- the worst way: the schema change and the deployment that notices it are
+-- weeks apart.
+--
+-- THE SEQUENCE, FOR WHOEVER PICKS THIS UP
+--
+--   1. Change checkDatabaseHealth() to something that does not depend on an
+--      anon table grant - `select version()` over an RPC on
+--      anon_execute_allowlist(), or the /health probe the platform already has.
+--      That is an api/ change and it ships on the API's own version.
+--   2. Deploy it, and confirm no other consumer of the publishable key reads a
+--      table. The two in the desktop app are listed above; a new one would be
+--      a new call site, and this note is what tells its author to look.
+--   3. Then revoke, in the sweep at the end of each module, alongside the
+--      routine posture: REVOKE ALL ON TABLE ... FROM anon for everything not on
+--      anon_read_allowlist(), plus ALTER DEFAULT PRIVILEGES ... REVOKE ALL ON
+--      TABLES FROM anon so the next table is born closed. The experiment file
+--      is that statement, already written.
+--
+-- AND WHAT IS TRUE IN THE MEANTIME
+--
+-- "Check instead that every table's policy provably excludes anon" is the
+-- appealing alternative and it is only partly available: whether a policy
+-- excludes anon is not decidable from its expression. `USING (org_id IN (SELECT
+-- org_id FROM users WHERE id = auth.uid()))` excludes anon because auth.uid()
+-- is NULL for it, which is a fact about the platform and not about the text.
+-- What check_anon_reach() does cover is the two decidable cases: row-level
+-- security switched off at all, and a permissive SELECT policy reaching anon
+-- whose USING is the constant true. Both withhold the stamp. Between them they
+-- catch every way a table has actually been left open here, and neither is a
+-- proof of exclusion in general. Saying that plainly is worth more than a check
+-- that implies a completeness it cannot have.
+
 CREATE OR REPLACE FUNCTION check_anon_reach()
 RETURNS TABLE (kind TEXT, identity TEXT, severity TEXT, detail TEXT)
 LANGUAGE plpgsql AS $$
@@ -884,8 +1302,27 @@ BEGIN
   -- "could the caller actually do this?" question decides the severity. Every
   -- BluePLM table is owned by the installing role, so this is blocking for all
   -- of them; a table an extension left in public is not.
+  --
+  -- relkind IN ('r','p','f'), not 'r'.
+  --
+  -- 'r' is an ordinary table and it is the only shape this used to look at.
+  --
+  --   'p' is a partitioned table. Its leaf partitions are 'r' and were caught,
+  --       which reads as adequate until row-level security is enabled on a
+  --       leaf: the leaf then drops out of this sweep, the parent was never in
+  --       it, and SELECT through the parent - which is how anyone queries a
+  --       partitioned table - applies the parent's policies, of which there
+  --       are none. Verified over HTTP: anon read every row of a partitioned
+  --       table in public while this function returned nothing.
+  --   'f' is a foreign table, which cannot carry row-level security at all and
+  --       reaches data this database does not even hold.
+  --
+  -- Partitions themselves are excluded (relispartition): a leaf is reached
+  -- through its parent, the parent is now swept, and reporting both would tell
+  -- the operator to fix the same exposure once per partition.
   RETURN QUERY
-  SELECT 'table'::TEXT,
+  SELECT CASE c.relkind WHEN 'p' THEN 'partitioned table'
+                        WHEN 'f' THEN 'foreign table' ELSE 'table' END::TEXT,
          c.relname::TEXT,
          CASE WHEN v_super OR pg_has_role(current_user, c.relowner, 'MEMBER')
               THEN 'blocking' ELSE 'advisory' END::TEXT,
@@ -902,9 +1339,51 @@ BEGIN
   FROM pg_class c
   JOIN pg_namespace n ON n.oid = c.relnamespace
   WHERE n.nspname = 'public'
-    AND c.relkind = 'r'
+    AND c.relkind IN ('r', 'p', 'f')
+    AND NOT c.relispartition
     AND NOT c.relrowsecurity
-    AND c.relname <> 'schema_version'
+    AND NOT EXISTS (SELECT 1 FROM anon_read_allowlist() a WHERE a.relname = c.relname)
+  ORDER BY 2;
+
+  -- Row-level security switched on, and a policy that hands anon every row.
+  --
+  -- The block above answers "is RLS off?" and stops. That is not the same
+  -- question as "is anon excluded?", and the gap between them is a whole class
+  -- of exposure: RLS on, `CREATE POLICY ... FOR SELECT TO anon USING (true)`,
+  -- and the table is public at GET /rest/v1/<table> with no JWT while every
+  -- inventory in this file calls it protected. Measured over HTTP against the
+  -- previous release; check_anon_reach() returned nothing and the schema was
+  -- stamped.
+  --
+  -- See anon_admitting_policies() for what this can and cannot recognise. It is
+  -- the narrow case - a permissive SELECT policy reaching anon whose USING is
+  -- the constant true - and it is the one that gets written by accident.
+  RETURN QUERY
+  SELECT CASE c.relkind WHEN 'p' THEN 'partitioned table'
+                        WHEN 'm' THEN 'matview' WHEN 'v' THEN 'view'
+                        ELSE 'table' END::TEXT,
+         c.relname::TEXT,
+         CASE WHEN v_super OR pg_has_role(current_user, c.relowner, 'MEMBER')
+              THEN 'blocking' ELSE 'advisory' END::TEXT,
+         'has row-level security enabled and a policy that admits anon to every '
+           || 'row: ' || array_to_string(anon_admitting_policies(c.oid), ', ')
+           || '. Enabling row-level security decides that policies apply; it does '
+           || 'not decide who they let in, and USING (true) lets in whoever the '
+           || 'policy names. Either scope the policy''s USING expression to the '
+           || 'caller''s organization, or restrict the policy to authenticated: '
+           || 'DROP POLICY ' || quote_ident((anon_admitting_policies(c.oid))[1])
+           || ' ON ' || quote_ident(c.relname) || '; and write it again with the '
+           || 'roles and the predicate it needs. If the relation is genuinely '
+           || 'meant to be public, add it to anon_read_allowlist() with a reason.'
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname = 'public'
+    AND c.relkind IN ('r', 'p')
+    AND NOT c.relispartition
+    AND c.relrowsecurity
+    AND has_any_column_privilege('anon', c.oid, 'SELECT')
+    AND array_length(anon_admitting_policies(c.oid), 1) > 0
+    AND NOT EXISTS (SELECT 1 FROM anon_read_allowlist() a WHERE a.relname = c.relname)
   ORDER BY 2;
 
   -- Views. This block is here because nothing in the release before last looked
@@ -917,6 +1396,16 @@ BEGIN
   --
   -- Materialized views used to be folded in here and are now handled on their
   -- own below, because revoking anon is not a sufficient answer for one.
+  --
+  -- has_any_column_privilege, not has_table_privilege.
+  --
+  -- A grant can be made on a single column - `GRANT SELECT (part_number) ON
+  -- parts_with_pricing TO anon` - and has_table_privilege is false for one,
+  -- because it asks about the privilege on the whole relation. PostgREST serves
+  -- ?select=part_number from it perfectly happily. Verified: a view with one
+  -- column granted was read over HTTP by anon while this returned nothing.
+  -- has_any_column_privilege answers true for the table-level grant as well, so
+  -- it is a superset and nothing that used to be reported stops being reported.
   RETURN QUERY
   SELECT 'view'::TEXT,
          c.relname::TEXT,
@@ -941,7 +1430,7 @@ BEGIN
   JOIN pg_namespace n ON n.oid = c.relnamespace
   WHERE n.nspname = 'public'
     AND c.relkind = 'v'
-    AND has_table_privilege('anon', c.oid, 'SELECT')
+    AND has_any_column_privilege('anon', c.oid, 'SELECT')
   ORDER BY 2;
 
   -- A view that is not security_invoker reads its base tables as the view's
@@ -971,8 +1460,8 @@ BEGIN
     AND c.relkind = 'v'
     AND COALESCE((SELECT option_value FROM pg_options_to_table(c.reloptions)
                   WHERE option_name = 'security_invoker'), 'off') NOT IN ('true', 'on')
-    AND (has_table_privilege('anon', c.oid, 'SELECT')
-         OR has_table_privilege('authenticated', c.oid, 'SELECT'))
+    AND (has_any_column_privilege('anon', c.oid, 'SELECT')
+         OR has_any_column_privilege('authenticated', c.oid, 'SELECT'))
   ORDER BY 2;
 
   -- Materialized views, which the block above cannot help with.
@@ -997,10 +1486,10 @@ BEGIN
          CASE WHEN v_super OR pg_has_role(current_user, c.relowner, 'MEMBER')
               THEN 'blocking' ELSE 'advisory' END::TEXT,
          'is a materialized view in public readable by '
-           || CASE WHEN has_table_privilege('anon', c.oid, 'SELECT')
-                        AND has_table_privilege('authenticated', c.oid, 'SELECT')
+           || CASE WHEN has_any_column_privilege('anon', c.oid, 'SELECT')
+                        AND has_any_column_privilege('authenticated', c.oid, 'SELECT')
                      THEN 'anon and authenticated'
-                   WHEN has_table_privilege('anon', c.oid, 'SELECT') THEN 'anon'
+                   WHEN has_any_column_privilege('anon', c.oid, 'SELECT') THEN 'anon'
                    ELSE 'authenticated' END
            || '. A materialized view cannot be security_invoker and has no row-level '
            || 'security of its own, so every grantee sees every organization''s rows '
@@ -1013,8 +1502,8 @@ BEGIN
   JOIN pg_namespace n ON n.oid = c.relnamespace
   WHERE n.nspname = 'public'
     AND c.relkind = 'm'
-    AND (has_table_privilege('anon', c.oid, 'SELECT')
-         OR has_table_privilege('authenticated', c.oid, 'SELECT'))
+    AND (has_any_column_privilege('anon', c.oid, 'SELECT')
+         OR has_any_column_privilege('authenticated', c.oid, 'SELECT'))
   ORDER BY 2;
 
   -- The default privileges themselves, which is what makes the function case
@@ -1313,13 +1802,27 @@ BEGIN
     -- separately, because the remedy is specific: the argument that was checked
     -- was not the argument that chose the row.
     -- ---------------------------------------------------------------------
+    -- THE OTHER IDS ARE THE ONES row_selecting_id_args() RECOGNISES
+    --
+    -- This used to take every argument whose name ends in _id, of any type,
+    -- which is the mistake rule 2 already knew not to make and says so in
+    -- row_selecting_id_args(): every primary key in this schema is a uuid, so a
+    -- text argument called p_client_id is a Google OAuth client id being
+    -- stored, not a row being reached into. update_google_drive_settings was
+    -- reported for "acting on" p_client_id and p_inspection_template_folder_id,
+    -- and update_extension_config for a p_extension_id that is text and is half
+    -- of a composite key whose other half is the gated p_org_id. Neither is a
+    -- way into another tenant, and a check that reports them is a check the
+    -- operator learns to scroll past.
+    --
+    -- Both were invisible before only because they hand-wrote their membership
+    -- test as `... AND org_id = p_org_id`, which this rule reads as p_org_id
+    -- constraining a row. Converting them to require_org_member() removed that
+    -- accidental exemption and exposed the real defect, which is here.
     IF 'p_org_id' = ANY(COALESCE(r.proargnames, '{}')) THEN
-      SELECT string_agg(a.name, ', ' ORDER BY a.ord) INTO v_org_others
-      FROM unnest(r.proargnames) WITH ORDINALITY AS a(name, ord)
-      WHERE a.name ~ '_id$'
-        AND a.name <> 'p_org_id'
-        AND (r.proargmodes IS NULL OR r.proargmodes[a.ord] IN ('i', 'b'))
-        AND a.name NOT IN ('p_user_id', 'p_created_by', 'p_actor_id', 'p_updated_by');
+      SELECT string_agg(a, ', ') INTO v_org_others
+      FROM unnest(row_selecting_id_args(r.oid)) AS a
+      WHERE a <> 'p_org_id';
 
       IF v_org_others IS NOT NULL
          AND v_src ~ '(require_org_member|is_org_member) *\( *p_org_id'
@@ -1403,6 +1906,152 @@ $$;
 
 REVOKE ALL ON FUNCTION check_unbound_entity_args() FROM PUBLIC, anon, authenticated;
 
+-- The other half of the manifest: what the data must no longer contain.
+--
+-- See the note above schema_remediation_log. These are the same questions the
+-- remediations answer, asked again afterwards by something that did not run
+-- them, so "the remediation ran" and "the residue is gone" stay two separate
+-- statements. Anything reported here withholds the stamp, which is what makes
+-- forgetting a remediation impossible rather than merely discouraged.
+--
+-- Guarded by to_regclass throughout: a core-only install has none of these
+-- tables and must not fail for the lack of them.
+--
+-- WHAT COUNTS AS RESIDUE, AND WHAT DELIBERATELY DOES NOT
+--
+-- An active cross-tenant share link does, because it is a live credential. A
+-- deactivated one does not: that is a remediated row kept for the audit, and a
+-- check that kept refusing after the remedy had run would be the v90 defect
+-- again - a condition the operator cannot clear.
+--
+-- A workflow_history row whose workflow, transition or state id belongs to
+-- another organization does, because the names copied alongside those ids are
+-- readable by the wrong tenant for as long as the row says what it says. A row
+-- whose ids are NULL does not, and cannot be judged: the foreign keys are ON
+-- DELETE SET NULL, so a NULL there is ordinary. This is stated rather than
+-- hidden - a history row that names a foreign workflow only in its text
+-- columns, with no ids, is outside what this can see.
+CREATE OR REPLACE FUNCTION check_release_residue()
+RETURNS TABLE (residue TEXT, identity TEXT, detail TEXT)
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+  r RECORD;
+BEGIN
+  -- ---------------------------------------------------------------------
+  -- Share links pointing at a file in another organization.
+  --
+  -- Matching on the link's org_id against the file's finds two different rows
+  -- and both are live cross-tenant credentials: one minted through the hole,
+  -- and one minted in good faith for a file that later moved organizations.
+  -- The detail says which it looks like, from the creator's own membership, so
+  -- an operator restoring a link they judge legitimate can tell them apart.
+  -- Neither is left active, because under this release validate_share_link()
+  -- resolves the organization from the file, so both hand out a file the
+  -- link's own organization does not own.
+  -- ---------------------------------------------------------------------
+  IF to_regclass('public.file_share_links') IS NOT NULL
+     AND to_regclass('public.files') IS NOT NULL THEN
+    FOR r IN
+      SELECT l.id, l.token, l.org_id AS link_org, f.org_id AS file_org,
+             l.created_by, l.created_at,
+             (SELECT u.org_id FROM users u WHERE u.id = l.created_by) AS creator_org
+      FROM file_share_links l
+      JOIN files f ON f.id = l.file_id
+      WHERE l.org_id IS DISTINCT FROM f.org_id
+        AND COALESCE(l.is_active, false)
+      ORDER BY l.created_at
+    LOOP
+      residue := 'cross_tenant_share_link';
+      -- The token's first eight characters as well as the row id, because the
+      -- way an operator meets this is somebody telling them a link stopped
+      -- working, and what they have is the URL. Eight characters of a
+      -- 128-bit token identify the row without being the credential, and the
+      -- credential is about to be deactivated in any case.
+      identity := 'file_share_links.id = ' || r.id
+               || ' (token ' || left(r.token, 8) || '...)';
+      detail := 'is active and grants access to a file in organization '
+             || r.file_org || ', while the link itself was minted for '
+             || COALESCE(r.link_org::TEXT, 'no organization') || '. Created by '
+             || r.created_by || ' on ' || r.created_at || ', who is '
+             || CASE WHEN r.creator_org IS NOT DISTINCT FROM r.file_org
+                     THEN 'a member of the file''s organization, so this is most '
+                          || 'likely a file that moved after the link was minted '
+                          || 'in good faith'
+                     ELSE 'NOT a member of the file''s organization, which is the '
+                          || 'shape create_file_share_link produced before this '
+                          || 'release resolved the organization from the file' END
+             || '. Deactivate it: SELECT remediate_cross_tenant_share_links();';
+      RETURN NEXT;
+    END LOOP;
+  END IF;
+
+  -- ---------------------------------------------------------------------
+  -- Workflow history naming another organization's workflow.
+  --
+  -- Asked through the foreign keys rather than through the names. A name join
+  -- would report every history row of two tenants who both called a workflow
+  -- 'Standard Release', which is not a finding and would make the stamp
+  -- unobtainable for a reason nobody could act on.
+  -- ---------------------------------------------------------------------
+  IF to_regclass('public.workflow_history') IS NOT NULL
+     AND to_regclass('public.workflow_templates') IS NOT NULL THEN
+    FOR r IN
+      SELECT h.id, h.org_id, h.file_id, h.workflow_name, h.performed_at
+      FROM workflow_history h
+      WHERE EXISTS (SELECT 1 FROM workflow_templates t
+                     WHERE t.id = h.workflow_id AND t.org_id <> h.org_id)
+         OR EXISTS (SELECT 1 FROM workflow_transitions tr
+                     JOIN workflow_templates t2 ON t2.id = tr.workflow_id
+                    WHERE tr.id = h.transition_id AND t2.org_id <> h.org_id)
+         OR EXISTS (SELECT 1 FROM workflow_states s
+                     JOIN workflow_templates t3 ON t3.id = s.workflow_id
+                    WHERE s.id IN (h.from_state_id, h.to_state_id)
+                      AND t3.org_id <> h.org_id)
+      ORDER BY h.performed_at
+    LOOP
+      residue := 'cross_tenant_workflow_history';
+      identity := 'workflow_history.id = ' || r.id;
+      detail := 'is filed under organization ' || r.org_id || ' and names a '
+             || 'workflow, transition or state belonging to another one. The '
+             || 'names copied into it are readable by every member of '
+             || r.org_id || ' through their own history. Redact it: '
+             || 'SELECT remediate_cross_tenant_workflow_history();';
+      RETURN NEXT;
+    END LOOP;
+  END IF;
+
+  -- ---------------------------------------------------------------------
+  -- A file left sitting in another organization's workflow state.
+  --
+  -- The same attack rewrote this row. It discloses no names by itself, and it
+  -- decides which transitions the file offers, so leaving it is leaving the
+  -- file driven by a workflow its organization does not own.
+  -- ---------------------------------------------------------------------
+  IF to_regclass('public.file_workflow_assignments') IS NOT NULL
+     AND to_regclass('public.workflow_templates') IS NOT NULL
+     AND to_regclass('public.files') IS NOT NULL THEN
+    FOR r IN
+      SELECT a.file_id, f.org_id AS file_org, wt.org_id AS workflow_org, wt.id AS workflow_id
+      FROM file_workflow_assignments a
+      JOIN files f ON f.id = a.file_id
+      JOIN workflow_templates wt ON wt.id = a.workflow_id
+      WHERE wt.org_id <> f.org_id
+      ORDER BY a.file_id
+    LOOP
+      residue := 'cross_tenant_workflow_assignment';
+      identity := 'file_workflow_assignments.file_id = ' || r.file_id;
+      detail := 'assigns a file in organization ' || r.file_org
+             || ' to workflow ' || r.workflow_id || ', which belongs to '
+             || r.workflow_org || '. Clear it: '
+             || 'SELECT remediate_cross_tenant_workflow_history();';
+      RETURN NEXT;
+    END LOOP;
+  END IF;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION check_release_residue() FROM PUBLIC, anon, authenticated;
+
 -- The only writer of schema_version. Stamps the release number if and only if
 -- every requirement of every installed module is satisfied; on failure it
 -- leaves the recorded version exactly as it was and reports what is wrong,
@@ -1469,6 +2118,17 @@ BEGIN
              'detail', detail
            )
     FROM check_unbound_entity_args()
+
+    -- What a closed hole already produced, which closing it does not undo.
+    -- This is the half the manifest did not have: v92 shipped a correct fix
+    -- for cross-tenant share links and stamped a database on which one was
+    -- still live. See check_release_residue().
+    UNION ALL
+    SELECT json_build_object(
+             'module', 'security', 'object', identity, 'status', residue,
+             'detail', detail
+           )
+    FROM check_release_residue()
   ) s;
 
   IF v_count > 0 THEN
@@ -2685,23 +3345,32 @@ BEGIN
   -- security_invoker on the view itself, which is set where the view is
   -- defined and checked by check_anon_reach().
   --
-  -- There is no allowlist here. Nothing pre-login reads a relation directly.
+  -- The allowlist is anon_read_allowlist(), which holds schema_version and
+  -- nothing else. Nothing else pre-login reads a relation directly.
+  --
+  -- has_any_column_privilege on the way in, because a column-level grant is
+  -- invisible to has_table_privilege and this loop would step over it while
+  -- check_anon_reach() reported it - a blocking condition the remedy could not
+  -- clear, which is the defect this whole file has now been through twice.
+  -- REVOKE ALL ON TABLE does remove column grants (measured in the harness:
+  -- has_any_column_privilege goes t -> f), so the remedy itself needed nothing.
   FOR r IN
     SELECT c.oid, quote_ident(c.relname) AS signature
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE n.nspname = 'public'
       AND c.relkind IN ('v', 'm')
-      AND has_table_privilege('anon', c.oid, 'SELECT')
+      AND has_any_column_privilege('anon', c.oid, 'SELECT')
+      AND NOT EXISTS (SELECT 1 FROM anon_read_allowlist() a WHERE a.relname = c.relname)
   LOOP
     SELECT ARRAY(
       SELECT role_name FROM unnest(v_preserve) AS role_name
-      WHERE has_table_privilege(role_name, r.oid, 'SELECT')
+      WHERE has_any_column_privilege(role_name, r.oid, 'SELECT')
     ) INTO v_keep;
 
     EXECUTE format('REVOKE ALL ON TABLE public.%s FROM anon', r.signature);
 
-    IF has_table_privilege('anon', r.oid, 'SELECT') THEN
+    IF has_any_column_privilege('anon', r.oid, 'SELECT') THEN
       FOREACH v_role IN ARRAY v_keep LOOP
         EXECUTE format('GRANT SELECT ON TABLE public.%s TO %I', r.signature, v_role);
       END LOOP;
@@ -3242,21 +3911,11 @@ CREATE OR REPLACE FUNCTION update_org_branding(
   p_contact_email TEXT DEFAULT NULL
 )
 RETURNS JSON AS $$
-DECLARE
-  current_user_id UUID;
-  current_org_id UUID;
 BEGIN
-  current_user_id := auth.uid();
-  
-  -- Get user's org
-  SELECT org_id INTO current_org_id
-  FROM users WHERE id = current_user_id;
-  
-  -- Verify user belongs to the target org
-  IF current_org_id IS NULL OR current_org_id != p_org_id THEN
+  IF NOT is_org_member(p_org_id) THEN
     RETURN json_build_object('success', false, 'error', 'You are not a member of this organization');
   END IF;
-  
+
   -- Verify user is an admin
   IF NOT is_org_admin() THEN
     RETURN json_build_object('success', false, 'error', 'Only admins can update organization branding');
@@ -3770,20 +4429,29 @@ DROP FUNCTION IF EXISTS clear_team_module_defaults(UUID) CASCADE;
 DROP FUNCTION IF EXISTS get_user_module_defaults() CASCADE;
 
 -- Get organization module defaults
+--
+-- THE MEMBERSHIP TEST IS NOT HAND-WRITTEN ANY MORE
+--
+-- This and nine other RPCs did their own:
+--
+--   SELECT org_id INTO v_user_org_id FROM users WHERE id = auth.uid();
+--   IF v_user_org_id IS NULL OR v_user_org_id != p_org_id THEN ...
+--
+-- which is correct - NULL-safe, and check_null_unsafe_org_gates() has nothing
+-- to say about it. It is gone anyway, because its existence was the reason
+-- check_org_gates() counted a bare `auth.uid()` as evidence that a function was
+-- gated, and that accommodation let a function with no authorization at all be
+-- certified and stamped. A convention accommodated is a convention abandoned.
+--
+-- require_org_member() admits the same callers and refuses a NULL p_org_id
+-- rather than proceeding against no organization, which the version above did.
 CREATE OR REPLACE FUNCTION get_org_module_defaults(p_org_id UUID)
 RETURNS JSONB AS $$
 DECLARE
-  v_user_org_id UUID;
   v_defaults JSONB;
 BEGIN
-  -- Get user's org
-  SELECT org_id INTO v_user_org_id FROM users WHERE id = auth.uid();
-  
-  -- Verify user belongs to the target org
-  IF v_user_org_id IS NULL OR v_user_org_id != p_org_id THEN
-    RAISE EXCEPTION 'Not authorized to access this organization';
-  END IF;
-  
+  PERFORM require_org_member(p_org_id);
+
   SELECT module_defaults INTO v_defaults
   FROM organizations WHERE id = p_org_id;
   
@@ -3805,17 +4473,13 @@ CREATE OR REPLACE FUNCTION set_org_module_defaults(
   p_custom_groups JSONB DEFAULT NULL
 )
 RETURNS JSON AS $$
-DECLARE
-  v_user_org_id UUID;
 BEGIN
-  -- Get user's org
-  SELECT org_id INTO v_user_org_id FROM users WHERE id = auth.uid();
-  
-  -- Verify user belongs to the target org
-  IF v_user_org_id IS NULL OR v_user_org_id != p_org_id THEN
+  -- is_org_member rather than require_org_member: this one answers with a
+  -- payload instead of raising, and the two have to keep saying the same thing.
+  IF NOT is_org_member(p_org_id) THEN
     RETURN json_build_object('success', false, 'error', 'Not authorized');
   END IF;
-  
+
   -- Verify user is admin
   IF NOT is_org_admin() THEN
     RETURN json_build_object('success', false, 'error', 'Only admins can set org defaults');
@@ -3853,17 +4517,11 @@ CREATE OR REPLACE FUNCTION force_org_module_defaults(
   p_custom_groups JSONB DEFAULT NULL
 )
 RETURNS JSON AS $$
-DECLARE
-  v_user_org_id UUID;
 BEGIN
-  -- Get user's org
-  SELECT org_id INTO v_user_org_id FROM users WHERE id = auth.uid();
-  
-  -- Verify user belongs to the target org
-  IF v_user_org_id IS NULL OR v_user_org_id != p_org_id THEN
+  IF NOT is_org_member(p_org_id) THEN
     RETURN json_build_object('success', false, 'error', 'Not authorized');
   END IF;
-  
+
   -- Verify user is admin
   IF NOT is_org_admin() THEN
     RETURN json_build_object('success', false, 'error', 'Only admins can force module defaults');
@@ -4279,15 +4937,10 @@ DROP FUNCTION IF EXISTS set_user_column_defaults(JSONB) CASCADE;
 CREATE OR REPLACE FUNCTION get_org_column_defaults(p_org_id UUID)
 RETURNS JSONB AS $$
 DECLARE
-  v_user_org_id UUID;
   v_defaults JSONB;
 BEGIN
-  SELECT org_id INTO v_user_org_id FROM users WHERE id = auth.uid();
-  
-  IF v_user_org_id IS NULL OR v_user_org_id != p_org_id THEN
-    RAISE EXCEPTION 'Not authorized';
-  END IF;
-  
+  PERFORM require_org_member(p_org_id);
+
   SELECT COALESCE(settings->'column_defaults', '[]'::jsonb)
   INTO v_defaults
   FROM organizations WHERE id = p_org_id;
@@ -4301,15 +4954,11 @@ GRANT EXECUTE ON FUNCTION get_org_column_defaults(UUID) TO authenticated;
 -- Set organization column defaults (admins only)
 CREATE OR REPLACE FUNCTION set_org_column_defaults(p_org_id UUID, p_column_defaults JSONB)
 RETURNS JSON AS $$
-DECLARE
-  v_user_org_id UUID;
 BEGIN
-  SELECT org_id INTO v_user_org_id FROM users WHERE id = auth.uid();
-  
-  IF v_user_org_id IS NULL OR v_user_org_id != p_org_id THEN
+  IF NOT is_org_member(p_org_id) THEN
     RETURN json_build_object('success', false, 'error', 'Not authorized');
   END IF;
-  
+
   IF NOT is_org_admin() THEN
     RETURN json_build_object('success', false, 'error', 'Only admins can set column defaults');
   END IF;
@@ -4328,15 +4977,11 @@ GRANT EXECUTE ON FUNCTION set_org_column_defaults(UUID, JSONB) TO authenticated;
 -- Sets both the defaults AND the forced_at timestamp
 CREATE OR REPLACE FUNCTION force_org_column_defaults(p_org_id UUID, p_column_defaults JSONB)
 RETURNS JSON AS $$
-DECLARE
-  v_user_org_id UUID;
 BEGIN
-  SELECT org_id INTO v_user_org_id FROM users WHERE id = auth.uid();
-  
-  IF v_user_org_id IS NULL OR v_user_org_id != p_org_id THEN
+  IF NOT is_org_member(p_org_id) THEN
     RETURN json_build_object('success', false, 'error', 'Not authorized');
   END IF;
-  
+
   IF NOT is_org_admin() THEN
     RETURN json_build_object('success', false, 'error', 'Only admins can force column defaults');
   END IF;

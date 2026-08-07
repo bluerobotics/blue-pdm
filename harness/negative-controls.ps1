@@ -14,7 +14,7 @@
 $ErrorActionPreference = 'Continue'
 Set-Location $PSScriptRoot
 
-$RELEASE = 92
+$RELEASE = 93
 
 function Psql {
   param([string]$Sql, [string]$File, [string]$AsRole = 'postgres')
@@ -46,7 +46,12 @@ function Test-Control {
     [string]$Id,
     [string]$What,
     [string]$HoleFile,      # SQL that reintroduces the hole
-    [string]$ExpectToken,   # must appear in the refusal, so the right check caught it
+    # Every one of these must appear in the refusal. More than one because a
+    # status alone - 'anon-reachable' - does not say WHICH object was caught,
+    # and three of the controls added in this release are different shapes of
+    # the same status: a control that passed on somebody else's row would be
+    # reporting a check that works for a case it does not cover.
+    [string[]]$ExpectToken,
     [string[]]$RepairFiles, # module files that put it back
     # Run after the repair has been verified. For a control whose repair is the
     # remedy rather than a removal - NC6 repairs by running the sweep, leaving
@@ -60,7 +65,16 @@ function Test-Control {
   Psql -Sql "UPDATE schema_version SET version = 0 WHERE id = 1" | Out-Null
 
   $applied = Psql -File $HoleFile -AsRole $HoleRole
-  if ($applied -match 'ERROR') {
+  # -cmatch, and the colon, because -match is case-insensitive in PowerShell and
+  # psql writes NOTICEs to stderr, which PowerShell renders as an ErrorRecord
+  # ending in "FullyQualifiedErrorId : NativeCommandError". Every hole file that
+  # emitted a single NOTICE - a DROP ... IF EXISTS on something absent - was
+  # therefore reported as having failed to apply, when it had applied perfectly:
+  # three of the controls added in this release were scored that way, and
+  # because a hole that "did not apply" is neither repaired nor cleaned up, the
+  # objects stayed behind and every control after them failed too. `ERROR:` in
+  # capitals with the colon is psql's own prefix and nothing else produces it.
+  if ($applied -cmatch 'ERROR:') {
     Write-Host "  hole did not apply:" -ForegroundColor Red
     Write-Host $applied
     $script:Failures += "$Id (hole failed to apply)"
@@ -70,12 +84,15 @@ function Test-Control {
   $out = Invoke-Verify
   $version = Get-StampedVersion
   $refused = ($out -match 'Schema verification failed')
-  $named   = ($out -match [regex]::Escape($ExpectToken))
+  $missing = @($ExpectToken | Where-Object { $out -notmatch [regex]::Escape($_) })
+  $named   = ($missing.Count -eq 0)
+  $tokens  = ($ExpectToken -join "' + '")
 
   if ($refused -and $named -and $version -eq 0) {
-    Write-Host "  caught: stamp withheld, version still 0, reason mentions '$ExpectToken'" -ForegroundColor Green
+    Write-Host "  caught: stamp withheld, version still 0, reason mentions '$tokens'" -ForegroundColor Green
   } else {
-    Write-Host ("  NOT CAUGHT: refused={0} named='{1}'={2} version={3}" -f $refused, $ExpectToken, $named, $version) -ForegroundColor Red
+    Write-Host ("  NOT CAUGHT: refused={0} missing from the refusal: '{1}' version={2}" -f `
+      $refused, ($missing -join "', '"), $version) -ForegroundColor Red
     ($out -split "`n" | Select-String -Pattern 'WARNING|ERROR|NOTICE' | Select-Object -First 12) | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
     $script:Failures += "$Id (hole not caught)"
   }
@@ -152,6 +169,45 @@ Test-Control -Id 'NC10' -What 'a function with no authorization that refuses the
 Test-Control -Id 'NC11' -What 'two entity ids, one checked, and no p_org_id anywhere' `
   -HoleFile '/sql/nc11-entity-gated.sql' -ExpectToken 'unbound-entity-arg' `
   -RepairFiles @('/sql/nc11-fix.sql') -CleanupFiles @('/sql/nc11-drop.sql')
+
+# ---------------------------------------------------------------------------
+# The controls this release adds. The first is a different kind of control from
+# everything above it: the schema is correct and the DATA is not.
+# ---------------------------------------------------------------------------
+
+# Repaired by running the remediation, not by deleting the row - the remediation
+# deactivates and keeps, so if this restores the stamp then residue is being
+# judged on whether the credential is live rather than on whether a row exists.
+Test-Control -Id 'NC12' -What 'a live cross-tenant share link left over from a release that closed the hole' `
+  -HoleFile '/sql/nc12-residue-link.sql' `
+  -ExpectToken @('cross_tenant_share_link', 'nc120000...') `
+  -RepairFiles @('/sql/nc12-remediate.sql') -CleanupFiles @('/sql/nc12-drop.sql')
+
+Test-Control -Id 'NC13' -What 'no authorization at all, with auth.uid() as the only identity-shaped line' `
+  -HoleFile '/sql/nc13-actor-stamp.sql' -ExpectToken @('ungated', 'nc_actor_stamp_only') `
+  -RepairFiles @('/sql/nc13-fix.sql') -CleanupFiles @('/sql/nc13-drop.sql')
+
+Test-Control -Id 'NC14' -What 'a partitioned table whose leaf has RLS and whose parent does not' `
+  -HoleFile '/sql/nc14-partitioned.sql' -ExpectToken @('anon-reachable', 'nc_partitioned_parts') `
+  -RepairFiles @('/sql/nc14-drop.sql')
+
+Test-Control -Id 'NC15' -What 'RLS enabled and a policy that admits anon to every row' `
+  -HoleFile '/sql/nc15-rls-admits-anon.sql' `
+  -ExpectToken @('anon-reachable', 'nc_rls_but_open', 'admits anon to every') `
+  -RepairFiles @('/sql/nc15-drop.sql')
+
+# Repaired by the sweep rather than by a DROP, for the same reason NC6 is: a
+# reported condition the printed remedy cannot clear is the defect this project
+# spent two releases removing.
+Test-Control -Id 'NC16' -What 'a view anon can read one column of' `
+  -HoleFile '/sql/nc16-column-grant-view.sql' `
+  -ExpectToken @('anon-reachable', 'nc_column_grant_view') `
+  -RepairFiles @('/sql/nc16-run-remedy.sql') -CleanupFiles @('/sql/nc16-drop.sql')
+
+Test-Control -Id 'NC17' -What 'consume_share_link restating validate_share_link''s conditions instead of calling it' `
+  -HoleFile '/sql/nc17-consume-restated.sql' `
+  -ExpectToken @('stale', 'consume_share_link') `
+  -RepairFiles @('/blueplm/modules/10-source-files.sql')
 
 # ---------------------------------------------------------------------------
 # NC7 is the other direction, and it needs its own test.

@@ -1,7 +1,7 @@
 ﻿# 04-verify-after-fix.txt
 # Produced by: psql -f /blueplm/tools/verify-schema.sql
 # Release under test: the working tree
-# Captured: 2026-08-06 15:14:43 -07:00 by capture-evidence.ps1
+# Captured: 2026-08-06 18:56:43 -07:00 by capture-evidence.ps1
 #
 # Unedited output. Re-run the command above to reproduce it.
 
@@ -44,6 +44,12 @@ DO
 
 psql:/blueplm/tools/verify-schema.sql:318: NOTICE:  ✅ Every function that selects rows by more than one id checks each of them
 DO
+ residue | identity | detail 
+---------+----------+--------
+(0 rows)
+
+psql:/blueplm/tools/verify-schema.sql:362: NOTICE:  ✅ Nothing left behind by the holes this release closes
+DO
       module       |                                        object                                        | status | detail 
 -------------------+--------------------------------------------------------------------------------------+--------+--------
  10-source-files   | apply_workflow_transition(uuid,uuid,uuid,text,jsonb)                                 | ok     | 
@@ -65,7 +71,10 @@ DO
  10-source-files   | merge_custom_properties(jsonb,jsonb)                                                 | ok     | 
  10-source-files   | move_file(uuid,uuid,text,text)                                                       | ok     | 
  10-source-files   | preview_next_serial_number(uuid)                                                     | ok     | 
+ 10-source-files   | remediate_cross_tenant_share_links()                                                 | ok     | 
+ 10-source-files   | remediate_cross_tenant_workflow_history()                                            | ok     | 
  10-source-files   | rename_folder_files(text,text,uuid,uuid)                                             | ok     | 
+ 10-source-files   | share_link_admission(text)                                                           | ok     | 
  10-source-files   | update_item_definition_settings(uuid,jsonb)                                          | ok     | 
  10-source-files   | update_serialization_settings_safe(uuid,jsonb)                                       | ok     | 
  10-source-files   | validate_share_link(text)                                                            | ok     | 
@@ -78,32 +87,48 @@ DO
  30-supply-chain   | parts_with_pricing                                                                   | ok     | 
  30-supply-chain   | rfq_number_counters                                                                  | ok     | 
  40-integrations   | apply_pending_license_assignments(uuid)                                              | ok     | 
+ 40-integrations   | get_google_drive_settings(uuid)                                                      | ok     | 
  40-integrations   | integration_credentials                                                              | ok     | 
+ 40-integrations   | update_google_drive_settings(uuid,text,text,boolean,text)                            | ok     | 
  50-extensions     | get_extension_config(uuid,text)                                                      | ok     | 
  50-extensions     | get_extension_stats(uuid,text)                                                       | ok     | 
+ 50-extensions     | update_extension_config(uuid,text,jsonb)                                             | ok     | 
  60-customers      | seed_customer_categories(uuid)                                                       | ok     | 
+ core              | anon_admitting_policies(oid)                                                         | ok     | 
+ core              | anon_read_allowlist()                                                                | ok     | 
  core              | anon_read_grantors(oid)                                                              | ok     | 
  core              | anon_revoke_grantors(oid)                                                            | ok     | 
  core              | check_anon_reach()                                                                   | ok     | 
  core              | check_null_unsafe_org_gates()                                                        | ok     | 
  core              | check_org_gates()                                                                    | ok     | 
+ core              | check_release_residue()                                                              | ok     | 
  core              | check_unbound_entity_args()                                                          | ok     | 
  core              | enforce_anon_execute_posture()                                                       | ok     | 
+ core              | force_org_column_defaults(uuid,jsonb)                                                | ok     | 
+ core              | force_org_module_defaults(uuid,jsonb,jsonb,jsonb,jsonb,jsonb,jsonb,jsonb)            | ok     | 
+ core              | get_org_column_defaults(uuid)                                                        | ok     | 
+ core              | get_org_module_defaults(uuid)                                                        | ok     | 
  core              | is_org_member(uuid)                                                                  | ok     | 
  core              | like_escape(text)                                                                    | ok     | 
  core              | migrate_uuid_defaults()                                                              | ok     | 
+ core              | probe_literal_for_arg(oid,text,text)                                                 | ok     | 
  core              | probe_literal_for(text)                                                              | ok     | 
+ core              | record_remediation(text,integer,jsonb,text)                                          | ok     | 
  core              | require_org_member(uuid)                                                             | ok     | 
  core              | row_selecting_id_args(oid)                                                           | ok     | 
  core              | schema_release_version()                                                             | ok     | 
+ core              | schema_remediation_log                                                               | ok     | 
+ core              | set_org_column_defaults(uuid,jsonb)                                                  | ok     | 
+ core              | set_org_module_defaults(uuid,jsonb,jsonb,jsonb,jsonb,jsonb,jsonb,jsonb)              | ok     | 
+ core              | update_org_branding(uuid,text,text,text,text,text)                                   | ok     | 
  core              | verify_and_stamp_schema()                                                            | ok     | 
-(51 rows)
+(70 rows)
 
-psql:/blueplm/tools/verify-schema.sql:360: NOTICE:  ✅ Schema verified and stamped at version 92
+psql:/blueplm/tools/verify-schema.sql:404: NOTICE:  ✅ Schema verified and stamped at version 93
 DO
  recorded_version | release_version | total_tables | total_functions | total_policies 
 ------------------+-----------------+--------------+-----------------+----------------
-               92 |              92 |          102 |             159 |            263
+               93 |              93 |          103 |             167 |            263
 (1 row)
 
 

@@ -318,6 +318,50 @@ BEGIN
 END $$;
 
 -- ===========================================
+-- CHECK THE CLOSED HOLES LEFT NOTHING BEHIND
+-- ===========================================
+-- Every check above asks what the code is. This one asks what the data still
+-- contains, and it is here because a release that closes a hole does not undo
+-- what the hole already did.
+--
+-- v92 fixed cross-tenant share links correctly and, applied over a database
+-- that had run v90 and been attacked, left one still answering is_valid: true
+-- to an unauthenticated caller - surviving because of the fix, since validation
+-- resolves the organization from the file and the file really was in it. Every
+-- release until then had only ever been verified against a fresh install, where
+-- there is no history for a fix to fail to undo, so nothing had ever asked.
+--
+-- Applying the modules performs the remediations; this asks afterwards, from
+-- something that did not run them, so "the remediation ran" and "the residue is
+-- gone" stay two separate statements. A fresh install reports nothing here.
+
+SELECT residue, identity, detail FROM check_release_residue() ORDER BY residue, identity;
+
+DO $$
+DECLARE
+  v_count INTEGER;
+  v_acted INTEGER;
+BEGIN
+  SELECT count(*) INTO v_count FROM check_release_residue();
+
+  IF v_count > 0 THEN
+    RAISE WARNING '❌ % row(s) produced by a hole this release closes are still live. Listed above with the remediation that clears each; the stamp is withheld.', v_count;
+  ELSE
+    RAISE NOTICE '✅ Nothing left behind by the holes this release closes';
+  END IF;
+
+  -- What the remediations did on the way in, if this is an upgrade. Printed
+  -- whether or not there is residue, because an operator who sees links stop
+  -- working needs to find this without knowing to look for it.
+  IF to_regclass('public.schema_remediation_log') IS NOT NULL THEN
+    SELECT count(*) INTO v_acted FROM schema_remediation_log;
+    IF v_acted > 0 THEN
+      RAISE NOTICE 'ℹ️  % remediation record(s) in schema_remediation_log. Each names the rows it acted on and keeps them verbatim: SELECT remediation, ran_at, rows_acted_on, detail, subjects FROM schema_remediation_log ORDER BY ran_at;', v_acted;
+    END IF;
+  END IF;
+END $$;
+
+-- ===========================================
 -- RELEASE MANIFEST
 -- ===========================================
 -- Anything not 'ok' or 'skipped' below is the reason the version was not stamped.

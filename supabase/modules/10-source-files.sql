@@ -2048,45 +2048,49 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 GRANT EXECUTE ON FUNCTION create_file_share_link(UUID, UUID, UUID, INTEGER, INTEGER, BOOLEAN) TO authenticated;
 
--- Validate share link
+-- WHO MAY REDEEM THIS LINK, ASKED ONCE
 --
--- Three things were wrong with this, all reachable by anon holding a token.
+-- validate_share_link() and consume_share_link() are two HTTP round trips with
+-- one admission decision between them, and nothing forces a caller to make the
+-- first. If consume admits somebody validate refuses, the download the refusal
+-- was protecting happens anyway - so the two must agree about every condition,
+-- not merely about the one somebody remembered to check twice.
 --
---   1. It ignored require_auth entirely. A link created with require_auth = true
---      validated for an unauthenticated caller exactly as one created without.
---      The flag was stored, returned by nothing, and consulted nowhere.
---   2. It spent the download allowance on *validation*. Nothing here downloads
---      anything - the caller does that afterwards with the file id - so any anon
---      caller could burn a ten-download link with twelve calls to this function
---      and never fetch a byte. Consumption now lives in consume_share_link(),
---      which the download path calls once it has actually served the file.
---   3. It returned the link's org_id. Until the fix above, the link's org_id was
---      whatever the creator passed and could differ from the file's, so a
---      consumer that trusted this went looking for the file in the wrong tenant.
---      It now reports the org the file is really in.
+-- They did not. Each restated the conditions in its own dialect: validate as a
+-- sequence of early returns, consume as a WHERE clause. The file test -
+-- `f.deleted_at IS NULL` - existed in both, and in consume it sat *inside* the
+-- require_auth branch, so with require_auth = false and the file soft-deleted
+-- between minting and use, validate answered `is_valid = f, 'Link not found'`
+-- and consume answered `t` and incremented download_count. Executed, both of
+-- them, over HTTP.
 --
--- Kept on the anon allowlist: recipients of a share link are not BluePLM users,
--- and the token is the credential. That is only defensible because the token is
--- now 128 bits from a strong source - see generate_share_token().
-DROP FUNCTION IF EXISTS validate_share_link(TEXT) CASCADE;
-CREATE OR REPLACE FUNCTION validate_share_link(p_token TEXT)
+-- The manifest tried to hold the two together by requiring the same words in
+-- each - 'require_auth && is_org_member' on both - and that passed the whole
+-- time. Two lists that must agree should not be two lists. This is the list.
+--
+-- Everything except the download counter is decided here. The counter is
+-- deliberately left out: it is the only condition with a race in it, and
+-- consume re-checks it inside its UPDATE, under the row lock, so two concurrent
+-- redemptions of the last download cannot both win.
+DROP FUNCTION IF EXISTS share_link_admission(TEXT) CASCADE;
+CREATE OR REPLACE FUNCTION share_link_admission(p_token TEXT)
 RETURNS TABLE (is_valid BOOLEAN, file_id UUID, org_id UUID, file_version INTEGER, error_message TEXT) AS $$
 DECLARE
   v_link RECORD;
   v_file_org_id UUID;
 BEGIN
   SELECT * INTO v_link FROM file_share_links WHERE token = p_token;
-  
+
   IF NOT FOUND THEN
     RETURN QUERY SELECT false::boolean, NULL::uuid, NULL::uuid, NULL::integer, 'Link not found'::text;
     RETURN;
   END IF;
-  
+
   IF NOT v_link.is_active THEN
     RETURN QUERY SELECT false::boolean, NULL::uuid, NULL::uuid, NULL::integer, 'Link has been deactivated'::text;
     RETURN;
   END IF;
-  
+
   IF v_link.expires_at IS NOT NULL AND v_link.expires_at < NOW() THEN
     RETURN QUERY SELECT false::boolean, NULL::uuid, NULL::uuid, NULL::integer, 'Link has expired'::text;
     RETURN;
@@ -2097,8 +2101,13 @@ BEGIN
     RETURN;
   END IF;
 
-  -- The file's organization is resolved before require_auth is tested, because
-  -- require_auth is a question about that organization.
+  -- The file has to still be there, whatever require_auth says. A link is a
+  -- pointer at a file; a deleted file is a link to nothing, and serving one is
+  -- serving something whose owner has already said to stop serving it.
+  --
+  -- This test is also what resolves the organization, and it is placed before
+  -- require_auth is read because require_auth is a question *about* that
+  -- organization.
   SELECT f.org_id INTO v_file_org_id FROM files f
    WHERE f.id = v_link.file_id AND f.deleted_at IS NULL;
 
@@ -2113,9 +2122,9 @@ BEGIN
   -- account", which is what `auth.uid() IS NOT NULL` meant and which is not a
   -- restriction at all: signing up is free and open, so an attacker holding the
   -- token defeated the flag by creating an account. Executed against the
-  -- previous version, a member of an unrelated tenant and an account belonging
-  -- to no organization at all both got is_valid: true with the file id and the
-  -- owning org id.
+  -- version before last, a member of an unrelated tenant and an account
+  -- belonging to no organization at all both got is_valid: true with the file
+  -- id and the owning org id.
   --
   -- The flag exists so that a link can be circulated inside a company without
   -- becoming a bearer credential for the world; org membership is the only
@@ -2142,41 +2151,84 @@ BEGIN
     END IF;
   END IF;
 
-  UPDATE file_share_links SET last_accessed_at = NOW() WHERE token = p_token;
-
   RETURN QUERY SELECT true::boolean, v_link.file_id, v_file_org_id, v_link.file_version, NULL::text;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Internal. Recipients call validate_share_link() and consume_share_link(),
+-- which are on anon_execute_allowlist(); this is neither, and the sweep at the
+-- end of this file withdraws it from anon.
+REVOKE ALL ON FUNCTION share_link_admission(TEXT) FROM PUBLIC, anon, authenticated;
+
+-- Validate share link
+--
+-- Three things were wrong with this, all reachable by anon holding a token.
+--
+--   1. It ignored require_auth entirely. A link created with require_auth = true
+--      validated for an unauthenticated caller exactly as one created without.
+--      The flag was stored, returned by nothing, and consulted nowhere.
+--   2. It spent the download allowance on *validation*. Nothing here downloads
+--      anything - the caller does that afterwards with the file id - so any anon
+--      caller could burn a ten-download link with twelve calls to this function
+--      and never fetch a byte. Consumption now lives in consume_share_link(),
+--      which the download path calls once it has actually served the file.
+--   3. It returned the link's org_id. Until create_file_share_link resolved the
+--      organization from the file, the link's org_id was whatever the creator
+--      passed and could differ from the file's, so a consumer that trusted this
+--      went looking for the file in the wrong tenant. It reports the org the
+--      file is really in.
+--
+-- Kept on the anon allowlist: recipients of a share link are not BluePLM users,
+-- and the token is the credential. That is only defensible because the token is
+-- now 128 bits from a strong source - see generate_share_token().
+DROP FUNCTION IF EXISTS validate_share_link(TEXT) CASCADE;
+CREATE OR REPLACE FUNCTION validate_share_link(p_token TEXT)
+RETURNS TABLE (is_valid BOOLEAN, file_id UUID, org_id UUID, file_version INTEGER, error_message TEXT) AS $$
+DECLARE
+  v_admission RECORD;
+BEGIN
+  SELECT * INTO v_admission FROM share_link_admission(p_token);
+
+  IF v_admission.is_valid THEN
+    UPDATE file_share_links SET last_accessed_at = NOW() WHERE token = p_token;
+  END IF;
+
+  RETURN QUERY SELECT v_admission.is_valid, v_admission.file_id, v_admission.org_id,
+                      v_admission.file_version, v_admission.error_message;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- Spend one download against a link. Separate from validate_share_link() so
 -- that the allowance is spent by downloading and not by asking.
 --
--- Re-checks everything validate_share_link() checks, in one UPDATE, so that two
--- concurrent redemptions of the last remaining download cannot both succeed:
--- the WHERE clause is evaluated under the row lock the UPDATE takes.
+-- Admission is share_link_admission()'s answer, so this cannot admit anybody
+-- validate_share_link() would refuse - not because both were written carefully,
+-- but because there is only one place where admission is decided. That is the
+-- fix for a bug where the two disagreed about whether the file still exists.
 --
--- Re-checking rather than trusting the earlier validate_share_link() call is
--- the point: the two are separate HTTP round trips and nothing forces a caller
--- to make the first one. max_downloads is enforced here or nowhere.
+-- The UPDATE's WHERE re-tests one thing and one thing only: the download
+-- counter. That is the condition with a race in it, and re-reading it under the
+-- row lock the UPDATE takes is what stops two concurrent redemptions of the
+-- last remaining download from both succeeding. Everything else is settled
+-- above.
 DROP FUNCTION IF EXISTS consume_share_link(TEXT) CASCADE;
 CREATE OR REPLACE FUNCTION consume_share_link(p_token TEXT)
 RETURNS BOOLEAN AS $$
 DECLARE
+  v_admitted BOOLEAN;
   v_updated INTEGER;
 BEGIN
+  SELECT a.is_valid INTO v_admitted FROM share_link_admission(p_token) a;
+
+  IF NOT COALESCE(v_admitted, false) THEN
+    RETURN false;
+  END IF;
+
   UPDATE file_share_links l
      SET download_count = COALESCE(l.download_count, 0) + 1,
          last_accessed_at = NOW()
    WHERE l.token = p_token
-     AND l.is_active
-     AND (l.expires_at IS NULL OR l.expires_at > NOW())
-     AND (l.max_downloads IS NULL OR COALESCE(l.download_count, 0) < l.max_downloads)
-     -- Same meaning as in validate_share_link(): a member of the organization
-     -- that owns the file. The two must agree, or a link that refuses to
-     -- validate can still be spent, or the other way round.
-     AND (NOT COALESCE(l.require_auth, false)
-          OR is_org_member((SELECT f.org_id FROM files f
-                             WHERE f.id = l.file_id AND f.deleted_at IS NULL)));
+     AND (l.max_downloads IS NULL OR COALESCE(l.download_count, 0) < l.max_downloads);
 
   GET DIAGNOSTICS v_updated = ROW_COUNT;
   RETURN v_updated > 0;
@@ -4406,8 +4458,226 @@ ALTER TABLE file_versions ADD COLUMN IF NOT EXISTS description TEXT;
 ALTER TABLE files ADD COLUMN IF NOT EXISTS configuration_revisions JSONB DEFAULT '{}'::jsonb;
 
 -- ===========================================
+-- REVOKING WHAT THE CLOSED HOLES PRODUCED
+-- ===========================================
+-- A fix changes what the code will do next time. It does not change what the
+-- data records from what the code already did, and every release before this
+-- one was verified only against a fresh install, where there is no history for
+-- a fix to fail to undo. Applied over a database that had run v90 and been
+-- attacked, v92 left a share link minted by one organization's member against
+-- another organization's file still answering is_valid: true to an
+-- unauthenticated caller - surviving *because* of the fix, since validation now
+-- resolves the organization from the file and the file really is in it.
+--
+-- So the two travel together from here on: the manifest in core.sql says what
+-- the code must be, check_release_residue() says what the data must no longer
+-- contain, and both withhold the stamp. These are the functions that clear it.
+-- They run below, as part of applying this module, because a remediation that
+-- lives in a script somebody has to remember is a remediation that will be
+-- forgotten exactly once.
+--
+-- Rules all of them keep:
+--   * idempotent - the second run finds nothing and writes nothing;
+--   * loud - every row acted on is printed by name and stored verbatim in
+--     schema_remediation_log before it is touched;
+--   * non-destructive - deactivate and redact, never delete, because the
+--     evidence of a breach is the first thing an audit asks for.
+
+-- Deactivate share links that hand out a file in another organization.
+--
+-- WHY DEACTIVATE AND NOT DELETE, AND WHY BOTH KINDS
+--
+-- Two different rows match. One was minted through the hole: a member of org A
+-- passed org B's file id to create_file_share_link, which believed the org_id
+-- it was handed. The other was minted in good faith and then the file moved
+-- organizations, which BluePLM permits. The detector cannot tell them apart -
+-- both are a link whose org_id differs from its file's - and neither may keep
+-- working, because under this release validation resolves the organization from
+-- the file, so both hand a recipient a file the link's own organization does
+-- not own.
+--
+-- What distinguishes them is the creator's own membership, so that is recorded
+-- for every row, and deactivating rather than deleting is what makes the
+-- distinction actionable: an operator who reads the ledger, recognises a
+-- legitimate link and wants it back sets is_active = true and moves it to the
+-- file's organization. Nothing is lost. A delete would have taken the token,
+-- the creator and the timestamps with it - the three things an audit needs to
+-- answer "who had this and for how long".
+CREATE OR REPLACE FUNCTION remediate_cross_tenant_share_links()
+RETURNS INTEGER
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_subjects JSONB;
+  v_rows INTEGER;
+BEGIN
+  WITH victims AS (
+    SELECT l.id, l.token, l.org_id AS link_org, f.org_id AS file_org,
+           l.created_by, l.created_at, l.expires_at, l.download_count,
+           l.require_auth, l.last_accessed_at,
+           (SELECT u.org_id FROM users u WHERE u.id = l.created_by) AS creator_org
+    FROM file_share_links l
+    JOIN files f ON f.id = l.file_id
+    WHERE l.org_id IS DISTINCT FROM f.org_id
+      -- Already-deactivated rows are skipped, which is what makes a second run
+      -- a no-op instead of a second ledger entry saying the same thing.
+      AND COALESCE(l.is_active, false)
+  ),
+  deactivated AS (
+    UPDATE file_share_links l
+       SET is_active = false
+      FROM victims v
+     WHERE l.id = v.id
+    RETURNING l.id
+  )
+  SELECT COALESCE(jsonb_agg(to_jsonb(v) || jsonb_build_object(
+           'assessment',
+           CASE WHEN v.creator_org IS NOT DISTINCT FROM v.file_org
+                THEN 'creator is a member of the file''s organization: most likely a file that moved after the link was minted in good faith'
+                ELSE 'creator is NOT a member of the file''s organization: the shape the cross-tenant minting hole produced'
+           END) ORDER BY v.created_at), '[]'::jsonb),
+         (SELECT count(*) FROM deactivated)
+    INTO v_subjects, v_rows
+  FROM victims v;
+
+  RETURN record_remediation(
+    'cross_tenant_share_links', v_rows, v_subjects,
+    'Each link granted access to a file in an organization other than the one '
+    || 'the link was minted for, and is now inactive. Nothing was deleted: the '
+    || 'token, creator and timestamps are in the subjects above. To restore one '
+    || 'you judge legitimate, set is_active = true and org_id to the file''s '
+    || 'organization.');
+END;
+$$;
+
+REVOKE ALL ON FUNCTION remediate_cross_tenant_share_links() FROM PUBLIC, anon, authenticated;
+
+-- Redact workflow history that names another organization's workflow, and undo
+-- the assignment the same attack left behind.
+--
+-- WHAT THIS CAN AND CANNOT UNDO, STATED PLAINLY
+--
+-- The disclosure already happened. A member of org A applied org B's transition
+-- to her own file; the history row copied B's workflow name, state names and
+-- transition name into A's tenant, and everybody in A has been able to read
+-- them ever since. Redacting the names now does not unsay them to anyone who
+-- has already looked. It does two things that are still worth doing: it stops
+-- the disclosure continuing to every future reader, including people who join A
+-- tomorrow, and it removes the ids, which are the part that keeps working - a
+-- foreign workflow_id in a history row is a live handle to another tenant's
+-- object that any query joining through it will follow.
+--
+-- The row is kept. It is the record that a foreign transition was applied to
+-- that file at that time by that user, which is the single most audit-relevant
+-- fact in the whole incident, and deleting it would destroy the evidence while
+-- undoing none of the disclosure. The original names go to
+-- schema_remediation_log, where no tenant can read them and the operator can.
+--
+-- The assignment is cleared rather than redacted: it is not a record of
+-- anything, it is a live pointer that decides which transitions the file offers
+-- next, and leaving it means a file in org A continues to be driven by org B's
+-- workflow. Its full contents go to the ledger first.
+CREATE OR REPLACE FUNCTION remediate_cross_tenant_workflow_history()
+RETURNS INTEGER
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_subjects JSONB;
+  v_rows INTEGER;
+  v_total INTEGER := 0;
+BEGIN
+  -- Same three EXISTS tests as check_release_residue(), asked through the
+  -- foreign keys and never through the names: two tenants may both have a
+  -- workflow called 'Standard Release' and neither has done anything wrong.
+  WITH victims AS (
+    SELECT h.id, h.org_id, h.file_id, h.file_name, h.workflow_id, h.workflow_name,
+           h.from_state_id, h.from_state_name, h.to_state_id, h.to_state_name,
+           h.transition_id, h.transition_name, h.performed_by,
+           h.performed_by_email, h.performed_at
+    FROM workflow_history h
+    WHERE EXISTS (SELECT 1 FROM workflow_templates t
+                   WHERE t.id = h.workflow_id AND t.org_id <> h.org_id)
+       OR EXISTS (SELECT 1 FROM workflow_transitions tr
+                   JOIN workflow_templates t2 ON t2.id = tr.workflow_id
+                  WHERE tr.id = h.transition_id AND t2.org_id <> h.org_id)
+       OR EXISTS (SELECT 1 FROM workflow_states s
+                   JOIN workflow_templates t3 ON t3.id = s.workflow_id
+                  WHERE s.id IN (h.from_state_id, h.to_state_id)
+                    AND t3.org_id <> h.org_id)
+  ),
+  redacted AS (
+    UPDATE workflow_history h
+       -- NOT NULL columns, so a marker rather than NULL. It says what happened
+       -- and where to look, which an empty string would not.
+       SET workflow_name    = '[redacted: another organization''s workflow]',
+           from_state_name  = '[redacted]',
+           to_state_name    = '[redacted]',
+           transition_name  = '[redacted]',
+           -- The handles. These are what a join would still follow.
+           workflow_id      = NULL,
+           from_state_id    = NULL,
+           to_state_id      = NULL,
+           transition_id    = NULL
+      FROM victims v
+     WHERE h.id = v.id
+    RETURNING h.id
+  )
+  SELECT COALESCE(jsonb_agg(to_jsonb(v) ORDER BY v.performed_at), '[]'::jsonb),
+         (SELECT count(*) FROM redacted)
+    INTO v_subjects, v_rows
+  FROM victims v;
+
+  v_total := v_total + record_remediation(
+    'cross_tenant_workflow_history', v_rows, v_subjects,
+    'Each row is filed under one organization and named another one''s '
+    || 'workflow, states or transition. The names are redacted and the foreign '
+    || 'ids removed; the rows themselves are kept, because they record that a '
+    || 'foreign transition was applied and that is what an audit needs. The '
+    || 'disclosure to anyone who already read them is not undone by this and '
+    || 'cannot be.');
+
+  -- The live half of the same damage.
+  WITH victims AS (
+    SELECT a.id, a.file_id, f.org_id AS file_org, a.workflow_id,
+           wt.org_id AS workflow_org, a.current_state_id, a.assigned_at, a.assigned_by
+    FROM file_workflow_assignments a
+    JOIN files f ON f.id = a.file_id
+    JOIN workflow_templates wt ON wt.id = a.workflow_id
+    WHERE wt.org_id <> f.org_id
+  ),
+  cleared AS (
+    DELETE FROM file_workflow_assignments a
+     USING victims v
+     WHERE a.id = v.id
+    RETURNING a.id
+  )
+  SELECT COALESCE(jsonb_agg(to_jsonb(v) ORDER BY v.assigned_at), '[]'::jsonb),
+         (SELECT count(*) FROM cleared)
+    INTO v_subjects, v_rows
+  FROM victims v;
+
+  v_total := v_total + record_remediation(
+    'cross_tenant_workflow_assignment', v_rows, v_subjects,
+    'Each assignment put a file in one organization under a workflow owned by '
+    || 'another, which decides the transitions the file offers next. The '
+    || 'assignment is removed - the file is in no workflow until somebody in '
+    || 'its own organization assigns one - and its full contents, including the '
+    || 'state it was left in, are in the subjects above.');
+
+  RETURN v_total;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION remediate_cross_tenant_workflow_history() FROM PUBLIC, anon, authenticated;
+
+-- ===========================================
 -- END OF SOURCE FILES MODULE
 -- ===========================================
+
+-- Applying the module performs the remediations. On a fresh install both find
+-- nothing, write nothing and print nothing; on a database carrying the damage
+-- they name every row they touch. This is the line that makes "close the hole"
+-- and "revoke what the hole produced" one act instead of two.
+SELECT remediate_cross_tenant_share_links();
+SELECT remediate_cross_tenant_workflow_history();
 
 SELECT enforce_anon_execute_posture();
 

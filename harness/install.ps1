@@ -4,10 +4,17 @@
 #   .\install.ps1                 core + every module
 #   .\install.ps1 -CoreOnly       core.sql alone
 #   .\install.ps1 -Modules 10,15  core plus a chosen subset
+#   .\install.ps1 -Root /baseline install the release mounted at /baseline
+#
+# -Root is what makes the upgrade lane possible. Both releases are mounted at
+# once - /blueplm and /baseline, see docker-compose.yml - so the older one can
+# be installed, attacked, and then upgraded in place by running this again
+# against /blueplm, without tearing the database down in between.
 param(
   [switch]$CoreOnly,
   [string[]]$Modules = @('10-source-files','15-inspection','20-change-control',
-                         '30-supply-chain','40-integrations','50-extensions','60-customers')
+                         '30-supply-chain','40-integrations','50-extensions','60-customers'),
+  [string]$Root = '/blueplm'
 )
 
 # psql writes NOTICEs to stderr, which PowerShell would otherwise turn into
@@ -24,8 +31,8 @@ function Invoke-Psql {
   if ($code -ne 0) { throw "FAILED: $File (exit $code)" }
 }
 
-Invoke-Psql '/blueplm/core.sql'
+Invoke-Psql "$Root/core.sql"
 if (-not $CoreOnly) {
-  foreach ($m in $Modules) { Invoke-Psql "/blueplm/modules/$m.sql" }
+  foreach ($m in $Modules) { Invoke-Psql "$Root/modules/$m.sql" }
 }
 Write-Host "install complete" -ForegroundColor Green

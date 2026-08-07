@@ -40,6 +40,21 @@ services:
       # reproduce. That is how evidence/01-attacks-before-fix.txt came to be a
       # file no committed script could regenerate.
       - ${RELEASE_DIR:-../supabase}:/blueplm:ro
+      # The release the database is UPGRADED FROM, mounted at the same time as
+      # the one under test. Every release so far was verified against a fresh
+      # install, so nothing ever asked whether a release cleans up after the
+      # holes it closes - and applying v92 to a database that had been attacked
+      # under v90 left a cross-tenant share link minting downloads, with
+      # verification reporting the schema clean. upgrade.ps1 installs this one,
+      # runs the attacks so the database carries real damage, then applies
+      # /blueplm over it in place.
+      #
+      #   git worktree add ../../blueplm-v90 <commit>
+      #   .\upgrade.ps1 -Baseline ../../blueplm-v90/supabase
+      #
+      # Defaults to the same directory as RELEASE_DIR, so a compose invocation
+      # that does not care about the upgrade lane behaves exactly as before.
+      - ${BASELINE_DIR:-../supabase}:/baseline:ro
     ports:
       - "${PGPORT_HOST:-55432}:5432"
     command:

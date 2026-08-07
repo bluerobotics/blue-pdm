@@ -1,0 +1,1 @@
+DROP TABLE IF EXISTS nc_rls_but_open CASCADE;

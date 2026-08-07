@@ -1,0 +1,303 @@
+﻿# 07-upgrade-lane.txt
+# Produced by: .\upgrade.ps1 -Baseline ../../blueplm-v90/supabase
+# Release under test: the working tree, applied over ../../blueplm-v90/supabase
+# Captured: 2026-08-06 19:18:41 -07:00 by capture-evidence.ps1
+#
+# Unedited output. Re-run the command above to reproduce it.
+
+=== UPGRADE LANE: installing the baseline (../../blueplm-v90/supabase) ===
+=== tearing down ===
+=== starting database ===
+
+db-1  | === HARNESS ASSERTIONS PASSED ===
+
+
+
+--- roles as this container actually has them ---
+    rolname     | rolsuper | rolbypassrls | rolcreaterole | rolcanlogin 
+----------------+----------+--------------+---------------+-------------
+ supabase_admin | t        | t            | t             | t
+ anon           | f        | f            | f             | f
+ authenticated  | f        | f            | f             | f
+ authenticator  | f        | f            | f             | t
+ postgres       | f        | t            | t             | t
+ service_role   | f        | t            | f             | f
+(6 rows)
+
+--- default privileges in public, which is what makes a new function anon-reachable ---
+ granting_role  | objtype |                                                                 defaclacl                                                                  
+----------------+---------+--------------------------------------------------------------------------------------------------------------------------------------------
+ postgres       | S       | {postgres=rwU/postgres,anon=rwU/postgres,authenticated=rwU/postgres,service_role=rwU/postgres}
+ postgres       | f       | {postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}
+ postgres       | r       | {postgres=arwdDxtm/postgres,anon=arwdDxtm/postgres,authenticated=arwdDxtm/postgres,service_role=arwdDxtm/postgres}
+ supabase_admin | S       | {postgres=rwU/supabase_admin,anon=rwU/supabase_admin,authenticated=rwU/supabase_admin,service_role=rwU/supabase_admin}
+ supabase_admin | f       | {postgres=X/supabase_admin,anon=X/supabase_admin,authenticated=X/supabase_admin,service_role=X/supabase_admin}
+ supabase_admin | r       | {postgres=arwdDxtm/supabase_admin,anon=arwdDxtm/supabase_admin,authenticated=arwdDxtm/supabase_admin,service_role=arwdDxtm/supabase_admin}
+(6 rows)
+
+=== installing release ===
+--- postgres : /baseline/core.sql
+--- postgres : /baseline/modules/10-source-files.sql
+--- postgres : /baseline/modules/15-inspection.sql
+--- postgres : /baseline/modules/20-change-control.sql
+--- postgres : /baseline/modules/30-supply-chain.sql
+--- postgres : /baseline/modules/40-integrations.sql
+--- postgres : /baseline/modules/50-extensions.sql
+--- postgres : /baseline/modules/60-customers.sql
+install complete
+=== seeding ===
+=== starting PostgREST ===
+harness ready
+
+=== the baseline records itself as ===
+ release 
+---------
+      90
+(1 row)
+
+
+
+=== ATTACKING THE BASELINE (the damage the upgrade has to clean up) ===
+
+=== PREFLIGHT ===
+PostgREST is answering and the seed is present.
+
+=== ATTACKS (expecting: vulnerable) ===
+
+[BREACHED] F2a     anon reads parts_with_pricing (another tenant's parts and prices)
+         HTTP 200: [{"part_number":"ACME-SECRET-0001","description":"Hypersonic nozzle, ITAR controlled","preferred_supplier":{"currency": "USD", "unit_price": 14250.0000, "supplier_id": "aaaaaaaa-4444-4000-8000-000000000001", "supplier_co...
+[BREACHED] F2b     Umbrella member reads Acme parts through parts_with_pricing
+         HTTP 200: [{"part_number":"ACME-SECRET-0001","description":"Hypersonic nozzle, ITAR controlled"}, {"part_number":"ACME-SECRET-0002","description":"Inlet cowl, ITAR controlled"}, {"part_number":"UMB-0001","description":"A widget"}]
+[BREACHED] F3a     Umbrella member mints a share link for an Acme file
+         HTTP 200: [{"link_id":"75bd616a-6522-4192-a860-8c984a1f283a","token":"6DEXDmIr0hAD","expires_at":"2026-08-14T02:16:57.150038+00:00"}]
+[BREACHED] F3b     anon redeems a require_auth=true link
+         HTTP 200: [{"is_valid":true,"file_id":"aaaaaaaa-3333-4000-8000-000000000001","org_id":"aaaaaaaa-0000-4000-8000-000000000001","file_version":null,"error_message":null}]
+[BREACHED] F3c     anon exhausts a 10-download allowance without downloading anything
+         limit hit after 11 validate calls
+[BREACHED] F3d     Umbrella member redeems Acme's require_auth=true link
+         HTTP 200: [{"is_valid":true,"file_id":"aaaaaaaa-3333-4000-8000-000000000001","org_id":"aaaaaaaa-0000-4000-8000-000000000001","file_version":null,"error_message":null}]
+[BREACHED] F3e     org-less account redeems Acme's require_auth=true link
+         HTTP 200: [{"is_valid":true,"file_id":"aaaaaaaa-3333-4000-8000-000000000001","org_id":"aaaaaaaa-0000-4000-8000-000000000001","file_version":null,"error_message":null}]
+[BREACHED] F4a     org-less account reads Acme's Odoo configuration
+         HTTP 200: [{"id":"facd54d1-9bc6-4477-aa84-309fe8c11d65","name":"Acme Production Odoo","description":"live ERP","url":"https://acme-secret.odoo.com","database":"acme_prod","color":null,"is_active":true,"last_tested_at":null,"last_t...
+[BREACHED] F4a2    org-less account reads Acme's integration status
+         HTTP 200: [{"id":"03aeb675-cf58-4612-ac8a-a43bc67cf953","integration_type":"odoo","is_active":true,"is_connected":true,"last_connected_at":null,"auto_sync":false,"last_sync_at":null,"last_sync_status":null,"last_sync_count":null}]
+[BREACHED] F4b     org-less account reads Acme's item-designation assignments
+         HTTP 200: [{"id":"16ca3801-ad38-466a-85fd-dc4a61ac4dfe","org_id":"aaaaaaaa-0000-4000-8000-000000000001","vault_id":"aaaaaaaa-2222-4000-8000-000000000001","part_number":"ACME-SECRET-0001","designation_id":"aaaaaaaa-5555-4000-8000-0...
+[BREACHED] F4c     org-less account OVERWRITES a row in Acme's item_images
+         HTTP 200: {"id":"8c315deb-aaf8-46c0-bd27-aee4cc1c91ee","org_id":"aaaaaaaa-0000-4000-8000-000000000001","part_number":"ACME-SECRET-0001","image_type":"icon","icon_name":"skull","icon_color":"#000000","image_storage_path":null,"upda...
+[BREACHED] F4d     org-less account DELETES a row from Acme's item_images
+         HTTP 200: true
+[BREACHED] F4e     org-less account reads Acme's item designations
+         HTTP 200: [{"id":"aaaaaaaa-5555-4000-8000-000000000001","org_id":"aaaaaaaa-0000-4000-8000-000000000001","name":"ITAR","sort_order":1,"created_at":"2026-08-07T02:16:53.901945+00:00","created_by":"aaaaaaaa-1111-4000-8000-00000000000...
+[refused ] F4f     org-less account writes an Acme item designation (admin check should stop this)
+         HTTP 400: {"code":"P0001","details":null,"hint":null,"message":"Not authorized to manage item designations"}
+[BREACHED] F5a     org slug enumeration: an existing org is distinguishable from a miss carrying the same answer
+         hit ={"users": {"email": true, "phone": true, "google": true}, "suppliers": {"email": true, "phone": true, "google": true}}
+         miss={"users" : {"google" : true, "email" : true, "phone" : true}, "suppliers" : {"google" : true, "email" : true, "phone" : true}}
+[BREACHED] F6a     Acme member applies UMBRELLA's transition to her own file
+         HTTP 200: {"success": true, "new_revision": "A", "new_state_id": "bbbbbbbb-7777-4000-8000-000000000002", "new_state_name": "UMBRELLA-STATE-OMEGA", "requires_review": false}
+[BREACHED] F6b     Acme member reads Umbrella's workflow/state/transition names out of her own history
+         HTTP 200: [{"workflow_name":"UMBRELLA-CONFIDENTIAL-WORKFLOW","to_state_name":"UMBRELLA-STATE-OMEGA","transition_name":"UMBRELLA-TRANSITION-CLASSIFIED"}]
+[refused ] F7a     consume_share_link spends a download on a soft-deleted file validate_share_link refuses
+         validate: [{"is_valid":true,"file_id":"aaaaaaaa-3333-4000-8000-000000000003","org_id":"aaaaaaaa-0000-4000-8000-000000000001","file... | consume: HTTP 404 {"code":"PGRST202","details":"Searched f...
+
+=== POSITIVE CONTROLS (must pass before and after) ===
+
+[works   ] C1      Acme member still reads Acme parts through parts_with_pricing
+         HTTP 200: [{"part_number":"ACME-SECRET-0001","preferred_supplier":{"currency": "USD", "unit_price": 14250.0000, "supplier_id": "aaaaaaaa-4444-4000-8000-000000000001", "supplier_code": "CONF-FORGE", "supplier_na...
+[n/a yet ] C1b     ...and sees no other tenant in it
+         UMB-0001 present: True
+[works   ] C2      Acme member still mints a share link for their OWN file
+         HTTP 200: [{"link_id":"42444649-fa55-4db2-993e-1d6747fb1b1a","token":"kc5Zum5J71HE","expires_at":"2026-08-14T02:16:58.685864+00:00"}]
+[works   ] C3      anon recipient still validates a legitimate share link
+         HTTP 200: [{"is_valid":true,"file_id":"aaaaaaaa-3333-4000-8000-000000000001","org_id":"aaaaaaaa-0000-4000-8000-000000000001","file_version":null,"error_message":null}]
+[n/a yet ] C4      6 more validations do NOT exhaust a 3-download allowance
+         HTTP 200: [{"is_valid":false,"file_id":null,"org_id":null,"file_version":null,"error_message":"Download limit reached"}]
+[works   ] C5      sign-in screen still reads auth providers with the anon key
+         HTTP 200: {"saml": true, "google": true}
+[works   ] C6      Acme member still reads their OWN Odoo configuration
+         HTTP 200: [{"id":"facd54d1-9bc6-4477-aa84-309fe8c11d65","name":"Acme Production Odoo","description":"live ERP","url":"https://acme-secret.odoo.com","database":"acme_prod"...
+[works   ] C7      Acme member still writes their OWN item_images row
+         HTTP 200: {"id":"96c31daf-705d-44bd-bcb6-3af43070cf30","org_id":"aaaaaaaa-0000-4000-8000-000000000001","part_number":"ACME-SECRET-0001","image_type":"icon","icon_name":"r...
+[works   ] C8      Acme member still runs Acme's OWN workflow transition on her own file
+         HTTP 200: {"success": true, "new_revision": "C", "new_state_id": "aaaaaaaa-7777-4000-8000-000000000002", "new_state_name": "Acme Released", "requires_review": false}
+[works   ] C9      Acme member still redeems Acme's require_auth=true link
+         HTTP 200: [{"is_valid":true,"file_id":"aaaaaaaa-3333-4000-8000-000000000001","org_id":"aaaaaaaa-0000-4000-8000-000000000001","file_version":null,"error_message":null}]
+[n/a yet ] C10     consume_share_link spends exactly max_downloads and then refuses
+         accepted 0 of 4 attempts on a 3-download link
+[n/a yet ] C11     validate and consume also agree on a link that IS good
+         validate [{"is_valid":true,"file_id":"aaaaaaaa-3333-4000-8000-000000000001","org_id":"aaaaaaaa-0000... | consume {"code":"PGRST202","...
+
+16 of 18 attacks succeeded; 0 of 8 enforced positive controls broken.
+OK: every attack reproduced against the current code, with all positive controls working.
+
+=== RESIDUE LEFT BY THE ATTACKS, BEFORE THE UPGRADE ===
+                  id                  | token_prefix |            minted_for_org            |         file_actually_in_org         |              created_by              |             creator_org              |                               reading                                |          created_at           |          expires_at           | is_active | require_auth | download_count | max_downloads 
+--------------------------------------+--------------+--------------------------------------+--------------------------------------+--------------------------------------+--------------------------------------+----------------------------------------------------------------------+-------------------------------+-------------------------------+-----------+--------------+----------------+---------------
+ 75bd616a-6522-4192-a860-8c984a1f283a | 6DEXDmIr...  | bbbbbbbb-0000-4000-8000-000000000001 | aaaaaaaa-0000-4000-8000-000000000001 | bbbbbbbb-1111-4000-8000-000000000001 | bbbbbbbb-0000-4000-8000-000000000001 | creator is NOT in the file's organization - the v92-and-earlier hole | 2026-08-07 02:16:57.150038+00 | 2026-08-14 02:16:57.150038+00 | t         | t            |              0 |            10
+(1 row)
+
+                  id                  |           filed_under_org            |               file_id                |         workflow_name          |   from_state_name    |    to_state_name     |        transition_name         | performed_by_email |         performed_at          
+--------------------------------------+--------------------------------------+--------------------------------------+--------------------------------+----------------------+----------------------+--------------------------------+--------------------+-------------------------------
+ 55bb49b3-c60f-4ca5-91e0-84fff99c9e1c | aaaaaaaa-0000-4000-8000-000000000001 | aaaaaaaa-3333-4000-8000-000000000002 | UMBRELLA-CONFIDENTIAL-WORKFLOW | UMBRELLA-STATE-ALPHA | UMBRELLA-STATE-OMEGA | UMBRELLA-TRANSITION-CLASSIFIED | alice@acme.test    | 2026-08-07 02:16:58.505814+00
+(1 row)
+
+ file_id | file_org | workflow_org | workflow_name | current_state_name 
+---------+----------+--------------+---------------+--------------------
+(0 rows)
+
+DO
+docker : psql:/sql/residue-report.sql:147: NOTICE:  RESIDUE PRESENT: 1 active cross-tenant share link(s), 1 
+cross-tenant workflow_history row(s), 0 cross-tenant workflow assignment(s)
+At C:\Users\emill\Documents\GitHub\bluePLM\harness\upgrade.ps1:48 char:5
++     docker compose exec -T -e PGPASSWORD=postgres db `
++     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (psql:/sql/resid...w assignment(s):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+
+
+=== APPLYING THE RELEASE UNDER TEST OVER IT (no teardown) ===
+--- postgres : /blueplm/core.sql
+--- postgres : /blueplm/modules/10-source-files.sql
+--- postgres : /blueplm/modules/15-inspection.sql
+--- postgres : /blueplm/modules/20-change-control.sql
+--- postgres : /blueplm/modules/30-supply-chain.sql
+--- postgres : /blueplm/modules/40-integrations.sql
+--- postgres : /blueplm/modules/50-extensions.sql
+--- postgres : /blueplm/modules/60-customers.sql
+install complete
+  (schema cache did not pick up consume_share_link after NOTIFY; restarting PostgREST)
+
+=== RESIDUE AFTER THE UPGRADE ===
+                  id                  | token_prefix |            minted_for_org            |         file_actually_in_org         |              created_by              |             creator_org              |                               reading                                |          created_at           |          expires_at           | is_active | require_auth | download_count | max_downloads 
+--------------------------------------+--------------+--------------------------------------+--------------------------------------+--------------------------------------+--------------------------------------+----------------------------------------------------------------------+-------------------------------+-------------------------------+-----------+--------------+----------------+---------------
+ 75bd616a-6522-4192-a860-8c984a1f283a | 6DEXDmIr...  | bbbbbbbb-0000-4000-8000-000000000001 | aaaaaaaa-0000-4000-8000-000000000001 | bbbbbbbb-1111-4000-8000-000000000001 | bbbbbbbb-0000-4000-8000-000000000001 | creator is NOT in the file's organization - the v92-and-earlier hole | 2026-08-07 02:16:57.150038+00 | 2026-08-14 02:16:57.150038+00 | f         | t            |              0 |            10
+(1 row)
+
+ id | filed_under_org | file_id | workflow_name | from_state_name | to_state_name | transition_name | performed_by_email | performed_at 
+----+-----------------+---------+---------------+-----------------+---------------+-----------------+--------------------+--------------
+(0 rows)
+
+ file_id | file_org | workflow_org | workflow_name | current_state_name 
+---------+----------+--------------+---------------+--------------------
+(0 rows)
+
+DO
+docker : psql:/sql/residue-report.sql:147: NOTICE:  No residue: no active cross-tenant share link, no cross-tenant 
+workflow history, no cross-tenant workflow assignment.
+At C:\Users\emill\Documents\GitHub\bluePLM\harness\upgrade.ps1:48 char:5
++     docker compose exec -T -e PGPASSWORD=postgres db `
++     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (psql:/sql/resid...low assignment.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+
+
+=== WHAT THE REMEDIATION REPORTED ===
+          remediation          | release | rows_acted_on |                                           detail                                           
+-------------------------------+---------+---------------+--------------------------------------------------------------------------------------------
+ cross_tenant_share_links      |      93 |             1 | Each link granted access to a file in an organization other than the one the link was mint
+ cross_tenant_workflow_history |      93 |             1 | Each row is filed under one organization and named another one's workflow, states or trans
+(2 rows)
+
+
+
+=== VERIFICATION AFTER THE UPGRADE ===
+docker : psql:/blueplm/tools/verify-schema.sql:86: NOTICE:  ✅ All 76 expected tables exist
+    + FullyQualifiedErrorId : NativeCommandError
+psql:/blueplm/tools/verify-schema.sql:115: NOTICE:  ✅ All 18 key functions exist
+psql:/blueplm/tools/verify-schema.sql:146: NOTICE:  ✅ RLS enabled on all tables
+psql:/blueplm/tools/verify-schema.sql:189: NOTICE:  ✅ Every org-scoped RPC refused a foreign organization when asked
+psql:/blueplm/tools/verify-schema.sql:256: NOTICE:  ✅ Nothing in public is reachable by anon outside the allowlist
+psql:/blueplm/tools/verify-schema.sql:256: NOTICE:  ℹ️  1 advisory item(s) listed above - real, but not something 
+psql:/blueplm/tools/verify-schema.sql:288: NOTICE:  ✅ No NULL-unsafe organization membership tests
+psql:/blueplm/tools/verify-schema.sql:318: NOTICE:  ✅ Every function that selects rows by more than one id checks each 
+psql:/blueplm/tools/verify-schema.sql:362: NOTICE:  ✅ Nothing left behind by the holes this release closes
+psql:/blueplm/tools/verify-schema.sql:362: NOTICE:  ℹ️  2 remediation record(s) in schema_remediation_log. Each names 
+psql:/blueplm/tools/verify-schema.sql:404: NOTICE:  ✅ Schema verified and stamped at version 93
+stamped version: 93
+
+=== ATTACKS AFTER THE UPGRADE ===
+
+=== PREFLIGHT ===
+PostgREST is answering and the seed is present.
+
+=== ATTACKS (expecting: fixed) ===
+
+[refused ] F2a     anon reads parts_with_pricing (another tenant's parts and prices)
+         HTTP 401: {"code":"42501","details":null,"hint":null,"message":"permission denied for view parts_with_pricing"}
+[refused ] F2b     Umbrella member reads Acme parts through parts_with_pricing
+         HTTP 200: [{"part_number":"UMB-0001","description":"A widget"}]
+[refused ] F3a     Umbrella member mints a share link for an Acme file
+         HTTP 403: {"code":"42501","details":null,"hint":null,"message":"Not authorized for this file"}
+[refused ] F3b     anon redeems a require_auth=true link
+         HTTP 200: [{"is_valid":false,"file_id":null,"org_id":null,"file_version":null,"error_message":"This link requires you to sign in"}]
+[refused ] F3c     anon exhausts a 10-download allowance without downloading anything
+         limit hit after 0 validate calls
+[refused ] F3d     Umbrella member redeems Acme's require_auth=true link
+         HTTP 200: [{"is_valid":false,"file_id":null,"org_id":null,"file_version":null,"error_message":"This link is restricted to members of the organization that owns the file"}]
+[refused ] F3e     org-less account redeems Acme's require_auth=true link
+         HTTP 200: [{"is_valid":false,"file_id":null,"org_id":null,"file_version":null,"error_message":"This link is restricted to members of the organization that owns the file"}]
+[refused ] F4a     org-less account reads Acme's Odoo configuration
+         HTTP 200: []
+[refused ] F4a2    org-less account reads Acme's integration status
+         HTTP 200: []
+[refused ] F4b     org-less account reads Acme's item-designation assignments
+         HTTP 403: {"code":"42501","details":null,"hint":null,"message":"Not authorized for this organization"}
+[refused ] F4c     org-less account OVERWRITES a row in Acme's item_images
+         HTTP 403: {"code":"42501","details":null,"hint":null,"message":"Not authorized for this organization"}
+[refused ] F4d     org-less account DELETES a row from Acme's item_images
+         HTTP 403: {"code":"42501","details":null,"hint":null,"message":"Not authorized for this organization"}
+[refused ] F4e     org-less account reads Acme's item designations
+         HTTP 403: {"code":"42501","details":null,"hint":null,"message":"Not authorized for this organization"}
+[refused ] F4f     org-less account writes an Acme item designation (admin check should stop this)
+         HTTP 403: {"code":"42501","details":null,"hint":null,"message":"Not authorized for this organization"}
+[refused ] F5a     org slug enumeration: an existing org is distinguishable from a miss carrying the same answer
+         hit ={"users": {"email": true, "phone": true, "google": true}, "suppliers": {"email": true, "phone": true, "google": true}}
+         miss={"users": {"email": true, "phone": true, "google": true}, "suppliers": {"email": true, "phone": true, "google": true}}
+[refused ] F6a     Acme member applies UMBRELLA's transition to her own file
+         HTTP 403: {"code":"42501","details":null,"hint":null,"message":"permission denied for function apply_workflow_transition"}
+[refused ] F6b     Acme member reads Umbrella's workflow/state/transition names out of her own history
+         HTTP 200: [{"workflow_name":"[redacted: another organization's workflow]","to_state_name":"[redacted]","transition_name":"[redacted]"}]
+[refused ] F7a     consume_share_link spends a download on a soft-deleted file validate_share_link refuses
+         validate: [{"is_valid":false,"file_id":null,"org_id":null,"file_version":null,"error_message":"Link not found"}] | consume: HTTP 200 false
+
+=== POSITIVE CONTROLS (must pass before and after) ===
+
+[works   ] C1      Acme member still reads Acme parts through parts_with_pricing
+         HTTP 200: [{"part_number":"ACME-SECRET-0002","preferred_supplier":null}, {"part_number":"ACME-SECRET-0001","preferred_supplier":{"currency": "USD", "unit_price": 14250.0000, "supplier_id": "aaaaaaaa-4444-4000-8...
+[works   ] C1b     ...and sees no other tenant in it
+         UMB-0001 present: False
+[works   ] C2      Acme member still mints a share link for their OWN file
+         HTTP 200: [{"link_id":"747f9b22-76ae-42f5-80c4-8460d45b56d4","token":"672f3e2186e442d8a2abd13fe99c501b","expires_at":"2026-08-14T02:18:40.584658+00:00"}]
+[works   ] C3      anon recipient still validates a legitimate share link
+         HTTP 200: [{"is_valid":true,"file_id":"aaaaaaaa-3333-4000-8000-000000000001","org_id":"aaaaaaaa-0000-4000-8000-000000000001","file_version":null,"error_message":null}]
+[works   ] C4      6 more validations do NOT exhaust a 3-download allowance
+         HTTP 200: [{"is_valid":true,"file_id":"aaaaaaaa-3333-4000-8000-000000000001","org_id":"aaaaaaaa-0000-4000-8000-000000000001","file_version":null,"error_message":null}]
+[works   ] C5      sign-in screen still reads auth providers with the anon key
+         HTTP 200: {"saml": true, "google": true}
+[works   ] C6      Acme member still reads their OWN Odoo configuration
+         HTTP 200: [{"id":"facd54d1-9bc6-4477-aa84-309fe8c11d65","name":"Acme Production Odoo","description":"live ERP","url":"https://acme-secret.odoo.com","database":"acme_prod"...
+[works   ] C7      Acme member still writes their OWN item_images row
+         HTTP 200: {"id":"96c31daf-705d-44bd-bcb6-3af43070cf30","org_id":"aaaaaaaa-0000-4000-8000-000000000001","part_number":"ACME-SECRET-0001","image_type":"icon","icon_name":"r...
+[works   ] C8      Acme member still runs Acme's OWN workflow transition on her own file
+         HTTP 200: {"success": true, "new_revision": "C", "new_state_id": "aaaaaaaa-7777-4000-8000-000000000001", "new_state_name": "Acme WIP", "requires_review": false}
+[works   ] C9      Acme member still redeems Acme's require_auth=true link
+         HTTP 200: [{"is_valid":true,"file_id":"aaaaaaaa-3333-4000-8000-000000000001","org_id":"aaaaaaaa-0000-4000-8000-000000000001","file_version":null,"error_message":null}]
+[works   ] C10     consume_share_link spends exactly max_downloads and then refuses
+         accepted 3 of 4 attempts on a 3-download link
+[works   ] C11     validate and consume also agree on a link that IS good
+         validate [{"is_valid":true,"file_id":"aaaaaaaa-3333-4000-8000-000000000001","org_id":"aaaaaaaa-0000... | consume true
+
+0 of 18 attacks succeeded; 0 of 12 enforced positive controls broken.
+OK: every attack was refused, and every positive control still works.
+
+=== POSTURE CHECKS AFTER THE UPGRADE ===
+  PASS - a routine created now is unreachable by anon and still reachable by authenticated.
+  PASS - apply_workflow_transition refuses a foreign transition and accepts its own.
+  PASS - a folder called 100% renames itself and nothing else.
+  PASS - validate_share_link and consume_share_link admit the same callers across 27 (link, caller) pairs covering require_auth, expiry, deactivation, exhaustion, a deleted file and an unknown token (7 admitted, 20 refused).
+
+OK: the release applied over an attacked baseline, removed what the holes produced, verified, and refused every attack.

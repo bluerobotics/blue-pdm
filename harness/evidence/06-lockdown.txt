@@ -1,7 +1,7 @@
 ﻿# 06-lockdown.txt
 # Produced by: psql -f /blueplm/tools/emergency-lockdown.sql
 # Release under test: the working tree
-# Captured: 2026-08-06 15:25:56 -07:00 by capture-evidence.ps1
+# Captured: 2026-08-06 19:16:04 -07:00 by capture-evidence.ps1
 #
 # Unedited output. Re-run the command above to reproduce it.
 

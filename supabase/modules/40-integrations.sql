@@ -581,15 +581,20 @@ $$;
 
 -- Google Drive settings (only if user is in org)
 -- Recreate to add inspection_template_folder_id to the return signature
+--
+-- Both of these hand-wrote their membership test out of auth.uid(). Both were
+-- correct, and their correctness was the problem: check_org_gates() had to
+-- treat a bare auth.uid() as evidence of a gate in order to keep passing them,
+-- and that accommodation certified a function with no authorization at all. See
+-- c_gate_binding in core.sql. require_org_member() admits exactly the same
+-- callers this test did.
 DROP FUNCTION IF EXISTS get_google_drive_settings(UUID);
 CREATE OR REPLACE FUNCTION get_google_drive_settings(p_org_id UUID)
 RETURNS TABLE (client_id TEXT, client_secret TEXT, enabled BOOLEAN, inspection_template_folder_id TEXT) 
 SECURITY DEFINER AS $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM users WHERE id = auth.uid() AND org_id = p_org_id) THEN
-    RAISE EXCEPTION 'User not authorized to access this organization';
-  END IF;
-  
+  PERFORM require_org_member(p_org_id);
+
   RETURN QUERY
   SELECT o.google_drive_client_id, o.google_drive_client_secret, o.google_drive_enabled,
          o.google_drive_inspection_template_folder_id
@@ -602,16 +607,16 @@ CREATE OR REPLACE FUNCTION update_google_drive_settings(
   p_org_id UUID, p_client_id TEXT, p_client_secret TEXT, p_enabled BOOLEAN,
   p_inspection_template_folder_id TEXT DEFAULT NULL
 ) RETURNS BOOLEAN SECURITY DEFINER AS $$
-DECLARE
-  v_user_role TEXT;
 BEGIN
-  SELECT role INTO v_user_role FROM users WHERE id = auth.uid() AND org_id = p_org_id;
-  
-  IF v_user_role IS NULL THEN
-    RAISE EXCEPTION 'User not found in organization';
-  END IF;
-  
-  IF v_user_role != 'admin' THEN
+  -- Membership first, then the narrower admin question. Splitting the old
+  -- single lookup in two keeps the admission set identical - member of
+  -- p_org_id AND users.role = 'admin' - while the organization binding becomes
+  -- a call something can recognise.
+  PERFORM require_org_member(p_org_id);
+
+  IF NOT EXISTS (
+    SELECT 1 FROM users WHERE id = current_actor_id() AND role = 'admin'
+  ) THEN
     RAISE EXCEPTION 'Only admins can update Google Drive settings';
   END IF;
   

@@ -9,7 +9,10 @@
 param(
   [switch]$CoreOnly,
   [string[]]$Modules,
-  [switch]$NoSeed
+  [switch]$NoSeed,
+  # Which mounted copy of supabase/ to install. /blueplm is the release under
+  # test; /baseline is the one the upgrade lane starts from.
+  [string]$Root = '/blueplm'
 )
 
 $ErrorActionPreference = 'Continue'
@@ -70,9 +73,9 @@ docker compose exec -T -e PGPASSWORD=postgres db `
     WHERE n.nspname = 'public' ORDER BY 1, 2" 2>&1 | Write-Host
 
 Write-Host "=== installing release ===" -ForegroundColor Yellow
-if ($CoreOnly)      { & "$PSScriptRoot\install.ps1" -CoreOnly }
-elseif ($Modules)   { & "$PSScriptRoot\install.ps1" -Modules $Modules }
-else                { & "$PSScriptRoot\install.ps1" }
+if ($CoreOnly)      { & "$PSScriptRoot\install.ps1" -CoreOnly -Root $Root }
+elseif ($Modules)   { & "$PSScriptRoot\install.ps1" -Modules $Modules -Root $Root }
+else                { & "$PSScriptRoot\install.ps1" -Root $Root }
 if ($LASTEXITCODE -ne 0) { throw "install failed" }
 
 if (-not $NoSeed -and -not $CoreOnly) {
@@ -84,7 +87,13 @@ if (-not $NoSeed -and -not $CoreOnly) {
 
 Write-Host "=== starting PostgREST ===" -ForegroundColor Yellow
 docker compose up -d rest 2>&1 | Out-Null
-Start-Sleep -Seconds 10
-docker compose exec -T rest true 2>&1 | Out-Null
+
+# Wait for it to answer, rather than sleeping a guessed ten seconds and then
+# running `docker compose exec rest true` - which cannot work, because the
+# PostgREST image has no shell and no /bin/true. It left $LASTEXITCODE at 126
+# for every successful reset, so a caller that checked the exit code of this
+# script concluded the harness had failed to build when it had not.
+. "$PSScriptRoot\rest-ready.ps1"
+Wait-RestReady | Out-Null
 
 Write-Host "harness ready" -ForegroundColor Green

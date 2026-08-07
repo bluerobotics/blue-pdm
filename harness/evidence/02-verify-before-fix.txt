@@ -1,7 +1,7 @@
 ﻿# 02-verify-before-fix.txt
 # Produced by: psql -f /blueplm/tools/verify-schema.sql
 # Release under test: ../../blueplm-v90/supabase
-# Captured: 2026-08-06 15:13:20 -07:00 by capture-evidence.ps1
+# Captured: 2026-08-06 18:55:13 -07:00 by capture-evidence.ps1
 #
 # Unedited output. Re-run the command above to reproduce it.
 

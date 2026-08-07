@@ -1,7 +1,7 @@
 ﻿# 03-attacks-after-fix.txt
 # Produced by: .\attack.ps1 -Expect fixed
 # Release under test: the working tree
-# Captured: 2026-08-06 15:14:16 -07:00 by capture-evidence.ps1
+# Captured: 2026-08-06 18:56:11 -07:00 by capture-evidence.ps1
 #
 # Unedited output. Re-run the command above to reproduce it.
 
@@ -46,6 +46,8 @@ PostgREST is answering and the seed is present.
          HTTP 403: {"code":"42501","details":null,"hint":null,"message":"permission denied for function apply_workflow_transition"}
 [refused ] F6b     Acme member reads Umbrella's workflow/state/transition names out of her own history
          HTTP 200: []
+[refused ] F7a     consume_share_link spends a download on a soft-deleted file validate_share_link refuses
+         validate: [{"is_valid":false,"file_id":null,"org_id":null,"file_version":null,"error_message":"Link not found"}] | consume: HTTP 200 false
 
 === POSITIVE CONTROLS (must pass before and after) ===
 
@@ -54,7 +56,7 @@ PostgREST is answering and the seed is present.
 [works   ] C1b     ...and sees no other tenant in it
          UMB-0001 present: False
 [works   ] C2      Acme member still mints a share link for their OWN file
-         HTTP 200: [{"link_id":"4eec1507-57af-40bd-9fbd-13f485686a17","token":"fa60ff215ece4a47b98ffbfa40ec0a9a","expires_at":"2026-08-13T22:14:15.855259+00:00"}]
+         HTTP 200: [{"link_id":"b01f8a2f-1d47-4bd3-8699-3450e439a6ad","token":"48448394d5f34f3ab0afd36658f814cf","expires_at":"2026-08-14T01:56:10.477155+00:00"}]
 [works   ] C3      anon recipient still validates a legitimate share link
          HTTP 200: [{"is_valid":true,"file_id":"aaaaaaaa-3333-4000-8000-000000000001","org_id":"aaaaaaaa-0000-4000-8000-000000000001","file_version":null,"error_message":null}]
 [works   ] C4      6 more validations do NOT exhaust a 3-download allowance
@@ -62,15 +64,17 @@ PostgREST is answering and the seed is present.
 [works   ] C5      sign-in screen still reads auth providers with the anon key
          HTTP 200: {"saml": true, "google": true}
 [works   ] C6      Acme member still reads their OWN Odoo configuration
-         HTTP 200: [{"id":"39f7db3f-2511-4c96-89e0-3a93ab1164f9","name":"Acme Production Odoo","description":"live ERP","url":"https://acme-secret.odoo.com","database":"acme_prod"...
+         HTTP 200: [{"id":"e8064089-9464-4f23-ad2d-6bd335044000","name":"Acme Production Odoo","description":"live ERP","url":"https://acme-secret.odoo.com","database":"acme_prod"...
 [works   ] C7      Acme member still writes their OWN item_images row
-         HTTP 200: {"id":"05f0a983-2e82-4ab3-9781-2bb628669e4b","org_id":"aaaaaaaa-0000-4000-8000-000000000001","part_number":"ACME-SECRET-0001","image_type":"icon","icon_name":"r...
+         HTTP 200: {"id":"5830cdfa-6a4a-42a2-8a6d-8f67fc11ed10","org_id":"aaaaaaaa-0000-4000-8000-000000000001","part_number":"ACME-SECRET-0001","image_type":"icon","icon_name":"r...
 [works   ] C8      Acme member still runs Acme's OWN workflow transition on her own file
          HTTP 200: {"success": true, "new_revision": "C", "new_state_id": "aaaaaaaa-7777-4000-8000-000000000002", "new_state_name": "Acme Released", "requires_review": false}
 [works   ] C9      Acme member still redeems Acme's require_auth=true link
          HTTP 200: [{"is_valid":true,"file_id":"aaaaaaaa-3333-4000-8000-000000000001","org_id":"aaaaaaaa-0000-4000-8000-000000000001","file_version":null,"error_message":null}]
 [works   ] C10     consume_share_link spends exactly max_downloads and then refuses
          accepted 3 of 4 attempts on a 3-download link
+[works   ] C11     validate and consume also agree on a link that IS good
+         validate [{"is_valid":true,"file_id":"aaaaaaaa-3333-4000-8000-000000000001","org_id":"aaaaaaaa-0000... | consume true
 
-0 of 17 attacks succeeded; 0 of 11 enforced positive controls broken.
+0 of 18 attacks succeeded; 0 of 12 enforced positive controls broken.
 OK: every attack was refused, and every positive control still works.

@@ -31,6 +31,15 @@ SET LOCAL client_min_messages = warning;
 -- transition on her own file afterwards. An attack that damages the thing the
 -- controls measure makes the controls useless.
 \set acme_file2    '''aaaaaaaa-3333-4000-8000-000000000002'''
+-- A third Acme file, soft-deleted, with a share link minted for it while it was
+-- still there. That ordering is the whole point: the link was created in good
+-- faith and the file was deleted afterwards, which is the ordinary way a link
+-- outlives its file. It is seeded already-deleted rather than deleted by the
+-- attack script because deleting it over HTTP would need a team permission the
+-- attack is not about, and because nothing else may touch this file - the test
+-- is whether validate and consume answer the same question about it.
+\set acme_file3    '''aaaaaaaa-3333-4000-8000-000000000003'''
+\set deleted_token '''harness0000deleted0000file0000li'''
 \set umb_file      '''bbbbbbbb-3333-4000-8000-000000000001'''
 \set acme_supplier '''aaaaaaaa-4444-4000-8000-000000000001'''
 
@@ -80,6 +89,27 @@ VALUES (:acme_file, :acme_org, :acme_vault,
         'Umbrella/widget.sldprt', 'widget.sldprt', 'sldprt',
         'UMB-0001', 'A widget', 'A', 1, 'WIP', :bob)
 ON CONFLICT (id) DO NOTHING;
+
+-- The soft-deleted file, and the link that outlived it.
+INSERT INTO files (id, org_id, vault_id, file_path, file_name, extension,
+                   part_number, description, revision, version, state, created_by,
+                   deleted_at)
+VALUES (:acme_file3, :acme_org, :acme_vault,
+        'Acme/Classified/withdrawn-fixture.sldprt', 'withdrawn-fixture.sldprt', 'sldprt',
+        'ACME-SECRET-0003', 'Withdrawn fixture, deleted after a link was shared', 'A', 1, 'WIP', :alice,
+        NOW() - INTERVAL '1 hour')
+ON CONFLICT (id) DO NOTHING;
+
+-- require_auth = false, so nothing in the require_auth branch runs. That is
+-- what exposed the disagreement: validate tested deleted_at on its own path and
+-- consume tested it only inside the branch neither of them was taking, so
+-- validate answered 'Link not found' and consume answered true and spent a
+-- download. Both now ask share_link_admission().
+INSERT INTO file_share_links (org_id, file_id, token, created_by, expires_at,
+                              max_downloads, download_count, require_auth, is_active)
+VALUES (:acme_org, :acme_file3, :deleted_token, :alice, NOW() + INTERVAL '7 days',
+        5, 0, false, true)
+ON CONFLICT (token) DO NOTHING;
 
 INSERT INTO suppliers (id, org_id, name, code, created_by)
 VALUES (:acme_supplier, :acme_org, 'Confidential Forge Ltd', 'CONF-FORGE', :alice)

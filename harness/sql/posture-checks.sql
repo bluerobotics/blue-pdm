@@ -166,57 +166,120 @@ BEGIN
 END $$;
 
 -- ===========================================================================
--- 4. consume_share_link and validate_share_link agree about require_auth
+-- 4. consume_share_link and validate_share_link admit exactly the same callers
 -- ===========================================================================
 -- They are two separate round trips and nothing forces a caller to make the
--- first. If validate refuses a caller that consume accepts, the download the
--- flag was protecting happens anyway.
+-- first. If consume admits somebody validate refuses, the download the refusal
+-- was protecting happens anyway.
+--
+-- WHY THIS IS A MATRIX AND NOT A CASE
+--
+-- The previous version of this check asked about require_auth and nothing else.
+-- It passed, for the whole life of the release, while the two functions
+-- disagreed about whether the file still exists: consume's `deleted_at IS NULL`
+-- test sat inside its require_auth branch, so with require_auth = false and the
+-- file soft-deleted, validate answered 'Link not found' and consume spent a
+-- download. A check that names one axis can only ever find a defect on that
+-- axis, and picking the axis in advance is picking the bug in advance.
+--
+-- So every condition either function tests is varied here, against every kind
+-- of caller, and the assertion is the general one: the two answers are equal.
+-- Not "consume refuses X" - equal, in both directions, because a consume that
+-- refused everything validation accepted would satisfy any one-directional test
+-- and break every download in the product.
 DO $$
 DECLARE
-  v_token TEXT;
-  v_valid BOOLEAN;
-  v_spent BOOLEAN;
+  c_acme      CONSTANT UUID := 'aaaaaaaa-0000-4000-8000-000000000001';
+  c_alice     CONSTANT UUID := 'aaaaaaaa-1111-4000-8000-000000000001';
+  c_bob       CONSTANT UUID := 'bbbbbbbb-1111-4000-8000-000000000001';
+  c_file      CONSTANT UUID := 'aaaaaaaa-3333-4000-8000-000000000001';  -- live
+  c_gone      CONSTANT UUID := 'aaaaaaaa-3333-4000-8000-000000000003';  -- soft-deleted
+  s           RECORD;
+  v_valid     BOOLEAN;
+  v_spent     BOOLEAN;
+  v_admitted  INTEGER := 0;
+  v_refused   INTEGER := 0;
+  v_mismatch  TEXT := '';
 BEGIN
-  PERFORM set_config('request.jwt.claims',
-    json_build_object('sub', 'aaaaaaaa-1111-4000-8000-000000000001',
-                      'role', 'authenticated')::text, true);
+  DELETE FROM file_share_links WHERE token LIKE 'posture4-%';
 
-  SELECT token INTO v_token
-  FROM create_file_share_link('aaaaaaaa-0000-4000-8000-000000000001'::uuid,
-                              'aaaaaaaa-3333-4000-8000-000000000001'::uuid,
-                              'aaaaaaaa-1111-4000-8000-000000000001'::uuid,
-                              7, 5, true);
+  -- One link per condition. Written straight into the table rather than through
+  -- create_file_share_link() because several of these states - expired,
+  -- exhausted, pointing at a file that has since been deleted - are states a
+  -- link arrives in later and cannot be minted in.
+  INSERT INTO file_share_links (org_id, file_id, token, created_by, expires_at,
+                                max_downloads, download_count, require_auth, is_active)
+  VALUES
+    (c_acme, c_file, 'posture4-open',       c_alice, NOW() + INTERVAL '7 days', 9, 0, false, true),
+    (c_acme, c_file, 'posture4-auth',       c_alice, NOW() + INTERVAL '7 days', 9, 0, true,  true),
+    (c_acme, c_file, 'posture4-expired',    c_alice, NOW() - INTERVAL '1 day',  9, 0, false, true),
+    (c_acme, c_file, 'posture4-inactive',   c_alice, NOW() + INTERVAL '7 days', 9, 0, false, false),
+    (c_acme, c_file, 'posture4-exhausted',  c_alice, NOW() + INTERVAL '7 days', 3, 3, false, true),
+    -- The pair that was actually broken: same deleted file, once with the
+    -- require_auth branch taken and once without.
+    (c_acme, c_gone, 'posture4-deleted',    c_alice, NOW() + INTERVAL '7 days', 9, 0, false, true),
+    (c_acme, c_gone, 'posture4-deleted-auth', c_alice, NOW() + INTERVAL '7 days', 9, 0, true, true),
+    -- NULL where the column is nullable, because a NULL must not read as
+    -- "no authentication required" in one function and as false in the other.
+    (c_acme, c_file, 'posture4-nullauth',   c_alice, NULL,                      NULL, 0, NULL, true);
 
-  -- As Bob, a member of another organization.
-  PERFORM set_config('request.jwt.claims',
-    json_build_object('sub', 'bbbbbbbb-1111-4000-8000-000000000001',
-                      'role', 'authenticated')::text, true);
+  FOR s IN
+    SELECT t.token, w.who, w.sub
+    FROM (VALUES
+      ('posture4-open'), ('posture4-auth'), ('posture4-expired'), ('posture4-inactive'),
+      ('posture4-exhausted'), ('posture4-deleted'), ('posture4-deleted-auth'),
+      ('posture4-nullauth'),
+      -- A token nobody minted. Both must refuse it identically, and it is the
+      -- one case where the two functions take completely different paths.
+      ('posture4-no-such-token')
+    ) AS t(token)
+    CROSS JOIN (VALUES
+      ('anon',  NULL::UUID),
+      ('owner', 'aaaaaaaa-1111-4000-8000-000000000001'::UUID),
+      ('other', 'bbbbbbbb-1111-4000-8000-000000000001'::UUID)
+    ) AS w(who, sub)
+    ORDER BY t.token, w.who
+  LOOP
+    IF s.sub IS NULL THEN
+      PERFORM set_config('request.jwt.claims', json_build_object('role', 'anon')::text, true);
+    ELSE
+      PERFORM set_config('request.jwt.claims',
+        json_build_object('sub', s.sub, 'role', 'authenticated')::text, true);
+    END IF;
 
-  SELECT is_valid INTO v_valid FROM validate_share_link(v_token);
-  IF v_valid THEN
-    RAISE EXCEPTION 'require_auth: validate_share_link accepted a member of another organization';
+    SELECT is_valid INTO v_valid FROM validate_share_link(s.token);
+    v_spent := consume_share_link(s.token);
+
+    IF COALESCE(v_valid, false) IS DISTINCT FROM COALESCE(v_spent, false) THEN
+      v_mismatch := v_mismatch || format(E'\n  %s as %s: validate=%s consume=%s',
+                                         s.token, s.who, v_valid, v_spent);
+    END IF;
+
+    IF COALESCE(v_valid, false) THEN v_admitted := v_admitted + 1;
+                                ELSE v_refused  := v_refused  + 1; END IF;
+  END LOOP;
+
+  IF v_mismatch <> '' THEN
+    RAISE EXCEPTION 'ADMISSION DISAGREEMENT: validate_share_link and consume_share_link answer differently for:%', v_mismatch;
   END IF;
 
-  v_spent := consume_share_link(v_token);
-  IF v_spent THEN
-    RAISE EXCEPTION 'require_auth: consume_share_link spent a download for a member of another organization, which validate_share_link had refused';
+  -- Agreement is worthless if the answer is always no. The open link admits all
+  -- three callers, the null-require_auth link admits all three, and the
+  -- require_auth link admits its owner: seven.
+  IF v_admitted < 7 THEN
+    RAISE EXCEPTION 'OVER-REFUSED: only % of % (link, caller) pairs were admitted. The two functions agree because they refuse everything.',
+      v_admitted, v_admitted + v_refused;
   END IF;
 
-  -- And the member it is for still gets through, on both.
-  PERFORM set_config('request.jwt.claims',
-    json_build_object('sub', 'aaaaaaaa-1111-4000-8000-000000000001',
-                      'role', 'authenticated')::text, true);
-
-  SELECT is_valid INTO v_valid FROM validate_share_link(v_token);
-  IF NOT v_valid THEN
-    RAISE EXCEPTION 'require_auth: validate_share_link refused a member of the owning organization';
+  -- And it is worthless if the answer is always yes.
+  IF v_refused < 1 THEN
+    RAISE EXCEPTION 'UNDER-REFUSED: every (link, caller) pair was admitted, including expired, inactive, exhausted and deleted links.';
   END IF;
 
-  IF NOT consume_share_link(v_token) THEN
-    RAISE EXCEPTION 'require_auth: consume_share_link refused a member of the owning organization';
-  END IF;
+  DELETE FROM file_share_links WHERE token LIKE 'posture4-%';
 
-  RAISE NOTICE 'PASS - validate_share_link and consume_share_link agree about require_auth.';
+  RAISE NOTICE 'PASS - validate_share_link and consume_share_link admit the same callers across % (link, caller) pairs covering require_auth, expiry, deactivation, exhaustion, a deleted file and an unknown token (% admitted, % refused).',
+    v_admitted + v_refused, v_admitted, v_refused;
 END $$;
 
 SELECT 'POSTURE CHECKS PASSED' AS verdict;

@@ -183,13 +183,30 @@ Report -Id 'F3a' -What 'Umbrella member mints a share link for an Acme file' `
 # They now mint their own links, legitimately, as Alice on Alice's own file.
 # That works in every state of the code, so a refusal below is always a
 # statement about require_auth and never about the mint.
+$script:LastMint = ''
 function New-AliceLink {
   param([bool]$RequireAuth, [int]$MaxDownloads = 10)
-  $r = Invoke-Rest -Path '/rpc/create_file_share_link' -Token $TOK_ALICE -Method POST -Body @{
-    p_org_id = $ACME_ORG; p_file_id = $ACME_FILE; p_created_by = $ALICE
-    p_expires_in_days = 7; p_max_downloads = $MaxDownloads; p_require_auth = $RequireAuth
+  # Retried, because this is scaffolding and not a measurement. A mint that
+  # fails aborts the whole run, and it has failed once for a reason outside the
+  # schema - PostgREST answering 503 PGRST002 while it reloads its schema cache,
+  # which it does on its own schedule after DDL. Scoring a transport hiccup as a
+  # result is the mistake $script:Transport exists to prevent everywhere else in
+  # this file; the same rule applies to the setup.
+  for ($try = 1; $try -le 3; $try++) {
+    $r = Invoke-Rest -Path '/rpc/create_file_share_link' -Token $TOK_ALICE -Method POST -Body @{
+      p_org_id = $ACME_ORG; p_file_id = $ACME_FILE; p_created_by = $ALICE
+      p_expires_in_days = 7; p_max_downloads = $MaxDownloads; p_require_auth = $RequireAuth
+    }
+    # Kept so that the abort below can say what actually happened. It used to
+    # print only that Alice could not mint a link, which is the least useful
+    # half of what the harness had in its hand.
+    $script:LastMint = ("attempt {0}, HTTP {1}: {2}" -f $try, $r.Status, (Trunc $r.Body 300))
+    if ($r.Status -eq 200 -and $r.Body -match '"token"') {
+      return ($r.Body | ConvertFrom-Json)[0].token
+    }
+    Start-Sleep -Seconds 2
   }
-  if ($r.Status -eq 200 -and $r.Body -match '"token"') { ($r.Body | ConvertFrom-Json)[0].token } else { $null }
+  return $null
 }
 
 $protectedToken = New-AliceLink -RequireAuth $true
@@ -197,6 +214,7 @@ $openToken      = New-AliceLink -RequireAuth $false -MaxDownloads 10
 
 if (-not $protectedToken -or -not $openToken) {
   Write-Host "ABORT: Alice could not mint her own share links, so the require_auth attacks below would be measuring the wrong thing." -ForegroundColor Red
+  Write-Host ("       last response was {0}" -f $script:LastMint) -ForegroundColor Red
   exit 2
 }
 
@@ -322,6 +340,35 @@ $r = Invoke-Rest -Path "/workflow_history?select=workflow_name,to_state_name,tra
 $f6b = ($r.Status -eq 200 -and $r.Body -match 'UMBRELLA-')
 Report -Id 'F6b' -What 'Acme member reads Umbrella''s workflow/state/transition names out of her own history' `
        -Breached $f6b -Evidence ("HTTP {0}: {1}" -f $r.Status, (Trunc $r.Body))
+
+# --------------------------------------------------------------- finding 7 ---
+# Two functions that must agree about admission, and did not.
+#
+# The seed carries a soft-deleted Acme file and a share link minted for it while
+# it was still there, with require_auth = false. validate_share_link tests
+# `deleted_at IS NULL` on its own path and refuses. consume_share_link tested it
+# only inside its require_auth branch - which this link does not enter - so it
+# admitted the caller validation had just turned away and spent a download on a
+# file whose owner had already withdrawn it.
+#
+# The download is what makes this more than an inconsistency: nothing forces a
+# caller to validate first, the two are separate HTTP round trips, and consume
+# is on the anon allowlist.
+$deletedFileToken = 'harness0000deleted0000file0000li'
+
+$rValidate = Invoke-Rest -Path '/rpc/validate_share_link' -Token $TOK_ANON -Method POST -Body @{ p_token = $deletedFileToken }
+$validateRefuses = ($rValidate.Body -match '"is_valid"\s*:\s*false')
+
+$rConsume = Invoke-Rest -Path '/rpc/consume_share_link' -Token $TOK_ANON -Method POST -Body @{ p_token = $deletedFileToken }
+$consumeAdmits = ($rConsume.Status -eq 200 -and $rConsume.Body -match '^\s*true\s*$')
+
+# Breached when they disagree in the dangerous direction: validation says no and
+# the download happens anyway. Written as a disagreement rather than as
+# "consume returned true" so that the test keeps its meaning if the admission
+# rules change - what is being asserted is that one answer governs both.
+Report -Id 'F7a' -What 'consume_share_link spends a download on a soft-deleted file validate_share_link refuses' `
+       -Breached ($validateRefuses -and $consumeAdmits) `
+       -Evidence ("validate: {0} | consume: HTTP {1} {2}" -f (Trunc $rValidate.Body 120), $rConsume.Status, (Trunc $rConsume.Body 40))
 
 # -------------------------------------------------- positive controls --------
 # Legitimate use, which must work in BOTH states. Without these, "every attack
@@ -451,6 +498,22 @@ if ($limited) {
 }
 Control -Id 'C10' -What 'consume_share_link spends exactly max_downloads and then refuses' -FixedOnly `
         -Ok $spendOk -Evidence ("accepted {0} of 4 attempts on a 3-download link" -f $accepted)
+
+# The other direction of F7a. Routing both functions through one admission
+# decision is only a fix if they now agree on YES as well as on no - a consume
+# that refused everything validation accepted would satisfy F7a and break every
+# download in the product.
+$agreeToken = New-AliceLink -RequireAuth $false -MaxDownloads 4
+$agree = $false
+$agreeEvidence = 'no token'
+if ($agreeToken) {
+  $rv = Invoke-Rest -Path '/rpc/validate_share_link' -Token $TOK_ANON -Method POST -Body @{ p_token = $agreeToken }
+  $rc = Invoke-Rest -Path '/rpc/consume_share_link'  -Token $TOK_ANON -Method POST -Body @{ p_token = $agreeToken }
+  $agree = ($rv.Body -match '"is_valid"\s*:\s*true') -and ($rc.Body -match '^\s*true\s*$')
+  $agreeEvidence = ("validate {0} | consume {1}" -f (Trunc $rv.Body 90), (Trunc $rc.Body 20))
+}
+Control -Id 'C11' -What 'validate and consume also agree on a link that IS good' -FixedOnly `
+        -Ok $agree -Evidence $agreeEvidence
 
 # ------------------------------------------------------------------ verdict --
 Write-Host ""

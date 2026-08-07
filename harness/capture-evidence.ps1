@@ -15,13 +15,22 @@
 #
 #   .\capture-evidence.ps1 -Baseline ../../blueplm-v90/supabase   # the "before"
 #   .\capture-evidence.ps1                                        # the "after"
+#   .\capture-evidence.ps1 -Upgrade                               # the upgrade lane
 #
 # -Baseline points RELEASE_DIR at another checkout of supabase/ (see the README)
 # and writes only the two "before" files, because the negative controls and the
 # posture checks are about the release under test and have nothing to say about
 # an older one.
+#
+# -Upgrade captures the second lane: the previous release installed, attacked,
+# and then upgraded to the release under test in place. It is a separate
+# invocation rather than a step of the "after" run because it destroys the
+# database it starts from and leaves behind one that has a history, which is the
+# opposite of what every other file in evidence/ is captured against.
 param(
-  [string]$Baseline
+  [string]$Baseline,
+  [switch]$Upgrade,
+  [string]$UpgradeFrom = '../../blueplm-v90/supabase'
 )
 
 $ErrorActionPreference = 'Continue'
@@ -54,7 +63,7 @@ function Save {
   $header = @(
     "# $Name",
     "# Produced by: $Command",
-    "# Release under test: $(if ($Baseline) { $Baseline } else { 'the working tree' })",
+    "# Release under test: $(if ($Baseline) { $Baseline } elseif ($Upgrade) { "the working tree, applied over $UpgradeFrom" } else { 'the working tree' })",
     "# Captured: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss K') by capture-evidence.ps1",
     "#",
     "# Unedited output. Re-run the command above to reproduce it.",
@@ -71,6 +80,13 @@ $env:NO_COLOR = '1'
 $env:PGCLIENTENCODING = 'UTF8'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 if ($Baseline) { $env:RELEASE_DIR = $Baseline } else { Remove-Item Env:\RELEASE_DIR -ErrorAction SilentlyContinue }
+
+if ($Upgrade) {
+  $lane = & powershell -NoProfile -File "$PSScriptRoot\upgrade.ps1" -Baseline $UpgradeFrom 2>&1 | ForEach-Object { "$_" }
+  Save -Name '07-upgrade-lane.txt' -Command (".\upgrade.ps1 -Baseline {0}" -f $UpgradeFrom) -Lines $lane
+  Write-Host "`nUpgrade lane captured." -ForegroundColor Green
+  exit 0
+}
 
 $build = & powershell -NoProfile -File "$PSScriptRoot\reset.ps1" 2>&1 | ForEach-Object { "$_" }
 
