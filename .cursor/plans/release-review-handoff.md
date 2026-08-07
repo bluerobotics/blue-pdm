@@ -1,7 +1,8 @@
 # Release review handoff: `v3.23.0` → `HEAD`
 
 Written 2026-08-06, revised the same evening after schema 93, schema 94 and the repair UI landed and
-the work was pushed. Written for an independent reviewer with no context from the day's work.
+the work was pushed, and revised again after the CI investigation closed §7.1 and §7.10. Written for
+an independent reviewer with no context from the day's work.
 
 **How to read the evidence markers.** Every factual claim below is one of two kinds, and the
 difference is the most useful thing in this document:
@@ -31,7 +32,8 @@ false and two of its central gaps have been closed.
 | "Nothing has been pushed" / six commits unpushed | **Everything is pushed.** `main` and `origin/main` are equal. See §2. |
 | "Do not modify `supabase/` or `harness/` — another agent is mid-flight" | **No other agent is active.** Schema 93 landed in `c7faa60`; both directories are clean and committed. |
 | "No GitHub Actions run has ever executed" | **False now.** The workflow has run four times, and the two most recent push-triggered runs exercised typecheck and test on the platform. See §7.1 — this is the biggest single change. |
-| "`npm run lint` reports 136 errors and 539 warnings" | **181 errors, 532 warnings, 713 problems** [measured, `npm run lint`]. It got worse, not better. |
+| "`npm run lint` reports 136 errors and 539 warnings" | **136 errors, 532 warnings on the source tree** [measured, in CI on a clean checkout]. The "181 errors" figure a previous revision of this row carried was a local-machine artifact; see §7.10. Errors are unchanged, warnings are down 7. |
+| "The two 15-minute `workflow_dispatch` failures are unexplained" | **Explained and not a defect.** GitHub never assigned a runner. Reproduced-clean by a dispatch run on the same unchanged workflow. See §7.1. |
 | "No lane exists for 85 → 93; five schema releases of drift untested" | **Closed, with a caveat that matters.** See §3 and §7.3. |
 | "`migrate_uuid_defaults()` has only ever run against the 93 defaults a v90 database has" | **Closed.** Measured at 103 on an 81 database and 93 on an 86 one; all move. See §3. |
 | "The Vault Audit `onRepair` seam and the repair tool are incompatible designs" | **Resolved by replacing the seam**, not by wiring the two together. See §5. |
@@ -467,7 +469,9 @@ Every row here was run by this document's author against `HEAD` (`8808e12`).
 | `npm run typecheck` | **clean** (renderer + electron) |
 | `npm test` | **1,035 passed, 59 files**, 6.06s |
 | `npm run test:sw-service` | **222 passed, 3 skipped, 225 total**, .NET Framework 4.8 |
-| `npm run lint` | **713 problems: 181 errors, 532 warnings** (non-blocking) |
+| `npm run lint`, in CI on a clean checkout | **668 problems: 136 errors, 532 warnings** (non-blocking). This is the honest number. |
+| `npm run lint`, on a developer machine | **713 problems: 181 errors, 532 warnings** — inflated by 45 errors from untracked `api/dist/**` build output. See §7.10. |
+| `workflow_dispatch` CI run `31142351257`, unchanged workflow | **success in 1m36s**; `Typecheck and Test` green 1m26s. Proves the dispatch path; see §7.1. |
 | Fresh install of schema 94 + `verify-schema.sql` | stamped **94**; 76 tables, RLS on all, anon sweep clean, 1 advisory |
 | `harness/sql/repair-config-maps-proof.sql` | **23 of 23 PASS** |
 | `repair_config_maps` ACL | `anon` EXECUTE **false**, `authenticated` **true**, `SECURITY DEFINER` **true** |
@@ -513,17 +517,54 @@ after, stamped 93* — the 90 lane's numbers are unchanged by schema 94 except f
 
 Be suspicious of everything here. These are the places where a claim is not backed by an execution.
 
-1. **GitHub Actions now runs, and the correction is instructive.** The previous revision said *"No
-   GitHub Actions run has ever executed"* and called checking it the cheapest high-value move
-   available. It was, and it has happened. **[measured, `gh run list`]** there have been four runs:
-   two `workflow_dispatch` runs on 2026-08-06 that **failed after ~15 minutes each**, one
-   push-triggered run (`31128559550`) that **succeeded** — `Typecheck and Test` green in 1m42s, with
-   only the non-blocking `Lint` job red — and the run triggered by tonight's push
-   (`31142030689`), which **also passed**: `Typecheck and Test` green in 1m31s, `Lint` red and
-   non-blocking. So the platform does agree with the container for typecheck and test, and
-   `actions/checkout@v5`, `actions/setup-node@v5` and the two-lockfile cache key do behave as
-   written. **What is still unexplained is the two 15-minute `workflow_dispatch` failures.** They
-   are the remaining question here, not the workflow's basic viability.
+1. **GitHub Actions runs, and the two 15-minute failures are now explained. Closed — no defect in
+   the workflow, the repository, or the trigger.**
+
+   **The cause. [measured, `gh run view`]** Both `workflow_dispatch` runs — `31126156257` (18:38
+   UTC, 15m04s) and `31126483600` (18:54 UTC, 15m05s) — carry the same annotation on **every** job:
+
+   > The job was not acquired by Runner of type hosted even after multiple attempts
+
+   `gh run view --log-failed` returns **nothing at all** for either run, and that emptiness is the
+   evidence. There are no step logs because no step ever ran: GitHub queued the jobs, failed to
+   assign a hosted runner, retried for its ~15-minute ceiling, and gave up. The 15 minutes is the
+   platform's allocation timeout, not work being done. This is why the duration looked alarming
+   against a 90-second success — nothing was hanging, because nothing had started.
+
+   **It was not specific to `workflow_dispatch`, and not specific to this workflow. [measured]** The
+   same annotation appears on two *push*-triggered `Publish API Docker Image` runs in the same
+   window — `31121100390` (16:48 UTC, 15m51s) and `31125220589` (18:09 UTC, 15m03s). Four runs
+   across two workflows and both trigger types, all failing the same way between 16:48 and 18:54
+   UTC, and the next run after the window (`31128559550`, 21:48 UTC) green in 1m46s. That is the
+   shape of the platform incident this workflow was authored during, not a property of the file.
+   The coincidence that misled the earlier revision is that the only two times anyone pressed the
+   dispatch button happened to fall inside the outage window.
+
+   **The hypotheses this rules out**, each of which was worth checking and none of which holds:
+   `workflow_dispatch` declares **no `inputs`**, so there is no required input going unsupplied;
+   there is **no job matrix**, so no entry is reachable only from the manual path; both jobs are
+   byte-identical across triggers, with no step that reads `github.event` or a push ref, so
+   `actions/checkout@v5` resolves `main` the same way either way; and no step waits on an external
+   service. The `timeout-minutes: 20` on both jobs never came into play — the runs died at 15
+   minutes, under GitHub's own limit, which is itself a tell that the ceiling hit was not ours.
+
+   **How this was proved, rather than reasoned. [measured]** The workflow file was **not changed** —
+   there was nothing to change. A fresh `workflow_dispatch` run was triggered by hand against the
+   same `main` at the same commit and watched to completion: run **`31142351257`**, **success in
+   1m36s**, `Typecheck and Test` green in 1m26s, `Lint` red in 54s and non-blocking as designed.
+   Same trigger, same file, same ref, same everything — the only difference is that GitHub had
+   runners to give. **The dispatch path works.**
+
+   The broader point stands and is worth keeping: the platform agrees with the container for
+   typecheck and test, and `actions/checkout@v5`, `actions/setup-node@v5` and the two-lockfile cache
+   key all behave as written. Push runs `31128559550`, `31142030689`, `31142207569` and
+   `31142255807` are all green.
+
+   **What to take from this:** a GitHub Actions job that fails at almost exactly 15 minutes with no
+   step logs and no annotation other than the runner-acquisition line is an infrastructure failure.
+   Re-run it before reading the workflow. The remaining honest gap is that **no run has ever been
+   triggered from a pull request** — `pull_request` is in the `on:` block and has never fired,
+   because every commit in this range went straight to `main`. That path is still unexercised.
 
 2. **The CORS work was proven against an Electron harness, not a packaged installer.** Unchanged and
    still the largest untested claim in the release. The load-bearing finding is that a `file://`
@@ -576,10 +617,46 @@ Be suspicious of everything here. These are the places where a claim is not back
    this as a finding; do factor it into how you weight anything that depends on production being
    closed.
 
-10. **`npm run lint` is red and getting redder.** **181 errors, 532 warnings, 713 problems**
-    [measured] against the 136 / 539 recorded previously. The job is `continue-on-error: true` and
-    was intended to start blocking at zero. It is moving the wrong way, and nothing is watching the
-    number.
+10. **`npm run lint` is red, but it is not getting redder — the increase was a measurement error,
+    and the measurement error is itself a small defect.**
+
+    **The honest count is 136 errors, 532 warnings, 668 problems** [measured, from the `Lint` job of
+    run `31142351257` on a clean CI checkout of this commit]. Against the 136 / 539 recorded
+    previously: **errors are unchanged**, and **warnings are down 7**. Nothing drifted the wrong
+    way. Today's work — 10 tracked files touched since `adb8b10` carry problems at all — did not add
+    a single error.
+
+    **Where 181 came from.** Running `npm run lint` on a developer machine reports **181 errors, 532
+    warnings** [measured, locally]. The 45-error difference is entirely `api/dist/**` — 16 files of
+    *compiled JavaScript output*, contributing 45 errors and **zero** warnings. `api/dist` is
+    gitignored (`.gitignore` line 5, `dist/`) and untracked, so it does not exist in a clean
+    checkout; it appears the moment anyone runs `npm run api:build`, which became a routine local
+    step when `0cb8337` started compiling the API ahead of time. CI's `lint` job never builds the
+    API, so CI has always reported the true number. 181 − 45 = 136 exactly.
+
+    **The underlying defect.** `eslint.config.mjs` ignores `'dist/**'`. In ESLint flat config that
+    pattern is anchored at the project root, so it matches `./dist/` and **not** `api/dist/`. The
+    one-line fix is to change `'dist/**'` to `'**/dist/**'` in the `ignores` array. **This has
+    deliberately not been applied** — it is left for the owner, because it is adjacent to the gating
+    decision below and because linting generated code is a judgement call, not a bug with one right
+    answer. It changes nothing in CI (which already reports 136); it only stops local runs from
+    disagreeing with CI.
+
+    **Recommendation on gating — the owner's call, not taken here.** Do **not** gate at zero now:
+    136 errors would fail the first push and the gate would be switched off within the hour, which
+    is the exact failure mode the job's comment was written to avoid. The sequence that works:
+
+    1. Fix the `**/dist/**` ignore first, so local and CI agree and the number stops moving for
+       reasons unrelated to code.
+    2. Gate on a **ratchet** rather than on zero — fail only if the error count *exceeds* a
+       committed baseline of 136. That stops the drift this section was worried about without
+       blocking anything today, and it is the change with the best ratio of protection to
+       disruption.
+    3. Consider `--max-warnings` separately and later. Warnings are 532 and mostly
+       `no-explicit-any`; that is a typing-debt project, not a CI question.
+
+    Note also that the comment in `.github/workflows/ci.yml` still quotes "136 errors and 539
+    warnings". The error count is right; the warning count is 7 stale.
 
 11. **`package.json` is still `3.24.0`** while the changelog heads `3.25.0 - Unreleased`, and there
     is no `v3.24.0` tag. The release gate in `.cursor/rules/always.mdc` requires the bump before
@@ -602,7 +679,7 @@ Be suspicious of everything here. These are the places where a claim is not back
 
 | Reviewer | Start at | First question |
 |---|---|---|
-| A — CI | `.github/workflows/ci.yml`, `gh run view 31126483600` | Why did the two `workflow_dispatch` runs fail after 15 minutes when the push-triggered run passed in under two? |
+| A — CI | `.github/workflows/ci.yml` | **The 15-minute question is answered (§7.1) — do not spend the slot on it.** Ask instead: the `pull_request` trigger has never once fired, since everything went straight to `main`. Open a throwaway PR and find out what the gate does on the path it was mainly written for. |
 | B — schema | `supabase/tools/verify-schema.sql`, `harness/sql/nc*.sql` | What object kind is still not covered by a sweep or a control? Start with the stale 18-name `expected_functions` list. |
 | C — upgrade path | `harness/upgrade.ps1`, `harness/attack.ps1` | Attack the `absent` verdict. Can a genuinely missing function reach production through it? Then: is there a restorable production backup to run the lane against? |
 | D — metadata | `src/lib/metadata/`, `overlayCallSites.test.ts` | Write a tenth form the AST guard misses. Find a length comparison that should be a name comparison. |
