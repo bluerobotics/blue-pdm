@@ -23,12 +23,12 @@ decayed tells you which kinds of claim to distrust in the next revision.
 
 ## 0. What changed since the previous revision
 
-If you read the earlier version of this file, these are the corrections. Four of its claims are now
-false and one of its central gaps has been closed.
+If you read the earlier version of this file, these are the corrections. Five of its claims are now
+false and two of its central gaps have been closed.
 
 | Previous claim | Now |
 |---|---|
-| "Nothing has been pushed" / six commits unpushed | **Everything is pushed.** `main` and `origin/main` are both `8808e12`. See §2. |
+| "Nothing has been pushed" / six commits unpushed | **Everything is pushed.** `main` and `origin/main` are equal. See §2. |
 | "Do not modify `supabase/` or `harness/` — another agent is mid-flight" | **No other agent is active.** Schema 93 landed in `c7faa60`; both directories are clean and committed. |
 | "No GitHub Actions run has ever executed" | **False now.** The workflow has run four times, and the two most recent push-triggered runs exercised typecheck and test on the platform. See §7.1 — this is the biggest single change. |
 | "`npm run lint` reports 136 errors and 539 warnings" | **181 errors, 532 warnings, 713 problems** [measured, `npm run lint`]. It got worse, not better. |
@@ -111,8 +111,11 @@ C# run: all 70 fixtures and all 8 bundled files byte-identical [measured].
 
 All [measured], from `git` at the time of writing:
 
-- **59 commits** in `v3.23.0..HEAD`, 369 files changed, +50,170 / −4,562.
-- **`main` and `origin/main` are both `8808e12`. The working tree is clean. Nothing is unpushed.**
+- **59 commits** of code in `v3.23.0..8808e12`, 369 files changed, +50,170 / −4,562. Counting the
+  commit that added this document makes it 60; it changes no code.
+- **`main` and `origin/main` are equal and the working tree is clean. Nothing is unpushed.** The
+  last code commit is `8808e12`; the tip is the commit that added this document, which is why no SHA
+  is quoted for it — writing one down here would be wrong the moment it was committed.
 - The push was `255a2e4..8808e12`, 13 commits, on 2026-08-06 evening.
 - **No tag was created, deliberately.** `v3.23.0` (2026-07-31) is still the newest tag. The owner
   authorised the push and explicitly declined a tag. There is a `chore: Release v3.24.0` commit and
