@@ -113,10 +113,44 @@ ON CONFLICT (id) DO NOTHING;
 -- what a database must contain to be allowed to claim it.
 
 CREATE OR REPLACE FUNCTION schema_release_version() RETURNS INTEGER
-LANGUAGE sql IMMUTABLE AS $$ SELECT 94 $$;
+LANGUAGE sql IMMUTABLE AS $$ SELECT 95 $$;
 
 CREATE OR REPLACE FUNCTION schema_release_description() RETURNS TEXT
 LANGUAGE sql IMMUTABLE AS $$ SELECT
+  'The anchor every other gate rests on is finally held down. users.org_id and users.role '
+  'are what is_org_admin, require_org_member and every membership subquery in this schema '
+  'resolve against, and the self-update policy on users had no WITH CHECK - a policy '
+  'without one reuses its USING expression, which tested the new row''s id and not its '
+  'org_id or role. One PATCH moved a viewer into another organization as its '
+  'administrator, and every gate schemas 89-94 added then answered honestly against a row '
+  'the caller had just rewritten. Both users UPDATE policies now carry an explicit check '
+  'and a TO authenticated qualifier they were the only policies in that block to be '
+  'missing; the self policy pins role and org_id to their pre-update values, and the admin '
+  'policy''s check is written out unchanged, because it is what lets an administrator '
+  'manage a member''s role and a stricter one there would break that and nothing else. '
+  'Four more policies stopped depending on a clause that was never about authorization. A '
+  'share link''s file must now belong to the same organization as the link and the caller, '
+  'and created_by must be the caller, so the table path can no longer mint what '
+  'create_file_share_link stopped minting in v91; the only UPDATE a share link admits is '
+  'its own revocation, where before a viewer could repoint file_id at another tenant''s '
+  'file or re-activate a link a remediation had just deactivated. Deciding a pending '
+  'review needs module:reviews:edit, matching the policy that gates asking for one, and '
+  'reviewed_by can only name the caller. Trashing a file needs module:explorer:delete '
+  'rather than edit: deletion in this product is UPDATE files SET deleted_at, so an '
+  'organization that deliberately withheld delete had still granted the ability to empty '
+  'its vault into the trash. complete_gate_review enforced reviewer identity only when the '
+  'review named an assignee, so any member could approve an unassigned gate through the '
+  'sanctioned RPC; the rule for an unassigned gate already existed in '
+  'get_my_pending_reviews, and both now call one may_review_gate() instead of keeping two '
+  'answers to one question. The remediation that revokes cross-tenant share links computed '
+  'the creator''s organization and used it only as prose, so a link whose org_id agreed '
+  'with its file''s was left active and unlogged however foreign its creator was - it is a '
+  'term of the query now, in the remediation and in check_release_residue together. Six '
+  'authorization helpers named by eleven manifest rows are manifest entries in their own '
+  'right, because requires is a substring search of the caller and a weakened helper left '
+  'all eleven reading ok. The config-map repair receipt counts the entries a file that did '
+  'not resolve asked for, so entries_requested minus entries_added stops reading zero for '
+  'the batch that dropped the most. '
   'repair_config_maps() lets an administrator restore the per-configuration entries the '
   'pre-87 checkin_file erased, and the guarantee that a repair cannot destroy anything is '
   'enforced in the function rather than argued from the caller. The merge is written '
@@ -250,6 +284,37 @@ LANGUAGE sql IMMUTABLE AS $$
     ('core', NULL, 'function', 'set_org_column_defaults(uuid,jsonb)', 'is_org_member'),
     ('core', NULL, 'function', 'force_org_column_defaults(uuid,jsonb)', 'is_org_member'),
     ('core', NULL, 'function', 'update_org_branding(uuid,text,text,text,text,text)', 'is_org_member'),
+    -- THE HELPERS THE ROWS ABOVE ARE PINNED ON
+    --
+    -- `requires` is a substring search of the *caller's* body, so it proves the
+    -- caller still names the helper and says nothing whatever about what the
+    -- helper does. Eleven rows across this manifest were pinned on six gate
+    -- helpers that were not themselves entries, which means a weakened helper
+    -- left all eleven reading 'ok' - the manifest reporting a schema verified
+    -- against an authorization check that no longer authorized anything. The
+    -- sharpest case is repair_config_maps, pinned on require_org_member &&
+    -- is_org_admin with a comment reasoning that both matter, where only the
+    -- first was an entry.
+    --
+    -- Each helper is pinned on the term that makes it a *membership* test
+    -- rather than merely a lookup, so a body that resolved the entity and
+    -- forgot to compare it to the caller's organization is stale, not ok.
+    -- current_actor_id() is the other half: it is what refuses an
+    -- unauthenticated caller before the comparison is reached.
+    --
+    -- require_auth is deliberately absent from this set. It appears in
+    -- share_link_admission's `requires` below and reads like a seventh helper,
+    -- but there is no such function - it is the file_share_links.require_auth
+    -- column, and that row pins that the admission test still honours it. An
+    -- entry for require_auth(...) would resolve to nothing and withhold the
+    -- stamp for ever, which is the one failure mode this file has now had to be
+    -- protected from three times.
+    ('core', NULL, 'function', 'is_org_admin()',
+      'u.org_id = v_user_org_id && t.org_id = v_user_org_id'),
+    ('core', NULL, 'function', 'is_org_admin(uuid)',
+      'u.org_id = v_user_org_id && t.org_id = v_user_org_id'),
+    ('core', NULL, 'function', 'require_same_org_user(uuid)',
+      'current_actor_id && actor.org_id = target.org_id'),
     -- One row per identity: check_schema_release() also reports unknown
     -- overloads while walking the manifest, and a second row for the same
     -- function would report each of those twice. The probe names the newest of
@@ -260,6 +325,13 @@ LANGUAGE sql IMMUTABLE AS $$
 
     -- 10-source-files.sql - REQUIRED, so probe is NULL
     ('10-source-files', NULL, 'table', 'files', NULL),
+    -- The two entity gates the rows below are pinned on. See the note beside
+    -- is_org_admin() above for why a helper named by a `requires` clause has to
+    -- be an entry in its own right.
+    ('10-source-files', NULL, 'function', 'require_file_access(uuid)',
+      'current_actor_id && u.org_id = v_org_id'),
+    ('10-source-files', NULL, 'function', 'require_vault_access(uuid)',
+      'current_actor_id && u.org_id = v_org_id'),
     ('10-source-files', NULL, 'function', 'merge_custom_properties(jsonb,jsonb)', NULL),
     ('10-source-files', NULL, 'function', 'checkin_file(uuid,uuid,text,bigint,text,text,text,text,integer,jsonb,text,text,text)', 'merge_custom_properties'),
     -- Repairs what the pre-87 checkin_file erased, and can only add keys. Both
@@ -310,6 +382,17 @@ LANGUAGE sql IMMUTABLE AS $$
     ('10-source-files', NULL, 'function', 'execute_workflow_transition(uuid,uuid,text)', 'is_org_member && wtpl.org_id = v_file.org_id'),
     ('10-source-files', NULL, 'function', 'execute_transition_to_legacy_state(uuid,text,text)', 'require_file_access'),
     ('10-source-files', NULL, 'function', 'get_user_vault_access(uuid)', 'require_same_org_user'),
+    -- Who may decide a gate, in one place instead of two. complete_gate_review
+    -- enforced reviewer identity only for an assigned review, so any member
+    -- could approve an unassigned gate through the sanctioned RPC while
+    -- get_my_pending_reviews - which had the correct rule written out - decided
+    -- what to offer them. Both are pinned on the shared helper, so a release
+    -- that lets either drift back to its own copy is stale rather than ok.
+    ('10-source-files', NULL, 'function', 'may_review_gate(uuid,uuid)',
+      'workflow_gate_reviewers && user_has_permission'),
+    ('10-source-files', NULL, 'function', 'complete_gate_review(uuid,review_status,text,jsonb)',
+      'is_org_member && may_review_gate'),
+    ('10-source-files', NULL, 'function', 'get_my_pending_reviews()', 'may_review_gate'),
 
     -- 15-inspection.sql - REQUIRED, so probe is NULL
     ('15-inspection', NULL, 'table', 'inspection_characteristics', NULL),
@@ -317,6 +400,8 @@ LANGUAGE sql IMMUTABLE AS $$
 
     -- 20-change-control.sql
     ('20-change-control', 'ecos', 'table', 'eco_gate_approvals', NULL),
+    ('20-change-control', 'ecos', 'function', 'require_eco_access(uuid)',
+      'current_actor_id && u.org_id = v_org_id'),
     ('20-change-control', 'ecos', 'function', 'instantiate_process_template(uuid,uuid)', 'require_eco_access'),
     ('20-change-control', 'ecos', 'function', 'check_gate_requirements(uuid,text)', 'require_eco_access'),
 
@@ -1952,26 +2037,34 @@ DECLARE
   r RECORD;
 BEGIN
   -- ---------------------------------------------------------------------
-  -- Share links pointing at a file in another organization.
+  -- Share links handing out a file in an organization somebody involved is not
+  -- part of.
   --
-  -- Matching on the link's org_id against the file's finds two different rows
-  -- and both are live cross-tenant credentials: one minted through the hole,
-  -- and one minted in good faith for a file that later moved organizations.
-  -- The detail says which it looks like, from the creator's own membership, so
-  -- an operator restoring a link they judge legitimate can tell them apart.
-  -- Neither is left active, because under this release validate_share_link()
-  -- resolves the organization from the file, so both hand out a file the
-  -- link's own organization does not own.
+  -- Three different rows match and all three are live cross-tenant credentials:
+  -- one minted through the hole; one minted in good faith for a file that later
+  -- moved organizations; and one whose link and file agree because both were
+  -- rewritten together over the UPDATE policy, which carried no WITH CHECK
+  -- until this release. The third is the one an org_id-only match cannot see,
+  -- so the creator's membership is a term of the query here and not only of the
+  -- prose - it must be, or this reports clean over a row
+  -- remediate_cross_tenant_share_links() is about to deactivate, and the two
+  -- halves of the release stop agreeing.
+  --
+  -- The detail says which shape it looks like, so an operator restoring a link
+  -- they judge legitimate can tell them apart. None is left active, because
+  -- under this release validate_share_link() resolves the organization from the
+  -- file, so all three hand out a file to somebody with no claim on it.
   -- ---------------------------------------------------------------------
   IF to_regclass('public.file_share_links') IS NOT NULL
      AND to_regclass('public.files') IS NOT NULL THEN
     FOR r IN
       SELECT l.id, l.token, l.org_id AS link_org, f.org_id AS file_org,
-             l.created_by, l.created_at,
-             (SELECT u.org_id FROM users u WHERE u.id = l.created_by) AS creator_org
+             l.created_by, l.created_at, cu.org_id AS creator_org
       FROM file_share_links l
       JOIN files f ON f.id = l.file_id
-      WHERE l.org_id IS DISTINCT FROM f.org_id
+      LEFT JOIN users cu ON cu.id = l.created_by
+      WHERE (l.org_id IS DISTINCT FROM f.org_id
+             OR cu.org_id IS DISTINCT FROM f.org_id)
         AND COALESCE(l.is_active, false)
       ORDER BY l.created_at
     LOOP
@@ -1987,13 +2080,20 @@ BEGIN
              || r.file_org || ', while the link itself was minted for '
              || COALESCE(r.link_org::TEXT, 'no organization') || '. Created by '
              || r.created_by || ' on ' || r.created_at || ', who is '
-             || CASE WHEN r.creator_org IS NOT DISTINCT FROM r.file_org
-                     THEN 'a member of the file''s organization, so this is most '
-                          || 'likely a file that moved after the link was minted '
-                          || 'in good faith'
-                     ELSE 'NOT a member of the file''s organization, which is the '
-                          || 'shape create_file_share_link produced before this '
-                          || 'release resolved the organization from the file' END
+             || CASE
+                  WHEN r.link_org IS NOT DISTINCT FROM r.file_org
+                    THEN 'NOT a member of the file''s organization even though '
+                         || 'the link names it correctly - the shape an UPDATE '
+                         || 'with no WITH CHECK produced by rewriting file_id '
+                         || 'and org_id together, or a creator who has since '
+                         || 'left the organization'
+                  WHEN r.creator_org IS NOT DISTINCT FROM r.file_org
+                    THEN 'a member of the file''s organization, so this is most '
+                         || 'likely a file that moved after the link was minted '
+                         || 'in good faith'
+                  ELSE 'NOT a member of the file''s organization, which is the '
+                       || 'shape create_file_share_link produced before this '
+                       || 'release resolved the organization from the file' END
              || '. Deactivate it: SELECT remediate_cross_tenant_share_links();';
       RETURN NEXT;
     END LOOP;
@@ -4418,15 +4518,97 @@ CREATE POLICY "Authenticated users can view users"
   TO authenticated
   USING (true);
 
+-- THE ANCHOR EVERY OTHER GATE IN THIS SCHEMA RESTS ON
+--
+-- users.org_id and users.role are what is_org_admin(), require_org_member(),
+-- require_file_access() and every membership subquery below resolve against.
+-- Until this release the self-update policy was USING (id = auth.uid()) with no
+-- WITH CHECK, and a policy with no WITH CHECK reuses its USING expression as the
+-- check - which tests the *new* row's id, not its org_id or role. One
+-- PATCH /rest/v1/users?id=eq.<self> {"org_id": "<other org>", "role": "admin"}
+-- returned 200 and moved a viewer into another tenant as its administrator, so
+-- every gate schemas 89-94 added was answered honestly against a row the caller
+-- had just rewritten. The BEFORE UPDATE trigger above (auto_set_user_org_id) is
+-- a no-op stub and caught nothing.
+--
+-- WHY A WITH CHECK AND NOT A COLUMN GRANT
+--
+-- A column-level GRANT UPDATE is issued to a *role*, and both policies here
+-- apply to the same role, authenticated. A grant therefore cannot tell a user
+-- editing their own row from an admin editing a member's - and the admin path
+-- legitimately writes role (src/lib/supabase/teams.ts:37), so granting role to
+-- keep team management working hands the escalation straight back. A WITH CHECK
+-- is per-policy, which is exactly the distinction that is needed: role and
+-- org_id are pinned on the self policy and left alone on the admin policy.
+--
+-- The subqueries read the caller's row under the statement snapshot. Rows
+-- written by the current command are not visible to subqueries within that same
+-- command, so these observe the pre-update values and cannot be satisfied by
+-- the write they are checking.
+--
+-- IS NOT DISTINCT FROM rather than =, because org_id is nullable: an account
+-- that has signed up and not yet joined an organization has org_id NULL, and
+-- `NULL = NULL` is NULL, which fails the check and would lock that account out
+-- of its own last_online write. This is the same NULL-unsafety the nine
+-- membership tests schema 91 corrected, on the other side of the comparison.
+--
+-- TO authenticated: these were the only two policies in this block without a
+-- role qualifier - the three organizations and users SELECT/UPDATE policies
+-- above all carry it - so they applied to PUBLIC, which includes anon. Not
+-- exploitable while auth.uid() is NULL for anon, but the bootstrap grants anon
+-- explicitly and schema 90 exists because a default grant nobody had named
+-- turned out to be load-bearing.
 DROP POLICY IF EXISTS "Users can update their own profile" ON users;
 CREATE POLICY "Users can update their own profile"
   ON users FOR UPDATE
-  USING (id = auth.uid());
+  TO authenticated
+  USING (id = auth.uid())
+  WITH CHECK (
+    id = auth.uid()
+    AND role   IS NOT DISTINCT FROM (SELECT u.role   FROM users u WHERE u.id = auth.uid())
+    AND org_id IS NOT DISTINCT FROM (SELECT u.org_id FROM users u WHERE u.id = auth.uid())
+  );
 
+-- EXAMINED AND SOUND - DO NOT WRITE A STRICTER CHECK HERE
+--
+-- This policy had no WITH CHECK either, and that is not a second hole. Nothing
+-- in supabase/ is AS RESTRICTIVE, so both UPDATE policies on users are
+-- permissive and PostgreSQL ORs them on the WITH CHECK side as well as the
+-- USING side. The effective check on the new row is:
+--
+--   (NEW.id = auth.uid() AND role and org_id unchanged)
+--   OR (NEW.org_id IN (caller's org) AND is_org_admin())
+--
+-- An admin moving *another* user to a foreign org fails branch 1 (the id is the
+-- victim's) and branch 2 (the foreign org is not in the caller's org set), and
+-- is refused. An admin moving *themselves* passes through branch 1 - which is
+-- the defect the policy above now closes, not a defect in this one.
+--
+-- The check below is written out rather than left implicit, matching "Admins
+-- can update their organization" above, which spells its check out. It restates
+-- the default and is therefore semantically a no-op; it is here so that the
+-- next reader does not have to reconstruct the permissive-OR argument to be
+-- sure of it. Anything *stricter* breaks this policy's entire purpose: pinning
+-- role here breaks updateUserRole (src/lib/supabase/teams.ts:14-44), which is
+-- the one thing it exists to allow.
+--
+-- Two known gaps that are product decisions and not cross-tenant holes, left
+-- for the owner rather than fixed here: there is no last-admin protection, so
+-- an admin can demote the only other admin and strand the organization; and
+-- there is no column restriction, so an admin can rewrite a member's email or
+-- id and desync the row from auth.users.
+--
+-- Separately: addUserToOrg (teams.ts:90, insert at :121) writes a user whose org_id is
+-- NULL, and `NULL IN (SELECT ...)` is NULL rather than true, so this policy
+-- already refuses it. Adding a member by email over the table path is broken
+-- today, independently of this release. Fixing it means a SECURITY DEFINER RPC
+-- as the invite path already uses, not a looser USING clause here.
 DROP POLICY IF EXISTS "Admins can update org users" ON users;
 CREATE POLICY "Admins can update org users"
   ON users FOR UPDATE
-  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND is_org_admin());
+  TO authenticated
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND is_org_admin())
+  WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND is_org_admin());
 
 -- ===========================================
 -- MODULE DEFAULTS FUNCTIONS

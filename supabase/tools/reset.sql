@@ -346,6 +346,34 @@ END $$;
 -- ===========================================
 -- DROP STORAGE POLICIES
 -- ===========================================
+-- READ THIS BEFORE ASSUMING THE LIST IS COMPLETE
+--
+-- These four names are the only ones this repository knows about, and it does
+-- not know them from anything that creates them: no CREATE POLICY ... ON
+-- storage.objects exists anywhere in the tree. The policies were committed once
+-- in cbe3997 and lost when e82e19d deleted the monolithic schema.sql during
+-- modularization, before v3.0.0. Whatever a working deployment actually has was
+-- applied by hand afterwards and was never written down.
+--
+-- Two consequences, both of which have bitten:
+--
+--   * A policy installed under a different name is not dropped by this script
+--     and survives the reset. If it is permissive, the "clean" database you
+--     think you just built is not clean.
+--   * Nothing recreates these. After a reset, storage.objects has row-level
+--     security on and - as far as this repository is concerned - no policies at
+--     all, which denies every upload and download until somebody installs them
+--     by hand again.
+--
+-- Before running this, take the inventory and keep it:
+--
+--   select policyname, cmd, roles, qual, with_check
+--     from pg_policies where schemaname = 'storage' and tablename = 'objects';
+--
+-- tools/verify-schema.sql prints the same inventory and asserts that row-level
+-- security is on. Neither can check the policies are correct, because there is
+-- no committed set to check them against. Bringing them under version control
+-- is outstanding work and this comment is the marker for it.
 DROP POLICY IF EXISTS "Authenticated users can upload to vault" ON storage.objects;
 DROP POLICY IF EXISTS "Authenticated users can read from vault" ON storage.objects;
 DROP POLICY IF EXISTS "Authenticated users can update vault files" ON storage.objects;

@@ -1285,10 +1285,33 @@ CREATE POLICY "Engineers can insert files"
   ON files FOR INSERT
   WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('module:explorer', 'create'));
 
+-- module:explorer:delete used to be decorative.
+--
+-- Trashing a file is not a DELETE - it is UPDATE files SET deleted_at - so it
+-- was authorized by the 'edit' term here, while the FOR DELETE policy below
+-- correctly required 'delete'. An organization that deliberately granted edit
+-- and withheld delete had still granted the ability to empty the vault into the
+-- trash, which is the only deletion the product's own UI offers.
+--
+-- The distinction cannot be drawn in USING, which sees the old row. It is drawn
+-- in WITH CHECK, which sees the new one: a row that comes out of the statement
+-- carrying a deleted_at is a trashed row, and trashing requires 'delete'.
+-- Restoring (deleted_at back to NULL, trash.ts:148-153) needs only 'edit',
+-- because putting a file back is not a destructive act.
+--
+-- The rule is stated over the resulting row rather than over the transition, so
+-- editing any other column of a file that is *already* in the trash also needs
+-- 'delete'. That is deliberate: it is the conservative reading, and the product
+-- offers no way to edit a trashed file in the first place.
 DROP POLICY IF EXISTS "Engineers can update files" ON files;
 CREATE POLICY "Engineers can update files"
   ON files FOR UPDATE
-  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('module:explorer', 'edit'));
+  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('module:explorer', 'edit'))
+  WITH CHECK (
+    org_id IN (SELECT org_id FROM users WHERE id = auth.uid())
+    AND user_has_team_permission('module:explorer', 'edit')
+    AND (deleted_at IS NULL OR user_has_team_permission('module:explorer', 'delete'))
+  );
 
 DROP POLICY IF EXISTS "Admins can delete files" ON files;
 CREATE POLICY "Admins can delete files"
@@ -1469,10 +1492,33 @@ CREATE POLICY "Engineers can create pending reviews"
   ON pending_reviews FOR INSERT
   WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('module:reviews', 'create'));
 
+-- Deciding a review is at least as privileged as asking for one.
+--
+-- The INSERT policy immediately above requires module:reviews:create; this one
+-- asked for organization membership and nothing else, so any member could
+-- approve any review over PostgREST and write whatever they liked into
+-- reviewed_by - including somebody else's id, which is the column
+-- workflow_review_history copies as the record of who approved. The permission
+-- term matches the reviews table in 20-change-control.sql:480-483, which gates
+-- the same act under the same resource.
+--
+-- reviewed_by may be left unset (a cancellation records no reviewer) or set to
+-- the caller, and to nobody else. complete_gate_review() is SECURITY DEFINER
+-- and does not pass through this policy; it sets reviewed_by from auth.uid()
+-- itself, so the two agree.
 DROP POLICY IF EXISTS "Users can update pending reviews" ON pending_reviews;
 CREATE POLICY "Users can update pending reviews"
   ON pending_reviews FOR UPDATE
-  USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
+  TO authenticated
+  USING (
+    org_id IN (SELECT org_id FROM users WHERE id = auth.uid())
+    AND user_has_team_permission('module:reviews', 'edit')
+  )
+  WITH CHECK (
+    org_id IN (SELECT org_id FROM users WHERE id = auth.uid())
+    AND user_has_team_permission('module:reviews', 'edit')
+    AND (reviewed_by IS NULL OR reviewed_by = auth.uid())
+  );
 
 -- Workflow Review History
 DROP POLICY IF EXISTS "Users can view workflow review history" ON workflow_review_history;
@@ -1540,14 +1586,90 @@ CREATE POLICY "Users can view share links in org"
   ON file_share_links FOR SELECT
   USING (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()));
 
+-- THE ARGUMENT THAT IS CHECKED MUST BE THE ARGUMENT THAT SELECTS THE ROW
+--
+-- create_file_share_link() had this exact defect and it was fixed there in v91
+-- by deriving the organization from the file. The table path kept it: org_id
+-- was constrained and file_id was not, so a member of org A inserted
+-- {org_id: A, file_id: <org B's file>} and minted a working token for another
+-- tenant's file. anon validate_share_link() then answered is_valid: true with
+-- the victim's file_id and org_id, and consume_share_link() spent a download.
+--
+-- Three terms, and each one is load-bearing:
+--   org_id      - the link is filed under an organization the caller belongs to
+--   file_id     - and it points at a file in *that same* organization, which is
+--                 what makes link_org = file_org = caller_org true by
+--                 construction rather than by the SELECT policy happening to
+--                 hide the result
+--   created_by  - the audit row names whoever actually inserted it.
+--                 remediate_cross_tenant_share_links() reads created_by to tell
+--                 a link minted through the hole from one minted in good faith
+--                 for a file that later moved, and until now the column it read
+--                 was whatever the request body said.
 DROP POLICY IF EXISTS "Engineers can create share links" ON file_share_links;
 CREATE POLICY "Engineers can create share links"
   ON file_share_links FOR INSERT
-  WITH CHECK (org_id IN (SELECT org_id FROM users WHERE id = auth.uid()) AND user_has_team_permission('module:explorer', 'create'));
+  TO authenticated
+  WITH CHECK (
+    org_id IN (SELECT org_id FROM users WHERE id = auth.uid())
+    AND user_has_team_permission('module:explorer', 'create')
+    AND created_by = auth.uid()
+    AND EXISTS (
+      SELECT 1 FROM files f
+       WHERE f.id = file_share_links.file_id
+         AND f.org_id = file_share_links.org_id
+    )
+  );
 
+-- REVOCATION IS THE ONLY UPDATE THERE IS
+--
+-- The policy was FOR UPDATE USING (created_by = auth.uid()) and nothing else,
+-- which reuses that expression as the check and so constrains only who owns the
+-- row - not what the row becomes. Two things followed. A viewer could repoint
+-- file_id on their own link at another tenant's file, reaching over UPDATE what
+-- the INSERT policy above refuses over INSERT; and anyone could re-activate a
+-- link a remediation or an administrator had just deactivated, because
+-- is_active appeared in neither clause. org_id was not reachable in practice,
+-- but only because PostgREST could not read the row back afterwards - the
+-- SELECT policy, not this one.
+--
+-- Nothing in the application updates this table: share links are created by
+-- shareLinks.ts and spent by consume_share_link(), which is SECURITY DEFINER
+-- and does not pass through RLS. The only update the product has ever needed is
+-- "revoke this link", so that is the only one admitted, and it is expressed as
+-- a property of the resulting row rather than as a list of columns nobody may
+-- touch. The three identity terms are repeated in the check so that they pin
+-- the new row as well as select the old one.
+--
+-- ONE CONSEQUENCE, WEIGHED AND ACCEPTED
+--
+-- A link that is *already* cross-tenant fails the file/org term, so its creator
+-- cannot deactivate it through this policy. Three things make that the right
+-- trade. They can still remove it - the DELETE policy below asks only who
+-- created it. Applying this release deactivates every such link on the way in,
+-- via remediate_cross_tenant_share_links(), so the stuck state is cleared by
+-- the same upgrade that creates it. And the alternative - dropping the term
+-- because "the row ends up inactive anyway, so repointing file_id is harmless"
+-- - is the same reasoning that left org_id reachable here in the first place: a
+-- clause held safe by a property some other clause happens to enforce.
 DROP POLICY IF EXISTS "Users can update own share links" ON file_share_links;
 CREATE POLICY "Users can update own share links"
-  ON file_share_links FOR UPDATE USING (created_by = auth.uid());
+  ON file_share_links FOR UPDATE
+  TO authenticated
+  USING (
+    created_by = auth.uid()
+    AND org_id IN (SELECT org_id FROM users WHERE id = auth.uid())
+  )
+  WITH CHECK (
+    created_by = auth.uid()
+    AND org_id IN (SELECT org_id FROM users WHERE id = auth.uid())
+    AND EXISTS (
+      SELECT 1 FROM files f
+       WHERE f.id = file_share_links.file_id
+         AND f.org_id = file_share_links.org_id
+    )
+    AND NOT COALESCE(is_active, false)
+  );
 
 DROP POLICY IF EXISTS "Users can delete share links" ON file_share_links;
 CREATE POLICY "Users can delete share links"
@@ -2959,11 +3081,35 @@ BEGIN
      FOR UPDATE;
 
     IF NOT FOUND THEN
+      -- Count what this request asked for even though none of it can be applied.
+      --
+      -- entries_requested used to be accumulated further down, after the row had resolved, while
+      -- files_requested in the return counts every element of p_repairs unconditionally. So a batch
+      -- that dropped a file whole reported entries_requested equal to entries_added, and
+      -- `entries_requested - entries_added` - the one subtraction a caller performs to ask whether
+      -- anything was missed - read zero for precisely the case it exists to report. The receipt was
+      -- most reassuring exactly where it had least to say.
+      --
+      -- Counted the way the applied path counts it, so the two are comparable: reserved keys only,
+      -- and a map that is absent or holds no keys contributes nothing.
+      SELECT COALESCE(sum(asked.entries), 0)::int
+        INTO v_requested
+        FROM (
+          SELECT (SELECT count(*) FROM jsonb_object_keys(v_request -> 'maps' -> k)) AS entries
+            FROM unnest(c_reserved_maps) AS k
+           WHERE jsonb_typeof(v_request -> 'maps' -> k) = 'object'
+        ) AS asked;
+
+      v_entries_asked := v_entries_asked + v_requested;
+
       v_reports := v_reports || jsonb_build_object(
         'file_id', v_file_id,
         'file_path', NULL,
         'updated', FALSE,
         'refused', 'row-not-found',
+        -- Per-file as well as in the total, because the total says how much was lost and this says
+        -- which file lost it. The applied path reports the same number per map under maps.<key>.
+        'entries_requested', v_requested,
         'maps', v_map_reports
       );
       CONTINUE;
@@ -4463,6 +4609,82 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 GRANT EXECUTE ON FUNCTION execute_transition_to_legacy_state(UUID, TEXT, TEXT) TO authenticated;
 
+-- WHO MAY DECIDE AN UNASSIGNED GATE, ASKED ONCE
+--
+-- complete_gate_review() enforced reviewer identity only when the review named
+-- an assignee: `IF assigned_to IS NOT NULL AND assigned_to <> caller AND NOT
+-- is_org_admin(...)`. An unassigned gate fell straight through to the
+-- organization membership test above it, so any member of the organization
+-- could approve any unassigned gate through the sanctioned RPC and have their
+-- own id written into workflow_review_history as the approver.
+--
+-- The rule for an unassigned gate was not missing from the schema. It was
+-- already written out in get_my_pending_reviews(), which decides whether the
+-- review is offered to a user at all - so the list of reviews a user was shown
+-- and the set of reviews the database would accept from them were two different
+-- answers to one question. They are one answer now. share_link_admission() in
+-- this module is the same lesson learned the same way: validate and consume
+-- each kept their own copy of the conditions, and they drifted.
+--
+-- One deliberate change to the rule as get_my_pending_reviews() stated it: a
+-- gate that names no reviewers at all used to mean "anybody in the
+-- organization", and now means "anybody holding module:reviews:edit". That
+-- fallback is where the hole actually lived. A gate that does name its
+-- reviewers is unaffected, and so is every user it names.
+--
+-- p_user_id must be the calling user or another member of their organization -
+-- user_has_permission() raises otherwise, which is its documented contract and
+-- not a case either caller here can reach.
+CREATE OR REPLACE FUNCTION may_review_gate(p_gate_id UUID, p_user_id UUID)
+RETURNS BOOLEAN AS $$
+DECLARE
+  v_role user_role;
+BEGIN
+  IF p_gate_id IS NULL OR p_user_id IS NULL THEN
+    RETURN false;
+  END IF;
+
+  SELECT u.role INTO v_role FROM users u WHERE u.id = p_user_id;
+
+  IF NOT EXISTS (SELECT 1 FROM workflow_gate_reviewers gr WHERE gr.gate_id = p_gate_id) THEN
+    RETURN user_has_permission(p_user_id, 'module:reviews', 'edit');
+  END IF;
+
+  -- Transplanted from get_my_pending_reviews() unchanged, deliberately: this is
+  -- the rule users already see, and rewriting it while moving it would make any
+  -- resulting difference impossible to attribute.
+  --
+  -- reviewer_type has a fourth label, 'group', and neither this nor the list it
+  -- came from has ever matched it - workflow_gate_reviewers.group_name is not
+  -- joined to anything, because there is no group table. The consequence has
+  -- changed direction, though, and that is worth being explicit about: a gate
+  -- whose reviewers are all 'group' rows was previously approvable by any member
+  -- of the organization, because complete_gate_review() fell through to the
+  -- membership test, and is now approvable only by an administrator, via the
+  -- override in complete_gate_review(). Restrictive rather than open, and not a
+  -- lockout. addGateReviewer (src/lib/supabase/teams.ts:431) only ever writes
+  -- 'user' or 'workflow_role', so no gate the application built can be in this
+  -- state; one built by hand can. Resolving 'group' properly needs a group
+  -- table and is a product decision, not a security fix.
+  RETURN EXISTS (
+    SELECT 1 FROM workflow_gate_reviewers gr
+     WHERE gr.gate_id = p_gate_id
+       AND (
+         (gr.reviewer_type = 'user' AND gr.user_id = p_user_id)
+         OR (gr.reviewer_type = 'role' AND gr.role = v_role)
+         OR (gr.reviewer_type = 'workflow_role' AND EXISTS (
+               SELECT 1 FROM user_workflow_roles uwr
+                WHERE uwr.user_id = p_user_id
+                  AND uwr.workflow_role_id = gr.workflow_role_id))
+       )
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Reached only from the two SECURITY DEFINER functions below, which run as the
+-- owner and do not need a grant. Nothing calls it over PostgREST.
+REVOKE ALL ON FUNCTION may_review_gate(UUID, UUID) FROM PUBLIC, anon, authenticated;
+
 -- Record one reviewer's decision on a gate and, when that clears the last
 -- blocking gate, perform the advance the reviews were holding up.
 DROP FUNCTION IF EXISTS complete_gate_review(UUID, review_status, TEXT, JSONB) CASCADE;
@@ -4519,11 +4741,18 @@ BEGIN
       'error_message', 'Review belongs to another organization');
   END IF;
 
-  IF v_review.assigned_to IS NOT NULL
-     AND v_review.assigned_to <> v_user_id
-     AND NOT is_org_admin(v_user_id) THEN
-    RETURN jsonb_build_object('success', false, 'error_code', 'NOT_ASSIGNED',
-      'error_message', 'This review is assigned to someone else');
+  -- Assigned: the assignee, or an administrator standing in for them.
+  -- Unassigned: whoever the gate's own reviewer rules admit. Before this
+  -- release the unassigned branch did not exist and any member could approve.
+  IF v_review.assigned_to IS NOT NULL THEN
+    IF v_review.assigned_to <> v_user_id AND NOT is_org_admin(v_user_id) THEN
+      RETURN jsonb_build_object('success', false, 'error_code', 'NOT_ASSIGNED',
+        'error_message', 'This review is assigned to someone else');
+    END IF;
+  ELSIF NOT may_review_gate(v_review.gate_id, v_user_id)
+        AND NOT is_org_admin(v_user_id) THEN
+    RETURN jsonb_build_object('success', false, 'error_code', 'NOT_A_REVIEWER',
+      'error_message', 'You are not a reviewer for this gate');
   END IF;
 
   SELECT * INTO v_gate FROM workflow_gates WHERE id = v_review.gate_id;
@@ -4624,6 +4853,18 @@ GRANT EXECUTE ON FUNCTION complete_gate_review(UUID, review_status, TEXT, JSONB)
 
 -- Reviews waiting on the calling user: either assigned to them, or unassigned
 -- and matching a reviewer rule on the gate.
+--
+-- The reviewer rule is may_review_gate() and is not restated here, because this
+-- function used to be the only place it was written down while
+-- complete_gate_review() enforced something weaker - so the reviews a user was
+-- offered and the reviews the database would accept from them were two
+-- different sets.
+--
+-- The one thing the two do not share is complete_gate_review()'s administrator
+-- override, and that is deliberate rather than drift: this function answers
+-- "which reviews are waiting on you", and an administrator being *able* to
+-- stand in for an absent reviewer is not the same as every pending review in
+-- the organization waiting on them.
 DROP FUNCTION IF EXISTS get_my_pending_reviews() CASCADE;
 CREATE OR REPLACE FUNCTION get_my_pending_reviews()
 RETURNS TABLE (
@@ -4646,12 +4887,11 @@ RETURNS TABLE (
 DECLARE
   v_user_id UUID;
   v_org_id UUID;
-  v_role user_role;
 BEGIN
   v_user_id := auth.uid();
   IF v_user_id IS NULL THEN RETURN; END IF;
 
-  SELECT u.org_id, u.role INTO v_org_id, v_role FROM users u WHERE u.id = v_user_id;
+  SELECT u.org_id INTO v_org_id FROM users u WHERE u.id = v_user_id;
 
   RETURN QUERY
   SELECT
@@ -4681,24 +4921,7 @@ BEGIN
     AND pr.org_id = v_org_id
     AND (
       pr.assigned_to = v_user_id
-      OR (
-        pr.assigned_to IS NULL
-        AND (
-          NOT EXISTS (SELECT 1 FROM workflow_gate_reviewers gr WHERE gr.gate_id = wg.id)
-          OR EXISTS (
-            SELECT 1 FROM workflow_gate_reviewers gr
-            WHERE gr.gate_id = wg.id
-              AND (
-                (gr.reviewer_type = 'user' AND gr.user_id = v_user_id)
-                OR (gr.reviewer_type = 'role' AND gr.role = v_role)
-                OR (gr.reviewer_type = 'workflow_role' AND EXISTS (
-                      SELECT 1 FROM user_workflow_roles uwr
-                      WHERE uwr.user_id = v_user_id
-                        AND uwr.workflow_role_id = gr.workflow_role_id))
-              )
-          )
-        )
-      )
+      OR (pr.assigned_to IS NULL AND may_review_gate(wg.id, v_user_id))
     )
   ORDER BY pr.requested_at;
 END;
@@ -4749,8 +4972,17 @@ ALTER TABLE files ADD COLUMN IF NOT EXISTS configuration_revisions JSONB DEFAULT
 --   * idempotent - the second run finds nothing and writes nothing;
 --   * loud - every row acted on is printed by name and stored verbatim in
 --     schema_remediation_log before it is touched;
---   * non-destructive - deactivate and redact, never delete, because the
---     evidence of a breach is the first thing an audit asks for.
+--   * non-destructive - deactivate and redact in preference to deleting,
+--     because the evidence of a breach is the first thing an audit asks for.
+--
+-- The third rule has exactly one exception and it is stated here rather than
+-- discovered in the code: the cross-tenant file_workflow_assignments row is
+-- deleted. The reasons are at the point of deletion below. What holds in every
+-- case, including that one, is the second rule - the row is in the ledger
+-- verbatim, with every column, before anything happens to it - and that is the
+-- property an audit depends on. "Nothing is deleted" is the wrong summary of
+-- this module and the changelog should not carry it; "no row is destroyed
+-- without being recorded first" is the one that is true everywhere.
 
 -- Deactivate share links that hand out a file in another organization.
 --
@@ -4772,6 +5004,29 @@ ALTER TABLE files ADD COLUMN IF NOT EXISTS configuration_revisions JSONB DEFAULT
 -- file's organization. Nothing is lost. A delete would have taken the token,
 -- the creator and the timestamps with it - the three things an audit needs to
 -- answer "who had this and for how long".
+-- THE SHAPE THE FIRST VERSION OF THIS COULD NOT SEE
+--
+-- It matched on l.org_id IS DISTINCT FROM f.org_id alone, computed creator_org
+-- beside it, and then used creator_org only to write prose into the assessment
+-- string. So a link whose org_id agrees with its file's was left active and
+-- unlogged however foreign its creator was - and that row is reachable: the
+-- UPDATE policy on this table was FOR UPDATE USING (created_by = auth.uid())
+-- with no WITH CHECK until this release, which let the holder of a link rewrite
+-- both file_id and org_id on it and land on a consistent pair naming an
+-- organization they have never belonged to.
+--
+-- Membership is what the detector is actually looking for, so it is what the
+-- detector now asks. Either disagreement is enough: the link filed under the
+-- wrong organization, or the link minted by somebody who is not in the file's.
+--
+-- A known and accepted false positive. A link minted in good faith by a member
+-- of the file's organization who has since moved to another one, or been
+-- removed from every organization, matches the second arm. It is deactivated
+-- like the rest, for the same reason the module deactivates rather than deletes
+-- everything else: the row survives in full, the operator can read the ledger
+-- and judge it, and restoring one is a single UPDATE. Leaving it live because
+-- it *might* be innocent is the trade the other way round, and this is a
+-- credential that outlives the person it was issued to.
 CREATE OR REPLACE FUNCTION remediate_cross_tenant_share_links()
 RETURNS INTEGER
 LANGUAGE plpgsql AS $$
@@ -4783,10 +5038,16 @@ BEGIN
     SELECT l.id, l.token, l.org_id AS link_org, f.org_id AS file_org,
            l.created_by, l.created_at, l.expires_at, l.download_count,
            l.require_auth, l.last_accessed_at,
-           (SELECT u.org_id FROM users u WHERE u.id = l.created_by) AS creator_org
+           cu.org_id AS creator_org
     FROM file_share_links l
     JOIN files f ON f.id = l.file_id
-    WHERE l.org_id IS DISTINCT FROM f.org_id
+    -- LEFT JOIN rather than the scalar subquery this used to carry, so the
+    -- creator's organization is available to the WHERE clause and not only to
+    -- the prose. A creator whose row is gone leaves creator_org NULL, and
+    -- IS DISTINCT FROM reads that as "not a member", which is correct.
+    LEFT JOIN users cu ON cu.id = l.created_by
+    WHERE (l.org_id IS DISTINCT FROM f.org_id
+           OR cu.org_id IS DISTINCT FROM f.org_id)
       -- Already-deactivated rows are skipped, which is what makes a second run
       -- a no-op instead of a second ledger entry saying the same thing.
       AND COALESCE(l.is_active, false)
@@ -4800,9 +5061,12 @@ BEGIN
   )
   SELECT COALESCE(jsonb_agg(to_jsonb(v) || jsonb_build_object(
            'assessment',
-           CASE WHEN v.creator_org IS NOT DISTINCT FROM v.file_org
-                THEN 'creator is a member of the file''s organization: most likely a file that moved after the link was minted in good faith'
-                ELSE 'creator is NOT a member of the file''s organization: the shape the cross-tenant minting hole produced'
+           CASE
+             WHEN v.link_org IS NOT DISTINCT FROM v.file_org
+               THEN 'link and file agree on the organization, but the creator is not a member of it: either a link whose file_id and org_id were rewritten together over the unchecked UPDATE policy, or a creator who has since left. Read created_at against the creator''s membership history to tell them apart'
+             WHEN v.creator_org IS NOT DISTINCT FROM v.file_org
+               THEN 'creator is a member of the file''s organization: most likely a file that moved after the link was minted in good faith'
+             ELSE 'creator is NOT a member of the file''s organization: the shape the cross-tenant minting hole produced'
            END) ORDER BY v.created_at), '[]'::jsonb),
          (SELECT count(*) FROM deactivated)
     INTO v_subjects, v_rows
@@ -4810,11 +5074,12 @@ BEGIN
 
   RETURN record_remediation(
     'cross_tenant_share_links', v_rows, v_subjects,
-    'Each link granted access to a file in an organization other than the one '
-    || 'the link was minted for, and is now inactive. Nothing was deleted: the '
-    || 'token, creator and timestamps are in the subjects above. To restore one '
-    || 'you judge legitimate, set is_active = true and org_id to the file''s '
-    || 'organization.');
+    'Each link handed out a file belonging to an organization that either the '
+    || 'link or its creator is not part of, and is now inactive. Nothing was '
+    || 'deleted: the token, creator and timestamps are in the subjects above, '
+    || 'and each carries an assessment of which shape it looks like. To restore '
+    || 'one you judge legitimate, set is_active = true and org_id to the '
+    || 'file''s organization.');
 END;
 $$;
 
@@ -4845,6 +5110,23 @@ REVOKE ALL ON FUNCTION remediate_cross_tenant_share_links() FROM PUBLIC, anon, a
 -- anything, it is a live pointer that decides which transitions the file offers
 -- next, and leaving it means a file in org A continues to be driven by org B's
 -- workflow. Its full contents go to the ledger first.
+--
+-- WHY THIS ONE IS A DELETE WHEN NOTHING ELSE HERE IS
+--
+-- The module's rule is deactivate over delete, and the two alternatives were
+-- both examined and neither works on this table. There is no is_active column
+-- to set (file_workflow_assignments is id, file_id, workflow_id,
+-- current_state_id, assigned_at, assigned_by - nothing else), and adding one
+-- would not help: file_id is UNIQUE, so a tombstone row keeps the file's slot
+-- and the remedy this remediation exists to enable - somebody in the file's own
+-- organization assigning a workflow it may actually use - would fail on the
+-- unique constraint. Redaction is not available either, because workflow_id is
+-- NOT NULL and the foreign id is the whole content of the row.
+--
+-- So the row goes, and what makes that acceptable is the ledger: every column,
+-- including current_state_id, is in schema_remediation_log.subjects before the
+-- DELETE runs, in the one place no tenant can read. Reinstating one an operator
+-- judges legitimate is an INSERT from the subjects, not a recovery.
 CREATE OR REPLACE FUNCTION remediate_cross_tenant_workflow_history()
 RETURNS INTEGER
 LANGUAGE plpgsql AS $$

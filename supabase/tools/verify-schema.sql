@@ -146,6 +146,82 @@ BEGIN
 END $$;
 
 -- ===========================================
+-- CHECK THE VAULT BUCKET IS NOT WIDE OPEN
+-- ===========================================
+-- Every check in this file used to stop at the public schema, and the file
+-- contained no occurrence of the word storage at all. The vault - the actual
+-- CAD files, which is what BluePLM exists to hold - lives in storage.objects,
+-- under paths of the form {org_id}/{hash[0:2]}/{hash}, and files.content_hash
+-- is readable org-wide. So a policy on that table with no organization term
+-- makes the bucket enumerable and downloadable across tenants, and nothing here
+-- or in the harness would have said a word about it.
+--
+-- WHAT THIS CAN AND CANNOT TELL YOU, STATED PLAINLY
+--
+-- It cannot tell you the policies are correct. No CREATE POLICY ... ON
+-- storage.objects exists anywhere in this repository - `git grep` finds only
+-- the four DROP POLICY lines in tools/reset.sql - so whatever is installed on a
+-- working deployment was applied by hand and was never committed. Until it is,
+-- there is no expected set to compare against, and a check that invented one
+-- would either lock every user out of the vault or bless a permissive policy
+-- under a name it had not thought of.
+--
+-- What it can do is the two things that are true regardless: assert that
+-- row-level security is on, because with it off no policy on the table is
+-- consulted at all and the bucket is open by construction; and print what is
+-- actually installed, so the operator has the inventory in front of them
+-- without having to know to go and look for it. Advisory, both of them - this
+-- does not withhold the stamp, because a database whose storage policies are
+-- unknown must still be verifiable.
+DO $$
+DECLARE
+  v_rls BOOLEAN;
+  v_policies INTEGER;
+  r RECORD;
+BEGIN
+  IF to_regclass('storage.objects') IS NULL THEN
+    RAISE NOTICE 'ℹ️  storage.objects does not exist - Supabase Storage is not enabled on this project, so there is no vault bucket to protect.';
+    RETURN;
+  END IF;
+
+  SELECT c.relrowsecurity INTO v_rls
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname = 'storage' AND c.relname = 'objects';
+
+  IF NOT COALESCE(v_rls, false) THEN
+    RAISE WARNING '❌ Row-level security is DISABLED on storage.objects. Every object in every bucket is readable, overwritable and deletable by anyone holding the publishable anon key. Enable it: ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY;';
+  ELSE
+    RAISE NOTICE '✅ Row-level security is enabled on storage.objects';
+  END IF;
+
+  SELECT count(*) INTO v_policies
+  FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects';
+
+  IF v_policies = 0 THEN
+    RAISE WARNING '⚠️  storage.objects has row-level security enabled and NO policies, which denies everything. If the vault is in use, uploads and downloads are failing for every user right now.';
+  ELSE
+    RAISE NOTICE 'ℹ️  % polic(ies) on storage.objects, listed below. None of them is in version control. Read each qual/with_check for an organization term - without one such as (storage.foldername(name))[1] = (select org_id::text from public.users where id = auth.uid()), the bucket is enumerable across tenants.', v_policies;
+    FOR r IN
+      SELECT policyname, cmd, roles::TEXT AS roles, COALESCE(qual, '(none)') AS qual,
+             COALESCE(with_check, '(none)') AS with_check
+      FROM pg_policies WHERE schemaname = 'storage' AND tablename = 'objects'
+      ORDER BY cmd, policyname
+    LOOP
+      RAISE NOTICE '     [%] % TO % USING % WITH CHECK %',
+        r.cmd, r.policyname, r.roles, r.qual, r.with_check;
+    END LOOP;
+  END IF;
+END $$;
+
+-- The same inventory as a result set, because the notices above scroll and this
+-- is the thing to paste into a review.
+SELECT policyname, cmd, roles, qual, with_check
+FROM pg_policies
+WHERE schemaname = 'storage' AND tablename = 'objects'
+ORDER BY cmd, policyname;
+
+-- ===========================================
 -- CHECK ORG-SCOPED RPCs ARE GATED
 -- ===========================================
 -- A SECURITY DEFINER function that takes a p_org_id runs with RLS switched off
