@@ -941,7 +941,7 @@ const DELIBERATE: readonly Allowance[] = [
       'Owns the merge the overlay applies to the configuration maps, and the payload shape it travels in.',
   },
   {
-    file: 'lib/metadata/divergence.ts',
+    file: 'lib/metadata/documentProperties.ts',
     symbols: ['CONFIG_TABS_KEY', 'CONFIG_DESCRIPTIONS_KEY'],
     reason: 'Declares the reserved configuration-map keys the overlay reads through.',
   },

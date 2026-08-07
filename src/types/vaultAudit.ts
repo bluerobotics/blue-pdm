@@ -6,11 +6,14 @@
  * names an administrator can act on, and the mapping between the two is in
  * `features/settings/system/vault-audit/vaultAuditView.ts`.
  *
- * Read-only by construction. `VaultAuditRepairTarget` is the single seam a repair tool attaches
- * to, and nothing in this module or the page behind it performs one.
+ * The scan itself is read-only by construction. The repair seam at the bottom of this file is the
+ * one place that is not, and everything it can do is bounded by the database function behind it
+ * rather than by anything declared here.
  */
 
+import type { ConfigMapKey } from '@/lib/metadata/configMapRepair'
 import type {
+  ConfigScopeField,
   OwnedField,
   UnattributedReason,
   MetadataScope,
@@ -211,24 +214,107 @@ export interface VaultAuditView {
 // ============================================
 
 /**
- * The one address a repair tool needs, and the only thing this feature will ever hand it.
+ * ## Why this is not the seam that was declared here before
  *
- * Deliberately narrow. It names a value and the string a repair may write, and carries no
- * instruction about what to do with either - the decision of whether a value may be written stays
- * with the repair tool, which is the thing that has been designed to make it. `repairValue` comes
- * from the scanner's `databaseRepairValue`, so it is a value BluePLM's own writers produced rather
- * than whatever the document happened to read as.
+ * The original seam was `(target: VaultAuditRepairTarget) => void`: one value, synchronous, no
+ * result. It was never wired to anything, and three things about it turned out to be wrong once a
+ * caller existed.
  *
- * The audit never calls a handler itself; the button that would is disabled until a repair tool
- * supplies one.
+ * **A write is asynchronous and has an outcome.** `void` cannot say whether the row was found,
+ * whether it was already intact, or how many entries actually landed. A repair whose result cannot
+ * be reported is one the operator has to go and verify by hand, which is the terminal-and-SQL
+ * workflow this replaces.
+ *
+ * **Approving a subset requires a set.** The owner must see file, configuration, field and value
+ * and tick the ones to apply. A per-value entry point can only be driven by a button per row,
+ * which is a click per value across a hundred and thirty-four of them and no way to see the whole
+ * before committing to any of it.
+ *
+ * **One call per value is one transaction per value.** A hundred round trips that can fail
+ * half-way leave a partial repair with no receipt.
+ *
+ * Note what is *not* among the reasons: safety. Per-value would have been perfectly safe, because
+ * the guarantee no longer lives in the shape of this interface - it lives in the SQL, where the
+ * merge is written `computed || existing` inside a `SECURITY DEFINER` function and no argument can
+ * turn it into an overwrite. The seam was reshaped for honesty about outcomes, not to buy back a
+ * property it never carried.
  */
-export interface VaultAuditRepairTarget {
+
+/** How a proposed value was arrived at. The two are never mixed in the interface. */
+export type VaultAuditRepairProvenance =
+  /**
+   * Read from the configuration's own bag, under the very key BluePLM's writers produce. The
+   * database held this string and lost it; putting it back is a restoration.
+   */
+  | 'recovered'
+  /**
+   * Computed by splitting the configuration's `Number` on its last dash - what the browser does at
+   * display time. The database never distinctly held this string, so writing one is a
+   * reconstruction and not a recovery. Off unless the operator asks for it, and labelled wherever
+   * it appears.
+   */
+  | 'derived'
+
+/** One value that could be written, and everything needed to decide whether it should be. */
+export interface VaultAuditRepairCandidate {
+  /** Stable within a report, so a selection survives re-renders. */
+  id: string
   fileId: string
   relativePath: string
-  field: OwnedField
-  configuration: string | null
-  repairValue: string | null
+  fileName: string
+  field: ConfigScopeField
+  configuration: string
+  /**
+   * The string that would be written.
+   *
+   * Frozen when the vault was scanned, and deliberately so: it is what the operator approved, and
+   * re-reading the document at apply time would write a value nobody saw. The database side is the
+   * half that is re-read - inside the merge - so a row that changed in between wins on its own
+   * entries and this value simply does not land.
+   */
+  value: string
+  provenance: VaultAuditRepairProvenance
 }
 
-/** Supplied by a repair tool. Absent everywhere in the audit today. */
-export type VaultAuditRepairHandler = (target: VaultAuditRepairTarget) => void
+/** One file's worth of merge, keyed by the reserved map the entries belong under. */
+export interface VaultAuditRepairFile {
+  fileId: string
+  relativePath: string
+  maps: Partial<Record<ConfigMapKey, Record<string, string>>>
+}
+
+/** What one file's maps did, as the database reported it. */
+export interface VaultAuditRepairFileOutcome {
+  fileId: string
+  relativePath: string | null
+  updated: boolean
+  /** Set when the row could not be acted on at all - a moved, deleted or foreign row. */
+  refused: string | null
+  /** Entries the row gained, per reserved map. Never more than were asked for; often fewer. */
+  added: Partial<Record<ConfigMapKey, number>>
+  /** Maps the row does not carry, so there was nothing there to restore. */
+  mapsAbsent: ConfigMapKey[]
+}
+
+/**
+ * The receipt.
+ *
+ * `entriesRequested` and `entriesAdded` differ exactly when the row already held something the
+ * scan did not know about. That is the normal, safe outcome of applying a stale plan, and it is
+ * reported rather than smoothed over so the operator can see it happened.
+ */
+export interface VaultAuditRepairOutcome {
+  filesRequested: number
+  filesUpdated: number
+  entriesRequested: number
+  entriesAdded: number
+  files: VaultAuditRepairFileOutcome[]
+}
+
+/**
+ * Supplied by the panel, which holds the Supabase session. Takes an approved set and returns what
+ * the database did with it.
+ */
+export type VaultAuditRepairHandler = (
+  files: readonly VaultAuditRepairFile[],
+) => Promise<VaultAuditRepairOutcome>

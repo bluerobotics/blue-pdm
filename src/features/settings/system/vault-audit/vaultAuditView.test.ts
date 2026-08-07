@@ -9,7 +9,7 @@ import {
 } from '@/lib/metadata/divergence'
 import { DIVERGENCE_REPORT_SCHEMA_VERSION, type DivergenceReport } from '@/lib/metadata/divergenceScan'
 
-import { buildVaultAuditView, toRepairTarget } from './vaultAuditView'
+import { buildVaultAuditView } from './vaultAuditView'
 
 // ============================================
 // Fixtures
@@ -296,20 +296,19 @@ describe('buildVaultAuditView - an empty run', () => {
   })
 })
 
-describe('toRepairTarget', () => {
+describe('the finding a repair is built from', () => {
   const view = buildVaultAuditView(reportOf([wipedRecord()]))
 
-  it('carries the address and the writable value, and nothing else', () => {
+  // The per-value repair seam this used to exercise is gone; what a repair consumes is now decided
+  // over a whole key set in `configMapRepairProposal`, which has its own tests. What the view still
+  // owes that planner is the writable value, kept apart from whatever the document merely reads as.
+  it('carries the value a repair may write, not just the one the file shows', () => {
     const finding = view.findings.find(
       (candidate) => candidate.configuration === 'Short' && candidate.field === 'config_tab',
     )
     expect(finding).toBeDefined()
-    expect(toRepairTarget(finding!)).toEqual({
-      fileId: 'BRACKET.SLDPRT',
-      relativePath: '0 - SHARED\\01-TOOLBOX\\BRACKET.SLDPRT',
-      field: 'config_tab',
-      configuration: 'Short',
-      repairValue: '-001',
-    })
+    expect(finding?.kind).toBe('recoverable')
+    expect(finding?.repairValue).toBe('-001')
+    expect(finding?.databaseValue).toBeNull()
   })
 })

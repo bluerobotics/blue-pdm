@@ -35,7 +35,6 @@ import type {
   VaultAuditCoverage,
   VaultAuditFileCoverage,
   VaultAuditFinding,
-  VaultAuditRepairTarget,
   VaultAuditTone,
   VaultAuditView,
 } from '@/types/vaultAudit'
@@ -118,17 +117,6 @@ function toFinding(
     fileValue: comparison.fileValue,
     repairValue: comparison.databaseRepairValue,
     unattributedReason: comparison.unattributedReason ?? null,
-  }
-}
-
-/** The address a repair tool would need, and nothing beyond it. */
-export function toRepairTarget(finding: VaultAuditFinding): VaultAuditRepairTarget {
-  return {
-    fileId: finding.fileId,
-    relativePath: finding.relativePath,
-    field: finding.field,
-    configuration: finding.configuration,
-    repairValue: finding.repairValue,
   }
 }
 

@@ -44,6 +44,7 @@
 
 import {
   configurationScopeProperties,
+  deriveTabFromNumber,
   CONFIG_DESCRIPTIONS_KEY,
   CONFIG_SCOPE_SPECS,
   CONFIG_TABS_KEY,
@@ -51,6 +52,15 @@ import {
   type ConfigScopeField,
   type FileMetadata,
 } from './divergence'
+
+/**
+ * Re-exported so this module's callers keep one import for the whole repair vocabulary.
+ *
+ * The rule itself lives in `documentProperties.ts` alongside the other rules for reading a value
+ * out of a property bag, because the Vault Audit's repair planner needs it too and pulling it from
+ * here would drag the offline planner into a module that has a database client in its graph.
+ */
+export { deriveTabFromNumber }
 
 // ============================================
 // Vocabulary
@@ -66,24 +76,6 @@ const MAP_FIELDS: Record<ConfigMapKey, ConfigScopeField> = {
   [CONFIG_TABS_KEY]: 'config_tab',
   [CONFIG_DESCRIPTIONS_KEY]: 'config_description',
 }
-
-/**
- * The single document property a tab may be derived from.
- *
- * `Number` carries the base part number plus the configuration's tab; `Base Item Number` carries
- * the base alone, so splitting that one yields a fragment of the base rather than a tab. The
- * browser's display-time derivation in `loadFileConfigurations.ts` also accepts `Part Number` and
- * `PartNumber`; this does not, because a value under either of those has no documented relationship
- * to the tab and guessing is the failure mode the whole exercise exists to avoid. The disagreement
- * is one of the several the property-contract task is meant to settle.
- */
-const TAB_DERIVATION_KEYS = ['Number'] as const
-
-/**
- * The longest trailing segment of `Number` that reads as a tab rather than as the number itself,
- * matching `tabFromNumber` in `loadFileConfigurations.ts`.
- */
-const MAX_DERIVED_TAB_LENGTH = 4
 
 /** How a proposed value was arrived at. The report keeps the two apart; so does the operator. */
 export type FillProvenance =
@@ -309,29 +301,6 @@ export function fillIsAdditive(
 // ============================================
 // Reading a value out of a configuration
 // ============================================
-
-/**
- * The tab a configuration's own `Number` implies, or null.
- *
- * Mirrors `tabFromNumber` in `loadFileConfigurations.ts`: split on the dash, and take the trailing
- * segment only when it is short enough to be a tab rather than the number itself. Unlike that
- * function this reads the configuration's own bag only, never the resolved view - resolving would
- * fall back to the file-level `Number` and hand every configuration the family's tab, which is the
- * `-XXX` value the census found on the ORING family and is not that configuration's tab at all.
- */
-export function deriveTabFromNumber(
-  configurationProperties: Readonly<Record<string, string>>,
-): string | null {
-  const number = readCanonicalProperty(configurationProperties, TAB_DERIVATION_KEYS)
-  if (number === null) return null
-
-  const parts = number.split('-')
-  if (parts.length < 2) return null
-
-  const last = parts[parts.length - 1]
-  if (!last || last.length > MAX_DERIVED_TAB_LENGTH) return null
-  return last
-}
 
 interface Candidate {
   value: string

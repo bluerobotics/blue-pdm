@@ -1,3 +1,5 @@
 export { VaultAuditSettings } from './VaultAuditSettings'
-export { buildVaultAuditView, toRepairTarget } from './vaultAuditView'
+export { buildVaultAuditView } from './vaultAuditView'
 export { useVaultAudit } from './useVaultAudit'
+export { useVaultAuditRepair } from './useVaultAuditRepair'
+export { VaultAuditRepair } from './VaultAuditRepair'

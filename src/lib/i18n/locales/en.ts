@@ -1074,7 +1074,7 @@ export const en: TranslationDict = {
   vaultAudit: {
     title: 'Vault Audit',
     description:
-      'Compare what BluePLM records against what your SOLIDWORKS files actually contain. The audit reads and reports; it changes nothing.',
+      'Compare what BluePLM records against what your SOLIDWORKS files actually contain, then put back the per-configuration entries a check-in erased. Your files are only ever read; nothing is written anywhere until you choose what to write.',
     adminOnly: 'Only administrators can run the vault audit.',
     noVault: 'Connect a vault before running the audit.',
     serviceTooOld:
@@ -1187,9 +1187,51 @@ export const en: TranslationDict = {
       empty: '—',
       reveal: 'Show in file browser',
       revealUnavailable: 'This file has no local copy to show.',
-      repair: 'Repair',
-      repairUnavailable:
-        'Repair is not part of the audit. This button becomes active when the repair tool is installed.',
+    },
+
+    repair: {
+      heading: 'Repair configuration records',
+      description:
+        'Put back the per-configuration entries a check-in erased, reading the values from what the audit just found in your files. Nothing is written until you choose what to write.',
+      guarantee:
+        'This can only add entries your record is missing. Every value BluePLM already holds wins over the one proposed here, including entries added since the scan, and entries for configurations that no longer exist are left alone. That is enforced by the database, not by this screen — the merge puts your record on the winning side, so an overwrite or a deletion cannot be expressed.',
+      notInstalled:
+        'Your database does not have the repair function yet. It ships with the next schema release; apply that and the repair appears here. The audit above works either way.',
+      nothingToRepair:
+        'Nothing to put back. Every configuration your files have is already described by its record.',
+      noOrganization: 'No organization is loaded, so there is nothing to repair against.',
+
+      available: '{{entries}} entries could be restored across {{files}} files.',
+      availableSplit: '({{recovered}} recovered, {{derived}} reconstructed)',
+
+      includeDerived: 'Also reconstruct tabs from each configuration’s Number',
+      includeDerivedHint:
+        'For configurations where neither BluePLM nor the file holds a tab, take the part after the last dash of the configuration’s Number — what the browser shows. This is a reconstruction, not a recovery: the value was never separately recorded, and it may not match the convention your vault uses. Off by default, and every such row is marked.',
+
+      selectAll: 'Select all {{count}}',
+      selectNone: 'Clear all {{count}}',
+      filterPlaceholder: 'Filter by path, configuration or value',
+      noMatches: 'No proposed values match that filter.',
+      showing: 'Showing {{shown}} of {{total}}',
+      columnFile: 'File',
+      columnConfiguration: 'Configuration',
+      columnField: 'Field',
+      columnValue: 'Value to write',
+      derivedTag: 'reconstructed',
+      derivedHint: 'Taken from the configuration’s Number. BluePLM never recorded this separately.',
+
+      selectPrompt: 'Tick the entries you want written. Nothing is selected, so nothing will be.',
+      selectedSummary:
+        '{{entries}} entries across {{files}} files selected, {{derived}} of them reconstructed.',
+      apply: 'Write {{count}} entries',
+      applying: 'Writing…',
+      appliedToast: 'Restored {{entries}} entries across {{files}} files.',
+
+      receiptHeading: '{{entries}} entries restored across {{files}} files.',
+      receiptShortfall:
+        '{{count}} of the {{requested}} requested were already there. Your record was ahead of the scan and kept what it had, which is the intended outcome rather than a failure.',
+      receiptRefused:
+        '{{count}} files could not be reached — moved, deleted, or no longer carrying a configuration record. Nothing was written to them.',
     },
 
     fields: {

@@ -1,30 +1,24 @@
 import { useMemo, useState } from 'react'
-import { ExternalLink, Wrench } from 'lucide-react'
+import { ExternalLink } from 'lucide-react'
 
 import { t } from '@/lib/i18n'
-import type {
-  VaultAuditCategoryKind,
-  VaultAuditFinding,
-  VaultAuditRepairHandler,
-} from '@/types/vaultAudit'
+import type { VaultAuditCategoryKind, VaultAuditFinding } from '@/types/vaultAudit'
 
 import { fieldLabel, unattributedReasonLabel } from './vaultAuditLabels'
-import { toRepairTarget } from './vaultAuditView'
 import { useRevealInFileBrowser } from './useRevealInFileBrowser'
 
+/**
+ * This table reports; it does not act.
+ *
+ * It used to carry a disabled per-row repair button, marking the place a repair tool would attach.
+ * The repair exists now and it does not attach here: what may be written is decided over a whole
+ * key set rather than one value at a time, and it is approved as a set in `VaultAuditRepair`,
+ * which shows every proposed value before anything is written. A button per row would have meant
+ * a click per value with no way to see the whole first.
+ */
 interface VaultAuditFindingsProps {
   findings: VaultAuditFinding[]
   kind: VaultAuditCategoryKind | null
-  /**
-   * The repair seam.
-   *
-   * The audit never supplies this. A repair tool passes a handler in and the per-row button comes
-   * alive; until then the button is present and disabled so that the place a repair attaches is
-   * visible in the interface rather than only in the code. The handler receives a
-   * `VaultAuditRepairTarget` and decides for itself whether the value may be written - this
-   * component makes no such claim.
-   */
-  onRepair?: VaultAuditRepairHandler
 }
 
 /**
@@ -55,7 +49,7 @@ function ValueCell({ value }: { value: string | null }) {
   return <span className="text-plm-fg">{value}</span>
 }
 
-export function VaultAuditFindings({ findings, kind, onRepair }: VaultAuditFindingsProps) {
+export function VaultAuditFindings({ findings, kind }: VaultAuditFindingsProps) {
   const [filter, setFilter] = useState('')
   const { resolve, reveal } = useRevealInFileBrowser()
 
@@ -161,20 +155,6 @@ export function VaultAuditFindings({ findings, kind, onRepair }: VaultAuditFindi
                             className="p-1 rounded text-plm-fg-muted hover:text-plm-fg hover:bg-plm-bg-lighter transition-colors disabled:opacity-40 disabled:hover:bg-transparent"
                           >
                             <ExternalLink size={12} />
-                          </button>
-                          {/* TODO(repair-tool): passing `onRepair` enables this. The audit itself
-                              never writes, so it stays disabled here. */}
-                          <button
-                            onClick={() => onRepair?.(toRepairTarget(finding))}
-                            disabled={!onRepair}
-                            title={
-                              onRepair
-                                ? t('vaultAudit.findings.repair')
-                                : t('vaultAudit.findings.repairUnavailable')
-                            }
-                            className="p-1 rounded text-plm-fg-muted hover:text-plm-fg hover:bg-plm-bg-lighter transition-colors disabled:opacity-40 disabled:hover:bg-transparent"
-                          >
-                            <Wrench size={12} />
                           </button>
                         </div>
                       </td>

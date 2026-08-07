@@ -6,9 +6,16 @@
  * the same artifact, presented so that "do BluePLM and my files still agree?" can be answered from
  * the application.
  *
- * It reads and reports. It does not repair, and nothing here writes to the database or to a file
- * in the vault. The single place a repair tool attaches is the `onRepair` prop on
- * `VaultAuditFindings`, which takes a `VaultAuditRepairTarget`; no caller passes one today.
+ * ## What writes, and what does not
+ *
+ * The scan reads. Nothing in it opens a vault file for writing, and the documents are the only
+ * surviving copy of what the configuration-map wipe destroyed, so that is not going to change.
+ *
+ * `VaultAuditRepair` at the bottom writes, to the database only, and only what the administrator
+ * has ticked. It can add a configuration entry the record is missing and it can do nothing else -
+ * not because this component is careful, but because the merge behind it is `computed || existing`
+ * inside a `SECURITY DEFINER` function that gates on organization membership and admin role. The
+ * admin check here decides what is worth rendering; it is not what makes the repair safe.
  */
 
 import { useState } from 'react'
@@ -26,6 +33,7 @@ import { VaultAuditFieldTable } from './VaultAuditFieldTable'
 import { VaultAuditFindings } from './VaultAuditFindings'
 import { VaultAuditOverview } from './VaultAuditOverview'
 import { VaultAuditProgress } from './VaultAuditProgress'
+import { VaultAuditRepair } from './VaultAuditRepair'
 import { VaultAuditScopeForm } from './VaultAuditScopeForm'
 
 function AdminOnlyNotice() {
@@ -103,6 +111,10 @@ export function VaultAuditSettings() {
               <VaultAuditFindings findings={audit.view.findings} kind={selectedCategory} />
 
               <VaultAuditFieldTable tallies={audit.view.fieldTallies} />
+
+              <div className="pt-4 border-t border-plm-border">
+                <VaultAuditRepair />
+              </div>
 
               <div className="flex items-center justify-between pt-2 border-t border-plm-border">
                 <p className="text-xs text-plm-fg-muted max-w-2xl">

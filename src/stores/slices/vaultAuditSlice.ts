@@ -1,7 +1,8 @@
 /**
  * Vault Audit Slice
  *
- * Holds the state of the read-only divergence scan the Vault Audit settings page drives.
+ * Holds the divergence scan the Vault Audit settings page drives, and the repair the admin builds
+ * on top of it.
  *
  * ## Why the result lives here and not in the database
  *
@@ -22,7 +23,12 @@
 import { StateCreator } from 'zustand'
 
 import type { DivergenceReport } from '../../lib/metadata/divergenceScan'
-import type { VaultAuditProgress, VaultAuditRunState, VaultAuditScope } from '../../types/vaultAudit'
+import type {
+  VaultAuditProgress,
+  VaultAuditRepairOutcome,
+  VaultAuditRunState,
+  VaultAuditScope,
+} from '../../types/vaultAudit'
 import { DEFAULT_VAULT_AUDIT_SCOPE } from '../../types/vaultAudit'
 import type { PDMStoreState } from '../types'
 
@@ -46,6 +52,37 @@ export interface VaultAuditRun {
   cancelRequested: boolean
 }
 
+/**
+ * What the admin has approved, and what came of applying it.
+ *
+ * The selection is by candidate id rather than by value: a value is the thing being approved, and
+ * keeping a copy here would let the list drift from the preview the admin is reading. It starts
+ * empty rather than everything-ticked, so a repair is something a person asked for item by item
+ * rather than something they forgot to untick.
+ */
+export interface VaultAuditRepairState {
+  /** Candidate ids the admin has ticked. Empty until they tick something. */
+  selectedIds: string[]
+  /** Offer tabs reconstructed from the configuration's `Number`. Off unless asked for. */
+  includeDerivedTabs: boolean
+  /** True while the RPC is in flight; the apply button is not clickable twice. */
+  applying: boolean
+  /** The receipt from the last apply, kept so the admin can read it after it finishes. */
+  outcome: VaultAuditRepairOutcome | null
+  error: string | null
+  /** The database predates the release the repair function ships in. */
+  notInstalled: boolean
+}
+
+export const EMPTY_VAULT_AUDIT_REPAIR: VaultAuditRepairState = {
+  selectedIds: [],
+  includeDerivedTabs: false,
+  applying: false,
+  outcome: null,
+  error: null,
+  notInstalled: false,
+}
+
 export interface VaultAuditSlice {
   // ═══════════════════════════════════════════════════════════════
   // State
@@ -56,6 +93,13 @@ export interface VaultAuditSlice {
 
   /** The current or most recent run. Session-scoped, never persisted. */
   vaultAuditRun: VaultAuditRun | null
+
+  /**
+   * The repair built on top of the current run. Session-scoped and never persisted, for the same
+   * reason the report is not: an approval of values read from a vault three days ago is an
+   * approval of something that may no longer be true.
+   */
+  vaultAuditRepair: VaultAuditRepairState
 
   // ═══════════════════════════════════════════════════════════════
   // Actions
@@ -75,6 +119,15 @@ export interface VaultAuditSlice {
   ) => void
   requestVaultAuditCancel: () => void
   clearVaultAuditRun: () => void
+
+  setVaultAuditRepairSelection: (ids: readonly string[]) => void
+  setVaultAuditIncludeDerivedTabs: (include: boolean) => void
+  startVaultAuditRepair: () => void
+  finishVaultAuditRepair: (result: {
+    outcome?: VaultAuditRepairOutcome | null
+    error?: string | null
+    notInstalled?: boolean
+  }) => void
 }
 
 // ============================================================================
@@ -91,12 +144,16 @@ export const createVaultAuditSlice: StateCreator<
 > = (set, get) => ({
   vaultAuditScope: DEFAULT_VAULT_AUDIT_SCOPE,
   vaultAuditRun: null,
+  vaultAuditRepair: EMPTY_VAULT_AUDIT_REPAIR,
 
   setVaultAuditScope: (scope: VaultAuditScope) => set({ vaultAuditScope: scope }),
 
   startVaultAuditRun: (scope: VaultAuditScope) => {
     const id = `vault-audit-${Date.now()}`
     set({
+      // A new scan invalidates every candidate the old one produced, and a selection carried
+      // across would name ids from a report that no longer exists.
+      vaultAuditRepair: EMPTY_VAULT_AUDIT_REPAIR,
       vaultAuditRun: {
         id,
         startedAt: Date.now(),
@@ -140,5 +197,57 @@ export const createVaultAuditSlice: StateCreator<
     set({ vaultAuditRun: { ...run, cancelRequested: true } })
   },
 
-  clearVaultAuditRun: () => set({ vaultAuditRun: null }),
+  clearVaultAuditRun: () =>
+    set({ vaultAuditRun: null, vaultAuditRepair: EMPTY_VAULT_AUDIT_REPAIR }),
+
+  setVaultAuditRepairSelection: (ids: readonly string[]) =>
+    set((state) => ({
+      // Clearing the previous receipt: leaving it on screen beside a new selection reads as if it
+      // described that selection.
+      vaultAuditRepair: {
+        ...state.vaultAuditRepair,
+        selectedIds: [...ids],
+        outcome: null,
+        error: null,
+      },
+    })),
+
+  setVaultAuditIncludeDerivedTabs: (include: boolean) =>
+    set((state) => ({
+      vaultAuditRepair: {
+        ...state.vaultAuditRepair,
+        includeDerivedTabs: include,
+        // Turning derivation off must not leave derived ids approved but invisible. The selection
+        // is rebuilt from the list the admin can actually see, so it starts again either way.
+        selectedIds: [],
+        outcome: null,
+        error: null,
+      },
+    })),
+
+  startVaultAuditRepair: () =>
+    set((state) => ({
+      vaultAuditRepair: {
+        ...state.vaultAuditRepair,
+        applying: true,
+        outcome: null,
+        error: null,
+        notInstalled: false,
+      },
+    })),
+
+  finishVaultAuditRepair: (result) =>
+    set((state) => ({
+      vaultAuditRepair: {
+        ...state.vaultAuditRepair,
+        applying: false,
+        outcome: result.outcome ?? null,
+        error: result.error ?? null,
+        notInstalled: result.notInstalled === true,
+        // Applied entries are no longer proposals. Emptying the selection stops a second click
+        // re-sending a request whose entries the row now holds - which the merge would refuse
+        // anyway, but which would read as a repair that did nothing.
+        selectedIds: result.outcome ? [] : state.vaultAuditRepair.selectedIds,
+      },
+    })),
 })
