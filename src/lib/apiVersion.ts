@@ -16,6 +16,8 @@
  * - Version 2.4.0: File state endpoints run through the workflow engine
  * - Version 2.5.0: Extension endpoints require authentication; rate limiting answers 429
  * - Version 2.6.0: 5xx responses carry a request id instead of the server's stack trace
+ * - Version 2.7.0: A caller-supplied request id is validated before it is logged or reflected,
+ *   and an extension's failed HTTP call is audited with the reason it failed
  *
  * When making API changes:
  * 1. Increment version in api/package.json
@@ -27,10 +29,16 @@ import { usePDMStore } from '../stores/pdmStore'
 
 // The API version this app version expects
 // Uses semver: MAJOR.MINOR.PATCH
-export const EXPECTED_API_VERSION = '2.6.0'
+export const EXPECTED_API_VERSION = '2.7.0'
 
 // Minimum API version that will still work (for soft warnings vs hard errors)
 // Breaking changes should bump the major version and update this
+//
+// This is a hard refusal, not a warning: raising it takes the app offline for every user whose
+// API is below the floor, until that API is redeployed. It should be raised only to exclude a
+// version that is unsafe to talk to - 2.6.0 is the candidate, being the release that stopped 5xx
+// responses returning the server's stack trace - and only once the deployed image is known to be
+// at or above the new floor. See D_AGENT_REPORT.md, "D10".
 export const MINIMUM_COMPATIBLE_API_VERSION = '2.0.0'
 
 // Human-readable descriptions for each version
@@ -49,6 +57,8 @@ export const API_VERSION_DESCRIPTIONS: Record<string, string> = {
     'Extension handler endpoints require a token and take the organization from it rather than from an X-Org-Id header, and a rate-limited request is answered with 429 RATE_LIMIT_EXCEEDED instead of 500',
   '2.6.0':
     "A 500 response no longer returns the server's error message and stack trace to the caller; it carries a requestId that matches the server log instead. CORS always allows the desktop app, so an API deployed with NODE_ENV=production keeps working, and the Swagger UI at /docs has its own ENABLE_DOCS switch",
+  '2.7.0':
+    'An X-Request-Id supplied by the caller is accepted only if it is short and alphanumeric, so a crafted one can no longer forge log lines or be reflected verbatim in an error response; anything else is replaced by a server-generated id. An extension HTTP call that fails is now audited with the reason it failed instead of an empty error column, and it rejects with the original Error rather than a string, so the stack survives',
 }
 
 export interface ApiVersionCheckResult {

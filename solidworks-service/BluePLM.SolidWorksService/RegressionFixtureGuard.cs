@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.InteropServices;
+
+using Microsoft.Win32.SafeHandles;
 
 namespace BluePLM.SolidWorksService
 {
@@ -28,10 +31,17 @@ namespace BluePLM.SolidWorksService
     /// - No junction or symbolic link stands anywhere between the volume root and the path, the
     ///   allowed root itself included. A reparse point makes the name a lie, and one planted at or
     ///   above the root redirects the whole fixture folder.
+    /// - The path has one name. A hard link carries no attribute that says so, so every check above
+    ///   can pass on a name inside the root while the bytes behind it are a production document with
+    ///   a second directory entry elsewhere on the volume. The link count is asked for directly.
     /// - The root is deep enough to confine anything. A well-formed root can still be useless as a
     ///   boundary: <c>C:\</c> has no components below its volume, so containment compares nothing
     ///   and every path on the drive passes. Being a valid path and being a usable root are
     ///   separate questions, and both are asked.
+    /// - The root is not the vault. Depth cannot decide this one -
+    ///   <c>C:\BluePLM\br-vault\Engineering</c> is exactly as deep as a legitimate throwaway
+    ///   sandbox - so <see cref="ProductionVaultRoot"/> is named and any root inside it other than
+    ///   <see cref="DefaultFixtureRoot"/> is refused outright.
     ///
     /// What it does not prove: that the answer is still true a moment later. Nothing that inspects a
     /// path and then acts on it can promise that, so the callers back a write with
@@ -41,6 +51,17 @@ namespace BluePLM.SolidWorksService
     {
         /// <summary>Only folder in the vault a write is ever permitted to reach.</summary>
         public const string DefaultFixtureRoot = @"C:\BluePLM\br-vault\0 - SHARED\00 - REGRESSION TESTS";
+
+        /// <summary>
+        /// The production vault, named so the guard can refuse to be pointed anywhere inside it
+        /// except <see cref="DefaultFixtureRoot"/>.
+        ///
+        /// A depth floor cannot express this. <c>C:\BluePLM\br-vault\Engineering</c> is as many
+        /// folders below its volume as a legitimate throwaway sandbox and contains nothing but
+        /// production documents, so the question has to be asked directly rather than
+        /// approximated by counting.
+        /// </summary>
+        public const string ProductionVaultRoot = @"C:\BluePLM\br-vault";
 
         /// <summary>
         /// Overrides <see cref="DefaultFixtureRoot"/>, so a test can point a spawned diagnostic at a
@@ -62,8 +83,19 @@ namespace BluePLM.SolidWorksService
         /// and one component short of it lets through <c>C:\Windows</c> and <c>C:\Users</c>. Those
         /// are precisely the roots a typo or an unset environment variable produces, so the shape of
         /// the root is checked rather than assumed. The real fixture root has four.
+        ///
+        /// Three rather than two because <c>C:\BluePLM\br-vault</c> has two, and a root of two
+        /// components authorises a write to every document in the vault while satisfying every
+        /// other rule here. Three is also the shallowest root the guard is asked to accept in
+        /// practice: a temporary directory is six or so components deep locally and three on a CI
+        /// runner (<c>D:\a\_temp\sandbox</c>).
+        ///
+        /// This is a floor and not the boundary. It cannot be raised into one, because the vault
+        /// has folders below it that are as deep as any legitimate sandbox; see
+        /// <see cref="DescribeVaultOverlap"/> for the check that actually keeps a root out of the
+        /// vault.
         /// </summary>
-        private const int MinRootComponents = 2;
+        private const int MinRootComponents = 3;
 
         /// <summary>
         /// Total components a path may have, root included. Splitting on separators cannot loop, so
@@ -110,12 +142,62 @@ namespace BluePLM.SolidWorksService
         /// </summary>
         public static string? DescribeRootRefusal(string? root)
         {
-            if (!TryReadPath(root, out _, out var components, out var refusal)) return refusal;
+            if (!TryReadPath(root, out var volume, out var components, out var refusal)) return refusal;
+
+            // Asked before the depth floor so a vault path gets the reason that actually applies to
+            // it rather than an incidental complaint about how many folders it has.
+            var overlap = DescribeVaultOverlap(volume, components);
+            if (overlap != null) return overlap;
 
             return components.Count < MinRootComponents
                 ? $"it is only {components.Count} folder(s) below its volume, and a root that shallow " +
                   $"confines writes to little more than the whole drive (at least {MinRootComponents} required)"
                 : null;
+        }
+
+        /// <summary>
+        /// Refuse a root that overlaps the production vault anywhere except the fixture folder.
+        ///
+        /// <see cref="MinRootComponents"/> is a heuristic about shape, and a root's shape is not
+        /// what makes it safe. <c>C:\BluePLM\br-vault\Engineering</c> is absolute, canonical, free
+        /// of reparse points and three folders below its volume, and it authorises a write to every
+        /// production document under it. No floor refuses that without also refusing a legitimate
+        /// sandbox of the same depth, so the guard names the vault and asks the question directly.
+        ///
+        /// <see cref="DefaultFixtureRoot"/> and anything below it stay allowed - that subtree is
+        /// what the fixture suite exists to write to. Anything outside the vault is not this
+        /// check's business and is left to the rules above.
+        /// </summary>
+        private static string? DescribeVaultOverlap(string volume, List<string> components)
+        {
+            if (!IsAtOrBelow(volume, components, ProductionVaultRoot)) return null;
+            if (IsAtOrBelow(volume, components, DefaultFixtureRoot)) return null;
+
+            return $"it is inside the production vault at '{ProductionVaultRoot}' but not inside " +
+                   $"'{DefaultFixtureRoot}', so it would authorise writes to production documents";
+        }
+
+        /// <summary>
+        /// Whether <paramref name="volume"/> and <paramref name="components"/> name
+        /// <paramref name="ancestor"/> itself or something below it.
+        ///
+        /// An unparseable ancestor answers false rather than throwing. Both callers pass a
+        /// compile-time constant of the required shape, so that branch is unreachable today; it is
+        /// written this way so a future typo in one of those constants widens nothing silently -
+        /// the containment rules in <see cref="FindRefusal"/> still apply on their own.
+        /// </summary>
+        private static bool IsAtOrBelow(string volume, List<string> components, string ancestor)
+        {
+            if (!TryReadPath(ancestor, out var ancestorVolume, out var ancestorComponents, out _)) return false;
+            if (!Same(volume, ancestorVolume)) return false;
+            if (components.Count < ancestorComponents.Count) return false;
+
+            for (var index = 0; index < ancestorComponents.Count; index++)
+            {
+                if (!Same(components[index], ancestorComponents[index])) return false;
+            }
+
+            return true;
         }
 
         /// <summary>
@@ -165,7 +247,7 @@ namespace BluePLM.SolidWorksService
             if (depth > MaxDepthBelowRoot)
                 return $"it is {depth} levels below the root, and a fixture is never more than {MaxDepthBelowRoot}";
 
-            return FindReparsePoint(volume, components);
+            return FindReparsePoint(volume, components) ?? FindExtraHardLink(Join(volume, components));
         }
 
         /// <summary>
@@ -347,11 +429,90 @@ namespace BluePLM.SolidWorksService
 
                 if (index >= components.Count) return null;
 
-                path = path.EndsWith(SeparatorText, StringComparison.Ordinal)
-                    ? path + components[index]
-                    : path + SeparatorText + components[index];
+                path = Append(path, components[index]);
             }
         }
+
+        /// <summary>
+        /// Refuse a file that the volume knows by more than one name.
+        ///
+        /// Every check above reasons about the shape of a path, and a hard link is the one alias
+        /// whose shape is genuine. It sets no ReparsePoint attribute and reads back as an ordinary
+        /// file, so a link planted inside the root walks the checks above unchallenged while the
+        /// bytes it opens are a production document with a second directory entry anywhere else on
+        /// the volume. Proving the name is inside the root proves nothing about the file.
+        ///
+        /// The evidence the shape cannot supply is the link count, which is the number of directory
+        /// entries the volume has for these bytes. More than one means containment of the name does
+        /// not bound what a write reaches, and the guard refuses what it cannot prove. A link whose
+        /// other names all happen to be inside the root is refused too: no fixture has that shape,
+        /// and admitting it would mean enumerating where the other names are, which is a far more
+        /// expensive question than this one.
+        ///
+        /// Directories are exempt because NTFS does not hard link them. The directory equivalent is
+        /// a junction, and <see cref="FindReparsePoint"/> has already refused those.
+        ///
+        /// A file system that does not report link counts - a network share, most notably - answers
+        /// one for everything. That is no weaker than the guard was before this check existed, and a
+        /// share cannot be the fixture root in any case: <see cref="DefaultFixtureRoot"/> is a local
+        /// path and a candidate on another volume is refused long before reaching here.
+        /// </summary>
+        private static string? FindExtraHardLink(string path)
+        {
+            using (var handle = CreateFile(
+                       path,
+                       FileReadAttributes,
+                       ShareAll,
+                       IntPtr.Zero,
+                       OpenExisting,
+                       FileFlagBackupSemantics,
+                       IntPtr.Zero))
+            {
+                if (handle.IsInvalid)
+                {
+                    var error = Marshal.GetLastWin32Error();
+
+                    // Nothing there has no second name, which is the same verdict the walk above
+                    // reaches for an absent path.
+                    if (error == ErrorFileNotFound || error == ErrorPathNotFound) return null;
+
+                    return $"the guard cannot open '{path}' to count its names (Win32 error {error}), " +
+                           "so it cannot rule out a hard link to a file outside the root";
+                }
+
+                if (!GetFileInformationByHandle(handle, out var information))
+                {
+                    return $"the guard cannot read how many names '{path}' has (Win32 error " +
+                           $"{Marshal.GetLastWin32Error()}), so it cannot rule out a hard link to a " +
+                           "file outside the root";
+                }
+
+                if ((information.FileAttributes & DirectoryAttribute) != 0) return null;
+
+                return information.NumberOfLinks > 1
+                    ? $"'{path}' is one of {information.NumberOfLinks} names this volume has for the same " +
+                      "file, so proving this name is inside the root does not prove the file is"
+                    : null;
+            }
+        }
+
+        /// <summary>Rejoin a volume and its components into the path they were read from.</summary>
+        private static string Join(string volume, List<string> components)
+        {
+            var path = volume;
+
+            foreach (var component in components)
+            {
+                path = Append(path, component);
+            }
+
+            return path;
+        }
+
+        private static string Append(string path, string component) =>
+            path.EndsWith(SeparatorText, StringComparison.Ordinal)
+                ? path + component
+                : path + SeparatorText + component;
 
         /// <summary>
         /// Attributes, absence, and "cannot tell" kept apart on purpose.
@@ -391,5 +552,69 @@ namespace BluePLM.SolidWorksService
 
         private static bool Same(string left, string right) =>
             string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Enough access to read metadata and nothing more. An open for FILE_READ_ATTRIBUTES alone
+        /// is exempt from sharing violations, so counting a document's names never fails merely
+        /// because SolidWorks has it open.
+        /// </summary>
+        private const uint FileReadAttributes = 0x0080;
+
+        /// <summary>Deny nothing: this handle only reads metadata and must not block other openers.</summary>
+        private const uint ShareAll = 0x00000001 | 0x00000002 | 0x00000004;
+
+        private const uint OpenExisting = 3;
+
+        /// <summary>Required to open a directory handle at all, which the guard needs to exempt them.</summary>
+        private const uint FileFlagBackupSemantics = 0x02000000;
+
+        private const uint DirectoryAttribute = 0x00000010;
+
+        private const int ErrorFileNotFound = 2;
+
+        private const int ErrorPathNotFound = 3;
+
+        /// <summary>
+        /// The link count is not exposed by System.IO on .NET Framework, and
+        /// <c>FindFirstFileName</c> would enumerate names the guard does not need. One handle and
+        /// one query answers the only question asked: is this count above one.
+        /// </summary>
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, EntryPoint = "CreateFileW")]
+        private static extern SafeFileHandle CreateFile(
+            string fileName,
+            uint desiredAccess,
+            uint shareMode,
+            IntPtr securityAttributes,
+            uint creationDisposition,
+            uint flagsAndAttributes,
+            IntPtr templateFile);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetFileInformationByHandle(SafeFileHandle file, out FileInformation information);
+
+        /// <summary>Win32 <c>BY_HANDLE_FILE_INFORMATION</c>. Laid out in full because the fields are positional.</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        private struct FileInformation
+        {
+            public uint FileAttributes;
+            public FileTime CreationTime;
+            public FileTime LastAccessTime;
+            public FileTime LastWriteTime;
+            public uint VolumeSerialNumber;
+            public uint FileSizeHigh;
+            public uint FileSizeLow;
+            public uint NumberOfLinks;
+            public uint FileIndexHigh;
+            public uint FileIndexLow;
+        }
+
+        /// <summary>Win32 <c>FILETIME</c>. Present only to give the struct above its correct size.</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        private struct FileTime
+        {
+            public uint Low;
+            public uint High;
+        }
     }
 }

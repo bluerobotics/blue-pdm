@@ -198,7 +198,12 @@ async function handleHttpFetch(
 ): Promise<SerializableResponse> {
   const startTime = Date.now()
   let status = 0
-  let error: string | undefined
+
+  // Named apart from the catch binding on purpose. This used to be `error`, so the
+  // catch below shadowed it, the assignment landed on the binding rather than on this
+  // variable, and the audit row in the `finally` recorded `undefined` for every failure
+  // the runtime ever logged.
+  let failure: string | undefined
 
   try {
     // Validate URL
@@ -245,7 +250,10 @@ async function handleHttpFetch(
       body: responseBody,
     }
   } catch (error) {
-    error = error instanceof Error ? error.message : String(error)
+    failure = error instanceof Error ? error.message : String(error)
+
+    // Rethrown as it arrived. Replacing it with its own message threw a bare string
+    // across the sandbox boundary, which carries no stack for the operator to read.
     throw error
   } finally {
     // Log the HTTP request
@@ -259,8 +267,8 @@ async function handleHttpFetch(
       duration_ms: duration,
       request_size: options?.body ? String(options.body).length : 0,
       response_size: 0, // Would need to capture this
-      error,
-    }).catch((err) => log.error({ err }, '[Runtime] Failed to log HTTP request'))
+      error: failure,
+    }).catch((error) => log.error({ err: error }, '[Runtime] Failed to log HTTP request'))
   }
 }
 

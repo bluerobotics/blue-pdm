@@ -1079,9 +1079,21 @@ namespace BluePLM.SolidWorksService
                     }
                 }
 
-                var configNames = GetConfigurationNames(dynDoc);
+                // An empty configuration list has to mean the document has none. Returning the
+                // file properties beside a list that failed to read is the reply the audit and
+                // the repair cannot tell from a configuration-less part.
+                if (!TryGetConfigurationNames(doc, filePath, out var configNames, out var configFailure))
+                {
+                    return new CommandResult
+                    {
+                        Success = false,
+                        Error = $"Could not read the configurations of {Path.GetFileName(filePath)}: {configFailure}",
+                        ErrorCode = ConfigurationEnumerationFailedCode
+                    };
+                }
+
                 var configProps = new Dictionary<string, Dictionary<string, string>>();
-                
+
                 foreach (var config in configNames)
                 {
                     if (configuration == null || config == configuration)
@@ -2007,7 +2019,19 @@ namespace BluePLM.SolidWorksService
                     return new CommandResult { Success = false, Error = $"Failed to open file: error code {openError}" };
 
                 dynamic dynDoc = doc;
-                var configNames = GetConfigurationNames(dynDoc);
+
+                // The list is the whole answer this command exists to give, so a list that
+                // could not be read is a failure rather than an empty one.
+                if (!TryGetConfigurationNames(doc, filePath, out var configNames, out var configFailure))
+                {
+                    return new CommandResult
+                    {
+                        Success = false,
+                        Error = $"Could not read the configurations of {Path.GetFileName(filePath)}: {configFailure}",
+                        ErrorCode = ConfigurationEnumerationFailedCode
+                    };
+                }
+
                 var configs = new List<object>();
                 var activeConfig = (string)dynDoc.ConfigurationManager.GetActiveConfigurationName();
 
@@ -2063,16 +2087,53 @@ namespace BluePLM.SolidWorksService
             }
         }
 
-        private string[] GetConfigurationNames(dynamic doc)
+        /// <summary>
+        /// Error code for a configuration list that could not be read. Distinct from a document
+        /// that genuinely has none, which is not an error and carries no code.
+        /// </summary>
+        public const string ConfigurationEnumerationFailedCode = "CONFIGURATION_ENUMERATION_FAILED";
+
+        /// <summary>
+        /// Enumerate a document's configurations, keeping "it has none" apart from "the read
+        /// failed".
+        ///
+        /// This used to be a bare <c>catch { return Array.Empty&lt;string&gt;(); }</c>, so a
+        /// failed enumeration left the caller reporting success with an empty configuration
+        /// list - the same reply a configuration-less part produces, and indistinguishable from
+        /// it to the vault audit and to the config-map repair downstream. It is the service end
+        /// of the defect the renderer had in <c>syncMetadataPush.ts</c>: the caller could not
+        /// tell a failure from an empty list because the service never told it.
+        ///
+        /// A drawing is the one document type whose refusal is an answer - see
+        /// <see cref="SolidWorksDocumentType.HasNoConfigurations"/>.
+        /// </summary>
+        /// <param name="filePath">Used only to tell a drawing from a model.</param>
+        /// <param name="names">The configurations, or empty for a document type that has none.</param>
+        /// <param name="failure">Why the list cannot be trusted, or null when it can.</param>
+        private bool TryGetConfigurationNames(object doc, string? filePath, out string[] names, out string? failure)
         {
+            names = Array.Empty<string>();
+            failure = null;
+
             try
             {
-                var names = (string[]?)doc.ConfigurationManager.GetConfigurationNames();
-                return names ?? Array.Empty<string>();
+                names = (string[]?)((dynamic)doc).ConfigurationManager.GetConfigurationNames() ?? Array.Empty<string>();
+                return true;
             }
-            catch
+            catch (Exception error)
             {
-                return Array.Empty<string>();
+                var reason = error.InnerException?.Message ?? error.Message;
+                var name = string.IsNullOrEmpty(filePath) ? "the document" : Path.GetFileName(filePath);
+
+                if (SolidWorksDocumentType.HasNoConfigurations(filePath))
+                {
+                    Console.Error.WriteLine($"[DM] {name} is a drawing, which has no configurations ({reason})");
+                    return true;
+                }
+
+                Console.Error.WriteLine($"[DM] Could not enumerate the configurations of {name}: {reason}");
+                failure = reason;
+                return false;
             }
         }
 
@@ -2863,8 +2924,19 @@ namespace BluePLM.SolidWorksService
 
                 InvokeReplaceReference(doc, oldReference, targetModelPath!);
 
+                // Through SaveDocument, like every other save in this class. Calling Save directly
+                // discarded the SwDmDocumentSaveError, which is the only place a refusal is
+                // reported; the verification below would still have caught the consequence, but it
+                // would have blamed the reference rewrite for a file that was never written.
+                var saveError = SaveDocument(doc);
+                if (saveError != SwDmDocumentSaveError.None)
+                {
+                    throw new DuplicateFailedException(
+                        $"Could not save the reference rewrite into {Path.GetFileName(targetDrawingPath!)}: " +
+                        DescribeSaveError(saveError));
+                }
+
                 dynamic dynDoc = doc;
-                dynDoc.Save();
                 try { dynDoc.CloseDoc(); } catch { }
                 LogDocClose(targetDrawingPath!);
                 doc = null;

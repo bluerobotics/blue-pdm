@@ -568,6 +568,171 @@ namespace BluePLM.SolidWorksService.Tests
             Assert.Null(RegressionFixtureGuard.DescribeRootRefusal(Path.Combine(Path.GetTempPath(), "blueplm-sandbox")));
         }
 
+        /// <summary>
+        /// The shallowest root a real machine hands the guard. A continuous integration runner's
+        /// temp directory is D:\a\_temp, so a sandbox in it has three components and the floor must
+        /// not be set above that.
+        /// </summary>
+        [Fact]
+        public void A_sandbox_in_a_build_agents_temp_directory_is_still_deep_enough()
+        {
+            Assert.Null(RegressionFixtureGuard.DescribeRootRefusal(@"D:\a\_temp\blueplm-sandbox"));
+        }
+
+        #endregion
+
+        #region Roots that overlap the vault
+
+        /// <summary>
+        /// The root the depth floor was one component away from allowing. C:\BluePLM\br-vault is
+        /// absolute, canonical, free of reparse points and two folders below its volume, and every
+        /// other rule in the guard is satisfied by it - so pointing BLUEPLM_FIXTURE_ROOT at the
+        /// vault authorised a write to every document in the company's part library. One stray
+        /// truncation of the variable is all it took.
+        /// </summary>
+        [Fact]
+        public void The_production_vault_root_is_refused_as_a_root()
+        {
+            Assert.NotNull(RegressionFixtureGuard.DescribeRootRefusal(RegressionFixtureGuard.ProductionVaultRoot));
+
+            Assert.False(RegressionFixtureGuard.IsInside(
+                Path.Combine(RegressionFixtureGuard.ProductionVaultRoot, "Engineering", "PRODUCTION.SLDPRT"),
+                RegressionFixtureGuard.ProductionVaultRoot));
+
+            Assert.False(RegressionFixtureGuard.IsInside(
+                Path.Combine(Root, FixtureSandbox.OringFixture, "ORING-BUNA-70A.SLDPRT"),
+                RegressionFixtureGuard.ProductionVaultRoot));
+        }
+
+        /// <summary>
+        /// Depth cannot answer this one and is not asked to. A production folder in the vault is
+        /// three components below its volume, which is exactly as deep as the sandbox in
+        /// <see cref="A_sandbox_in_a_build_agents_temp_directory_is_still_deep_enough"/>, so any
+        /// floor that refused it would refuse a legitimate root too.
+        /// </summary>
+        [Theory]
+        [InlineData(@"C:\BluePLM\br-vault\Engineering")]
+        [InlineData(@"C:\BluePLM\br-vault\0 - SHARED")]
+        [InlineData(@"C:\BluePLM\br-vault\0 - SHARED\00 - REGRESSION TESTS ARCHIVE")]
+        [InlineData(@"C:/BluePLM/br-vault/Engineering")]
+        public void A_folder_of_the_vault_that_is_not_the_fixture_root_is_refused_as_a_root(string insideTheVault)
+        {
+            var refusal = RegressionFixtureGuard.DescribeRootRefusal(insideTheVault);
+
+            Assert.NotNull(refusal);
+            Assert.Contains("vault", refusal, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void The_fixture_root_and_everything_below_it_are_still_allowed_as_roots()
+        {
+            Assert.Null(RegressionFixtureGuard.DescribeRootRefusal(RegressionFixtureGuard.DefaultFixtureRoot));
+            Assert.Null(RegressionFixtureGuard.DescribeRootRefusal(Path.Combine(Root, FixtureSandbox.OringFixture)));
+        }
+
+        /// <summary>
+        /// The sibling that shares the vault root's name is outside the vault, so the overlap check
+        /// must compare components rather than string prefixes the way the containment check does.
+        /// </summary>
+        [Fact]
+        public void A_folder_whose_name_begins_with_the_vaults_is_not_treated_as_being_in_it()
+        {
+            Assert.Null(RegressionFixtureGuard.DescribeRootRefusal(@"C:\BluePLM\br-vault-copy\fixtures"));
+            Assert.Null(RegressionFixtureGuard.DescribeRootRefusal(@"C:\BluePLM-archive\br-vault\fixtures"));
+        }
+
+        [Fact]
+        public void The_vault_in_the_environment_authorises_nothing()
+        {
+            var original = Environment.GetEnvironmentVariable(RegressionFixtureGuard.FixtureRootVariable);
+
+            try
+            {
+                Environment.SetEnvironmentVariable(
+                    RegressionFixtureGuard.FixtureRootVariable,
+                    RegressionFixtureGuard.ProductionVaultRoot);
+
+                Assert.False(RegressionFixtureGuard.IsInsideAllowedRoot(
+                    Path.Combine(RegressionFixtureGuard.ProductionVaultRoot, "Engineering", "PRODUCTION.SLDPRT")));
+
+                Assert.False(RegressionFixtureGuard.IsInsideAllowedRoot(Path.Combine(Root, "REAL.SLDPRT")));
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable(RegressionFixtureGuard.FixtureRootVariable, original);
+            }
+        }
+
+        #endregion
+
+        #region A file with more than one name
+
+        /// <summary>
+        /// The alias every other check in the guard is blind to. A hard link sets no attribute, has
+        /// no reparse point, is not a short name and is genuinely inside the root - the path is not
+        /// lying about where the *name* is. It is the file that is somewhere else, and only the
+        /// link count says so.
+        ///
+        /// Built for real rather than reasoned about: mklink /H, then a write through the link, to
+        /// confirm the bytes outside the root do change. Without that confirmation the test would
+        /// be asserting the guard refuses something harmless.
+        /// </summary>
+        [Fact]
+        public void A_hard_link_inside_the_root_to_a_file_outside_it_is_refused()
+        {
+            Assert.True(_layout.HardLinkedProductionFile, AdversarialLayout.NoHardLink);
+
+            var production = Path.Combine(_layout.Outside, "PRODUCTION.txt");
+            File.WriteAllText(_layout.HardLinkInsideRoot, "written through the link");
+            Assert.Equal("written through the link", File.ReadAllText(production));
+
+            Assert.False(
+                RegressionFixtureGuard.IsInside(_layout.HardLinkInsideRoot, _layout.Root),
+                "The link is inside the root by name and reaches a file outside it, which is the whole point.");
+        }
+
+        [Fact]
+        public void The_refusal_of_a_hard_link_says_the_file_has_more_than_one_name()
+        {
+            Assert.True(_layout.HardLinkedProductionFile, AdversarialLayout.NoHardLink);
+
+            var refusal = RegressionFixtureGuard.DescribeRefusal(_layout.HardLinkInsideRoot, _layout.Root);
+
+            Assert.Contains("names", refusal, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// The check must not cost the ordinary cases anything. A file with one name, a directory,
+        /// and a path that does not exist yet all have to stay allowed - the last one especially,
+        /// since a fixture write creates files that were not there when the guard was asked.
+        /// </summary>
+        [Fact]
+        public void One_name_is_not_a_hard_link()
+        {
+            Assert.True(RegressionFixtureGuard.IsInside(_layout.RealFileInsideRoot, _layout.Root), "a real file");
+            Assert.True(RegressionFixtureGuard.IsInside(_layout.Root, _layout.Root), "the root directory itself");
+            Assert.True(
+                RegressionFixtureGuard.IsInside(Path.Combine(_layout.Root, "not-created-yet.SLDPRT"), _layout.Root),
+                "a file the caller is about to create");
+        }
+
+        /// <summary>
+        /// The real fixtures are ordinary files, so the check has to be silent on all seventy of
+        /// them. If this fails, the guard has started refusing the suite's own writes.
+        /// </summary>
+        [Fact]
+        public void The_real_fixture_files_have_one_name_each()
+        {
+            if (!Directory.Exists(Root)) return;
+
+            foreach (var fixture in Directory.GetFiles(Root, "*.SLDPRT", SearchOption.AllDirectories))
+            {
+                Assert.True(
+                    RegressionFixtureGuard.IsInside(fixture, Root),
+                    $"'{fixture}' is a real fixture and must stay writable: {RegressionFixtureGuard.DescribeRefusal(fixture, Root)}");
+            }
+        }
+
         [Fact]
         public void An_over_broad_root_in_the_environment_authorises_nothing()
         {
@@ -603,6 +768,9 @@ namespace BluePLM.SolidWorksService.Tests
         public const string JunctionName = "hop";
         public const string SymlinkName = "slink";
 
+        /// <summary>A second name, inside the root, for a file that lives outside it.</summary>
+        public const string HardLinkName = "alias.SLDPRT";
+
         /// <summary>
         /// Said out loud rather than skipped over. mklink /J needs no elevation, so a machine that
         /// cannot make one is unusual enough to be worth failing over: without it the tests below
@@ -610,6 +778,14 @@ namespace BluePLM.SolidWorksService.Tests
         /// </summary>
         public const string NoJunction =
             "mklink /J could not create a junction here, so the reparse-point check was never exercised.";
+
+        /// <summary>
+        /// Same reasoning as <see cref="NoJunction"/>. mklink /H needs no elevation either, and it
+        /// only fails on a volume that is not NTFS - which the temp directory is, on any machine
+        /// that can run the rest of this suite.
+        /// </summary>
+        public const string NoHardLink =
+            "mklink /H could not create a hard link here, so the link-count check was never exercised.";
 
         private readonly string _base;
 
@@ -627,14 +803,18 @@ namespace BluePLM.SolidWorksService.Tests
 
             RealFileInsideRoot = Path.Combine(Root, GenuineFileName);
             File.WriteAllText(RealFileInsideRoot, "genuine");
-            File.WriteAllText(Path.Combine(Outside, "PRODUCTION.txt"), "production");
+
+            var production = Path.Combine(Outside, "PRODUCTION.txt");
+            File.WriteAllText(production, "production");
             File.WriteAllText(Path.Combine(SiblingSharingAPrefix, "secret.txt"), "secret");
 
             FileReachedThroughJunction = Path.Combine(Root, JunctionName, "PRODUCTION.txt");
+            HardLinkInsideRoot = Path.Combine(Root, HardLinkName);
 
             JunctionInsideTheRoot = TryLink("/J", Path.Combine(Root, JunctionName), Outside);
             JunctionAsRoot = TryLink("/J", JunctionRoot, Outside);
             SymbolicLinkInsideTheRoot = TryLink("/D", Path.Combine(Root, SymlinkName), Outside);
+            HardLinkedProductionFile = TryHardLink(HardLinkInsideRoot, production);
         }
 
         /// <summary>An ordinary folder standing in for the fixture root.</summary>
@@ -652,8 +832,15 @@ namespace BluePLM.SolidWorksService.Tests
         public string RealFileInsideRoot { get; }
         public string FileReachedThroughJunction { get; }
 
+        /// <summary>
+        /// A name inside <see cref="Root"/> whose bytes are the production file in
+        /// <see cref="Outside"/>. Nothing about its shape says so.
+        /// </summary>
+        public string HardLinkInsideRoot { get; }
+
         public bool JunctionInsideTheRoot { get; }
         public bool JunctionAsRoot { get; }
+        public bool HardLinkedProductionFile { get; }
 
         /// <summary>Symbolic links need a privilege or developer mode, so this one is optional.</summary>
         public bool SymbolicLinkInsideTheRoot { get; }
@@ -668,7 +855,18 @@ namespace BluePLM.SolidWorksService.Tests
         [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
         private static extern int GetShortPathName(string longPath, System.Text.StringBuilder shortPath, int bufferSize);
 
-        internal static bool TryLink(string flag, string link, string target)
+        internal static bool TryLink(string flag, string link, string target) =>
+            RunMklink(flag, link, target) && Directory.Exists(link);
+
+        /// <summary>
+        /// mklink /H makes a second directory entry for an existing file, so the result is a file
+        /// rather than a directory and <see cref="TryLink"/>'s check would answer no for a link
+        /// that was made correctly.
+        /// </summary>
+        internal static bool TryHardLink(string link, string target) =>
+            RunMklink("/H", link, target) && File.Exists(link);
+
+        private static bool RunMklink(string flag, string link, string target)
         {
             try
             {
@@ -683,7 +881,7 @@ namespace BluePLM.SolidWorksService.Tests
                 });
 
                 process?.WaitForExit();
-                return process?.ExitCode == 0 && Directory.Exists(link);
+                return process?.ExitCode == 0;
             }
             catch (Exception)
             {

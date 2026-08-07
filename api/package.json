@@ -1,6 +1,6 @@
 {
   "name": "bluepdm-api",
-  "version": "2.6.0",
+  "version": "2.7.0",
   "description": "BluePLM REST API",
   "type": "module",
   "main": "dist/server.js",
@@ -21,6 +21,7 @@
     "@supabase/supabase-js": "^2.39.0",
     "fastify": "^5.2.1",
     "fastify-plugin": "^5.1.0",
+    "pino": "^10.1.0",
     "pino-pretty": "^13.0.0",
     "zod": "^3.23.8"
   },

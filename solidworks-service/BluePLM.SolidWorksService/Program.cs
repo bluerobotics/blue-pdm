@@ -917,13 +917,24 @@ namespace BluePLM.SolidWorksService
             var pagResult = _swApi.DuplicateViaPackAndGo(sourceDrawingPath, nameMap);
             if (pagResult.Success || dmResult == null) return pagResult;
 
-            // Surface both failures; either one alone is misleading about what went wrong
+            // Both engines failed, and the reply names one of them - see CommandResult's
+            // remarks. It used to lead the prose with Document Manager's message while taking
+            // the code from Pack and Go, so the code and the sentence described different
+            // failures and a caller branching on the code told the user about the other one.
+            //
+            // Pack and Go ran last and is what ended the operation, so it is the failure
+            // reported. Document Manager's is still surfaced - either alone is misleading
+            // about what was tried - but as the trailing half of the sentence and in
+            // ErrorDetails, not as the code.
             return new CommandResult
             {
                 Success = false,
-                Error = $"{dmResult.Error} Pack and Go fallback also failed: {pagResult.Error}",
-                ErrorCode = pagResult.ErrorCode ?? dmResult.ErrorCode,
-                ErrorDetails = pagResult.ErrorDetails
+                Error = $"{pagResult.Error} Document Manager was tried first and also failed: {dmResult.Error}",
+                ErrorCode = pagResult.ErrorCode,
+                ErrorDetails = string.Join(
+                    Environment.NewLine,
+                    $"Document Manager ({dmResult.ErrorCode ?? "no code"}): {dmResult.ErrorDetails ?? dmResult.Error}",
+                    $"Pack and Go ({pagResult.ErrorCode ?? "no code"}): {pagResult.ErrorDetails ?? pagResult.Error}")
             };
         }
 
@@ -1333,6 +1344,48 @@ Commands:
         }
     }
 
+    /// <summary>
+    /// Every reply this service sends over stdout. Read on the other side of the process
+    /// boundary by the Electron main process and then by the renderer, so the rules below are
+    /// a contract between two languages rather than a house style.
+    ///
+    /// <para><b>The rule, in one line: a caller branches on <see cref="ErrorCode"/>, never on
+    /// <see cref="Error"/>.</b></para>
+    ///
+    /// <list type="bullet">
+    /// <item><description>
+    /// <see cref="ErrorCode"/> is the machine-readable name of the failure. SCREAMING_SNAKE,
+    /// stable across releases, and renaming one is a breaking change to the app. Every failure
+    /// a caller has to react to differently gets one. A failure the caller can only report to
+    /// the user does not need one, and inventing a code nobody reads is how eleven of the
+    /// sixteen that exist ended up with no reader at all.
+    /// </description></item>
+    /// <item><description>
+    /// <see cref="Error"/> is prose for a person. It may be reworded in any release. Nothing
+    /// may match on it, in whole or by substring.
+    /// </description></item>
+    /// <item><description>
+    /// <b>One reply names one failure.</b> When both are set they describe the same thing.
+    /// A reply whose prose leads with one engine's failure while its code names another's is
+    /// two answers to one question, and the caller and the user then disagree about what went
+    /// wrong. Where two attempts both failed, report the one that ended the operation and put
+    /// the other in <see cref="ErrorDetails"/> or in the same sentence - not in the code.
+    /// </description></item>
+    /// <item><description>
+    /// <see cref="ErrorDetails"/> is for an operator reading a log: stack traces, inner
+    /// exception messages, the attempt that came first. Never matched on either.
+    /// </description></item>
+    /// </list>
+    ///
+    /// <para><b>Why some replies set <see cref="Error"/> to the bare code as well.</b> Three
+    /// contracts predate the rule and match on the prose field: <c>syncMetadataPull.ts</c>
+    /// compares <c>error</c> against <c>SOLIDWORKS_NOT_RUNNING</c> and
+    /// <c>SOLIDWORKS_COM_INACCESSIBLE</c> exactly, and <c>useConfigBomHandlers.ts</c> matches
+    /// substrings of it. Those replies therefore assign the code string to <b>both</b> fields,
+    /// which is the only reason the prose matches work. That duplication is a migration
+    /// shim, not the pattern - do not copy it into a new reply, and delete it from an existing
+    /// one only together with the reader that depends on it.</para>
+    /// </summary>
     public class CommandResult
     {
         [JsonProperty("success")]
@@ -1341,12 +1394,18 @@ Commands:
         [JsonProperty("data", NullValueHandling = NullValueHandling.Ignore)]
         public object? Data { get; set; }
 
+        /// <summary>Prose for a person. Never matched on - see the type's remarks.</summary>
         [JsonProperty("error", NullValueHandling = NullValueHandling.Ignore)]
         public string? Error { get; set; }
 
+        /// <summary>Diagnostics for an operator reading a log. Never matched on.</summary>
         [JsonProperty("errorDetails", NullValueHandling = NullValueHandling.Ignore)]
         public string? ErrorDetails { get; set; }
 
+        /// <summary>
+        /// The machine-readable name of the failure, and the only field a caller may branch on.
+        /// SCREAMING_SNAKE. Must describe the same failure as <see cref="Error"/>.
+        /// </summary>
         [JsonProperty("errorCode", NullValueHandling = NullValueHandling.Ignore)]
         public string? ErrorCode { get; set; }
 

@@ -2191,8 +2191,11 @@ namespace BluePLM.SolidWorksService
         ///
         /// The 2026 Inspection API has no EditCharacteristic method; this mutates the object
         /// returned by GetCharacteristicsData in place. We read each field back after writing and
-        /// return it so the caller can confirm whether the edit actually took. The drawing is NOT
-        /// saved here — the user verifies the change in the Inspection panel and saves manually.
+        /// return it so the caller can confirm whether the edit actually took.
+        ///
+        /// The drawing IS saved when anything changed, and the reply fails when that save is
+        /// refused. The edits live in the open document until then and this service closes it,
+        /// so an unsaved push leaves the file exactly as it was.
         /// </summary>
         public CommandResult SetInspectionCharacteristics(string? filePath, List<Dictionary<string, string>>? characteristics)
         {
@@ -2314,6 +2317,8 @@ namespace BluePLM.SolidWorksService
                 // Persist the edits into the drawing file so they survive close/reopen and are
                 // captured on the next bluePLM check-in.
                 bool saved = false;
+                string? saveFailure = null;
+
                 if (updated > 0)
                 {
                     try
@@ -2323,26 +2328,50 @@ namespace BluePLM.SolidWorksService
                             (int)swSaveAsOptions_e.swSaveAsOptions_Silent,
                             ref saveErrors,
                             ref saveWarnings);
-                        saved = saveErrors == 0;
+
+                        // Read through SwSaveError rather than testing saveErrors == 0: a
+                        // rebuild-error flag means SolidWorks wrote the file and the model has
+                        // a rebuild error, which is not a write failure. Testing for zero
+                        // reported that file as unsaved.
+                        saved = !SwSaveError.IsFailure(saveErrors);
+                        if (!saved) saveFailure = SwSaveError.Describe(saveErrors);
                     }
                     catch (Exception saveEx)
                     {
-                        Console.Error.WriteLine($"[Inspection] Save after push failed: {saveEx.Message}");
+                        saveFailure = saveEx.Message;
                     }
+                }
+
+                var report = new
+                {
+                    filePath,
+                    requested = characteristics.Count,
+                    matched = results.Count,
+                    updated,
+                    saved,
+                    results
+                };
+
+                // A refused save used to be a green reply carrying 'saved: false', which nothing
+                // reads - so the app told the user the push had landed while the drawing on disk
+                // was untouched. The characteristics that were set are still reported, because
+                // knowing which ones the push reached is what makes a retry sensible.
+                if (saveFailure != null)
+                {
+                    Console.Error.WriteLine($"[Inspection] Save after push failed: {saveFailure}");
+                    return new CommandResult
+                    {
+                        Success = false,
+                        Error = $"{updated} characteristic(s) were updated in memory but SolidWorks could not save " +
+                                $"{Path.GetFileName(filePath)}: {saveFailure}",
+                        Data = report
+                    };
                 }
 
                 return new CommandResult
                 {
                     Success = true,
-                    Data = new
-                    {
-                        filePath,
-                        requested = characteristics.Count,
-                        matched = results.Count,
-                        updated,
-                        saved,
-                        results
-                    }
+                    Data = report
                 };
             }
             catch (Exception ex)
@@ -3313,14 +3342,43 @@ namespace BluePLM.SolidWorksService
                     }
                 }
 
+                if (replacedCount == 0)
+                {
+                    return new CommandResult
+                    {
+                        Success = false,
+                        Error = $"No component matching '{Path.GetFileName(oldComponent)}' was replaced in " +
+                                $"{Path.GetFileName(assemblyPath)}."
+                    };
+                }
+
+                // Its own out-parameters, not OpenDocument's. Reusing those aliased the save's
+                // verdict onto the open's, so neither could be read for what it actually said.
+                int saveErrors = 0, saveWarnings = 0;
                 doc.Save3(
                     (int)swSaveAsOptions_e.swSaveAsOptions_Silent,
-                    ref errors, ref warnings
+                    ref saveErrors, ref saveWarnings
                 );
+
+                // ReplaceComponents2 swaps the component in the in-memory model; only the save puts
+                // it in the file. This out-parameter was passed by reference and never read, so a
+                // refused save - a read-only vault file being the routine cause - was reported as a
+                // completed replacement.
+                if (SwSaveError.IsFailure(saveErrors))
+                {
+                    var reason = SwSaveError.Describe(saveErrors);
+                    Console.Error.WriteLine($"[SW-API] ReplaceComponent: Save3 refused {assemblyPath}: {reason}");
+                    return new CommandResult
+                    {
+                        Success = false,
+                        Error = $"{replacedCount} component(s) were replaced but SolidWorks could not save " +
+                                $"{Path.GetFileName(assemblyPath)}, so the assembly on disk is unchanged: {reason}"
+                    };
+                }
 
                 return new CommandResult
                 {
-                    Success = replacedCount > 0,
+                    Success = true,
                     Data = new
                     {
                         assemblyPath,
@@ -3695,6 +3753,22 @@ namespace BluePLM.SolidWorksService
                 {
                     int errors = 0, warnings = 0;
                     doc.Save3((int)swSaveAsOptions_e.swSaveAsOptions_Silent, ref errors, ref warnings);
+
+                    // Save3 reports a refusal only through this out-parameter, and it was passed
+                    // by reference and never read. This assembly was opened by the service and is
+                    // closed again in the finally below, so a save that did not happen is a
+                    // component that never reached the file - a read-only vault file being the
+                    // routine way that occurs.
+                    if (SwSaveError.IsFailure(errors))
+                    {
+                        var reason = SwSaveError.Describe(errors);
+                        Console.Error.WriteLine($"[SW-API] AddComponent: Save3 refused {doc.GetPathName()}: {reason}");
+                        return new CommandResult
+                        {
+                            Success = false,
+                            Error = $"'{componentName}' was added but SolidWorks could not save the assembly: {reason}"
+                        };
+                    }
                 }
 
                 return new CommandResult
@@ -4717,12 +4791,17 @@ namespace BluePLM.SolidWorksService
                     ref warnings
                 );
 
-                if (errors != 0)
+                // Read through SwSaveError rather than testing errors != 0. Save3 raises a
+                // rebuild-error flag on a file it wrote successfully, and testing for zero reported
+                // that saved file as a failure - the mirror of the defect elsewhere in this class,
+                // and the reason the verdict is asked for in one place.
+                if (SwSaveError.IsFailure(errors))
                 {
+                    var reason = SwSaveError.Describe(errors);
                     return new CommandResult
                     {
                         Success = false,
-                        Error = $"Save failed with error code: {errors}"
+                        Error = $"SolidWorks could not save {Path.GetFileName(filePath)}: {reason}"
                     };
                 }
 
