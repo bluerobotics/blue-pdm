@@ -13,12 +13,15 @@
 -- discriminate rather than pass vacuously.
 --
 -- HOW TO RUN
---   Against a throwaway database with core.sql, the modules, harness/sql/seed.sql and
---   94-repair-config-maps.sql installed:
+--   Against a throwaway database with core.sql, the modules (repair_config_maps lands in
+--   10-source-files.sql at schema 94) and harness/sql/seed.sql installed:
 --
---     docker exec <db> psql -v ON_ERROR_STOP=1 -U postgres -d postgres -f <this file>
+--     docker compose exec -T db psql -v ON_ERROR_STOP=1 -U postgres -d postgres \
+--       -f /sql/repair-config-maps-proof.sql
 --
 --   Every row of the result table must read PASS. The final block raises if any case failed.
+--   It is re-runnable: the fixtures are deleted and reinserted at the top, so a second run
+--   measures the same thing as the first.
 --
 -- WHAT IS NOT PROVEN HERE
 --   That `anon` cannot reach the function. That is an ACL question rather than a behavioural one,

@@ -113,10 +113,18 @@ ON CONFLICT (id) DO NOTHING;
 -- what a database must contain to be allowed to claim it.
 
 CREATE OR REPLACE FUNCTION schema_release_version() RETURNS INTEGER
-LANGUAGE sql IMMUTABLE AS $$ SELECT 93 $$;
+LANGUAGE sql IMMUTABLE AS $$ SELECT 94 $$;
 
 CREATE OR REPLACE FUNCTION schema_release_description() RETURNS TEXT
 LANGUAGE sql IMMUTABLE AS $$ SELECT
+  'repair_config_maps() lets an administrator restore the per-configuration entries the '
+  'pre-87 checkin_file erased, and the guarantee that a repair cannot destroy anything is '
+  'enforced in the function rather than argued from the caller. The merge is written '
+  'computed || existing with the row on the right, so an entry the row already holds '
+  'survives however loudly the request disagrees, the key set can only grow, and a key '
+  'naming a configuration that no longer exists is carried through rather than removed. '
+  'The keys it writes come from a constant in the body and not from the request, and a map '
+  'the row never had is not created. Prior releases are unchanged. '
   'Closing a hole and revoking what the hole produced now travel together. Applying a '
   'release deactivates share links that grant access to a file in another organization '
   'and redacts workflow history naming another organization''s workflow, recording both '
@@ -254,6 +262,12 @@ LANGUAGE sql IMMUTABLE AS $$
     ('10-source-files', NULL, 'table', 'files', NULL),
     ('10-source-files', NULL, 'function', 'merge_custom_properties(jsonb,jsonb)', NULL),
     ('10-source-files', NULL, 'function', 'checkin_file(uuid,uuid,text,bigint,text,text,text,text,integer,jsonb,text,text,text)', 'merge_custom_properties'),
+    -- Repairs what the pre-87 checkin_file erased, and can only add keys. Both
+    -- gates are pinned because they are independent: require_org_member decides
+    -- whether the caller is in the organization named, is_org_admin whether an
+    -- ordinary member may perform an admin write. A version carrying only the
+    -- first would let any member of the organization rewrite its metadata.
+    ('10-source-files', NULL, 'function', 'repair_config_maps(uuid,jsonb)', 'require_org_member && is_org_admin'),
     ('10-source-files', NULL, 'function', 'get_vault_files_fast(uuid,uuid)', 'require_org_member'),
     ('10-source-files', NULL, 'function', 'get_vault_files_delta(uuid,uuid,timestamptz)', 'require_org_member'),
     ('10-source-files', NULL, 'function', 'get_next_serial_number(uuid)', 'require_org_member'),

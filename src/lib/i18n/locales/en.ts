@@ -1196,7 +1196,7 @@ export const en: TranslationDict = {
       guarantee:
         'This can only add entries your record is missing. Every value BluePLM already holds wins over the one proposed here, including entries added since the scan, and entries for configurations that no longer exist are left alone. That is enforced by the database, not by this screen — the merge puts your record on the winning side, so an overwrite or a deletion cannot be expressed.',
       notInstalled:
-        'Your database does not have the repair function yet. It ships with the next schema release; apply that and the repair appears here. The audit above works either way.',
+        'Your database does not have the repair function yet. It ships in schema 94; ask your admin to apply the latest schema (core.sql, then the modules, then tools/verify-schema.sql) and the repair appears here. The audit above works either way.',
       nothingToRepair:
         'Nothing to put back. Every configuration your files have is already described by its record.',
       noOrganization: 'No organization is loaded, so there is nothing to repair against.',
