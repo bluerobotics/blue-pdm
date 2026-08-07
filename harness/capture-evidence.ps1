@@ -116,11 +116,36 @@ Save -Name '04-verify-after-fix.txt' -Command 'psql -f /blueplm/tools/verify-sch
 $controls = & powershell -NoProfile -File "$PSScriptRoot\negative-controls.ps1" 2>&1 | ForEach-Object { "$_" }
 Save -Name '05-negative-controls.txt' -Command '.\negative-controls.ps1' -Lines $controls
 
+$tooling = & powershell -NoProfile -File "$PSScriptRoot\tooling-controls.ps1" 2>&1 | ForEach-Object { "$_" }
+Save -Name '08-tooling-controls.txt' -Command '.\tooling-controls.ps1' -Lines $tooling
+
+# The only executed evidence that schema 95's five policy fixes exist, because
+# schema_release_manifest() has no 'policy' kind and check_schema_release()
+# therefore cannot see any of them. Captured after the negative controls, and
+# before the reopen below, because it reverts and restores real policies and
+# must not be running while anything else is reading them.
+$policies = & powershell -NoProfile -File "$PSScriptRoot\policy-controls.ps1" 2>&1 | ForEach-Object { "$_" }
+Save -Name '09-policy-controls.txt' -Command '.\policy-controls.ps1' -Lines $policies
+
 # The lockdown script is the answer for a running database that cannot wait for
 # a schema upgrade, so it is captured against a database that has just been put
 # back into the open state - otherwise the run proves only that it is a no-op on
 # a database already closed.
-Save -Name '06-lockdown.txt' -Command 'psql -f /blueplm/tools/emergency-lockdown.sql' `
+#
+# THAT SENTENCE USED TO BE FALSE
+#
+# It was here, in these words, over a capture that did no such thing. Nothing
+# between the reset and this line reopened anything, so the lockdown ran against
+# a database the release had already closed and evidence/06-lockdown.txt
+# recorded "Revoked EXECUTE from anon on 0 function(s)" as the proof that the
+# lockdown works. sql/reopen-for-lockdown.sql is the missing step; the capture
+# below now shows the script revoking something.
+#
+# The reopen runs last in this file, after the controls, because it deliberately
+# leaves the database open until the lockdown closes it again.
+Invoke-PsqlToFile '/sql/reopen-for-lockdown.sql' | Out-Null
+
+Save -Name '06-lockdown.txt' -Command 'psql -f /sql/reopen-for-lockdown.sql ; psql -f /blueplm/tools/emergency-lockdown.sql' `
   -Lines (Invoke-PsqlToFile '/blueplm/tools/emergency-lockdown.sql')
 
 Write-Host "`nAll evidence regenerated." -ForegroundColor Green

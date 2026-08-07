@@ -1,0 +1,14 @@
+-- LC2, part one of two. RUN AS postgres.
+--
+-- Takes one allowlisted routine away from anon so that the rogue routine added
+-- by lc2-rogue-routine.sql brings the total back to exactly three.
+--
+-- Three is the number the lockdown's PASS gate used to compare against, and the
+-- point of this control is that a database can arrive at three the wrong way
+-- round without anybody doing anything strange. consume_share_link does not
+-- exist at all on the release before this one, so "two allowlisted routines
+-- plus one that should not be there" is the ordinary state of a database
+-- mid-upgrade - and it counted as a pass.
+--
+-- Restored by lc2-restore.sql.
+REVOKE EXECUTE ON FUNCTION consume_share_link(TEXT) FROM anon;

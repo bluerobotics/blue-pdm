@@ -51,6 +51,11 @@
 --      views at all.
 --   4. Removes anon from the default privileges that grant EXECUTE on new
 --      functions, as far as the role running this is able to.
+--   5. Checks its own work at the end, and the check asks about identity rather
+--      than about counts: the routines anon can still execute must be exactly
+--      the allowlist below, not merely as few as it. It sweeps and reports on
+--      column-level grants, which has_table_privilege cannot see, and on every
+--      relation kind that can hold rows rather than on ordinary tables alone.
 --
 -- Point 4 cannot be completed, and it is worth being plain about why rather
 -- than leaving a puzzling line in the output. Two things are in the way. The
@@ -135,6 +140,7 @@ DECLARE
   r RECORD;
   d RECORD;
   v_signature TEXT;
+  v_grantors TEXT[];
   v_keep TEXT[];
   v_role TEXT;
   v_revoked INTEGER := 0;
@@ -143,6 +149,19 @@ DECLARE
   v_defaults_stuck INTEGER := 0;
   v_views_revoked INTEGER := 0;
 BEGIN
+  -- Published to the check at the bottom of this file, which has to name the
+  -- allowlist rather than count it. Written before the anon guard below so that
+  -- the check can always read it, whichever way this block exits.
+  --
+  -- Guarded rather than DROP ... IF EXISTS, which would emit a "does not exist"
+  -- notice on the first run and read like a fault in a script run under pressure.
+  IF to_regclass('pg_temp._lockdown_allowlist') IS NOT NULL THEN
+    DROP TABLE _lockdown_allowlist;
+  END IF;
+  CREATE TEMP TABLE _lockdown_allowlist (signature TEXT PRIMARY KEY)
+    ON COMMIT PRESERVE ROWS;
+  INSERT INTO _lockdown_allowlist SELECT unnest(c_anon_allowlist);
+
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
     RAISE NOTICE 'No anon role on this database - nothing to lock down.';
     RETURN;
@@ -151,8 +170,6 @@ BEGIN
   RAISE NOTICE 'Roles whose current access will be preserved verbatim: %',
     array_to_string(c_preserve_roles, ', ');
 
-  -- Guarded rather than DROP ... IF EXISTS, which would emit a "does not exist"
-  -- notice on the first run and read like a fault in a script run under pressure.
   IF to_regclass('pg_temp._lockdown_report') IS NOT NULL THEN
     DROP TABLE _lockdown_report;
   END IF;
@@ -182,19 +199,46 @@ BEGIN
       CONTINUE;
     END IF;
 
+    -- Who granted anon its EXECUTE on this routine, directly or through PUBLIC.
+    --
+    -- SPELLED OUT HERE RATHER THAN CALLING anon_revoke_grantors(oid)
+    --
+    -- This is a verbatim copy of core.sql's anon_revoke_grantors(), and the two
+    -- must move together - core.sql says the same thing from its side, because
+    -- check_anon_reach() and this script have to draw the "cannot revoke" line
+    -- in the same place. Duplicating it is nonetheless correct: the helper was
+    -- introduced by the release this script exists to buy time for, so a
+    -- database that still needs an emergency lockdown is exactly a database that
+    -- does not have it. Calling it aborted the whole DO block with
+    -- `42883 function anon_revoke_grantors(oid) does not exist` and revoked
+    -- nothing at all - on a production database still on the previous release,
+    -- which is the only kind this file is ever run against.
+    --
+    -- COALESCE onto acldefault() because a NULL proacl is not "no privileges";
+    -- it means the built-in default is in force, which for a routine is EXECUTE
+    -- to PUBLIC, granted by the owner.
+    SELECT COALESCE(array_agg(DISTINCT pg_get_userbyid(x.grantor)), '{}'::TEXT[])
+      INTO v_grantors
+      FROM pg_proc p
+      CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) x
+     WHERE p.oid = r.oid
+       AND x.privilege_type = 'EXECUTE'
+       -- grantee 0 is PUBLIC, which anon holds through.
+       AND (x.grantee = 0 OR pg_has_role('anon', x.grantee, 'MEMBER'));
+
     -- A grant made by a role this one is not a member of cannot be revoked
     -- here. Saying so is the point: an emergency script that reports "revoked"
     -- over a "WARNING: no privileges could be revoked" is worse than one that
     -- reports the truth, because someone is reading it while deciding whether
     -- the incident is over.
     IF EXISTS (
-      SELECT 1 FROM unnest(anon_revoke_grantors(r.oid)) g
+      SELECT 1 FROM unnest(v_grantors) g
       WHERE NOT pg_has_role(current_user, g, 'MEMBER')
     ) AND NOT COALESCE((SELECT rolsuper FROM pg_roles WHERE rolname = current_user), false)
     THEN
       INSERT INTO _lockdown_report VALUES (v_signature,
         'STILL REACHABLE BY ANON - granted by '
-        || array_to_string(anon_revoke_grantors(r.oid), ', ')
+        || array_to_string(v_grantors, ', ')
         || ', which ' || current_user || ' cannot revoke');
       CONTINUE;
     END IF;
@@ -230,6 +274,24 @@ BEGIN
   -- needs before signing in are functions, and they are exempted above. A view
   -- carries no policies of its own, so unlike a table there is no second line
   -- of defence behind the grant.
+  --
+  -- has_any_column_privilege, not has_table_privilege.
+  --
+  -- has_table_privilege(...,'SELECT') asks about the privilege on the whole
+  -- relation and is FALSE for `GRANT SELECT (part_number) ON v TO anon`.
+  -- PostgREST does not care - it serves ?select=part_number to an
+  -- unauthenticated caller perfectly happily - so this loop stepped straight
+  -- over a column-granted view serving both organizations' part numbers and
+  -- descriptions, and the check at the bottom of this file then printed
+  -- "no view is [readable by anon]". core.sql's check_anon_reach() and
+  -- enforce_anon_execute_posture() were widened for this in the same release
+  -- and this script was not, which is the one place the two disagreed.
+  -- has_any_column_privilege answers true for a table-level grant as well, so
+  -- it is a strict superset: nothing that used to be swept stops being swept.
+  --
+  -- DELETE stays on has_table_privilege because DELETE cannot be granted per
+  -- column - has_any_column_privilege only accepts SELECT, INSERT, UPDATE and
+  -- REFERENCES, and passing it DELETE is an error rather than a false.
   FOR r IN
     SELECT c.oid,
            format('%I.%I', n.nspname, c.relname) AS signature,
@@ -238,20 +300,30 @@ BEGIN
     JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE n.nspname = 'public'
       AND c.relkind IN ('v', 'm')
-      AND (has_table_privilege('anon', c.oid, 'SELECT')
-        OR has_table_privilege('anon', c.oid, 'INSERT')
-        OR has_table_privilege('anon', c.oid, 'UPDATE')
+      AND (has_any_column_privilege('anon', c.oid, 'SELECT')
+        OR has_any_column_privilege('anon', c.oid, 'INSERT')
+        OR has_any_column_privilege('anon', c.oid, 'UPDATE')
         OR has_table_privilege('anon', c.oid, 'DELETE'))
     ORDER BY 2
   LOOP
+    -- Detection is widened above; preservation deliberately is not. v_keep is
+    -- the set of roles whose access is re-granted at TABLE level before PUBLIC
+    -- is withdrawn, so it has to be the set that holds it at table level. Asking
+    -- has_any_column_privilege here would answer true for a role holding one
+    -- column and then hand that role every column, which is the one way a
+    -- lockdown script could widen access instead of narrowing it.
     SELECT ARRAY(
       SELECT role_name FROM unnest(c_preserve_roles) AS role_name
       WHERE has_table_privilege(role_name, r.oid, 'SELECT')
     ) INTO v_keep;
 
+    -- REVOKE ALL ON <relation> removes column grants as well as the table-level
+    -- one, so the remedy reaches everything the widened sweep now reports. A
+    -- reported condition the remedy cannot clear is the defect this project has
+    -- already shipped twice.
     EXECUTE format('REVOKE ALL ON %s FROM anon', r.signature);
 
-    IF has_table_privilege('anon', r.oid, 'SELECT') THEN
+    IF has_any_column_privilege('anon', r.oid, 'SELECT') THEN
       FOREACH v_role IN ARRAY v_keep LOOP
         EXECUTE format('GRANT SELECT ON %s TO %I', r.signature, v_role);
       END LOOP;
@@ -344,14 +416,40 @@ ORDER BY action, signature;
 -- =============================================================================
 -- THE CHECK
 -- =============================================================================
--- anon_executable_functions must be only the allowlisted pre-login functions,
--- anon_readable_views must be 0, and tables_without_rls must be 0. Anything
--- else and the lockdown did not fully take - say so rather than assume.
+-- The routines anon can still execute must be exactly the allowlisted pre-login
+-- ones, no view may be readable by anon, and no relation that can hold rows may
+-- be without row-level security. Anything else and the lockdown did not fully
+-- take - say so rather than assume.
 --
 -- The view count is checked here for the same reason it is now swept above: the
 -- previous release's equivalent check counted functions and tables only, so it
 -- printed PASS over a view that was serving every tenant's pricing to anybody
 -- with the anon key.
+--
+-- WHICH RELATION KINDS COUNT AS A TABLE, AND WHY
+--
+-- The RLS count used to filter relkind = 'r'. That is one of five kinds in
+-- public that can hand a caller rows, and it is the only one this asked about.
+-- The list below is the same one core.sql's check_anon_reach() walks, so the
+-- emergency script and the release's own verifier agree about what they are
+-- counting - which they have to, or one certifies what the other reports.
+--
+--   'r'  ordinary table          - counted. Carries RLS.
+--   'p'  partitioned table       - counted. Carries RLS, and it is the parent's
+--                                  policies that apply to a SELECT through the
+--                                  parent, which is how a partitioned table is
+--                                  queried. A parent with no RLS over leaves
+--                                  that have it reads as protected in any
+--                                  audit that lists tables without RLS.
+--   'f'  foreign table           - counted. Cannot carry RLS at all, so one in
+--                                  public is unprotected by construction and
+--                                  belongs in the operator's hands.
+--   'v'  view                    - not counted here; swept and counted as a
+--   'm'  materialized view         view above. Neither can carry RLS.
+--
+-- Partitions themselves are relkind 'r' and are excluded by NOT relispartition:
+-- the parent is swept, and reporting both would tell the operator to fix one
+-- exposure once per partition.
 
 SELECT
   (SELECT count(*)
@@ -359,55 +457,113 @@ SELECT
     WHERE n.nspname = 'public'
       AND has_function_privilege('anon', p.oid, 'EXECUTE')
   ) AS anon_executable_functions,
+  (SELECT count(*) FROM _lockdown_allowlist) AS allowlisted_pre_login_functions,
   (SELECT count(*)
      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE n.nspname = 'public' AND c.relkind IN ('v', 'm')
-      AND has_table_privilege('anon', c.oid, 'SELECT')
+      AND has_any_column_privilege('anon', c.oid, 'SELECT')
   ) AS anon_readable_views,
   (SELECT count(*)
      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE n.nspname = 'public' AND c.relkind = 'r' AND NOT c.relrowsecurity
-  ) AS tables_without_rls;
+    WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'f')
+      AND NOT c.relispartition AND NOT c.relrowsecurity
+  ) AS relations_without_rls;
 
-SELECT p.oid::regprocedure::TEXT AS still_reachable_by_anon
+-- Named, and marked, rather than counted. A signature in this list that is not
+-- on the allowlist is the whole finding; a count cannot say which one it is.
+SELECT p.oid::regprocedure::TEXT AS still_reachable_by_anon,
+       CASE WHEN EXISTS (SELECT 1 FROM _lockdown_allowlist a
+                          WHERE a.signature = p.oid::regprocedure::TEXT)
+            THEN 'allowlisted (pre-login)' ELSE 'UNEXPECTED' END AS verdict
 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
 WHERE n.nspname = 'public'
   AND has_function_privilege('anon', p.oid, 'EXECUTE')
-ORDER BY 1;
+ORDER BY 2 DESC, 1;
 
 SELECT format('%I.%I', n.nspname, c.relname) AS view_still_readable_by_anon
 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = 'public' AND c.relkind IN ('v', 'm')
-  AND has_table_privilege('anon', c.oid, 'SELECT')
+  AND has_any_column_privilege('anon', c.oid, 'SELECT')
 ORDER BY 1;
 
+SELECT format('%I.%I', n.nspname, c.relname) AS relation_without_rls,
+       CASE c.relkind WHEN 'p' THEN 'partitioned table'
+                      WHEN 'f' THEN 'foreign table' ELSE 'table' END AS kind
+FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'f')
+  AND NOT c.relispartition AND NOT c.relrowsecurity
+ORDER BY 1;
+
+-- IDENTITY, NOT ARITHMETIC
+--
+-- This gate used to be `v_funcs <= 3`, against a constant whose comment named
+-- get_org_auth_providers, validate_share_link and consume_share_link - and it
+-- never asked whether the routines it was counting were those three. It printed
+-- PASS three lines below a query that had just named an exposed routine. Three
+-- is also a number a database can reach the wrong way round without trying:
+-- consume_share_link does not exist on the previous release, so two allowlisted
+-- routines plus one that should not be there is a passing count.
+--
+-- The allowlist is not *required*, only *matched*: a database that predates
+-- consume_share_link is missing it legitimately, and that is reported as
+-- information rather than treated as a failure. What fails is a routine anon
+-- can execute that nobody put on the list.
 DO $$
 DECLARE
-  v_funcs INTEGER;
-  v_views INTEGER;
-  v_tables INTEGER;
-  -- get_org_auth_providers, validate_share_link, and consume_share_link on a
-  -- database already carrying this release.
-  c_allowed_anon_functions CONSTANT INTEGER := 3;
+  v_unexpected TEXT[];
+  v_absent     TEXT[];
+  v_views      INTEGER;
+  v_relations  INTEGER;
+  v_kept       INTEGER;
 BEGIN
-  SELECT count(*) INTO v_funcs
-    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-   WHERE n.nspname = 'public'
-     AND has_function_privilege('anon', p.oid, 'EXECUTE');
+  SELECT ARRAY(
+    SELECT p.oid::regprocedure::TEXT
+      FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+     WHERE n.nspname = 'public'
+       AND has_function_privilege('anon', p.oid, 'EXECUTE')
+       AND NOT EXISTS (SELECT 1 FROM _lockdown_allowlist a
+                        WHERE a.signature = p.oid::regprocedure::TEXT)
+     ORDER BY 1
+  ) INTO v_unexpected;
+
+  -- Phrased as NOT EXISTS over pg_proc rather than to_regprocedure() so that a
+  -- signature naming no routine at all - which is the ordinary case on a
+  -- database predating consume_share_link - is answered by the catalogue rather
+  -- than by a cast that has to be guarded against NULL.
+  SELECT ARRAY(
+    SELECT a.signature FROM _lockdown_allowlist a
+     WHERE NOT EXISTS (
+       SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public'
+          AND p.oid::regprocedure::TEXT = a.signature
+          AND has_function_privilege('anon', p.oid, 'EXECUTE'))
+     ORDER BY 1
+  ) INTO v_absent;
+
+  SELECT count(*) - COALESCE(array_length(v_absent, 1), 0)
+    INTO v_kept FROM _lockdown_allowlist;
 
   SELECT count(*) INTO v_views
     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
    WHERE n.nspname = 'public' AND c.relkind IN ('v', 'm')
-     AND has_table_privilege('anon', c.oid, 'SELECT');
+     AND has_any_column_privilege('anon', c.oid, 'SELECT');
 
-  SELECT count(*) INTO v_tables
+  SELECT count(*) INTO v_relations
     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-   WHERE n.nspname = 'public' AND c.relkind = 'r' AND NOT c.relrowsecurity;
+   WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'f')
+     AND NOT c.relispartition AND NOT c.relrowsecurity;
 
-  IF v_funcs <= c_allowed_anon_functions AND v_views = 0 AND v_tables = 0 THEN
-    RAISE NOTICE 'PASS - only the % pre-login function(s) remain reachable by anon, no view is, and every table has RLS.', v_funcs;
+  IF array_length(v_absent, 1) > 0 THEN
+    RAISE NOTICE 'Allowlisted pre-login routine(s) not present or not reachable by anon on this database: %. That is expected on a database predating the release that introduced them; it is not a failure.',
+      array_to_string(v_absent, ', ');
+  END IF;
+
+  IF array_length(v_unexpected, 1) IS NULL AND v_views = 0 AND v_relations = 0 THEN
+    RAISE NOTICE 'PASS - the % routine(s) anon can still execute are exactly the pre-login allowlist, no view is readable by anon, and every relation that can hold rows has RLS.', v_kept;
   ELSE
-    RAISE WARNING 'CHECK FAILED - % function(s) still reachable by anon (expected at most %), % view(s) still readable by anon (expected 0), % table(s) without RLS (expected 0). See the lists above.',
-      v_funcs, c_allowed_anon_functions, v_views, v_tables;
+    RAISE WARNING 'CHECK FAILED - % routine(s) reachable by anon that are NOT on the pre-login allowlist: %. % view(s) still readable by anon (expected 0). % relation(s) without RLS (expected 0). See the lists above.',
+      COALESCE(array_length(v_unexpected, 1), 0),
+      COALESCE(NULLIF(array_to_string(v_unexpected, ', '), ''), 'none'),
+      v_views, v_relations;
   END IF;
 END $$;

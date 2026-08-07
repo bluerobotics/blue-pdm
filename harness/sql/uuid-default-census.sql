@@ -24,6 +24,8 @@
 --      and "0 defaults remaining" would still read as success. Tested by dropping it inside a
 --      subtransaction that is then rolled back, so this file changes nothing.
 --   3. Is a second run a no-op? An upgrade gets applied twice more often than anyone plans for.
+--      Asked the same way question 2 is: the function is called inside a subtransaction that is
+--      then rolled back, so the census observes what a second run would move without moving it.
 
 \set ON_ERROR_STOP on
 
@@ -107,18 +109,48 @@ END $$;
 
 -- A second application of the release must move nothing, or the migration is not idempotent and
 -- an operator who runs the upgrade twice is doing something different the second time.
+--
+-- PROBED AND ROLLED BACK, BECAUSE THIS FILE IS A CENSUS
+--
+-- This block used to call `SELECT migrate_uuid_defaults() INTO v_second` for real - a write, in a
+-- file named a census, run as part of measuring an upgrade lane. It was harmless at baselines of
+-- 81, 86 and 90 only because the release had already moved everything by the time it ran, so the
+-- call found nothing to do. At `-BaselineVersion 92` or later the function exists on the baseline
+-- and the release has not run yet, so the "measurement" quietly performs the migration the lane
+-- was brought up to observe, and the reading taken afterwards describes a database the census
+-- itself changed.
+--
+-- The droppability probe above already had the right idiom for this and it is reused verbatim: do
+-- the thing inside a subtransaction, then raise to undo it. Everything migrate_uuid_defaults()
+-- issues is transactional DDL, so the rollback is complete. v_second survives the rollback because
+-- PL/pgSQL reverts database state on a trapped error and not local variables.
 DO $$
-DECLARE v_second INTEGER;
+DECLARE
+  v_second   INTEGER;
+  v_probe_ok BOOLEAN := FALSE;
+  v_err      TEXT;
 BEGIN
   IF to_regprocedure('migrate_uuid_defaults()') IS NULL THEN
     RAISE NOTICE 'SECOND RUN: n/a - migrate_uuid_defaults() does not exist on this database';
     RETURN;
   END IF;
 
-  SELECT migrate_uuid_defaults() INTO v_second;
-  IF v_second = 0 THEN
-    RAISE NOTICE 'SECOND RUN IS A NO-OP: yes - 0 further defaults moved';
+  BEGIN
+    SELECT migrate_uuid_defaults() INTO v_second;
+    RAISE EXCEPTION 'BLUEPLM_PROBE_UNDO';
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM = 'BLUEPLM_PROBE_UNDO' THEN
+      v_probe_ok := TRUE;
+    ELSE
+      v_err := SQLERRM;
+    END IF;
+  END;
+
+  IF NOT v_probe_ok THEN
+    RAISE NOTICE 'SECOND RUN: could not be measured - %', v_err;
+  ELSIF v_second = 0 THEN
+    RAISE NOTICE 'SECOND RUN IS A NO-OP: yes - 0 further defaults would move';
   ELSE
-    RAISE NOTICE 'SECOND RUN IS A NO-OP: NO - % more moved, so the first run was incomplete', v_second;
+    RAISE NOTICE 'SECOND RUN IS A NO-OP: NO - % more would move, so the first run was incomplete', v_second;
   END IF;
 END $$;

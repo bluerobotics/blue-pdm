@@ -11,10 +11,32 @@
 # incidental reason - a syntax error in the hole, a missing table - would
 # otherwise look like a pass, which is the exact mistake this whole exercise is
 # about.
+#
+# THE RELEASE NUMBER IS DERIVED, NOT PINNED
+#
+# This file used to carry `$RELEASE = 93` as a literal. The schema moved to 94
+# and the literal did not, so the baseline sanity check below - which requires
+# the database to verify clean before any control runs - compared 94 against 93,
+# printed "the database does not verify clean before the controls start" and
+# exited 2. Every one of NC1 to NC17 was skipped from that moment on, and the
+# message named the wrong culprit: the database verified perfectly, and it was
+# this script that was two releases stale.
+#
+# So the expected release is read from schema_release_version(), which is the
+# single place core.sql says the release number lives and the same value
+# verify-schema.sql stamps. A pin cannot go stale if there is no pin.
+#
+# -ExpectRelease is for a caller that wants the number asserted as well - CI, or
+# an operator checking that the tree under test is the release they think it is.
+# It fails loudly, by name, and says which two numbers disagreed. It does not
+# silently substitute its own.
+#
+param(
+  [int]$ExpectRelease = 0
+)
+
 $ErrorActionPreference = 'Continue'
 Set-Location $PSScriptRoot
-
-$RELEASE = 93
 
 function Psql {
   param([string]$Sql, [string]$File, [string]$AsRole = 'postgres')
@@ -27,11 +49,37 @@ function Psql {
   }
 }
 
-function Get-StampedVersion {
+# One value, unaligned and unheadered, as a trimmed string. Empty when the query
+# produced no row or psql failed - callers decide what that means rather than
+# having a cast throw here.
+function Get-Scalar {
+  param([string]$Sql)
   $v = docker compose exec -T -e PGPASSWORD=postgres db `
-    psql -tAq --no-psqlrc -U postgres -d postgres -h 127.0.0.1 `
-    -c "SELECT version FROM schema_version WHERE id = 1" 2>&1 | Out-String
-  return ([int]($v.Trim()))
+    psql -tAq --no-psqlrc -U postgres -d postgres -h 127.0.0.1 -c $Sql 2>&1 | Out-String
+  return $v.Trim()
+}
+
+# The release the installed schema declares for itself, or $null if the schema
+# is not installed at all. Those are different faults and the caller says so.
+function Get-DeclaredRelease {
+  # Asked in two steps because a missing function is resolved at parse time: a
+  # single query guarded by an EXISTS would still fail to plan.
+  if ((Get-Scalar "SELECT to_regprocedure('schema_release_version()') IS NOT NULL") -ne 't') {
+    return $null
+  }
+  $v = Get-Scalar 'SELECT schema_release_version()'
+  if ($v -notmatch '^\d+$') { return $null }
+  return [int]$v
+}
+
+# -1 rather than an exception when the stamp is missing or unreadable: the
+# controls below use "did not advance" as a signal, and a PowerShell cast error
+# in the middle of one would read as the harness breaking rather than as the
+# verifier withholding a stamp.
+function Get-StampedVersion {
+  $v = Get-Scalar 'SELECT version FROM schema_version WHERE id = 1'
+  if ($v -notmatch '^-?\d+$') { return -1 }
+  return [int]$v
 }
 
 function Invoke-Verify {
@@ -40,6 +88,10 @@ function Invoke-Verify {
 }
 
 $script:Failures = @()
+# Controls that actually executed. A suite that skipped everything and exited 0
+# is the failure mode this file spent two releases in; the count is printed at
+# the end so "OK" can never be read without it.
+$script:Ran = 0
 
 function Test-Control {
   param(
@@ -60,6 +112,7 @@ function Test-Control {
     [string]$HoleRole = 'postgres'
   )
   Write-Host "`n--- $Id  $What" -ForegroundColor Cyan
+  $script:Ran = $script:Ran + 1
 
   # Start from a known stamped state so "did not advance" is unambiguous.
   Psql -Sql "UPDATE schema_version SET version = 0 WHERE id = 1" | Out-Null
@@ -116,15 +169,32 @@ function Test-Control {
 
 Write-Host "=== NEGATIVE CONTROLS ===" -ForegroundColor Yellow
 
+# Three faults, three messages. Conflating them is what cost this suite two
+# releases of coverage.
+$RELEASE = Get-DeclaredRelease
+if ($null -eq $RELEASE) {
+  Write-Host "ABORT: schema_release_version() is not installed on this database, so there is no release for the controls to be measured against. Run .\reset.ps1 first." -ForegroundColor Red
+  exit 2
+}
+if ($ExpectRelease -gt 0 -and $RELEASE -ne $ExpectRelease) {
+  Write-Host ("ABORT: RELEASE MISMATCH - schema_release_version() says {0}, -ExpectRelease says {1}. The tree under test is not the release you asked for; nothing below would be measuring it." `
+    -f $RELEASE, $ExpectRelease) -ForegroundColor Red
+  exit 2
+}
+
 # Sanity: we must start from a database that verification accepts. Otherwise
-# every control below "fails verification" for free.
+# every control below "fails verification" for free. Now that $RELEASE comes
+# from the schema rather than from a literal, a failure here really is the
+# database and not the pin.
 Invoke-Verify | Out-Null
-if ((Get-StampedVersion) -ne $RELEASE) {
-  Write-Host "ABORT: the database does not verify clean before the controls start." -ForegroundColor Red
+$stamped = Get-StampedVersion
+if ($stamped -ne $RELEASE) {
+  Write-Host ("ABORT: the database does not verify clean before the controls start - schema_release_version() declares {0} and schema_version holds {1}." `
+    -f $RELEASE, $(if ($stamped -lt 0) { 'nothing readable' } else { $stamped })) -ForegroundColor Red
   Invoke-Verify | Select-String -Pattern 'WARNING|ERROR' | Select-Object -First 20
   exit 2
 }
-Write-Host "baseline verifies clean at $RELEASE" -ForegroundColor Green
+Write-Host "baseline verifies clean at $RELEASE (read from schema_release_version())" -ForegroundColor Green
 
 Test-Control -Id 'NC1' -What 'finding 2: parts_with_pricing as a plain view, readable by anon' `
   -HoleFile '/sql/nc1-view-open.sql' -ExpectToken 'anon-reachable' `
@@ -280,10 +350,16 @@ if ((Get-StampedVersion) -ne $RELEASE) {
   $script:Failures += 'left the database dirty'
 }
 
+if ($script:Ran -eq 0) {
+  Write-Host "`nFAIL: no control executed. A suite that runs nothing cannot report success." -ForegroundColor Red
+  $script:Failures += 'no control executed'
+}
+
 Write-Host ""
 if ($script:Failures.Count -gt 0) {
   Write-Host ("FAIL: {0}" -f ($script:Failures -join '; ')) -ForegroundColor Red
   exit 1
 }
-Write-Host "OK: every hole was caught by the verifier, the one nobody can fix was reported without blocking, and the database still verifies clean." -ForegroundColor Green
+Write-Host ("OK: {0} controls executed at release {1}. Every hole was caught by the verifier, the one nobody can fix was reported without blocking, and the database still verifies clean." `
+  -f $script:Ran, $RELEASE) -ForegroundColor Green
 exit 0

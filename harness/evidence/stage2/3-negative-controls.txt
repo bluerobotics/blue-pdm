@@ -1,0 +1,77 @@
+﻿=== NEGATIVE CONTROLS ===
+baseline verifies clean at 95 (read from schema_release_version())
+
+--- NC1  finding 2: parts_with_pricing as a plain view, readable by anon
+  caught: stamp withheld, version still 0, reason mentions 'anon-reachable'
+  repaired: stamped again at 95
+
+--- NC2  finding 3: create_file_share_link gating p_org_id, acting on p_file_id
+  caught: stamp withheld, version still 0, reason mentions 'unbound-entity-arg'
+  repaired: stamped again at 95
+
+--- NC3  finding 4: NOT IN (SELECT org_id FROM users ...)
+  caught: stamp withheld, version still 0, reason mentions 'null-unsafe-gate'
+  repaired: stamped again at 95
+
+--- NC4  a function created later, born anon-executable
+  caught: stamp withheld, version still 0, reason mentions 'anon-reachable'
+  repaired: stamped again at 95
+
+--- NC5  a leftover overload from a previous release
+  caught: stamp withheld, version still 0, reason mentions 'extra'
+  repaired: stamped again at 95
+
+--- NC6  a PROCEDURE in public that anon can call, cleared by the remedy the verifier prints
+  caught: stamp withheld, version still 0, reason mentions 'anon-reachable'
+  repaired: stamped again at 95
+
+--- NC8  a materialized view in public, readable by authenticated
+  caught: stamp withheld, version still 0, reason mentions 'materialized view'
+  repaired: stamped again at 95
+
+--- NC9  the NULL-unsafe membership test in four other spellings
+  caught: stamp withheld, version still 0, reason mentions 'null-unsafe-gate'
+  repaired: stamped again at 95
+
+--- NC10  a function with no authorization that refuses the probe for another reason
+  caught: stamp withheld, version still 0, reason mentions 'ungated'
+  repaired: stamped again at 95
+
+--- NC11  two entity ids, one checked, and no p_org_id anywhere
+  caught: stamp withheld, version still 0, reason mentions 'unbound-entity-arg'
+  repaired: stamped again at 95
+
+--- NC12  a live cross-tenant share link left over from a release that closed the hole
+  caught: stamp withheld, version still 0, reason mentions 'cross_tenant_share_link' + 'nc120000...'
+  repaired: stamped again at 95
+
+--- NC13  no authorization at all, with auth.uid() as the only identity-shaped line
+  caught: stamp withheld, version still 0, reason mentions 'ungated' + 'nc_actor_stamp_only'
+  repaired: stamped again at 95
+
+--- NC14  a partitioned table whose leaf has RLS and whose parent does not
+  caught: stamp withheld, version still 0, reason mentions 'anon-reachable' + 'nc_partitioned_parts'
+  repaired: stamped again at 95
+
+--- NC15  RLS enabled and a policy that admits anon to every row
+  caught: stamp withheld, version still 0, reason mentions 'anon-reachable' + 'nc_rls_but_open' + 'admits anon to every'
+  repaired: stamped again at 95
+
+--- NC16  a view anon can read one column of
+  caught: stamp withheld, version still 0, reason mentions 'anon-reachable' + 'nc_column_grant_view'
+  repaired: stamped again at 95
+
+--- NC17  consume_share_link restating validate_share_link's conditions instead of calling it
+  caught: stamp withheld, version still 0, reason mentions 'stale' + 'consume_share_link'
+  repaired: stamped again at 95
+
+--- NC7  a function in public owned by supabase_admin, which postgres cannot revoke
+  correct: postgres could not revoke it, it is reported by name as advisory, and the stamp was still granted
+
+--- POSTURE CHECKS
+  PASS - a routine created now is unreachable by anon and still reachable by authenticated.
+  PASS - apply_workflow_transition refuses a foreign transition and accepts its own.
+  PASS - a folder called 100% renames itself and nothing else.
+  PASS - validate_share_link and consume_share_link admit the same callers across 27 (link, caller) pairs covering require_auth, expiry, deactivation, exhaustion, a deleted file and an unknown token (7 admitted, 20 refused).
+
+OK: 16 controls executed at release 95. Every hole was caught by the verifier, the one nobody can fix was reported without blocking, and the database still verifies clean.

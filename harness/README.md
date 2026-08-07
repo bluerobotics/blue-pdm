@@ -41,10 +41,16 @@ read out loud rather than trusted.
 
 ```powershell
 .\reset.ps1                                    # rebuild, install, seed, start PostgREST
-.\attack.ps1 -Expect fixed                     # the attack suite
+.\tooling-controls.ps1                         # do the verifiers catch what they claim to?
 .\negative-controls.ps1                        # reintroduce each hole, require the verifier to catch it
+.\attack.ps1 -Expect fixed                     # the attack suite
+.\policy-controls.ps1                          # revert each policy fix, require the hole to reopen
 .\upgrade.ps1                                  # the other lane: attack the previous release, then upgrade over it
 ```
+
+`negative-controls.ps1` takes its expected release number from
+`schema_release_version()` rather than from a literal, so it cannot go stale
+when the schema moves. Pass `-ExpectRelease 95` to assert the number as well.
 
 `reset.ps1 -CoreOnly` and `reset.ps1 -Modules 10-source-files,15-inspection`
 cover the partial-install cases.
@@ -179,15 +185,127 @@ matrix of link states (good, expired, deactivated, allowance exhausted, file
 deleted, token unknown) and callers (`anon`, another organization's member, the
 owner), and requires the two answers to be equal in all of them.
 
+### The controls on the controls
+
+`negative-controls.ps1` proves that `tools/verify-schema.sql` refuses a database
+with a hole in it. Nothing asked the same question about the other two
+verifiers, and both of them certified the exact hole they were written to catch:
+`tools/emergency-lockdown.sql` printed `PASS - ... no view is [readable by anon]`
+over a column-granted view serving two tenants' part numbers, and reached that
+PASS by counting anon-executable routines against the number three rather than
+checking they were the allowlisted three; `sql/repair-config-maps-proof.sql`'s
+case 23, documented as the sentinel that proves the suite discriminates, never
+called the function.
+
+`tooling-controls.ps1` closes that. Each control reintroduces one of those
+conditions and requires the fixed tool to catch it — and asserts its own premise
+first, including that the *old* predicate really was blind to it, so a control
+cannot pass by testing something else. **LC0 runs first and is a positive
+control:** the three pre-login routines (`get_org_auth_providers`,
+`validate_share_link`, `consume_share_link`) must still be reachable by `anon`
+after the lockdown, or a script that revoked everything from everyone would
+satisfy every other control while taking the sign-in screen down with it.
+
+To show the controls would fail against the unfixed script, point them at a copy
+of it:
+
+```powershell
+git show <commit>:supabase/tools/emergency-lockdown.sql |
+  Set-Content harness\sql\_pre-fix-lockdown.sql -Encoding utf8
+.\tooling-controls.ps1 -LockdownScript /sql/_pre-fix-lockdown.sql -Only LC1,LC2,LC3
+```
+
+### The policy controls
+
+`schema_release_manifest()` has kinds `'table'` and `'function'` and no
+`'policy'`, so `check_schema_release()` cannot see a row-level security policy
+at all. A database whose `users` self-update policy has silently lost its
+`WITH CHECK` verifies clean and stamps. Five of schema 95's seven fixes are
+policies, which leaves the manifest unable to pin the most severe fix in the
+release.
+
+`policy-controls.ps1` is the substitute. It runs each fix twice:
+
+1. against the release as it stands, where every assertion must hold;
+2. with that one fix reverted to its schema-94 text — taken verbatim from
+   `git show HEAD:` and kept in `sql/revert-*.sql` — where the assertions that
+   close a hole must report it open again.
+
+The second half is the point. An assertion that refuses both before and after
+the fix is not evidence of the fix, and each fix declares which assertion ids
+must flip; one that does not flip is reported as an **inert control** rather
+than as a pass. Everything a fix does *not* declare is expected to hold in both
+phases, and the fix table says why for each one: the four regression controls
+(`4`, `12`, `20`, `30`) and the other positive controls must not move, and
+`A1a/5`, `A3/11`, `A4/15`, `A4/17`, `A6/27` and `A6/28eq` are refused by terms
+older than schema 95 or by a clause in a different policy. A1b declares nothing
+at all, which is how A's claim that its added `WITH CHECK` is a no-op gets
+executed rather than believed.
+
+The real policy is put back from a snapshot of the *live* definition taken at
+the start of the run (`sql/policy-snapshot.sql`), not from a copy kept in the
+harness. A restore that reinstalled a stale copy would leave every later
+assertion measuring the harness's idea of the schema instead of the schema —
+the same defect one level up.
+
+`sql/policy-fixtures.sql` adds the six accounts the assertions need. The seed
+has only organization administrators and an account in no organization, and
+`is_org_admin()` short-circuits `user_has_permission()` to true, so no seeded
+account can prove anything about a permission term. The fixtures are
+authoritative rather than additive, and re-applying them is what undoes the
+damage a reverted policy lets through — an A1a escalation really does move a
+viewer into another organization as its administrator.
+
+A6 is reverted by mutating `may_review_gate()` to return `true` rather than by
+restoring a policy, because the schema-94 defect was the *absence* of a reviewer
+branch in `complete_gate_review()`. The mutant reproduces the same observable
+behaviour through the branch that now exists, without carrying 160 lines of
+unrelated workflow machinery in the harness. See `sql/revert-a6.sql`.
+
+### `storage.objects`
+
+`sql/storage-objects-fixture.sql` builds a `storage.objects` the harness can
+attack, seeded with one object per tenant at BluePLM's real path shape
+`{org_id}/{hash[0:2]}/{hash}`, plus Supabase's `storage.foldername()`. Nothing
+in `supabase/` creates that table — it belongs to the Storage service — which is
+why no release has ever been able to assert anything about the vault bucket.
+
+**The cross-tenant read control is reported as not applicable, pending A2.** The
+four vault policies are not in version control, so with RLS enabled and zero
+policies `authenticated` reads nothing: "Bob cannot read Acme's object" is true
+today and means nothing, because Alice cannot read her own either. Scoring that
+as a pass would be the exact failure this whole directory exists to prevent. The
+assertions are written and will run against the four names in
+`A_AGENT_REPORT.md` section 4 the moment they are committed.
+
+What *is* executed now is the advisory storage section `verify-schema.sql`
+gained in schema 95: that it warns when RLS is off, and that it never withholds
+the stamp in either state. A check that blocks on unknown policies is a check
+nobody can clear.
+
 ## Evidence
 
 `evidence/` holds the captured runs: the attacks before and after the fix,
-verification before and after, the negative controls, and the upgrade lane.
-Every file in there is the unedited output of the script named at the top of it,
-and every one of them can be regenerated by running that script:
+verification before and after, the negative controls, the tooling controls, the
+policy controls, and the upgrade lane. Every file in there is the unedited
+output of the script named at the top of it, and every one of them can be
+regenerated by running that script:
 
 ```powershell
 .\capture-evidence.ps1 -Baseline ../../blueplm-v90/supabase   # 01, 02
-.\capture-evidence.ps1                                        # 00, 03, 04, 05, 06
+.\capture-evidence.ps1                                        # 00, 03, 04, 05, 06, 08, 09
 .\capture-evidence.ps1 -Upgrade                               # 07
+.\evidence\stage2\run-all.ps1                                 # the whole release sequence, one file per script
 ```
+
+`evidence/stage2/` is the schema-95 sign-off run: all six scripts in order, one
+capture each. It exists as its own script because every script here reports
+through `Write-Host`, which writes to the host and not to the success stream, so
+`.\x.ps1 | Tee-Object` produces an empty file while the operator watches the
+output scroll past. Running each script as a child process turns that host
+output back into stdout, which can be redirected.
+
+`06-lockdown.txt` is captured after `sql/reopen-for-lockdown.sql` has put the
+database back into the open state, so the run shows the script revoking
+something. It did not used to: the comment claiming the reopen said so over a
+capture that recorded `Revoked EXECUTE from anon on 0 function(s)`.

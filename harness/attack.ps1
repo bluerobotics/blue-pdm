@@ -21,6 +21,12 @@ param(
 
 $ErrorActionPreference = 'Continue'
 
+# JWT minting and the HTTP call live in rest-client.ps1, shared with
+# policy-controls.ps1. Two suites that talk to the same PostgREST have to agree
+# about what a refusal looks like, and two copies of that would be two answers.
+. "$PSScriptRoot\rest-client.ps1"
+Initialize-RestClient -RestUrl $RestUrl -JwtSecret $JwtSecret
+
 # ---------------------------------------------------------------- identities --
 $ACME_ORG     = 'aaaaaaaa-0000-4000-8000-000000000001'
 $UMBRELLA_ORG = 'bbbbbbbb-0000-4000-8000-000000000001'
@@ -32,40 +38,6 @@ $ACME_FILE    = 'aaaaaaaa-3333-4000-8000-000000000001'
 # Separate file for the transition attack, so a successful attack cannot break
 # the positive control that runs Alice's own transition on ACME_FILE.
 $ACME_FILE2   = 'aaaaaaaa-3333-4000-8000-000000000002'
-
-function ConvertTo-B64Url([byte[]]$Bytes) {
-  [Convert]::ToBase64String($Bytes).TrimEnd('=').Replace('+','-').Replace('/','_')
-}
-
-function New-Jwt {
-  param([string]$Sub, [string]$Role = 'authenticated', [string]$Email = '')
-  $header  = '{"alg":"HS256","typ":"JWT"}'
-  $exp     = [DateTimeOffset]::UtcNow.AddHours(2).ToUnixTimeSeconds()
-  $claims  = @{ role = $Role; exp = $exp }
-
-  # NO sub CLAIM AT ALL WHEN THERE IS NO SUBJECT
-  #
-  # This used to emit `"sub": ""` for the anon token. auth.uid() casts the claim
-  # to uuid, `''::uuid` raises invalid_text_representation, and PostgREST turns
-  # that into HTTP 400 - which this script scored as a refusal. Every anon
-  # attack that got as far as auth.uid() was therefore passing for the wrong
-  # reason, inside the harness built to stop exactly that.
-  #
-  # A real Supabase publishable key carries no sub, so the claim is absent, the
-  # GUC is absent, and auth.uid() is NULL. That is the case the gates are
-  # written against and the one worth testing.
-  if ($Sub)   { $claims.sub = $Sub; $claims.aud = 'authenticated' }
-  if ($Email) { $claims.email = $Email }
-
-  $payload = $claims | ConvertTo-Json -Compress
-  $h = ConvertTo-B64Url ([Text.Encoding]::UTF8.GetBytes($header))
-  $p = ConvertTo-B64Url ([Text.Encoding]::UTF8.GetBytes($payload))
-  $signing = "$h.$p"
-  $hmac = New-Object System.Security.Cryptography.HMACSHA256
-  $hmac.Key = [Text.Encoding]::UTF8.GetBytes($JwtSecret)
-  $sig = ConvertTo-B64Url ($hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($signing)))
-  "$signing.$sig"
-}
 
 # anon uses a JWT whose role claim is anon and which carries no subject -
 # exactly the shape of a publishable key.
@@ -79,51 +51,20 @@ $UMB_TRANSITION  = 'bbbbbbbb-8888-4000-8000-000000000001'
 $ACME_TRANSITION      = 'aaaaaaaa-8888-4000-8000-000000000001'
 $ACME_TRANSITION_BACK = 'aaaaaaaa-8888-4000-8000-000000000002'
 
-# Requests that never reached the server, recorded here rather than at each call
-# site so that no call site can forget. A connection failure must never be
-# scored as the server refusing.
-$script:Transport = @()
-
-function Invoke-Rest {
-  param([string]$Path, [string]$Token, [string]$Method = 'GET', $Body = $null)
-  $headers = @{ Authorization = "Bearer $Token"; 'Accept' = 'application/json' }
-  $uri = "$RestUrl$Path"
-  try {
-    if ($Body -ne $null) {
-      $json = ($Body | ConvertTo-Json -Compress -Depth 6)
-      $r = Invoke-WebRequest -UseBasicParsing -Uri $uri -Method $Method -Headers $headers `
-             -ContentType 'application/json' -Body $json -TimeoutSec 20
-    } else {
-      $r = Invoke-WebRequest -UseBasicParsing -Uri $uri -Method $Method -Headers $headers -TimeoutSec 20
-    }
-    [pscustomobject]@{ Status = [int]$r.StatusCode; Body = $r.Content }
-  } catch {
-    $resp = $_.Exception.Response
-    if ($resp) {
-      $sr = New-Object IO.StreamReader($resp.GetResponseStream())
-      [pscustomobject]@{ Status = [int]$resp.StatusCode; Body = $sr.ReadToEnd() }
-    } else {
-      $script:Transport += "$Method $Path"
-      [pscustomobject]@{ Status = -1; Body = $_.Exception.Message }
-    }
-  }
-}
-
-function Trunc {
-  param([string]$Text, [int]$Max = 220)
-  if ($null -eq $Text) { return '' }
-  $flat = ($Text -replace '\s+', ' ')
-  if ($flat.Length -le $Max) { return $flat }
-  $flat.Substring(0, $Max) + '...'
-}
-
 $script:Results = @()
 
-# PostgREST's "no function matches that name and those arguments". On the
-# baseline half of the upgrade lane this is not a refusal and not a breakage:
-# it means the baseline predates the object the case is about.
+# PostgREST's "no function matches that name and those arguments" means one of
+# two opposite things, and which one depends entirely on which half of the lane
+# is running. Deciding that in one place, from an explicit expectation rather
+# than from the ambient $Expect, is what lets it be self-tested below.
 #
-# WHY THIS IS NEEDED, AND WHY IT IS SAFE
+#   'absent'  - baseline half. The baseline predates the object the case is
+#               about. Not a refusal and not a breakage.
+#   'missing' - fixed half. The release under test is supposed to have created
+#               this object and has not. That is a broken application.
+#   'none'    - the evidence says nothing about the object existing.
+#
+# WHY THE BASELINE LENIENCY IS NEEDED, AND WHY IT IS SAFE
 #
 # The lane was built with a v90 baseline, where every object this suite touches
 # already exists. The owner's database is on 85, and execute_workflow_transition
@@ -133,13 +74,22 @@ $script:Results = @()
 # the run aborts with "the application is damaged", which is the one thing that
 # has definitely not happened.
 #
-# The leniency is confined to the baseline run. After the upgrade the release
-# under test has created every one of these, so PGRST202 there is a genuine
-# failure and is still scored as one - which is what stops this from becoming a
-# way for a missing function to pass unnoticed.
-function Test-ObjectAbsent {
-  param([string]$Evidence)
-  return ($Expect -eq 'vulnerable') -and ($Evidence -match 'PGRST202')
+# WHY 'missing' HAD TO BE ADDED
+#
+# The leniency was confined to the baseline run correctly. What was not written
+# down anywhere is what should happen on the *other* side, and the answer the
+# code gave was 'refused ' - the same verdict, and the same green, as an attack
+# the fix had genuinely turned away. get_item_designations was dropped while the
+# renderer still called it (src/lib/supabase/itemDesignations.ts:31); F4e asked
+# for it, got PGRST202, and was scored as an attack that had been repelled. The
+# suite passed and the schema was stamped over an application that could not
+# load its own designations. A missing object in the fixed half is now BROKEN,
+# and it is fatal in the same way a broken positive control is.
+function Get-MissingObjectVerdict {
+  param([string]$Evidence, [string]$Expectation)
+  if ($Evidence -notmatch 'PGRST202') { return 'none' }
+  if ($Expectation -eq 'vulnerable')  { return 'absent' }
+  return 'missing'
 }
 
 function Report {
@@ -148,19 +98,78 @@ function Report {
     # For a case that reads back what an earlier case wrote. If the write could
     # not be attempted on this baseline there is nothing to read, and the empty
     # answer is the absence of the first case rather than a refusal by this one.
-    [bool]$AbsentBecause = $false
+    [bool]$AbsentBecause = $false,
+    # For a case whose whole point is that the object must NOT be callable.
+    #
+    # The 'missing' rule above says a PGRST202 after the fix is a dropped
+    # function the application still calls, and that is right for every case
+    # that asks for an entry point. It is exactly wrong for one that asks for an
+    # internal helper: may_review_gate() is REVOKEd from PUBLIC, anon and
+    # authenticated on purpose, so PostgREST failing to offer it is the correct
+    # answer and scoring it BROKEN would make the release unshippable for having
+    # done the right thing.
+    #
+    # It suppresses 'missing' ONLY. On the baseline half a PGRST202 still means
+    # 'absent', because may_review_gate() arrives in 95 and a baseline older than
+    # that has nothing to revoke: the case is satisfied by the function not
+    # existing yet, which is not evidence that the grant is correct. The first
+    # version of this switch returned 'none' for both halves and the upgrade lane
+    # printed a green 'refused' against schema 81 - the same overstatement B5 was
+    # written to remove, one line further down.
+    [switch]$Unreachable
   )
-  $absent = (Test-ObjectAbsent -Evidence $Evidence) -or ($AbsentBecause -and $Expect -eq 'vulnerable')
-  $script:Results += [pscustomobject]@{ Id = $Id; What = $What; Breached = $Breached; Evidence = $Evidence; Absent = $absent }
-  $verdict = if ($Breached) { 'BREACHED' } elseif ($absent) { 'absent  ' } else { 'refused ' }
-  $colour  = if ($Breached) { 'Red' } elseif ($absent) { 'DarkGray' } else { 'Green' }
+  $kind = Get-MissingObjectVerdict -Evidence $Evidence -Expectation $Expect
+  if ($Unreachable -and $kind -eq 'missing') { $kind = 'none' }
+  $absent  = ($kind -eq 'absent') -or ($AbsentBecause -and $Expect -eq 'vulnerable')
+  $missing = ($kind -eq 'missing')
+  $script:Results += [pscustomobject]@{
+    Id = $Id; What = $What; Breached = $Breached; Evidence = $Evidence
+    Absent = $absent; Missing = $missing
+  }
+  $verdict = if ($Breached) { 'BREACHED' } elseif ($missing) { 'MISSING ' } elseif ($absent) { 'absent  ' } else { 'refused ' }
+  $colour  = if ($Breached -or $missing) { 'Red' } elseif ($absent) { 'DarkGray' } else { 'Green' }
   Write-Host ("[{0}] {1}  {2}" -f $verdict, $Id.PadRight(6), $What) -ForegroundColor $colour
   if ($Evidence) { Write-Host ("         {0}" -f $Evidence) -ForegroundColor DarkGray }
+}
+
+# The scoring rule above is the whole of the defect it was written to remove, so
+# it is exercised rather than trusted. Both expectations are checked whichever
+# one this run was invoked with: a change that made 'missing' depend on $Expect
+# being 'fixed' at the point of *definition* rather than at the point of use
+# would otherwise be invisible on a baseline run.
+function Test-ScoringSelfCheck {
+  $pgrst202 = 'HTTP 404: {"code":"PGRST202","message":"Could not find the function"}'
+  $refusal  = 'HTTP 403: {"code":"42501","message":"permission denied"}'
+  $cases = @(
+    @{ Evidence = $pgrst202; Expectation = 'vulnerable'; Want = 'absent'  },
+    @{ Evidence = $pgrst202; Expectation = 'fixed';      Want = 'missing' },
+    @{ Evidence = $refusal;  Expectation = 'vulnerable'; Want = 'none'    },
+    @{ Evidence = $refusal;  Expectation = 'fixed';      Want = 'none'    },
+    @{ Evidence = '';        Expectation = 'fixed';      Want = 'none'    }
+  )
+  $wrong = @()
+  foreach ($case in $cases) {
+    $got = Get-MissingObjectVerdict -Evidence $case.Evidence -Expectation $case.Expectation
+    if ($got -ne $case.Want) {
+      $wrong += ("{0} + {1} scored '{2}', expected '{3}'" -f `
+        $case.Expectation, $(if ($case.Evidence -match 'PGRST202') { 'PGRST202' } else { 'other evidence' }), $got, $case.Want)
+    }
+  }
+  return $wrong
 }
 
 # --------------------------------------------------------------- preflight ---
 # Refuse to draw any conclusion from a harness that is not actually answering.
 Write-Host "`n=== PREFLIGHT ===" -ForegroundColor Yellow
+
+$scoringFaults = Test-ScoringSelfCheck
+if ($scoringFaults.Count -gt 0) {
+  Write-Host "ABORT: the verdict scoring is wrong, so no verdict below could be trusted:" -ForegroundColor Red
+  $scoringFaults | ForEach-Object { Write-Host "       $_" -ForegroundColor Red }
+  exit 2
+}
+Write-Host "verdict scoring self-check passed (a missing object is 'absent' on the baseline and BROKEN after the fix)." -ForegroundColor Green
+
 $ping = Invoke-Rest -Path '/' -Token $TOK_ANON
 if ($ping.Status -ne 200) {
   Write-Host "ABORT: PostgREST at $RestUrl did not answer (status $($ping.Status)). Nothing below would mean anything." -ForegroundColor Red
@@ -406,6 +415,33 @@ Report -Id 'F7a' -What 'consume_share_link spends a download on a soft-deleted f
        -Breached ($validateRefuses -and $consumeAdmits) `
        -Evidence ("validate: {0} | consume: HTTP {1} {2}" -f (Trunc $rValidate.Body 120), $rConsume.Status, (Trunc $rConsume.Body 40))
 
+# --------------------------------------------------------------- schema 95 ---
+# may_review_gate() decides who may approve a workflow gate. It is new in schema
+# 95, it is SECURITY DEFINER, and it is reached only from complete_gate_review()
+# and get_my_pending_reviews(), which run as the owner and need no grant - so
+# the module revokes it from PUBLIC, anon and authenticated.
+#
+# The revoke is the interesting part. Supabase's bootstrap issues
+# ALTER DEFAULT PRIVILEGES ... GRANT ALL ON FUNCTIONS TO anon, so a new function
+# in public is born reachable and stays reachable unless something takes the
+# grant away. A signed-in member of any organization being able to call the
+# gate-review authorization helper directly is not an escalation on its own -
+# it answers a boolean - but it is an oracle for who reviews what across the
+# whole database, and it is the kind of grant that becomes load-bearing later.
+#
+# Both a 403 and a PGRST202 are correct here, which is why this case is marked
+# -Unreachable: an internal helper PostgREST cannot offer is the goal, not a
+# dropped entry point.
+$r = Invoke-Rest -Path '/rpc/may_review_gate' -Token $TOK_ALICE -Method POST -Body @{
+  p_gate_id = '00000000-0000-4000-8000-000000000000'; p_user_id = $ALICE }
+Report -Id 'F8a' -What 'signed-in member calls the gate-review authorization helper directly' -Unreachable `
+       -Breached ($r.Status -eq 200) -Evidence ("HTTP {0}: {1}" -f $r.Status, (Trunc $r.Body))
+
+$r = Invoke-Rest -Path '/rpc/may_review_gate' -Token $TOK_ANON -Method POST -Body @{
+  p_gate_id = '00000000-0000-4000-8000-000000000000'; p_user_id = $ALICE }
+Report -Id 'F8b' -What '...and anon does the same' -Unreachable `
+       -Breached ($r.Status -eq 200) -Evidence ("HTTP {0}: {1}" -f $r.Status, (Trunc $r.Body))
+
 # -------------------------------------------------- positive controls --------
 # Legitimate use, which must work in BOTH states. Without these, "every attack
 # was refused" is also what you get from a database with the schema dropped, a
@@ -423,11 +459,17 @@ function Control {
     [switch]$FixedOnly
   )
   # A control cannot be broken by a function that does not exist yet. See
-  # Test-ObjectAbsent: baseline run only, and only for PGRST202.
-  $absent = Test-ObjectAbsent -Evidence $Evidence
+  # Get-MissingObjectVerdict: baseline run only, and only for PGRST202. After
+  # the fix the same evidence is 'missing', which is enforced and named as such
+  # rather than folded into a generic BROKEN.
+  $kind     = Get-MissingObjectVerdict -Evidence $Evidence -Expectation $Expect
+  $absent   = ($kind -eq 'absent')
+  $missing  = ($kind -eq 'missing')
   $enforced = -not (($FixedOnly -and $Expect -eq 'vulnerable') -or $absent)
-  $script:Controls += [pscustomobject]@{ Id = $Id; What = $What; Ok = $Ok; Enforced = $enforced; Absent = $absent }
-  $verdict = if ($Ok) { 'works   ' } elseif ($absent) { 'absent  ' } elseif (-not $enforced) { 'n/a yet ' } else { 'BROKEN  ' }
+  $script:Controls += [pscustomobject]@{
+    Id = $Id; What = $What; Ok = $Ok; Enforced = $enforced; Absent = $absent; Missing = $missing
+  }
+  $verdict = if ($Ok) { 'works   ' } elseif ($missing) { 'MISSING ' } elseif ($absent) { 'absent  ' } elseif (-not $enforced) { 'n/a yet ' } else { 'BROKEN  ' }
   $colour  = if ($Ok) { 'Green' } elseif (-not $enforced) { 'DarkGray' } else { 'Red' }
   Write-Host ("[{0}] {1}  {2}" -f $verdict, $Id.PadRight(6), $What) -ForegroundColor $colour
   if ($Evidence) { Write-Host ("         {0}" -f $Evidence) -ForegroundColor DarkGray }
@@ -493,6 +535,21 @@ $r = Invoke-Rest -Path '/rpc/upsert_item_image' -Token $TOK_ALICE -Method POST -
 $c7 = ($r.Status -eq 200 -and $r.Body -match 'rocket')
 Control -Id 'C7' -What 'Acme member still writes their OWN item_images row' `
         -Ok $c7 -Evidence ("HTTP {0}: {1}" -f $r.Status, (Trunc $r.Body 160))
+
+# The named counterpart to F4e, and the reason it exists is finding E8.
+#
+# F4e attacks get_item_designations as an org-less account. When the function
+# was dropped, F4e got PGRST202 and was scored 'refused' - so the suite reported
+# the attack repelled by the absence of a function the renderer calls on every
+# load of the item-designations screen. An attack case can only ever say who is
+# turned away; it takes a positive control to say the door is still there.
+#
+# Not -FixedOnly: Alice reading her own organization's designations works in
+# both states and must, or the fix has removed a feature rather than a hole.
+$r = Invoke-Rest -Path '/rpc/get_item_designations' -Token $TOK_ALICE -Method POST -Body @{ p_org_id = $ACME_ORG }
+Control -Id 'C12' -What 'Acme member still reads their OWN item designations' `
+        -Ok ($r.Status -eq 200 -and $r.Body -match 'ITAR') `
+        -Evidence ("HTTP {0}: {1}" -f $r.Status, (Trunc $r.Body 160))
 
 # The workflow control for finding 6. Binding the transition to the file's
 # organization has to leave the legitimate move working, or "the attack was
@@ -565,9 +622,22 @@ Write-Host ("{0} of {1} attacks succeeded; {2} of {3} enforced positive controls
 
 $fatal = $false
 
-if ($script:Transport.Count -gt 0) {
+$transport = @(Get-RestTransportFailures)
+if ($transport.Count -gt 0) {
   Write-Host ("FAIL: {0} request(s) never reached the server: {1}. A connection failure is not a refusal; this run proves nothing." `
-    -f $script:Transport.Count, ($script:Transport -join ', ')) -ForegroundColor Red
+    -f $transport.Count, ($transport -join ', ')) -ForegroundColor Red
+  $fatal = $true
+}
+
+# Reported before the broken-control line, because a missing object is usually
+# the reason a control below it is broken and the operator should read the cause
+# first. Fatal on its own account: an attack that asks for a function the
+# release deleted is not an attack that was refused.
+$missingObjects = @(@($script:Results | Where-Object { $_.Missing }) +
+                    @($script:Controls | Where-Object { $_.Missing }))
+if ($missingObjects.Count -gt 0) {
+  Write-Host ("FAIL: {0} case(s) asked for a database object the release under test does not have: {1}. PGRST202 here is a dropped or renamed function, not a refusal - the application calls these too." `
+    -f $missingObjects.Count, (($missingObjects | ForEach-Object { $_.Id }) -join ', ')) -ForegroundColor Red
   $fatal = $true
 }
 

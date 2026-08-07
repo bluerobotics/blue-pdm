@@ -1,0 +1,39 @@
+﻿=== TOOLING CONTROLS ===
+lockdown script under test: /blueplm/tools/emergency-lockdown.sql
+
+--- LC0  the lockdown passes a clean database and leaves the pre-login allowlist reachable
+  [ok]      the check reports PASS on a database with nothing wrong with it
+  [ok]      all three pre-login routines are still executable by anon afterwards
+
+--- LC1  a column-granted view is swept, not stepped over
+  [ok]      premise: anon can read a column of the view
+  [ok]      premise: has_table_privilege is blind to that grant, which is why the old predicate missed it
+  [ok]      the sweep revoked it
+  [ok]      the report names the view
+
+--- LC2  the PASS gate checks which routines anon can execute, not how many
+  [ok]      premise: exactly three routines are anon-executable, which the old gate read as a pass
+  [ok]      the check refuses
+  [ok]      the refusal names the routine
+  [ok]      teardown put the allowlisted routine back
+
+--- LC3  the RLS count covers every relation kind that can hold rows
+  [ok]      premise: the old relkind = 'r' predicate still counts zero
+  [ok]      the check refuses
+  [ok]      the refusal names the relation
+
+--- LC4  the uuid census leaves the defaults it counts exactly where they were
+  [ok]      premise: there is at least one uuid_generate_v4() default for a migration to move
+  [ok]      the census asked the second-run question
+  [ok]      the census changed nothing
+
+--- LC5  the repair proof suite fails against a function that repairs only the first file
+  [ok]      premise: the suite passes against the genuine function
+  [ok]      the suite refuses the mutant
+  [ok]      and the case that catches it is the multi-file one
+  [ok]      the genuine function is back and the suite passes again
+
+--- AFTERWARDS
+  [ok]      the database still verifies clean
+
+OK: 6 tooling controls executed. Each verifier caught the condition it was written to catch, and the pre-login allowlist survived.

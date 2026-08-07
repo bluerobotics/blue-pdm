@@ -1,0 +1,113 @@
+﻿
+=== SCHEMA 95 POLICY CONTROLS ===
+schema release under test: 95
+fixtures applied; PostgREST is answering.
+snapshotted 7 object(s) for restore
+
+--- PHASE 1: schema 95 as it stands. Every assertion Agent A published must hold.
+
+A1a  users self-update: WITH CHECK pinning role and org_id
+  [ok      ] 1      viewer moves themselves into another organization
+  [ok      ] 2      viewer makes themselves an administrator
+  [ok      ] 3      viewer becomes administrator OF another organization (the findings reproduction)
+  [ok      ] 4      viewer still writes their own last_online (regression control)
+  [ok      ] 5      anon patches a user row at all (proves TO authenticated)
+
+A1b  users admin-update: the WITH CHECK A says is a no-op
+  [ok      ] 6      admin still changes a member's role (updateUserRole, teams.ts:37 - the control that stops a future agent 'fixing' A1b)
+  [ok      ] 7      admin moves a member to a foreign organization
+  [ok      ] 8      admin moves THEMSELVES to a foreign organization
+
+A3  share-link INSERT: file must be in the caller's org, created_by must be the caller
+  [ok      ] 9      engineer files a link under Acme pointing at UMBRELLA's file (the E1 attack)
+  [ok      ] 10     engineer forges created_by as somebody else
+  [ok      ] 11     viewer without module:explorer:create mints a link (pre-existing term, must stay)
+  [ok      ] 12     engineer still mints a legitimate link for their own file (regression control)
+
+A4  share-link UPDATE: revocation is the only update admitted
+  [ok      ] 13     viewer repoints their own link at UMBRELLA's file (the E2 attack)
+  [ok      ] 14     viewer re-activates a link that had been revoked (the E4 attack)
+  [ok      ] 15     viewer rewrites org_id on their own link
+  [ok      ] 16     viewer still revokes their own link - the one update admitted (regression control)
+  [ok      ] 17     engineer revokes somebody else's link
+
+A5  pending_reviews UPDATE: needs module:reviews:edit, reviewed_by must be the caller
+  [ok      ] 18     member without module:reviews:edit approves a review
+  [ok      ] 19     reviewer approves but records SOMEBODY ELSE as the reviewer
+  [ok      ] 20     reviewer approves and records themselves (regression control)
+  [ok      ] 21     reviewer cancels, leaving reviewed_by NULL - the check admits NULL deliberately
+
+A6  complete_gate_review: an unassigned gate is decided by its reviewers
+  [ok      ] 22     member who is not the named reviewer approves an unassigned gate (the hole)
+  [ok      ] 23     the gate's named reviewer approves it
+  [ok      ] 24     an administrator stands in for the reviewer (deliberate override)
+  [ok      ] 25     gate names NO reviewers: member without module:reviews:edit approves
+  [ok      ] 26     gate names NO reviewers: holder of module:reviews:edit approves
+  [ok      ] 27     review assigned to somebody else (pre-existing term, must stay)
+  [ok      ] 27b    gate whose only reviewer rows are reviewer_type='group': member approves
+  [ok      ] 28eq   get_my_pending_reviews offers member nothing complete_gate_review would refuse them
+
+A7  files UPDATE: trashing needs module:explorer:delete, not edit
+  [ok      ] 28     editor with edit and NOT delete trashes a file (the finding)
+  [ok      ] 29     deleter with module:explorer:delete trashes the same file
+  [ok      ] 30     editor still renames a live file - the common path (regression control)
+  [ok      ] 31     editor still restores a trashed file - putting one back needs only edit
+
+--- PHASE 2: each fix reverted to its schema-94 text, one at a time. The assertions that close a hole must now report it open.
+
+A1a reverted  <- /sql/revert-a1a.sql
+  proven: assertion(s) 1, 2, 3 report the hole open with the fix reverted, and closed with it in place.
+  not expected to flip - 5 stays refused either way: anon has no auth.uid(), so id = auth.uid() matches no row with or without the TO qualifier. It is defence in depth, not a reproduction. 4 is a regression control and must hold in both phases.
+
+A1b reverted  <- /sql/revert-a1b.sql
+  as documented: nothing changed when this was reverted.
+  not expected to flip - Nothing is expected to flip, and that is the finding rather than a gap. A states the added WITH CHECK restates the USING expression exactly and is semantically a no-op. Running the revert phase with an empty Flips list is how that claim gets executed instead of believed: if anything DID flip, A's reasoning would be wrong.
+
+A3 reverted  <- /sql/revert-a3.sql
+  proven: assertion(s) 9, 10 report the hole open with the fix reverted, and closed with it in place.
+  not expected to flip - 11 is refused by the module:explorer:create term, which predates schema 95 and is unchanged. 12 is the regression control.
+
+A4 reverted  <- /sql/revert-a4.sql
+  proven: assertion(s) 13, 14 report the hole open with the fix reverted, and closed with it in place.
+  not expected to flip - 15 is A's own caveat: rewriting org_id was 'not reachable in practice, but only because PostgREST could not read the row back - the SELECT policy, not this one'. Whether it flips is therefore a fact about the SELECT policy, and pinning it here would attribute the refusal to the wrong clause. 17 is refused by created_by in USING, unchanged. 16 is the regression control.
+
+A5 reverted  <- /sql/revert-a5.sql
+  proven: assertion(s) 18, 19 report the hole open with the fix reverted, and closed with it in place.
+  not expected to flip - 20 and 21 are regression controls and must hold in both phases.
+
+A6 reverted  <- /sql/revert-a6.sql
+  proven: assertion(s) 22, 25, 27b report the hole open with the fix reverted, and closed with it in place.
+  not expected to flip - 27 exercises the assigned branch, which schema 95 did not touch. 23, 24 and 26 are positive controls. 28eq compares two functions that both call may_review_gate, so the mutant moves both together and the equivalence is preserved by construction - it is an assertion about the fixed release, not a reproduction.
+
+A7 reverted  <- /sql/revert-a7.sql
+  proven: assertion(s) 28 report the hole open with the fix reverted, and closed with it in place.
+  not expected to flip - 29, 30 and 31 are the three regression controls: delete still works for a holder of delete, the common rename path is untouched, and restoring from the trash still needs only edit.
+
+--- B8(a): storage.objects
+            BOB_READS_ACME=0
+            BOB_READS_OWN=0
+            ALICE_READS_OWN=0
+            RLS_ENABLED=true
+  [ok      ] S1     storage.objects exists in the harness and has RLS enabled
+  [ok      ] S2     the fixture carries one object for each of two tenants
+  [n/a]     cross-tenant read: NOT APPLICABLE, pending A2.
+            No policy exists on storage.objects, so authenticated reads nothing and a refusal proves nothing.
+            When A2 lands, this asserts: Bob reads 0 of Acme's objects, Bob reads 1 of Umbrella's, Alice reads 1 of Acme's.
+            Expected policy names (A_AGENT_REPORT.md section 4): Vault objects are readable / written / replaced / removed within their organization.
+  [ok      ] S5     verify-schema still stamps the release with storage.objects present, RLS on and ZERO policies
+  [ok      ] S6     verify-schema warns when RLS is OFF on storage.objects
+  [ok      ] S7     ...and still stamps, because an unknown storage posture must not block verification
+
+=== VERDICT ===
+38 assertion(s) run against schema 95; 0 did not hold.
+
+Per fix - is it proven by an executed control?
+  A1a   PROVEN by 3 of 3 - assertion(s) 1, 2, 3 flip when it is reverted
+  A1b   no-op by design - nothing to flip, and nothing did
+  A3    PROVEN by 2 of 2 - assertion(s) 9, 10 flip when it is reverted
+  A4    PROVEN by 2 of 2 - assertion(s) 13, 14 flip when it is reverted
+  A5    PROVEN by 2 of 2 - assertion(s) 18, 19 flip when it is reverted
+  A6    PROVEN by 3 of 3 - assertion(s) 22, 25, 27b flip when it is reverted
+  A7    PROVEN by 1 of 1 - assertion(s) 28 flip when it is reverted
+
+OK: 38 assertions held against schema 95, every fix with a reproducible hole was proven by reverting it, and the database still verifies clean.

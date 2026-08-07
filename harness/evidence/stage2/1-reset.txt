@@ -1,0 +1,42 @@
+﻿=== tearing down ===
+=== starting database ===
+
+db-1  | === HARNESS ASSERTIONS PASSED ===
+
+
+
+--- roles as this container actually has them ---
+    rolname     | rolsuper | rolbypassrls | rolcreaterole | rolcanlogin 
+----------------+----------+--------------+---------------+-------------
+ supabase_admin | t        | t            | t             | t
+ anon           | f        | f            | f             | f
+ authenticated  | f        | f            | f             | f
+ authenticator  | f        | f            | f             | t
+ postgres       | f        | t            | t             | t
+ service_role   | f        | t            | f             | f
+(6 rows)
+
+--- default privileges in public, which is what makes a new function anon-reachable ---
+ granting_role  | objtype |                                                                 defaclacl                                                                  
+----------------+---------+--------------------------------------------------------------------------------------------------------------------------------------------
+ postgres       | S       | {postgres=rwU/postgres,anon=rwU/postgres,authenticated=rwU/postgres,service_role=rwU/postgres}
+ postgres       | f       | {postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}
+ postgres       | r       | {postgres=arwdDxtm/postgres,anon=arwdDxtm/postgres,authenticated=arwdDxtm/postgres,service_role=arwdDxtm/postgres}
+ supabase_admin | S       | {postgres=rwU/supabase_admin,anon=rwU/supabase_admin,authenticated=rwU/supabase_admin,service_role=rwU/supabase_admin}
+ supabase_admin | f       | {postgres=X/supabase_admin,anon=X/supabase_admin,authenticated=X/supabase_admin,service_role=X/supabase_admin}
+ supabase_admin | r       | {postgres=arwdDxtm/supabase_admin,anon=arwdDxtm/supabase_admin,authenticated=arwdDxtm/supabase_admin,service_role=arwdDxtm/supabase_admin}
+(6 rows)
+
+=== installing release ===
+--- postgres : /blueplm/core.sql
+--- postgres : /blueplm/modules/10-source-files.sql
+--- postgres : /blueplm/modules/15-inspection.sql
+--- postgres : /blueplm/modules/20-change-control.sql
+--- postgres : /blueplm/modules/30-supply-chain.sql
+--- postgres : /blueplm/modules/40-integrations.sql
+--- postgres : /blueplm/modules/50-extensions.sql
+--- postgres : /blueplm/modules/60-customers.sql
+install complete
+=== seeding ===
+=== starting PostgREST ===
+harness ready

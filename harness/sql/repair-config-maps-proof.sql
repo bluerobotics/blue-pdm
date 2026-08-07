@@ -46,6 +46,9 @@ SET client_min_messages = warning;
 \set badmap    '''aaaaaaaa-9000-4000-8000-000000000005'''
 \set gone      '''aaaaaaaa-9000-4000-8000-000000000006'''
 \set strict    '''aaaaaaaa-9000-4000-8000-000000000007'''
+\set sentinel  '''aaaaaaaa-9000-4000-8000-000000000008'''
+\set multi_a   '''aaaaaaaa-9000-4000-8000-000000000009'''
+\set multi_b   '''aaaaaaaa-9000-4000-8000-00000000000a'''
 
 DROP TABLE IF EXISTS pg_temp.proof_results;
 CREATE TEMP TABLE proof_results (
@@ -70,7 +73,8 @@ INSERT INTO users (id, email, full_name, org_id, role)
 VALUES (:carol, 'carol@acme.test', 'Carol Acme', :acme, 'engineer')
 ON CONFLICT (id) DO UPDATE SET org_id = EXCLUDED.org_id, role = EXCLUDED.role;
 
-DELETE FROM files WHERE id IN (:buna, :fkm, :cleared, :nomap, :badmap, :gone, :strict);
+DELETE FROM files WHERE id IN (:buna, :fkm, :cleared, :nomap, :badmap, :gone, :strict,
+                               :sentinel, :multi_a, :multi_b);
 
 -- ORING-BUNA-70A, as the census measured it: 68 configurations in the document, one surviving
 -- entry in each map. The survivor's value disagrees with what the repair will propose for it, and
@@ -137,6 +141,29 @@ VALUES (:cleared, :acme, :vault,
         jsonb_build_object('_config_tabs', jsonb_build_object('Config-A', 'A')));
 
 UPDATE files SET deleted_at = NOW() WHERE id = :gone;
+
+-- Scratch rows for cases 23 and 24. All three carry the same minimal shape: one
+-- surviving entry whose value DISAGREES with what the request will propose for
+-- it, and one configuration the request will fill in. That shape is what lets a
+-- single call discriminate against two different mutants at once - see case 23.
+-- They are scratch precisely so the sentinel cannot be satisfied, or broken, by
+-- something another case did to a shared fixture.
+INSERT INTO files (id, org_id, vault_id, file_path, file_name, extension,
+                   part_number, description, revision, version, state, created_by, custom_properties)
+VALUES (:sentinel, :acme, :vault,
+        'Acme/Scratch/SENTINEL.SLDPRT', 'SENTINEL.SLDPRT', 'sldprt',
+        'SENTINEL', 'Scratch row for the sentinel', 'A', 1, 'WIP', :alice,
+        jsonb_build_object('_config_tabs', jsonb_build_object('Config-07', 'SURVIVOR-TAB'))),
+
+       (:multi_a, :acme, :vault,
+        'Acme/Scratch/MULTI-A.SLDPRT', 'MULTI-A.SLDPRT', 'sldprt',
+        'MULTI-A', 'First file of a two-file request', 'A', 1, 'WIP', :alice,
+        jsonb_build_object('_config_tabs', jsonb_build_object('Config-07', 'SURVIVOR-TAB'))),
+
+       (:multi_b, :acme, :vault,
+        'Acme/Scratch/MULTI-B.SLDPRT', 'MULTI-B.SLDPRT', 'sldprt',
+        'MULTI-B', 'Second file of a two-file request', 'A', 1, 'WIP', :alice,
+        jsonb_build_object('_config_tabs', jsonb_build_object('Config-07', 'SURVIVOR-TAB')));
 
 -- The request the repair will send for ORING-BUNA-70A: all 68 configurations, in both maps.
 CREATE TEMP TABLE buna_request AS
@@ -502,20 +529,115 @@ END $$;
 -- CASE 23 - THE SENTINEL
 -- ===========================================
 -- Everything above passes just as well against a function that does nothing at all. This is the
--- case that says the suite can tell the difference: the same merge written the other way round,
--- `existing || computed`, must destroy the value case 1 protects. It runs on a scratch value and
--- touches no fixture.
+-- case that says the suite can tell the difference.
+--
+-- IT HAS TO CALL THE FUNCTION
+--
+-- The version of this case that shipped did not. It built two JSONB literals locally and asserted
+-- that `(computed || row) ->> 'Config-07'` was the row's value - which is a property of the ||
+-- operator and would hold on a database where repair_config_maps had been deleted. It was named the
+-- sentinel, documented as the case that proves the suite discriminates, and executed against
+-- nothing. With the merge deliberately written backwards it still passed; cases 1, 8 and 11 were
+-- what actually failed.
+--
+-- WHAT MAKES ONE CALL DISCRIMINATE AGAINST TWO MUTANTS
+--
+-- The scratch row carries Config-07 = SURVIVOR-TAB and nothing else. The request proposes a
+-- different value for Config-07 and a new Config-01. Both halves are asserted about the same call:
+--
+--   * a function whose merge is reversed to `existing || computed` overwrites Config-07, so the
+--     first assertion fails;
+--   * a function that does nothing never adds Config-01, so the second one does.
+--
+-- Neither mutant satisfies both, and no arrangement of JSONB literals satisfies either without the
+-- function having run. The `added` count is asserted alongside so that a row repaired by something
+-- other than this call - a trigger, a leftover from an earlier case - cannot be mistaken for it.
+--
+-- Case 24 covers the mutant this cannot reach: one that repairs the first file of a request and
+-- drops the rest.
 
 DO $$
 DECLARE
-  v_row      JSONB := jsonb_build_object('Config-07', 'SURVIVOR-TAB');
-  v_computed JSONB := jsonb_build_object('Config-07', 'TAB-07', 'Config-01', 'TAB-01');
+  v_receipt JSONB;
+  v_tabs    JSONB;
 BEGIN
+  PERFORM set_config('request.jwt.claims',
+                     '{"sub":"aaaaaaaa-1111-4000-8000-000000000001"}', true);
+
+  SELECT repair_config_maps(
+           'aaaaaaaa-0000-4000-8000-000000000001'::uuid,
+           jsonb_build_array(jsonb_build_object(
+             'file_id', 'aaaaaaaa-9000-4000-8000-000000000008',
+             'maps', jsonb_build_object(
+               '_config_tabs', jsonb_build_object('Config-07', 'TAB-07',
+                                                  'Config-01', 'TAB-01')))))
+    INTO v_receipt;
+
+  SELECT custom_properties -> '_config_tabs' INTO v_tabs
+    FROM files WHERE id = 'aaaaaaaa-9000-4000-8000-000000000008';
+
   INSERT INTO proof_results VALUES (
-    23, 'SENTINEL: reversing the merge order would lose the value, so the order is load-bearing',
-    (v_computed || v_row)  ->> 'Config-07' = 'SURVIVOR-TAB'
-      AND (v_row || v_computed) ->> 'Config-07' = 'TAB-07',
-    'computed||row keeps the row; row||computed does not');
+    23, 'SENTINEL: one call to the function keeps the row''s value AND fills the gap',
+    v_tabs ->> 'Config-07' = 'SURVIVOR-TAB'
+      AND v_tabs ->> 'Config-01' = 'TAB-01'
+      AND (v_receipt #>> '{files,0,maps,_config_tabs,added}')::int = 1,
+    format('Config-07=%s (request proposed TAB-07) Config-01=%s added=%s',
+           v_tabs ->> 'Config-07', v_tabs ->> 'Config-01',
+           v_receipt #>> '{files,0,maps,_config_tabs,added}'));
+END $$;
+
+-- ===========================================
+-- CASE 24 - MORE THAN ONE FILE IN ONE REQUEST
+-- ===========================================
+-- Every case above sends a request naming exactly one file, except case 17 - and case 17 requires
+-- the request to apply NONE of itself. So nothing in the suite ever asked whether a request naming
+-- several files repairs all of them, and a mutant that applies the first element and returns
+-- passes all 23 other cases.
+--
+-- That is not a hypothetical shape. The renderer batches: the Vault Audit repair sends every file
+-- it found in one call, which is the only way this function is ever invoked in the product.
+--
+-- The two rows are identical, so the assertion is about position and nothing else. Both must keep
+-- their disagreeing value and both must gain the missing one.
+
+DO $$
+DECLARE
+  v_receipt JSONB;
+  v_a       JSONB;
+  v_b       JSONB;
+BEGIN
+  PERFORM set_config('request.jwt.claims',
+                     '{"sub":"aaaaaaaa-1111-4000-8000-000000000001"}', true);
+
+  SELECT repair_config_maps(
+           'aaaaaaaa-0000-4000-8000-000000000001'::uuid,
+           jsonb_build_array(
+             jsonb_build_object(
+               'file_id', 'aaaaaaaa-9000-4000-8000-000000000009',
+               'maps', jsonb_build_object(
+                 '_config_tabs', jsonb_build_object('Config-07', 'TAB-07',
+                                                    'Config-01', 'TAB-01'))),
+             jsonb_build_object(
+               'file_id', 'aaaaaaaa-9000-4000-8000-00000000000a',
+               'maps', jsonb_build_object(
+                 '_config_tabs', jsonb_build_object('Config-07', 'TAB-07',
+                                                    'Config-01', 'TAB-01')))))
+    INTO v_receipt;
+
+  SELECT custom_properties -> '_config_tabs' INTO v_a
+    FROM files WHERE id = 'aaaaaaaa-9000-4000-8000-000000000009';
+  SELECT custom_properties -> '_config_tabs' INTO v_b
+    FROM files WHERE id = 'aaaaaaaa-9000-4000-8000-00000000000a';
+
+  INSERT INTO proof_results VALUES (
+    24, 'a request naming two files repairs both of them, not just the first',
+    v_a ->> 'Config-07' = 'SURVIVOR-TAB' AND v_a ->> 'Config-01' = 'TAB-01'
+      AND v_b ->> 'Config-07' = 'SURVIVOR-TAB' AND v_b ->> 'Config-01' = 'TAB-01'
+      AND (v_receipt #>> '{files,0,updated}')::boolean
+      AND (v_receipt #>> '{files,1,updated}')::boolean
+      AND (v_receipt ->> 'entries_added')::int = 2,
+    format('first=%s second=%s entries_added=%s',
+           v_a ->> 'Config-01', v_b ->> 'Config-01', v_receipt ->> 'entries_added'));
 END $$;
 
 -- ===========================================
@@ -537,8 +659,8 @@ BEGIN
     INTO v_failed, v_total, v_names
   FROM proof_results;
 
-  IF v_total < 23 THEN
-    RAISE EXCEPTION 'Only % of 23 cases ran; the suite did not complete', v_total;
+  IF v_total < 24 THEN
+    RAISE EXCEPTION 'Only % of 24 cases ran; the suite did not complete', v_total;
   END IF;
 
   IF v_failed > 0 THEN
