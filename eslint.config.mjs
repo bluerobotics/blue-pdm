@@ -5,9 +5,29 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import prettier from 'eslint-config-prettier'
 
 export default tseslint.config(
-  // `scripts/**` joins `cli/**` here for the same reason: plain Node developer scripts, run
+  // `scripts/*.js` joins `cli/**` here for the same reason: plain Node developer scripts, run
   // directly rather than bundled, so the browser globals this config assumes do not apply.
-  { ignores: ['dist/**', 'dist-electron/**', 'release/**', 'docs/**', 'native/**', 'cli/**', 'scripts/**', 'solidworks-service/**', 'node_modules/**'] },
+  // The ignore is deliberately narrowed to `.js`: `scripts/repair-config-maps.ts` is a shipped
+  // operator entry point (`npm run repair:config-maps`) for the schema-94 config-map repair, not a
+  // developer convenience, and it is linted and typechecked like the rest of the TypeScript.
+  //
+  // `dist` is `**/dist/**` rather than `dist/**` because flat-config ignore patterns are anchored at
+  // the config file's directory: `dist/**` matches the root build output only and leaves `api/dist/`
+  // linted, so a local `npm run api:build` adds 43 errors that CI never sees. No tracked file has a
+  // `dist` path segment, so the recursive form excludes nothing real.
+  {
+    ignores: [
+      '**/dist/**',
+      'dist-electron/**',
+      'release/**',
+      'docs/**',
+      'native/**',
+      'cli/**',
+      'scripts/**/*.js',
+      'solidworks-service/**',
+      'node_modules/**',
+    ],
+  },
 
   js.configs.recommended,
   ...tseslint.configs.recommended,
@@ -36,6 +56,16 @@ export default tseslint.config(
 
   {
     files: ['electron/**/*.ts'],
+    rules: {
+      'no-console': 'off',
+    },
+  },
+
+  // A command-line tool's stdout is its output, not stray debugging, and these scripts have no
+  // logger to route it through — `log.*` is an app and API facility. The rest of the ruleset,
+  // including the type-safety rules, still applies.
+  {
+    files: ['scripts/**/*.ts'],
     rules: {
       'no-console': 'off',
     },

@@ -16,6 +16,19 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: bluerobotics/blueplm-api
 
+# Two pushes to api/ in quick succession each start a run, and both push the `latest` tag. Without
+# this, the two race and whichever finishes last wins — which can be the older commit, leaving
+# `latest` pointing at an image that is behind main with nothing to indicate it. Cancel the
+# superseded run rather than queueing it: for a mutable tag the newest commit is the only correct
+# answer, and a cancelled push is safe because the registry does not move a tag until the manifest
+# is uploaded at the very end.
+concurrency:
+  group: publish-api-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
@@ -56,3 +69,39 @@ jobs:
           build-args: |
             GIT_COMMIT_SHA=${{ github.sha }}
 
+  # A failed publish is silent: `latest` simply keeps serving the previous image, the app carries on
+  # talking to it, and nothing anywhere says the deployment is behind. Two consecutive runs failed
+  # that way and it went unnoticed until a review compared the published image's commit against
+  # main — by which time `latest` had been missing two security fixes for a fortnight.
+  #
+  # This cannot block or slow a publish; it only runs when one has already failed. It reuses a
+  # single open issue rather than filing one per failure, so a persistent break is one thread
+  # instead of a flood.
+  notify-failure:
+    name: Report publish failure
+    needs: build-and-push
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the tracking issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TITLE: 'API image publish is failing'
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          BODY=$(printf '%s\n' \
+            "\`publish-api.yml\` failed for commit \`${GITHUB_SHA}\`." \
+            "" \
+            "\`${REGISTRY}/${IMAGE_NAME}:latest\` still serves the previous image, so the deployed" \
+            "API is behind \`main\` until this is resolved." \
+            "" \
+            "Failed run: ${RUN_URL}")
+          EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "\"$TITLE\" in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo "$GITHUB_REPOSITORY" --body "$BODY"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body "$BODY"
+          fi

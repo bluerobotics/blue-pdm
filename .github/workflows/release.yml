@@ -5,8 +5,81 @@ on:
     tags:
       - 'v*'
 
+# Read by default; the two jobs that genuinely publish something widen it for themselves.
+permissions:
+  contents: read
+
+# `scripts/release.js` deletes and re-pushes an existing tag, so the same ref can start this
+# workflow twice. Serialize rather than cancel: a cancelled run can leave artifacts uploaded and a
+# GitHub release half-created, which is worse than waiting for the first one to finish.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  # The gate that did not exist. Before this, a tag produced installers without a single test,
+  # typecheck or API build having run against it — ci.yml has no `tags:` trigger, so nothing in the
+  # release path checked anything. This is the same job definition ci.yml runs on pull requests,
+  # not a copy of it; see verify.yml.
+  verify:
+    uses: ./.github/workflows/verify.yml
+
+  # A tag is the only input to this workflow and two things can silently disagree with it, both
+  # cheap to check here and expensive to discover afterwards.
+  #
+  # electron-builder takes the version from package.json rather than from the tag, so tagging
+  # v3.25.0 while package.json says 3.24.0 emits BluePLM-3.24.0-win.exe and a latest.yml announcing
+  # 3.24.0 — existing installs never see the release and auto-update never offers it. The release
+  # would still go green.
+  #
+  # The release body is extracted from CHANGELOG.md by exact heading match, so a tag whose section
+  # is missing or empty publishes a release with no notes.
+  check-release-metadata:
+    name: Check version and changelog
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Tag must match package.json version
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Tag v${TAG_VERSION} does not match package.json version ${PKG_VERSION}." \
+                 "electron-builder reads package.json, so this tag would publish installers named" \
+                 "${PKG_VERSION} and a latest.yml that existing installs ignore." \
+                 "Bump package.json to ${TAG_VERSION} and re-tag."
+            exit 1
+          fi
+          echo "Tag and package.json agree on ${PKG_VERSION}."
+
+      # Prereleases are exempt because they have never had their own changelog section — every
+      # `-beta.N` tag in this repository extracts empty today, and failing them here would break a
+      # working path to fix one that is not used by them.
+      - name: Changelog section must exist for a stable release
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          SECTION=$(awk "/^## \[${VERSION}\]/{flag=1; next} /^## \[/{flag=0} flag" CHANGELOG.md)
+          if [ -n "$(printf '%s' "$SECTION" | tr -d '[:space:]')" ]; then
+            echo "Found a non-empty '## [${VERSION}]' section in CHANGELOG.md."
+            exit 0
+          fi
+          case "$VERSION" in
+            *-*)
+              echo "::warning::No '## [${VERSION}]' section in CHANGELOG.md." \
+                   "Prerelease, so the release body will be empty — this is the existing behaviour."
+              ;;
+            *)
+              echo "::error::CHANGELOG.md has no non-empty '## [${VERSION}]' section." \
+                   "This tag would publish a release with no notes. Add the section and re-tag."
+              exit 1
+              ;;
+          esac
+
   build-windows:
+    needs: [verify, check-release-metadata]
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -29,21 +102,35 @@ jobs:
       - name: Download restic binary
         run: npm run download-restic -- --current
 
-      # Build SolidWorks service - requires SolidWorks interop DLLs in the project
+      # Blocking, deliberately. This step carried `continue-on-error: true` from 2fc2bd9, where the
+      # comment read "will fail on GitHub-hosted runners (no SolidWorks), but works on self-hosted
+      # runners". That stopped being true in 7d165b2, which moved the interop assemblies to
+      # SolidWorks.Interop.* NuGet PackageReferences and says so in the csproj: the Document Manager
+      # API is bound dynamically at runtime, "no compile-time reference needed... this allows CI/CD
+      # builds to succeed". Nothing here needs SOLIDWORKS installed, so a failure is a real failure.
       - name: Build SolidWorks Service
-        id: sw-service
-        continue-on-error: true
-        run: |
-          dotnet build solidworks-service/BluePLM.SolidWorksService -c Release
-          
+        run: dotnet build solidworks-service/BluePLM.SolidWorksService -c Release
+
       - name: Copy SolidWorks Service to resources
-        if: steps.sw-service.outcome == 'success'
         run: |
           New-Item -ItemType Directory -Force -Path resources/bin/win32
           Copy-Item solidworks-service/BluePLM.SolidWorksService/bin/Release/*.exe resources/bin/win32/
           Copy-Item solidworks-service/BluePLM.SolidWorksService/bin/Release/*.dll resources/bin/win32/
           Copy-Item solidworks-service/BluePLM.SolidWorksService/bin/Release/*.config resources/bin/win32/
           Write-Host "SolidWorks service copied to resources/bin/win32"
+
+      # Belt and braces for the same defect from the other end. electron-builder skips an
+      # extraResources entry whose `from` directory is missing rather than failing, and
+      # `if-no-files-found: error` below only guards the installer itself, so an absent service
+      # binary produces a green release and an installer with no SOLIDWORKS integration. Assert the
+      # binary exists while the cause is still on screen, rather than discovering it from a user.
+      - name: Verify SolidWorks service binary is present
+        run: |
+          $exe = 'resources/bin/win32/BluePLM.SolidWorksService.exe'
+          if (-not (Test-Path $exe)) {
+            throw "Missing $exe - the installer would ship without SOLIDWORKS integration."
+          }
+          Write-Host "Found $exe ($((Get-Item $exe).Length) bytes)"
 
       - name: Build Electron app
         run: npm run build -- --publish never
@@ -60,6 +147,7 @@ jobs:
           if-no-files-found: error
 
   build-macos:
+    needs: [verify, check-release-metadata]
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -93,6 +181,7 @@ jobs:
           if-no-files-found: error
 
   build-api:
+    needs: [verify, check-release-metadata]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -168,17 +257,26 @@ jobs:
             echo "IS_PRERELEASE=false" >> $GITHUB_OUTPUT
           fi
 
+      # check-release-metadata has already rejected a stable tag with no section, but the guard is
+      # repeated here because this is the step that actually produces the body: it should not be
+      # able to publish an empty release regardless of what ran before it. Prereleases are exempt
+      # for the reason given in that job.
       - name: Extract changelog for version
         id: changelog
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
           CHANGELOG=$(awk "/^## \[${VERSION}\]/{flag=1; next} /^## \[/{flag=0} flag" CHANGELOG.md)
+          if [ -z "$(printf '%s' "$CHANGELOG" | tr -d '[:space:]')" ] && [[ "$VERSION" != *-* ]]; then
+            echo "::error::Refusing to publish ${VERSION} with an empty release body:" \
+                 "CHANGELOG.md has no non-empty '## [${VERSION}]' section."
+            exit 1
+          fi
           echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
           echo "$CHANGELOG" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           name: ${{ steps.get_version.outputs.VERSION }}
           body: ${{ steps.changelog.outputs.CHANGELOG }}

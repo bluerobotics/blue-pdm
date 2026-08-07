@@ -24,7 +24,11 @@
       "@/*": ["src/*"]
     }
   },
-  "include": ["src"],
+  // `scripts/**/*.ts` is checked here rather than under tsconfig.node.json because
+  // scripts/repair-config-maps.ts imports src/lib/metadata/* by explicit `.ts` specifier, which
+  // needs the `allowImportingTsExtensions` and `bundler` resolution this config sets. Checking it
+  // against the same config as the modules it reuses is also what makes the check meaningful.
+  "include": ["src", "scripts/**/*.ts"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }
 

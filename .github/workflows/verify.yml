@@ -1,0 +1,72 @@
+name: Verify
+
+# The single definition of "this revision is sound", called by ci.yml on pull requests and pushes
+# to main and by release.yml on tag pushes.
+#
+# It is reusable rather than duplicated because the two paths had already drifted apart: ci.yml has
+# no `tags:` trigger and release.yml ran nothing but `npm run build`, so every tag in this
+# repository was cut without a single test, typecheck or API build having run on it. A second copy
+# of these steps would drift again the first time only one of them was updated. One definition
+# cannot.
+on:
+  workflow_call:
+
+# Read-only. Nothing here publishes, comments or writes to the repository — it installs
+# dependencies and runs checks. `npm ci` executes arbitrary postinstall scripts, so the token this
+# job carries is worth keeping useless.
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Typecheck and Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # Node 22 because both `engines` fields that govern this tree require it: the root
+      # package.json declares `>=22.12.0` and @electron/rebuild declares the same, and Electron 39
+      # embeds Node 22, so 22 is the closest match to what this code actually runs on.
+      #
+      # It was originally pinned here for a different reason — src/lib/network.ts read
+      # `navigator.onLine` at module scope, and `navigator` only arrived in Node 21, so on 20 the
+      # module failed to import and the suites that imported it were skipped rather than failed.
+      # That read is guarded with a `typeof` check now, so it no longer forces the version; the
+      # `engines` floor does.
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            api/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # api/ is a separate deployable with its own manifest and lockfile, and the Docker image
+      # installs from those. Root `npm ci` does not touch them, so without this step
+      # `typecheck:api` resolves the API against whatever the desktop app happens to have hoisted —
+      # a different dependency set from the one that actually ships. Installing api/'s own lockfile
+      # checks the API against the versions the image is built from.
+      - name: Install API dependencies
+        run: npm ci --prefix api
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Typecheck API
+        run: npm run typecheck:api
+
+      # `typecheck:api` runs with noEmit, so it proves the types are sound and nothing else. The
+      # image runs the JavaScript that tsc emits, and emit can fail — or succeed while producing
+      # specifiers Node cannot resolve — with the type check still green. This compiles the API the
+      # same way the Dockerfile does, so a broken build fails the caller instead of the publish.
+      - name: Build API
+        run: npm run api:build
+
+      - name: Test
+        run: npm test

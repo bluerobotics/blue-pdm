@@ -7,6 +7,13 @@ on:
       - main
   workflow_dispatch:
 
+# The repository default token is write-scoped and can approve pull requests, while every job here
+# runs `npm ci` and therefore arbitrary postinstall scripts from the dependency tree. Nothing in
+# this workflow writes anything back, so read is all it gets. Declared at the top level so a job
+# added later inherits the restriction rather than the default.
+permissions:
+  contents: read
+
 # A superseded push to a pull request has nothing left to prove, so cancel it.
 # Pushes to main are never cancelled: every commit on main gets its own answer.
 concurrency:
@@ -14,62 +21,19 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Defined in verify.yml so that tag builds run this exact job rather than a copy of it.
+  # See the comment at the top of that file.
   verify:
-    name: Typecheck and Test
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
+    uses: ./.github/workflows/verify.yml
 
-      # Node 22 rather than the 20 the release workflow builds with. Node 20 has no
-      # `navigator` global — that arrived in 21 — and src/lib/network.ts reads
-      # `navigator.onLine` at module scope, so on 20 two suites fail to import and
-      # 25 tests never run. 22 is also what Electron 39 embeds and what
-      # @electron/rebuild's engines field requires, so it is the closer match to
-      # what this code actually runs on.
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: |
-            package-lock.json
-            api/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      # api/ is a separate deployable with its own manifest and lockfile, and the
-      # Docker image installs from those. Root `npm ci` does not touch them, so
-      # without this step `typecheck:api` resolves the API against whatever the
-      # desktop app happens to have hoisted — a different dependency set from the
-      # one that actually ships. Installing api/'s own lockfile checks the API
-      # against the versions the image is built from.
-      - name: Install API dependencies
-        run: npm ci --prefix api
-
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Typecheck API
-        run: npm run typecheck:api
-
-      # `typecheck:api` runs with noEmit, so it proves the types are sound and
-      # nothing else. The image runs the JavaScript that tsc emits, and emit can
-      # fail — or succeed while producing specifiers Node cannot resolve — with
-      # the type check still green. This compiles the API the same way the
-      # Dockerfile does, so a broken build fails the PR instead of the publish.
-      - name: Build API
-        run: npm run api:build
-
-      - name: Test
-        run: npm test
-
-  # Non-blocking on purpose. `npm run lint` currently reports 136 errors and 539
-  # warnings across 172 files, all pre-existing; a blocking lint job would fail on
-  # its first run and be switched off before anyone fixed them. This reports the
-  # count so it can be driven down, and starts blocking once it reaches zero.
+  # Non-blocking on purpose. `npm run lint` is red with a backlog of pre-existing errors, and a
+  # blocking lint job would fail on its first run and be switched off before anyone fixed them.
+  # This reports the count so it can be driven down, and starts blocking once it reaches zero.
+  #
+  # No count is quoted here deliberately. The figures this comment used to carry had gone stale —
+  # the warning total by 7, measured against a clean checkout — and a comment nobody can trust is
+  # worse than no comment. The job's own output is the current number; a ratchet is the thing that
+  # should hold it, not a sentence.
   lint:
     name: Lint (non-blocking)
     runs-on: ubuntu-latest

@@ -11,6 +11,18 @@ on:
     types: [published]
   workflow_dispatch:
 
+# The deploy job scopes itself below; this is the floor for any job added later, so a new one
+# inherits read rather than the repository's write-scoped default.
+permissions:
+  contents: read
+
+# Two docs pushes in quick succession each deploy to the same Cloudflare Pages project, and the
+# older run can finish last and win. Cancel the superseded one: the newest commit is the only
+# correct content for a site that serves one version.
+concurrency:
+  group: deploy-docs-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
