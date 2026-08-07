@@ -20,6 +20,7 @@ import {
   resolvePartNumber,
   resolveRevision,
   resolvedText,
+  type ResolvedMetadataField,
 } from '@/lib/metadata/overlay'
 import { combineBaseAndTab, getSerializationSettings } from '@/lib/serialization'
 import type { LocalFile } from '@/stores/pdmStore'
@@ -39,6 +40,17 @@ export interface ConfigurationExportMetadataInput {
   /** The configuration as the tree loaded it, for the tab and description read out of the file. */
   loaded?: { tabNumber?: string; description?: string }
   organizationId?: string
+}
+
+/**
+ * What BluePLM says about a field, or `undefined` when it has nothing to say.
+ *
+ * A cleared field comes back as `''` - an answer - while a field neither side ever set comes back
+ * as `undefined`, which is what lets a caller fall through to the document for the second without
+ * falling through for the first.
+ */
+function decided(field: ResolvedMetadataField): string | undefined {
+  return field.source === 'absent' ? undefined : (field.value ?? '')
 }
 
 /**
@@ -74,10 +86,15 @@ export async function buildConfigurationExportMetadata(
   if (!file) return { partNumber: '', tabNumber: '', revision: '', description: '' }
 
   // The overlay first, then whatever the configuration tree read out of the document.
-  const tabNumber = resolveConfigurationTab(file, configuration).value || loaded?.tabNumber || ''
+  //
+  // `decided`, not `||`. `.value` is null for a field the user cleared and for one nobody ever set,
+  // so a truthiness chain reads a deletion as an absence and falls through to the document - and
+  // the export then leaves the building carrying the value the user had just removed, in its
+  // filename and in its title block. `.source` is the only place the two are distinguishable.
+  const tabNumber = decided(resolveConfigurationTab(file, configuration)) ?? loaded?.tabNumber ?? ''
   const description =
-    resolveConfigurationDescription(file, configuration).value ||
-    loaded?.description ||
+    decided(resolveConfigurationDescription(file, configuration)) ??
+    loaded?.description ??
     resolvedText(resolveDescription(file))
 
   const baseNumber = resolvedText(resolvePartNumber(file))

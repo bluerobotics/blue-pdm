@@ -237,13 +237,20 @@ export async function sendSessionHeartbeat(
     log.error('[Session]', 'Heartbeat failed', { error: error.message })
   }
 
-  // Also update last_online in users table (throttled - only if more than 1 min since last update)
-  // This keeps "last online" in sync with actual activity
-  try {
-    await client.from('users').update({ last_online: new Date().toISOString() }).eq('id', userId)
-  } catch (error) {
-    // Silently ignore - last_online is non-critical
-  }
+  // Keeps "last online" in sync with actual activity. Non-critical, so the result is not acted on -
+  // but `updateLastOnline` logs a failure rather than discarding it, which the inline write did not.
+  //
+  // Through the RPC rather than writing `public.users` directly. This was the last self-serve direct
+  // table write to that table in the renderer, and while schema 95's `WITH CHECK` admits it either
+  // way, routing it here collapses the column grant `authenticated` needs on `users` from
+  // `last_online, role, org_id` down to `role` - which is what makes a follow-up
+  // `REVOKE UPDATE ON users; GRANT UPDATE (role)` worth issuing as a second lock on `org_id`,
+  // independent of any policy. Agent A's request; their report has the reasoning in full.
+  //
+  // The timestamp now comes from the database rather than from this machine's clock, and the row is
+  // chosen by `auth.uid()` rather than by the `userId` argument. Both are the same row here, and a
+  // skewed workstation clock can no longer stamp a "last online" in the future.
+  await updateLastOnline()
 
   return true
 }

@@ -860,9 +860,9 @@ const DELIBERATE: readonly Allowance[] = [
   },
   {
     file: 'features/integrations/solidworks/SolidWorksPanel.tsx',
-    symbols: ['handleSyncMetadata', 'SWPropertiesTab'],
+    symbols: ['handleSyncMetadata', 'SWPropertiesTab', 'handleWriteToSwFile'],
     reason:
-      'A database-versus-file comparison. Overlaying a pending edit would ask whether the file agrees with what the user just typed and report "already up to date" for a file still holding the old value, which is the divergence the panel exists to surface.',
+      'handleSyncMetadata and SWPropertiesTab are a database-versus-file comparison. Overlaying a pending edit would ask whether the file agrees with what the user just typed and report "already up to date" for a file still holding the old value, which is the divergence the panel exists to surface. handleWriteToSwFile is the opposite half and reads back the synthetic pending set it just built out of resolveFileMetadata, handing the planner a committed side that agrees with it - the same shape, and the same reason, as syncMetadataPlan.ts and configWritePlan.ts.',
   },
   {
     file: 'features/items/itemBrowser/components/ItemExpandedSections.tsx',

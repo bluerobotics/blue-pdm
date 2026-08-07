@@ -38,6 +38,13 @@ async function getBrNumberForFile(
   organizationId: string | undefined,
 ): Promise<string> {
   const baseNumber = resolvedText(resolvePartNumber(file))
+
+  // Left on truthiness deliberately, and it is not the cleared-versus-never-set distinction: the
+  // fallback here runs across *configurations*, not across the two states of one field, and the
+  // question it answers is "which configuration names this file". `resolveConfigurationTabs`
+  // returns a merged `Record<string, string>` that carries no source per key, so a presence-aware
+  // version of this line would need the merge to return resolved fields rather than strings -
+  // a change to the map API rather than to this call site. Recorded in `C_AGENT_REPORT.md`.
   const configTabs = resolveConfigurationTabs(file)
   const tabNumber =
     configTabs['Default'] || configTabs['default'] || Object.values(configTabs)[0] || ''

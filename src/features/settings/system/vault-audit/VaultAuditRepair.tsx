@@ -16,14 +16,15 @@ import { AlertTriangle, Check, Database, Loader2, ShieldCheck, Sparkles } from '
 import { t } from '@/lib/i18n'
 import type { VaultAuditRepairOutcome } from '@/types/vaultAudit'
 
+import { describeShortfall } from './repairReceipt'
 import { useVaultAuditRepair } from './useVaultAuditRepair'
 import { VaultAuditRepairTable } from './VaultAuditRepairTable'
 
 function Receipt({ outcome }: { outcome: VaultAuditRepairOutcome }) {
-  // Fewer entries landing than were asked for is the normal result of applying against a row that
-  // has moved on, not a failure. It is called out because the alternative is an administrator
-  // comparing two numbers and assuming something broke.
-  const shortfall = outcome.entriesRequested - outcome.entriesAdded
+  // Broken out by reason rather than reported as one number. Fewer entries landing than were asked
+  // for is the normal result of applying against a row that has moved on - but it is also what an
+  // unreachable file looks like, and this panel used to describe both as "already there".
+  const shortfall = describeShortfall(outcome)
   const refused = outcome.files.filter((file) => file.refused !== null)
 
   return (
@@ -35,17 +36,28 @@ function Receipt({ outcome }: { outcome: VaultAuditRepairOutcome }) {
           files: outcome.filesUpdated,
         })}
       </p>
-      {shortfall > 0 && (
+      {shortfall.alreadyPresent > 0 && (
         <p className="text-xs text-plm-fg-muted">
           {t('vaultAudit.repair.receiptShortfall', {
-            count: shortfall,
+            count: shortfall.alreadyPresent,
             requested: outcome.entriesRequested,
           })}
         </p>
       )}
-      {refused.length > 0 && (
+      {shortfall.noRecord > 0 && (
         <p className="text-xs text-plm-fg-muted">
-          {t('vaultAudit.repair.receiptRefused', { count: refused.length })}
+          {t('vaultAudit.repair.receiptNoRecord', { count: shortfall.noRecord })}
+        </p>
+      )}
+      {refused.length > 0 && (
+        <p className="text-xs text-plm-warning flex items-start gap-1.5">
+          <AlertTriangle size={13} className="mt-0.5 flex-shrink-0" />
+          <span>
+            {t('vaultAudit.repair.receiptRefused', { count: refused.length })}
+            {shortfall.unreachable > 0 && (
+              <> {t('vaultAudit.repair.receiptEntriesDropped', { count: shortfall.unreachable })}</>
+            )}
+          </span>
         </p>
       )}
     </div>

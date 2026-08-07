@@ -363,6 +363,18 @@ export const en: TranslationDict = {
     forceRelease: 'Force Release',
   },
 
+  // Sharing a file by link. Every one of these is a refusal: the success path returns a URL rather
+  // than a sentence. `notPermitted` covers both halves of its clause on purpose - the database
+  // answers "may this person share it" and "was the share recorded" with the same refusal, and
+  // guessing which one it meant would put a wrong reason in front of the user.
+  shareLink: {
+    fileNotFound: 'File not found',
+    noContent: 'File has no content in storage',
+    notPermitted:
+      'You do not have permission to share this file, or the share could not be recorded. No link was created.',
+    signingFailed: 'Failed to generate download URL',
+  },
+
   // Status messages
   status: {
     ready: 'Ready',
@@ -676,6 +688,8 @@ export const en: TranslationDict = {
 
   // Trash view
   trash: {
+    deleteNotPermitted:
+      'You do not have permission to delete files. Ask an administrator for the Delete permission on Explorer.',
     openVaultToView: 'Open a vault to view trash',
     signInToView: 'Sign in to view trash',
     fileViewTitle: 'File view - show only deleted files',
@@ -1033,6 +1047,13 @@ export const en: TranslationDict = {
   metadataWrite: {
     configurationsFailed:
       'Only part of the file was written: {{failed}} of {{total}} configurations did not take the change',
+    // Shown instead of a write, not after one. The alternative BluePLM is declining is spelled out
+    // because refusing to write looks like a malfunction unless the reader can see what the other
+    // choice would have cost them.
+    configurationsUnreadable:
+      'Nothing was written: BluePLM could not read this file’s configurations, and writing only the document properties would have left every configuration holding its old values.',
+    configurationsUnaddressed:
+      '{{count}} of this file’s configurations were never written to and still hold their previous values, even though the document properties were updated.',
     configurationsUnwritten:
       'File-level properties were written, but the configurations were not: {{reason}}',
     fieldsUnwritten:
@@ -1109,6 +1130,10 @@ export const en: TranslationDict = {
       cancelledNote: 'Cancelled part-way — these numbers cover only the files that were read.',
       generatedAt: 'Scanned {{time}}',
       noFindings: 'Every value compared agrees. Nothing to act on.',
+      // The narrower claim, for a run whose scope left files unopened. "Nothing to act on" is not
+      // available then: it would be an all-clear over files nothing looked at.
+      noFindingsInCompared:
+        'Every value compared agrees. Files that were not compared are listed below.',
       filesWithFindings: '{{files}} of {{compared}} files have at least one finding',
       multiConfiguration: '{{count}} of them have more than one configuration',
       noEvidence:
@@ -1123,6 +1148,17 @@ export const en: TranslationDict = {
       missingOnDisk: '{{count}} have no local copy',
       openInSolidWorks: '{{count}} are open in SOLIDWORKS',
       readFailed: '{{count}} could not be opened',
+    },
+
+    // Files the run's scope covered but never opened - distinct from `unread`, which is files it
+    // tried to open and could not. Worded as an omission rather than as damage on purpose: the
+    // thousands of single-configuration models a narrowed run skips are overwhelmingly fine, and an
+    // alarming count over them would be a worse lie than the silence it replaces.
+    notCompared: {
+      heading: 'Not compared',
+      noConfigurationRecord:
+        '{{count}} carry no configuration record, so a scan of this scope never opens them',
+      beyondLimit: '{{count}} were beyond the run’s limit',
     },
 
     integrity: {
@@ -1228,10 +1264,17 @@ export const en: TranslationDict = {
       appliedToast: 'Restored {{entries}} entries across {{files}} files.',
 
       receiptHeading: '{{entries}} entries restored across {{files}} files.',
+      // Three reasons an approved entry did not land, kept apart because only one of them is
+      // reassuring. Before the receipt distinguished them, the sentence below was printed over all
+      // three, so entries that had been dropped were described as entries that were already safe.
       receiptShortfall:
         '{{count}} of the {{requested}} requested were already there. Your record was ahead of the scan and kept what it had, which is the intended outcome rather than a failure.',
+      receiptNoRecord:
+        '{{count}} entries had no configuration record on the row to be restored into, so they were not written. Those files never carried one, so nothing was lost from them.',
       receiptRefused:
         '{{count}} files could not be reached — moved, deleted, or no longer carrying a configuration record. Nothing was written to them.',
+      receiptEntriesDropped:
+        '{{count}} approved entries went with them and were not written anywhere. Re-run the scan to pick those files up again.',
     },
 
     fields: {

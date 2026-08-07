@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2, FileWarning, ShieldCheck } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, CircleDashed, FileWarning, ShieldCheck } from 'lucide-react'
 
 import { t } from '@/lib/i18n'
 import type { VaultAuditView } from '@/types/vaultAudit'
@@ -26,15 +26,45 @@ function unreadLines(view: VaultAuditView): string[] {
   return lines
 }
 
+/**
+ * Why in-scope files were never opened, one clause per reason.
+ *
+ * Deliberately worded as "not compared" rather than as anything that sounds like damage: the 6,363
+ * single-configuration models a `configuration-recorded` run skips are overwhelmingly fine, and an
+ * alarming count over them would be a worse lie than the silence it replaces.
+ */
+function notComparedLines(view: VaultAuditView): string[] {
+  const lines: string[] = []
+  const { noConfigurationRecord, beyondLimit } = view.notCompared
+
+  if (noConfigurationRecord > 0) {
+    lines.push(
+      t('vaultAudit.notCompared.noConfigurationRecord', { count: noConfigurationRecord }),
+    )
+  }
+  if (beyondLimit > 0) {
+    lines.push(t('vaultAudit.notCompared.beyondLimit', { count: beyondLimit }))
+  }
+  return lines
+}
+
 export function VaultAuditOverview({ view, artifactPath }: VaultAuditOverviewProps) {
-  const clean = view.findings.length === 0
+  // "No findings" and "nothing to act on" are different claims, and `findings.length === 0` only
+  // supports the first. A `configuration-recorded` run compares roughly one model in seven, so the
+  // green tick used to appear over six thousand files nothing had looked at.
+  const noFindings = view.findings.length === 0
+  const everythingCompared = view.notCompared.total === 0
+  const clean = noFindings && everythingCompared
   const notRead = unreadLines(view)
+  const notCompared = notComparedLines(view)
 
   return (
     <div className="space-y-3">
       <div className="flex items-start gap-2">
         {clean ? (
           <CheckCircle2 size={16} className="text-plm-success mt-0.5 flex-shrink-0" />
+        ) : noFindings ? (
+          <CircleDashed size={16} className="text-plm-fg-muted mt-0.5 flex-shrink-0" />
         ) : (
           <FileWarning size={16} className="text-yellow-500 mt-0.5 flex-shrink-0" />
         )}
@@ -42,10 +72,12 @@ export function VaultAuditOverview({ view, artifactPath }: VaultAuditOverviewPro
           <p className="text-sm text-plm-fg">
             {clean
               ? t('vaultAudit.result.noFindings')
-              : t('vaultAudit.result.filesWithFindings', {
-                  files: view.filesWithFindings,
-                  compared: view.filesCompared,
-                })}
+              : noFindings
+                ? t('vaultAudit.result.noFindingsInCompared')
+                : t('vaultAudit.result.filesWithFindings', {
+                    files: view.filesWithFindings,
+                    compared: view.filesCompared,
+                  })}
           </p>
           <p className="text-xs text-plm-fg-muted mt-0.5">
             {t('vaultAudit.result.scanned', {
@@ -64,6 +96,12 @@ export function VaultAuditOverview({ view, artifactPath }: VaultAuditOverviewPro
         <p className="text-xs text-yellow-500 flex items-start gap-1.5">
           <AlertTriangle size={13} className="mt-0.5 flex-shrink-0" />
           {t('vaultAudit.result.cancelledNote')}
+        </p>
+      )}
+
+      {notCompared.length > 0 && (
+        <p className="text-xs text-plm-fg-muted">
+          {t('vaultAudit.notCompared.heading')}: {notCompared.join(' · ')}
         </p>
       )}
 

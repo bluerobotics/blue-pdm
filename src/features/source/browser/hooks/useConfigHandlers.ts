@@ -26,7 +26,9 @@ import { useCallback } from 'react'
 
 import { getEffectiveExportSettings } from '@/features/settings/system'
 import { beginWatcherSuppression } from '@/lib/fileWatcherSuppression'
+import { t } from '@/lib/i18n'
 import { log } from '@/lib/logger'
+import { readDocumentConfigurations } from '@/lib/metadata/configurationRead'
 import { resolvePartNumber, resolvedText } from '@/lib/metadata/overlay'
 import { reportMetadataWrite, unattemptedWrite } from '@/lib/metadata/reportMetadataWrite'
 import {
@@ -36,7 +38,11 @@ import {
   fileWriteKey,
 } from '@/lib/metadata/writeInFlight'
 import { writeMetadataWithVerification } from '@/lib/metadata/writeMetadataToFile'
-import { buildMetadataWritePlan, type PlanSerialization } from '@/lib/metadata/writePlan'
+import {
+  buildMetadataWritePlan,
+  type PlanConfiguration,
+  type PlanSerialization,
+} from '@/lib/metadata/writePlan'
 import { listWriteAddresses } from '@/lib/metadata/writeState'
 import { refreshLocalFileFacts } from '@/lib/refreshLocalFileFacts'
 import { combineBaseAndTab, getSerializationSettings, normalizeTabNumber } from '@/lib/serialization'
@@ -486,7 +492,29 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
         return
       }
 
-      const configs = fileConfigurations.get(file.path) || []
+      // `fileConfigurations` is the expansion cache: it holds an entry only for files whose
+      // configuration row the user has opened at least once this session. `|| []` therefore read
+      // "the user has not expanded this row" as "this document has no configurations", and a plan
+      // built on that reaches the document's own bag and nothing else. The read-back then confirms
+      // the one scope the write touched and the save reports verified, while every configuration
+      // keeps its old description. It is B1's mistake in a second place, with a UI cache standing
+      // in for the failed service call.
+      //
+      // Read live on a miss, which is what check-in already does, so the plan does not depend on
+      // whether a row happens to be open.
+      const cached = fileConfigurations.get(file.path)
+      const configs = cached ?? (await readPlanConfigurations(file.path))
+      if (configs === null) {
+        reportMetadataWrite(
+          edit,
+          unattemptedWrite(edit, 'the file’s configurations could not be listed'),
+        )
+        addToast(
+          'error',
+          t('metadataWrite.configurationsUnreadable'),
+        )
+        return
+      }
 
       const inFlightKey = fileWriteKey(file.path)
       beginMetadataWrite(inFlightKey)
@@ -546,6 +574,10 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
         )
         const parity = writeParity()
 
+        // Presence decides, not truthiness. `pm.part_number !== undefined` is the whole test: an
+        // item number cleared to nothing is an edit like any other, and the propagation below has
+        // to carry it into every configuration or the file ends up with an empty document bag and
+        // 68 configurations still holding the number the user deleted.
         const itemNumberEdited = pm.part_number !== undefined
         const baseNumber = resolvedText(resolvePartNumber(file))
 
@@ -591,7 +623,12 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
           // Not verified, and deliberately so - these are derived copies of a value whose own
           // address is verified above, and reading back once per config would cost more than the
           // whole edit.
-          if (itemNumberEdited && baseNumber && configs.length === 0) {
+          //
+          // The plan above reaches only the base configuration for a file-scope field, so this is
+          // what carries the number to the rest. It is no longer conditioned on the configuration
+          // list having been empty: that made the propagation happen or not happen according to
+          // whether the row was expanded, which is not a property of the edit.
+          if (itemNumberEdited) {
             await propagateBaseNumberToConfigs(file, baseNumber, serialization, isOpenInSW)
           }
 
@@ -926,12 +963,47 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
 }
 
 /**
+ * Every configuration the document holds, or null when the list could not be read.
+ *
+ * Null rather than an empty array, and the distinction is the whole point: a document with no
+ * configurations and a document whose configurations could not be listed used to produce the same
+ * empty array, and a write plan built on the second one silently covers a fraction of the file.
+ * `readDocumentConfigurations` is where the service's reply is read; this only takes the shape the
+ * planner wants.
+ */
+async function readPlanConfigurations(path: string): Promise<PlanConfiguration[] | null> {
+  const read = await readDocumentConfigurations(path)
+  if (!read.ok) {
+    log.warn('[ConfigHandlers]', 'Could not list the document’s configurations', {
+      path,
+      reason: read.reason,
+    })
+    return null
+  }
+
+  return read.configurations.map((configuration) => ({
+    name: configuration.name,
+    isActive: configuration.isActive,
+  }))
+}
+
+/**
  * Push the base item number into every configuration the document has.
  *
- * Only runs when the datacard's own save had no loaded configuration list to write through, which
- * is when a drawing referencing a specific configuration would otherwise keep reading the old base.
+ * Runs whenever the item number was edited. It used to be gated on the datacard having had no
+ * loaded configuration list, which made a drawing's `$PRP:"Number"` resolve to the new base or the
+ * old one depending on whether the user had happened to expand that file's configuration row -
+ * about as arbitrary a dependency as a written value can have.
+ *
  * Deliberately unverified: these are derived copies of a value whose own address was confirmed by
  * the write above, and one read-back per configuration would cost more than the edit did.
+ *
+ * An empty `baseNumber` is a clear, not an absence - the caller only reaches here when the user
+ * edited the item number - and it is written as an empty property rather than skipped, matching
+ * `buildMetadataWritePlan`. Emptied rather than removed, because a title block reading
+ * `$PRP:"Number"` by name renders blank against an empty property and breaks against a missing one.
+ * The tab is dropped along with the base: `combineBaseAndTab('', '500')` would leave the
+ * configuration holding a bare `-500`, which is neither the old number nor the cleared one.
  */
 async function propagateBaseNumberToConfigs(
   file: LocalFile,
@@ -940,8 +1012,20 @@ async function propagateBaseNumberToConfigs(
   isOpenInSW: boolean,
 ): Promise<void> {
   try {
-    const configResult = await window.electronAPI?.solidworks?.getConfigurations(file.path)
-    const allConfigs = configResult?.data?.configurations || []
+    // Through the shared reader, so a failed enumeration is logged rather than read as a document
+    // with nothing to propagate to. The propagation is still best-effort - the number's own address
+    // was confirmed by the write above - but "could not ask" and "nothing to ask about" should not
+    // leave the same trace behind.
+    const read = await readDocumentConfigurations(file.path)
+    if (!read.ok) {
+      log.warn('[ConfigHandlers]', 'Base number not propagated: could not list the configurations', {
+        path: file.path,
+        reason: read.reason,
+      })
+      return
+    }
+
+    const allConfigs = read.configurations
     if (allConfigs.length === 0) return
 
     log.info('[ConfigHandlers]', 'Propagating base number to all configs', {
@@ -955,18 +1039,20 @@ async function propagateBaseNumberToConfigs(
         // Normalize tab number to strip leading separators (e.g., "-500" -> "500").
         // Some SW templates store tab with leading dash which causes double-dash.
         const existingTab = normalizeTabNumber(
-          config.properties?.['Tab Number'] || '',
+          config.properties['Tab Number'] || '',
           serialization?.settings.tab_separator || '-',
         )
 
-        const configProps: Record<string, string> = {
-          'Base Item Number': baseNumber,
-          Number: existingTab
-            ? serialization?.tabEnabled
-              ? combineBaseAndTab(baseNumber, existingTab, serialization.settings)
-              : `${baseNumber}-${existingTab}`
-            : baseNumber,
-        }
+        const configProps: Record<string, string> = baseNumber
+          ? {
+              'Base Item Number': baseNumber,
+              Number: existingTab
+                ? serialization?.tabEnabled
+                  ? combineBaseAndTab(baseNumber, existingTab, serialization.settings)
+                  : `${baseNumber}-${existingTab}`
+                : baseNumber,
+            }
+          : { 'Base Item Number': '', Number: '' }
 
         if (isOpenInSW) {
           await window.electronAPI?.solidworks?.setDocumentProperties?.(

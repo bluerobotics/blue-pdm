@@ -1,10 +1,34 @@
-import { getSupabaseClient } from '../client'
-import { processWithConcurrency, CONCURRENT_OPERATIONS } from '../../concurrency'
+import { t } from '@/lib/i18n'
 import { log } from '@/lib/logger'
+
+import { processWithConcurrency, CONCURRENT_OPERATIONS } from '../../concurrency'
+import { getSupabaseClient } from '../client'
 
 // ============================================
 // Soft Delete / Restore Operations
 // ============================================
+
+/**
+ * PostgREST's code for "one row requested, none returned".
+ *
+ * An UPDATE that row-level security refuses does not come back as a permission error. The statement
+ * runs, matches nothing the caller is allowed to write, and returns an empty set - so `.single()`
+ * reports *"JSON object requested, multiple (or no) rows returned"* and the user is shown that.
+ */
+const NO_ROW_RETURNED = 'PGRST116'
+
+/**
+ * What to tell the user when the soft delete wrote nothing.
+ *
+ * Schema 95 moves trashing from `module:explorer:edit` to `module:explorer:delete`, so from that
+ * release on this is the ordinary experience of an organisation that granted Edit and withheld
+ * Delete on purpose. The select above already proved the row exists and is visible to this caller,
+ * which is what makes "you may not write it" the only remaining reading of an empty update.
+ */
+export function describeFailedSoftDelete(error: { code?: string; message: string }): string {
+  if (error.code !== NO_ROW_RETURNED) return error.message
+  return t('trash.deleteNotPermitted')
+}
 
 /**
  * Soft delete a file (move to trash)
@@ -50,7 +74,12 @@ export async function softDeleteFile(
     .single()
 
   if (error) {
-    return { success: false, error: error.message }
+    log.warn('[Trash]', 'The soft delete wrote nothing', {
+      fileId,
+      code: error.code,
+      reason: error.message,
+    })
+    return { success: false, error: describeFailedSoftDelete(error) }
   }
 
   // Log activity

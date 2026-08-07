@@ -12,6 +12,20 @@
  * Here the sequence is write, read back, compare, and record per address. `verifyWrite.ts` owns the
  * comparison and is pure; this module owns the I/O and the timing.
  *
+ * ## What a verdict does and does not say
+ *
+ * Every verdict is about an address the request named. `verified` means that address holds the
+ * value the plan intended, confirmed against the file - and it says nothing whatever about an
+ * address the plan left out. For most callers that is exactly right, and for a caller whose plan
+ * came out short it was catastrophic: a sync whose configuration list came back empty on failure
+ * wrote the document's own bag, confirmed the document's own bag, and reported the whole document
+ * as verified while sixty-eight configurations kept the previous part number.
+ *
+ * Plan completeness is therefore part of the request rather than something each caller checks for
+ * itself. `coverage: 'whole-document'` asks this module to hold the plan to its claim, and it is
+ * checked against the read-back - which names every configuration the file has - rather than
+ * against anything the caller supplied. See `MetadataWriteCoverage`.
+ *
  * ## What the write and the read-back cost
  *
  * Both halves are one service call, and neither scales with the configuration count.
@@ -90,6 +104,25 @@ export interface MetadataWriteGroup {
   intents: MetadataWriteIntent[]
 }
 
+/**
+ * What the caller claims its plan covers, which is the one thing this module cannot work out.
+ *
+ * Every verdict here is derived from the intents in the request, so a plan that addresses one
+ * scope out of sixty-nine is verified against that one scope and reports `verified`. That is the
+ * right answer to "did the write land" and the wrong answer to "does the document agree now", and
+ * for most of a year nothing distinguished the two questions. A caller that built a short plan -
+ * because a configuration list came back empty on failure, or because a UI cache had never been
+ * populated - got a clean bill of health for the short plan, and the user was told "PUSH complete
+ * - confirmed in the file" over sixty-eight configurations holding the previous number.
+ *
+ * - `stated-scopes` (the default): the plan addresses exactly the scopes it means to, and nothing
+ *   is claimed about the ones it left out. The datacard writing the document's own bag and the
+ *   inline configuration editors writing one configuration are all correct at this setting.
+ * - `whole-document`: the plan is meant to leave the entire document in agreement. The read-back
+ *   names every configuration the file has, so this module can and does check that claim.
+ */
+export type MetadataWriteCoverage = 'stated-scopes' | 'whole-document'
+
 export interface MetadataWriteRequest {
   /** Absolute path of the document. */
   path: string
@@ -99,6 +132,8 @@ export interface MetadataWriteRequest {
    * open in SolidWorks, and more reliable for imported parts with forced properties.
    */
   useLiveApi?: boolean
+  /** Defaults to `stated-scopes`, which is what every caller meant before the option existed. */
+  coverage?: MetadataWriteCoverage
 }
 
 /** A scope whose write failed while naming no address, so no verdict can carry the news. */
@@ -121,6 +156,15 @@ export interface MetadataWriteResult {
    * intent-less group any more; this is what makes the next one say so rather than pass.
    */
   unrecordedFailures: UnrecordedScopeFailure[]
+  /**
+   * Configurations the read-back found that a `whole-document` plan never addressed.
+   *
+   * Always empty at `stated-scopes`, where leaving a configuration out is the point. Non-empty
+   * means the plan was short of its own claim, which no per-address verdict can express: each
+   * address the plan did name may be perfectly verified, and the document still disagrees with
+   * BluePLM everywhere the plan never looked.
+   */
+  unaddressedConfigurations: string[]
   /** Time in the service's write calls, milliseconds. */
   writeMs: number
   /** Time in the read-back, or null when none was made. */
@@ -163,13 +207,69 @@ export function summarizeOutcome(addresses: readonly VerifiedAddress[]): Metadat
  * A write that failed is not a write that succeeded, whether or not the group it belonged to
  * named an address. With addresses present the honest answer is `partial` - something landed and
  * something did not - and with none it is simply `failed`.
+ *
+ * A `whole-document` plan that missed configurations is `partial` for the same reason: what landed
+ * landed, and the document does not agree. `partial` rather than `failed` because the distinction
+ * is real and callers act on it - and `partial` is already the value every caller treats as "not
+ * done", which is the property that matters.
  */
 function roundOutcome(
   addresses: readonly VerifiedAddress[],
   unrecordedFailures: readonly UnrecordedScopeFailure[],
+  unaddressedConfigurations: readonly string[],
 ): MetadataWriteOutcome {
-  if (unrecordedFailures.length === 0) return summarizeOutcome(addresses)
+  if (unrecordedFailures.length === 0 && unaddressedConfigurations.length === 0) {
+    return summarizeOutcome(addresses)
+  }
   return addresses.length === 0 ? 'failed' : 'partial'
+}
+
+/**
+ * File-scope properties a configuration's own bag shadows while that configuration is active.
+ *
+ * SolidWorks resolves `$PRP:"Number"` out of the active configuration when there is one, so a
+ * document bag holding the new number and sixty-eight configurations holding the old one shows the
+ * old one everywhere it is looked at. These are the property names that makes true of a document,
+ * and a plan that writes one of them without reaching the configurations has not finished.
+ */
+const CONFIGURATION_SHADOWED_PROPERTIES: readonly string[] = [
+  'Number',
+  'Base Item Number',
+  'Description',
+  'Revision',
+  'Tab Number',
+]
+
+/**
+ * Configurations a plan claiming the whole document never wrote to.
+ *
+ * Answered from the read-back rather than from anything the caller supplied, which is the point:
+ * a caller whose configuration list came back empty is exactly the caller that cannot be asked how
+ * many configurations the document has.
+ *
+ * A plan touching none of the shadowed properties is not measured. Writing `Date` and `DrawnBy`
+ * into the document bag says nothing about the configurations, and reporting sixty-eight misses
+ * for it would train every reader to ignore the field.
+ */
+function configurationsMissedBy(
+  groups: readonly MetadataWriteGroup[],
+  document: FileMetadata,
+): string[] {
+  const addressed = new Set<string>()
+  let writesShadowedProperty = false
+
+  for (const group of groups) {
+    if (group.configuration !== undefined) {
+      addressed.add(group.configuration)
+      continue
+    }
+    if (CONFIGURATION_SHADOWED_PROPERTIES.some((name) => name in group.properties)) {
+      writesShadowedProperty = true
+    }
+  }
+
+  if (!writesShadowedProperty) return []
+  return document.configurations.filter((name) => !addressed.has(name))
 }
 
 /** The name a file-scope group goes by in a log line or a failure. */
@@ -361,6 +461,7 @@ export async function writeMetadataWithVerification(
       outcome: 'not-applicable',
       addresses: [],
       unrecordedFailures: [],
+      unaddressedConfigurations: [],
       writeMs: 0,
       readBackMs: null,
       document: null,
@@ -443,10 +544,13 @@ export async function writeMetadataWithVerification(
 
   if (accepted.length === 0) {
     const addresses = rejected
+    // No read-back, so no configuration list, so no coverage check. Nothing was accepted anyway:
+    // the outcome is already `failed` or `partial` and cannot be made worse by a shortfall.
     return {
-      outcome: roundOutcome(addresses, unrecordedFailures),
+      outcome: roundOutcome(addresses, unrecordedFailures, []),
       addresses,
       unrecordedFailures,
+      unaddressedConfigurations: [],
       writeMs,
       readBackMs: null,
       document: null,
@@ -472,6 +576,21 @@ export async function writeMetadataWithVerification(
 
   const addresses = [...withDoubtKept(verified, unaccountedFor), ...rejected]
 
+  // Checked against the read-back, not against anything the caller passed in. A caller that could
+  // not list the configurations is precisely the caller whose list must not be believed.
+  const unaddressedConfigurations =
+    request.coverage === 'whole-document' && document
+      ? configurationsMissedBy(request.groups, document)
+      : []
+
+  if (unaddressedConfigurations.length > 0) {
+    log.warn('[MetadataWrite]', 'The plan claimed the whole document and missed configurations', {
+      path: request.path,
+      missed: unaddressedConfigurations.length,
+      configurations: unaddressedConfigurations.slice(0, 10),
+    })
+  }
+
   log.info('[MetadataWrite]', 'Verified write complete', {
     path: request.path,
     writeMs,
@@ -480,12 +599,14 @@ export async function writeMetadataWithVerification(
     unverified: addresses.filter((entry) => entry.state === 'unverified').length,
     failed: addresses.filter((entry) => entry.state === 'failed').length,
     unrecordedFailures: unrecordedFailures.length,
+    unaddressedConfigurations: unaddressedConfigurations.length,
   })
 
   return {
-    outcome: roundOutcome(addresses, unrecordedFailures),
+    outcome: roundOutcome(addresses, unrecordedFailures, unaddressedConfigurations),
     addresses,
     unrecordedFailures,
+    unaddressedConfigurations,
     writeMs,
     readBackMs,
     document,

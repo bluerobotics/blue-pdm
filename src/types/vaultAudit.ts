@@ -177,6 +177,28 @@ export interface VaultAuditUnread {
   readFailed: number
 }
 
+/**
+ * Files inside the run's file-type and path scope that were never opened.
+ *
+ * Distinct from `VaultAuditUnread`, which is files the run tried to read and failed on. These were
+ * not attempted at all, and neither number is a finding. They are carried separately because the
+ * page's headline depends on them: "every value compared agrees" is true of a run that compared
+ * one file in seven, and read as "the vault is fine" by everyone who saw it.
+ */
+export interface VaultAuditNotCompared {
+  /** The sum. Zero means the run covered everything its scope named. */
+  total: number
+  /**
+   * Dropped because the row carries no reserved configuration map.
+   *
+   * Roughly six of every seven models. Not damage - nothing can be lost from a record that never
+   * existed - but not evidence of health either.
+   */
+  noConfigurationRecord: number
+  /** Dropped because the run was limited to a fixed number of files. */
+  beyondLimit: number
+}
+
 /** Evidence that the run changed nothing. */
 export interface VaultAuditIntegrity {
   filesHashed: number
@@ -199,6 +221,8 @@ export interface VaultAuditView {
   filesWithMultipleConfigurations: number
   /** Values absent from both sides on a row that never described the file. Absence, not loss. */
   noEvidenceValues: number
+  /** In-scope files the run never opened. The headline is not allowed to ignore these. */
+  notCompared: VaultAuditNotCompared
   unread: VaultAuditUnread
   integrity: VaultAuditIntegrity
   coverage: VaultAuditCoverage
@@ -290,18 +314,30 @@ export interface VaultAuditRepairFileOutcome {
   updated: boolean
   /** Set when the row could not be acted on at all - a moved, deleted or foreign row. */
   refused: string | null
+  /**
+   * Entries this file's request asked for, whether or not any of them could be applied.
+   *
+   * On a refused file this is the whole request, and it is the number the receipt has to show:
+   * every one of those entries was dropped.
+   */
+  entriesRequested: number
   /** Entries the row gained, per reserved map. Never more than were asked for; often fewer. */
   added: Partial<Record<ConfigMapKey, number>>
   /** Maps the row does not carry, so there was nothing there to restore. */
   mapsAbsent: ConfigMapKey[]
+  /** How many entries were asked for under those absent maps. Dropped, not merged. */
+  entriesUnderAbsentMap: number
 }
 
 /**
  * The receipt.
  *
- * `entriesRequested` and `entriesAdded` differ exactly when the row already held something the
- * scan did not know about. That is the normal, safe outcome of applying a stale plan, and it is
- * reported rather than smoothed over so the operator can see it happened.
+ * `entriesRequested` and `entriesAdded` can differ for three unrelated reasons, and the difference
+ * alone does not say which. The row may already have held the entry, which is the normal and safe
+ * outcome of applying a stale plan; the row may not have been reachable at all; or the row may not
+ * carry the reserved map, in which case there was nothing to restore into. `describeShortfall` in
+ * `features/settings/system/vault-audit/repairReceipt.ts` separates them, because reporting all
+ * three as "already there" is reassurance about entries that were dropped.
  */
 export interface VaultAuditRepairOutcome {
   filesRequested: number

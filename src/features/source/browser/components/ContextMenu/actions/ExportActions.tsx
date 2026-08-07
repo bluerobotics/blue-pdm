@@ -151,7 +151,11 @@ export function ExportActions({
         const description = resolvedText(resolveDescription(file))
         const revision = resolvedText(resolveRevision(file)).trim()
 
-        // Get tab number for the default config
+        // Get tab number for the default config.
+        //
+        // Left on truthiness deliberately: the fallback runs across configurations rather than
+        // across the two states of one field, and the merged map carries no source per key. See
+        // the same note in `ExportMetadataTableActions.tsx`.
         const configTabs = resolveConfigurationTabs(file)
         const tabNumber =
           configTabs['Default'] || configTabs['default'] || Object.values(configTabs)[0] || ''

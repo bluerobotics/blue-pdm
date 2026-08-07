@@ -506,6 +506,103 @@ describe('rounding many verdicts into one outcome', () => {
   })
 })
 
+describe('holding a plan to the coverage it claims', () => {
+  /** A document bag write that every configuration shadows while it is active. */
+  const documentGroup = {
+    properties: { Number: 'BR-202020', 'Base Item Number': 'BR-202020' },
+    intents: [
+      { address: { scope: 'file' as const, field: 'part_number' as const }, expected: 'BR-202020' },
+    ],
+  }
+
+  /** Sixty-eight configurations, of which the plan below will reach one. */
+  const SIXTY_EIGHT = Object.fromEntries(
+    Array.from({ length: 68 }, (_, index) => [`AS568-${String(index).padStart(3, '0')}`, {}]),
+  )
+
+  it('is B1: a document-bag-only plan verifies clean when it claims nothing', async () => {
+    // The behaviour every other caller depends on, pinned so the check below is a change of claim
+    // rather than a change of default. The write landed where it was addressed and it is verified,
+    // and the sixty-eight configurations it never mentioned are none of this request's business.
+    install({ fileProperties: { Number: 'BR-202020' }, configurationProperties: SIXTY_EIGHT })
+
+    const result = await writeMetadataWithVerification({ path: PATH, groups: [documentGroup] })
+
+    expect(result.outcome).toBe('verified')
+    expect(result.unaddressedConfigurations).toEqual([])
+  })
+
+  it('refuses the same plan a clean bill of health once it claims the whole document', async () => {
+    // B1 exactly: the configuration list came back empty, so the plan reached the document's own
+    // bag and stopped. Every verdict it produced is still correct - and the answer to "does this
+    // file agree with BluePLM now" is no, in sixty-eight places.
+    install({ fileProperties: { Number: 'BR-202020' }, configurationProperties: SIXTY_EIGHT })
+
+    const result = await writeMetadataWithVerification({
+      path: PATH,
+      groups: [documentGroup],
+      coverage: 'whole-document',
+    })
+
+    expect(result.unaddressedConfigurations).toHaveLength(68)
+    expect(result.outcome).toBe('partial')
+    // The shortfall is not expressible as a verdict, so the verdicts must not be disturbed by it.
+    expect(result.addresses.every((entry) => entry.state === 'verified')).toBe(true)
+  })
+
+  it('is satisfied when the plan reaches every configuration the read-back names', async () => {
+    install({
+      fileProperties: { Number: 'BR-202020' },
+      configurationProperties: { Default: { 'Tab Number': '014' } },
+    })
+
+    const result = await writeMetadataWithVerification({
+      path: PATH,
+      groups: [documentGroup, configurationGroup('Default', '014')],
+      coverage: 'whole-document',
+    })
+
+    expect(result.unaddressedConfigurations).toEqual([])
+    expect(result.outcome).toBe('verified')
+  })
+
+  it('says nothing about configurations when the plan writes no property they shadow', async () => {
+    // `Date` and `DrawnBy` live in the document bag and nowhere else. Counting sixty-eight misses
+    // for a parity stamp would put a shortfall on a write that has no configuration side at all.
+    install({ fileProperties: { Date: '2026-08-07' }, configurationProperties: SIXTY_EIGHT })
+
+    const result = await writeMetadataWithVerification({
+      path: PATH,
+      coverage: 'whole-document',
+      groups: [
+        {
+          properties: { Date: '2026-08-07' },
+          intents: [{ address: { scope: 'file', field: 'revision' }, expected: '' }],
+        },
+      ],
+    })
+
+    expect(result.unaddressedConfigurations).toEqual([])
+  })
+
+  it('measures against the read-back, not against the list the caller planned from', async () => {
+    // The whole point. A caller whose configuration list came back short is the one caller that
+    // cannot be asked how many configurations the document has, so the file is asked instead.
+    install({
+      fileProperties: { Number: 'BR-202020' },
+      configurationProperties: { Default: {}, 'AS568-014': {}, 'AS568-015': {} },
+    })
+
+    const result = await writeMetadataWithVerification({
+      path: PATH,
+      groups: [documentGroup, configurationGroup('Default', '014')],
+      coverage: 'whole-document',
+    })
+
+    expect(result.unaddressedConfigurations).toEqual(['AS568-014', 'AS568-015'])
+  })
+})
+
 describe('clearing a field', () => {
   it('sends the empty value instead of dropping the property from the write', async () => {
     install({ fileProperties: {} })

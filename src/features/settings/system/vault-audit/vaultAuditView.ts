@@ -269,6 +269,15 @@ export function buildVaultAuditView(report: DivergenceReport): VaultAuditView {
     filesWithFindings: filesWithFindings.size,
     filesWithMultipleConfigurations: report.summary.filesWithMultipleConfigurations,
     noEvidenceValues,
+    // Passed through rather than derived from `rowsInScope - filesCompared`: that difference also
+    // contains the files the run tried to read and could not, which are a different statement and
+    // already have their own line.
+    notCompared: {
+      total:
+        report.counts.rowsSkippedNoConfigurationRecord + report.counts.rowsSkippedByLimit,
+      noConfigurationRecord: report.counts.rowsSkippedNoConfigurationRecord,
+      beyondLimit: report.counts.rowsSkippedByLimit,
+    },
     unread: {
       missingOnDisk: report.counts.filesMissingOnDisk,
       openInSolidWorks: report.counts.filesOpenInSolidWorks,

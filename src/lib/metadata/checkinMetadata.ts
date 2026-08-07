@@ -36,6 +36,7 @@ import { getSerializationSettings } from '@/lib/serialization'
 import { getTabValidationOptions } from '@/lib/tabValidation'
 import type { LocalFile } from '@/stores/types'
 
+import { readDocumentConfigurations } from './configurationRead'
 import { writeMetadataWithVerification } from './writeMetadataToFile'
 import { buildMetadataWritePlan } from './writePlan'
 import {
@@ -278,17 +279,15 @@ export async function settleMetadataForCheckin(
 }
 
 /**
- * The document's configurations, or null when the service could not say.
+ * The document's configurations by name, or null when the service could not say.
  *
  * Null rather than an empty list, because the two mean opposite things: an empty list is a
  * document that keeps its metadata at file level, and a failed call is a document that may keep
- * all of it somewhere this write is about to ignore.
+ * all of it somewhere this write is about to ignore. `readDocumentConfigurations` is where that
+ * distinction is drawn against the service's reply; this only takes the names.
  */
 async function readConfigurations(path: string): Promise<string[] | null> {
-  const api = window.electronAPI?.solidworks
-  if (!api?.getConfigurations) return null
-
-  const result = await api.getConfigurations(path)
-  if (!result?.success || !result.data?.configurations) return null
-  return result.data.configurations.map((configuration) => configuration.name)
+  const read = await readDocumentConfigurations(path)
+  if (!read.ok) return null
+  return read.configurations.map((configuration) => configuration.name)
 }

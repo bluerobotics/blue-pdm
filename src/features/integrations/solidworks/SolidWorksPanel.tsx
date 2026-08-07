@@ -6,6 +6,8 @@ import { beginWatcherSuppression } from '@/lib/fileWatcherSuppression'
 import { refreshLocalFileFacts } from '@/lib/refreshLocalFileFacts'
 import { resolvedPropertyView } from '@/lib/metadata/divergence'
 import { resolveFileMetadata } from '@/lib/metadata/overlay'
+import { buildMetadataWritePlan } from '@/lib/metadata/writePlan'
+import type { PendingMetadata } from '@/stores/types'
 import {
   FileBox,
   Layers,
@@ -1088,27 +1090,45 @@ export function SWPropertiesTab({ file }: { file: LocalFile }) {
     // a full vault reload.
     const releaseWatcher = beginWatcherSuppression([file.relativePath])
     try {
-      const properties: Record<string, string> = {}
-
       // Map PDM metadata to SW properties.
       //
       // Overlaid, unlike the comparison above: this is the write that makes the file agree, and
       // the value the user is asking to push is the one they can see. It only wrote the pending
       // edit before because updatePendingMetadata copied it into pdmData; with that gone the
       // overlay is what keeps the button from pushing the number the user just replaced.
-      const identity = resolveFileMetadata(file)
-      if (identity.partNumber.value) {
-        properties['Base Item Number'] = identity.partNumber.value
+      //
+      // Presence decides, not truthiness. `.value` alone cannot tell a field the user cleared from
+      // one neither side ever held - `present()` maps both to null - so clearing the item number
+      // used to leave the old one sitting in the document while the database moved on.
+      // `.source` is where that distinction lives, and `buildMetadataWritePlan` is what turns it
+      // into an empty property rather than a missing one.
+      const resolved = resolveFileMetadata(file)
+      const pending: PendingMetadata = {}
+      if (resolved.partNumber.source !== 'absent') {
+        pending.part_number = resolved.partNumber.value ?? ''
       }
-      if (identity.description.value) {
-        properties['Description'] = identity.description.value
+      if (resolved.description.source !== 'absent') {
+        pending.description = resolved.description.value ?? ''
       }
 
-      if (Object.keys(properties).length === 0) {
+      // Through the shared planner rather than built here, so this button writes the same
+      // properties as the datacard, check-in and Sync Metadata. It used to set `Base Item Number`
+      // and not `Number`, while "Sync from SolidWorks" reads `Number` first - so pressing the two
+      // in the obvious order read back the number this write had left stale and wrote it to the
+      // database, silently reverting the edit the user had just pushed.
+      const [group] = buildMetadataWritePlan({
+        pending,
+        committed: { partNumber: pending.part_number, description: pending.description },
+        configurations: [],
+        serialization: null,
+      })
+
+      if (!group || group.intents.length === 0) {
         addToast('info', 'No metadata to write')
         return
       }
 
+      const properties = group.properties
       const result = await window.electronAPI?.solidworks?.setProperties(file.path, properties)
       if (result?.success) {
         addToast('success', 'Metadata written to SolidWorks file')

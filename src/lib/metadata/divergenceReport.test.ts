@@ -49,7 +49,10 @@ function reportOf(): DivergenceReport {
     },
     counts: {
       rowsFetched: 1,
+      rowsInScope: 1,
       rowsConsidered: 1,
+      rowsSkippedNoConfigurationRecord: 0,
+      rowsSkippedByLimit: 0,
       filesCompared: 1,
       filesMissingOnDisk: 0,
       filesUnreadable: 0,

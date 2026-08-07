@@ -58,8 +58,13 @@ import {
  * records whether the reserved map exists as well as how many entries it has. A version 1 report
  * classified some of those values as `recoverable`, so acting on one would write values BluePLM
  * never owned.
+ *
+ * 3 - `counts` says how many rows the narrowing options dropped, and why. A version 2 report
+ * carries `rowsFetched` and `rowsConsidered` and nothing between them, so a reader cannot tell a
+ * run that compared everything from one that compared a seventh of it - and the page above this
+ * read "no findings" as "every value agrees" over 6,363 models it had never opened.
  */
-export const DIVERGENCE_REPORT_SCHEMA_VERSION = 2
+export const DIVERGENCE_REPORT_SCHEMA_VERSION = 3
 
 /** Supabase caps a single response; rows are pulled in pages of this size. */
 const ROW_PAGE_SIZE = 1000
@@ -195,7 +200,26 @@ export interface DivergenceReport {
   }
   counts: {
     rowsFetched: number
+    /**
+     * Rows of a type and path this run covers, before `configurationRecordedOnly` and `limit`.
+     *
+     * The denominator the run's coverage should be read against. `rowsFetched` is not: it counts
+     * every row in the organisation, including the drawings, PDFs and STEP files no scan of this
+     * kind ever looks at, so a shortfall against it says nothing.
+     */
+    rowsInScope: number
     rowsConsidered: number
+    /**
+     * In-scope rows `configurationRecordedOnly` dropped without opening them.
+     *
+     * Roughly six of every seven models in a real vault. Not a finding and not a failure - the
+     * option exists because a configuration record can only have lost what it once held - but not
+     * a comparison either, which is the part that has to reach the reader. See the option's own
+     * documentation for what it cannot see.
+     */
+    rowsSkippedNoConfigurationRecord: number
+    /** In-scope rows beyond `limit`. Zero on an unlimited run. */
+    rowsSkippedByLimit: number
     filesCompared: number
     filesMissingOnDisk: number
     filesUnreadable: number
@@ -506,7 +530,14 @@ function recordsConfigurations(row: ScanRow): boolean {
   return CONFIG_TABS_KEY in properties || CONFIG_DESCRIPTIONS_KEY in properties
 }
 
-function inScope(row: ScanRow, options: DivergenceScanOptions): boolean {
+/**
+ * Whether this run covers the row at all, by file type and by path.
+ *
+ * Kept apart from the narrowing options below so the report can say how many rows each one
+ * dropped. Folded together, the only numbers available were "rows in the organisation" and "rows
+ * compared", and the gap between those two is mostly PDFs.
+ */
+function inFileScope(row: ScanRow, options: DivergenceScanOptions): boolean {
   const extension = extensionOf(row)
   const isModel = (MODEL_EXTENSIONS as readonly string[]).includes(extension)
   const isDrawing = extension === DRAWING_EXTENSION
@@ -517,8 +548,6 @@ function inScope(row: ScanRow, options: DivergenceScanOptions): boolean {
     const prefix = normalizeSeparators(options.pathPrefix).toLowerCase()
     if (!normalizeSeparators(row.file_path).toLowerCase().startsWith(prefix)) return false
   }
-
-  if (options.configurationRecordedOnly && !recordsConfigurations(row)) return false
 
   return true
 }
@@ -536,10 +565,19 @@ export async function runDivergenceScan(
 
   report('Reading file rows from the database...')
   const allRows = await fetchRows(options)
-  const scoped = allRows.filter((row) => inScope(row, options))
+  const inFileScopeRows = allRows.filter((row) => inFileScope(row, options))
+  const scoped = options.configurationRecordedOnly
+    ? inFileScopeRows.filter(recordsConfigurations)
+    : inFileScopeRows
   const rows = options.limit ? scoped.slice(0, options.limit) : scoped
 
+  const skippedNoConfigurationRecord = inFileScopeRows.length - scoped.length
+  const skippedByLimit = scoped.length - rows.length
+
   report(`${allRows.length} rows fetched, ${rows.length} in scope.`)
+  if (skippedNoConfigurationRecord > 0) {
+    report(`${skippedNoConfigurationRecord} carry no configuration record and are not compared.`)
+  }
 
   const files: FileDivergence[] = []
   const unreadable: UnreadableFile[] = []
@@ -653,7 +691,10 @@ export async function runDivergenceScan(
     },
     counts: {
       rowsFetched: allRows.length,
+      rowsInScope: inFileScopeRows.length,
       rowsConsidered: rows.length,
+      rowsSkippedNoConfigurationRecord: skippedNoConfigurationRecord,
+      rowsSkippedByLimit: skippedByLimit,
       filesCompared: files.length,
       filesMissingOnDisk: missingOnDisk,
       filesUnreadable: unreadable.filter((entry) => entry.reason === 'read-failed').length,

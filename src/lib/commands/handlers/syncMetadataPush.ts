@@ -23,6 +23,7 @@
  */
 
 import { t } from '@/lib/i18n'
+import { readDocumentConfigurations } from '@/lib/metadata/configurationRead'
 import { resolveFileMetadata, resolvedText } from '@/lib/metadata/overlay'
 import { writeMetadataWithVerification } from '@/lib/metadata/writeMetadataToFile'
 import type { PlanSerialization } from '@/lib/metadata/writePlan'
@@ -43,33 +44,39 @@ export interface PushResult {
 }
 
 /**
- * The document's configurations, with the tab each one currently holds.
+ * The document's configurations, with the tab each one currently holds, or the reason the service
+ * could not say.
  *
  * Read before anything is written, because the plan needs them: a configuration BluePLM has no tab
- * for keeps its own rather than being emptied. A read that fails is reported rather than treated as
- * "no configurations", which would silently downgrade the write to the document bag alone.
+ * for keeps its own rather than being emptied.
+ *
+ * The two outcomes are kept apart because they mean opposite things. An empty list is a document
+ * that keeps its metadata at file level - a drawing, most often. A failed call is a document that
+ * may keep all of it in configurations this write is about to ignore, and reading the second as
+ * the first is exactly how a PUSH came to write the document bag, verify that one scope honestly,
+ * and report "confirmed in the file" while all 68 configurations kept their old values.
+ *
+ * `readDocumentConfigurations` is where that distinction is now made, once, for the three write
+ * paths that need it. This function only adds the tabs.
  */
+type PushConfigurationRead =
+  | { readonly ok: true; readonly configurations: PushConfiguration[] }
+  | { readonly ok: false; readonly reason: string }
+
 async function readConfigurations(
   fullPath: string,
   separator: string,
-): Promise<{ configurations: PushConfiguration[]; error?: string }> {
-  try {
-    const result = await window.electronAPI?.solidworks?.getConfigurations(fullPath)
-    const configurations = result?.data?.configurations
-    if (!configurations) return { configurations: [] }
+): Promise<PushConfigurationRead> {
+  const read = await readDocumentConfigurations(fullPath)
+  if (!read.ok) return { ok: false, reason: read.reason }
 
-    return {
-      configurations: configurations.map((configuration) => ({
-        name: configuration.name,
-        isActive: configuration.isActive,
-        tabNumber: readConfigurationTab(configuration.properties, separator),
-      })),
-    }
-  } catch (error) {
-    return {
-      configurations: [],
-      error: error instanceof Error ? error.message : String(error),
-    }
+  return {
+    ok: true,
+    configurations: read.configurations.map((configuration) => ({
+      name: configuration.name,
+      isActive: configuration.isActive,
+      tabNumber: readConfigurationTab(configuration.properties, separator),
+    })),
   }
 }
 
@@ -77,7 +84,16 @@ async function readConfigurations(
 function describeUnwritten(
   addresses: readonly VerifiedAddress[],
   configurationCount: number,
+  unaddressedConfigurations: readonly string[] = [],
 ): string {
+  // First, because it is the one shortfall no address can express: every verdict may read
+  // `verified` and the document still disagree, in every configuration the plan never reached.
+  if (unaddressedConfigurations.length > 0) {
+    return t('metadataWrite.configurationsUnaddressed', {
+      count: unaddressedConfigurations.length,
+    })
+  }
+
   const failed = addresses.filter((entry) => entry.state === 'failed')
   const configurations = new Set(
     failed
@@ -168,10 +184,24 @@ export async function pushPartAssemblyMetadata(
     drawnBy: currentUser?.full_name || currentUser?.email || '',
   }
 
-  const { configurations, error: configurationError } = await readConfigurations(
-    fullPath,
-    serSettings?.tab_separator || '-',
-  )
+  const read = await readConfigurations(fullPath, serSettings?.tab_separator || '-')
+  if (!read.ok) {
+    // Nothing is written at all, deliberately. A plan built without the configuration list can
+    // only reach the document's own property bag, and the read-back would then confirm exactly
+    // the scope the write had just touched - a `verified` verdict over a document whose
+    // configurations still hold the old number. Refusing is the only honest answer available,
+    // and it is the answer `settleMetadataForCheckin` already gives to the same question.
+    logSync('error', 'Could not list the configurations, so nothing was written', {
+      fullPath,
+      reason: read.reason,
+    })
+    return {
+      success: false,
+      error: t('metadataWrite.configurationsUnreadable'),
+    }
+  }
+
+  const { configurations } = read
 
   const groups = buildPartAssemblyPushPlan({ file, configurations, serialization, parity })
   if (groups.length === 0) {
@@ -196,7 +226,15 @@ export async function pushPartAssemblyMetadata(
 
   let diskMutated = false
   try {
-    const result = await writeMetadataWithVerification({ path: fullPath, groups })
+    // `whole-document`, because that is what a sync is: `buildPartAssemblyPushPlan` names every
+    // configuration the read above returned, so a plan that reaches fewer than the file has is a
+    // plan built from a list that was wrong. The refusal above is the first defence and this is the
+    // second, checked against the read-back instead of against the same list that misled the plan.
+    const result = await writeMetadataWithVerification({
+      path: fullPath,
+      groups,
+      coverage: 'whole-document',
+    })
 
     // The per-address verdicts are what the datacard marks and what check-in reads, so they are
     // recorded whatever the outcome. Recorded rather than reported: this command runs over a
@@ -214,17 +252,6 @@ export async function pushPartAssemblyMetadata(
 
     diskMutated = result.addresses.some((entry) => entry.state !== 'unattempted')
 
-    if (configurationError) {
-      logSync('error', 'Could not read the configurations to write them', {
-        fullPath,
-        error: configurationError,
-      })
-      return {
-        success: false,
-        error: t('metadataWrite.configurationsUnwritten', { reason: configurationError }),
-      }
-    }
-
     if (result.outcome === 'unverified') {
       // The write was issued and the document could not be read back. That is not a failure - the
       // value may well be there - but it is not the proof this path exists to produce either.
@@ -237,8 +264,16 @@ export async function pushPartAssemblyMetadata(
         fullPath,
         addresses: result.addresses.length,
         failed: result.addresses.filter((entry) => entry.state === 'failed').length,
+        unaddressedConfigurations: result.unaddressedConfigurations.length,
       })
-      return { success: false, error: describeUnwritten(result.addresses, configurations.length) }
+      return {
+        success: false,
+        error: describeUnwritten(
+          result.addresses,
+          configurations.length,
+          result.unaddressedConfigurations,
+        ),
+      }
     }
 
     logSync('info', 'PUSH complete - confirmed in the file', {
@@ -289,6 +324,15 @@ export async function pushDrawingMetadata(
   const properties: Record<string, string> = {}
   const intents = []
 
+  // Truthiness, deliberately, and it is not the `.source` distinction.
+  //
+  // `metadata` is `ExtractedMetadata`, read out of the *parent document's* own property bag by
+  // `extractMetadataFromProperties`. It is not a `ResolvedMetadataField` and there is no overlay
+  // behind it: one side, one value, and nothing that could say whether an absent `Number` was
+  // cleared by someone or simply never read. Reading it as a clear would empty the number on every
+  // drawing whose parent could not be opened, which is the destructive half of a guess. Keeping
+  // what the drawing holds is the same rule this file already applies to a configuration tab
+  // BluePLM has no opinion about.
   if (metadata.partNumber) {
     properties['Number'] = metadata.partNumber
     properties['Base Item Number'] = deriveBaseNumber(metadata.partNumber, metadata.tabNumber)

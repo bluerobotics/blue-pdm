@@ -912,17 +912,23 @@ export async function getBackupStatus(orgId: string): Promise<BackupStatus> {
     }
   }
 
-  // Get snapshots directly from restic
+  // Get snapshots directly from restic.
+  //
+  // The failure is held in its own binding rather than one called `error`: the catch binding is
+  // always `error` by convention, so an outer `let error` is shadowed by it and the assignment
+  // lands on the parameter instead. The status then went back to the caller reporting
+  // `error: null` for a listing that had thrown, and the page showed a configured backup with no
+  // snapshots and nothing wrong.
   let snapshots: BackupSnapshot[] = []
-  let error: string | null = null
+  let listError: string | null = null
 
   try {
     snapshots = await listSnapshots(config)
     // Sort by time descending
     snapshots.sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
   } catch (error) {
-    error = error instanceof Error ? error.message : String(error)
-    log.error('[Backup]', 'Failed to get snapshots', { error })
+    listError = error instanceof Error ? error.message : String(error)
+    log.error('[Backup]', 'Failed to get snapshots', { error: listError })
   }
 
   return {
@@ -932,7 +938,7 @@ export async function getBackupStatus(orgId: string): Promise<BackupStatus> {
     lastSnapshot: snapshots[0] || null,
     totalSnapshots: snapshots.length,
     isLoading: false,
-    error,
+    error: listError,
   }
 }
 
@@ -1061,8 +1067,9 @@ export async function exportDatabaseMetadata(
       })
     }
 
-    // Note: file_comments table may not exist in all deployments
-    let fileComments: any[] = []
+    // Note: file_comments table may not exist in all deployments, so the export always carries an
+    // empty list for it rather than reading one.
+    const fileComments: unknown[] = []
 
     const { data: users } = await supabase
       .from('users')

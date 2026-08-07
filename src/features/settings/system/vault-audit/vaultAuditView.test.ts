@@ -45,7 +45,10 @@ function compare(
   )
 }
 
-function reportOf(files: FileDivergence[]): DivergenceReport {
+function reportOf(
+  files: FileDivergence[],
+  counts?: Partial<DivergenceReport['counts']>,
+): DivergenceReport {
   return {
     schemaVersion: DIVERGENCE_REPORT_SCHEMA_VERSION,
     generatedAt: '2026-08-06T00:00:00.000Z',
@@ -60,11 +63,15 @@ function reportOf(files: FileDivergence[]): DivergenceReport {
     },
     counts: {
       rowsFetched: 8019,
+      rowsInScope: files.length,
       rowsConsidered: files.length,
+      rowsSkippedNoConfigurationRecord: 0,
+      rowsSkippedByLimit: 0,
       filesCompared: files.length,
       filesMissingOnDisk: 0,
       filesUnreadable: 0,
       filesOpenInSolidWorks: 0,
+      ...counts,
     },
     summary: summarizeDivergence(files),
     files,
@@ -184,6 +191,53 @@ function neverRecorded(): FileDivergence {
 // ============================================
 // Tests
 // ============================================
+
+describe('buildVaultAuditView - what the run did not compare', () => {
+  /**
+   * `configurationRecordedOnly` drops roughly six models in seven, and the page used to say
+   * nothing about them. "Every value compared agrees" was true and read as "the vault is fine".
+   */
+  it('carries the rows the scope filter dropped, separately from the ones it read', () => {
+    const view = buildVaultAuditView(
+      reportOf([conflicting()], {
+        rowsFetched: 8019,
+        rowsInScope: 8015,
+        rowsConsidered: 1652,
+        rowsSkippedNoConfigurationRecord: 6363,
+        rowsSkippedByLimit: 0,
+      }),
+    )
+
+    expect(view.notCompared).toEqual({
+      total: 6363,
+      noConfigurationRecord: 6363,
+      beyondLimit: 0,
+    })
+  })
+
+  it('counts a limited run’s remainder too, so a spot check cannot read as a full audit', () => {
+    const view = buildVaultAuditView(
+      reportOf([conflicting()], {
+        rowsInScope: 8015,
+        rowsConsidered: 50,
+        rowsSkippedNoConfigurationRecord: 0,
+        rowsSkippedByLimit: 7965,
+      }),
+    )
+
+    expect(view.notCompared).toEqual({
+      total: 7965,
+      noConfigurationRecord: 0,
+      beyondLimit: 7965,
+    })
+  })
+
+  it('is empty for a run that covered everything its scope named', () => {
+    const view = buildVaultAuditView(reportOf([conflicting()]))
+
+    expect(view.notCompared.total).toBe(0)
+  })
+})
 
 describe('buildVaultAuditView - configuration coverage', () => {
   const view = buildVaultAuditView(reportOf([oringFkm()]))
