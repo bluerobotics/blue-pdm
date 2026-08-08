@@ -121,20 +121,20 @@ LANGUAGE sql IMMUTABLE AS $$ SELECT
   'are what is_org_admin, require_org_member and every membership subquery in this schema '
   'resolve against, and the self-update policy on users had no WITH CHECK - a policy '
   'without one reuses its USING expression, which tested the new row''s id and not its '
-  'org_id or role. One PATCH moved a viewer into another organization as its '
-  'administrator, and every gate schemas 89-94 added then answered honestly against a row '
-  'the caller had just rewritten. Both users UPDATE policies now carry an explicit check '
-  'and a TO authenticated qualifier they were the only policies in that block to be '
-  'missing; the self policy pins role and org_id to their pre-update values, and the admin '
-  'policy''s check is written out unchanged, because it is what lets an administrator '
-  'manage a member''s role and a stricter one there would break that and nothing else. '
-  'Four more policies stopped depending on a clause that was never about authorization. A '
-  'share link''s file must now belong to the same organization as the link and the caller, '
-  'and created_by must be the caller, so the table path can no longer mint what '
+  'org_id or role. One PATCH moved a viewer into another organization as its administrator, '
+  'and every gate schemas 89-94 added then answered honestly against a row the caller had '
+  'just rewritten. Both users UPDATE policies now carry an explicit check and a TO '
+  'authenticated qualifier they were the only policies in that block to be missing; the '
+  'self policy pins role and org_id to their pre-update values, and the admin policy''s '
+  'check is written out unchanged, because it is what lets an administrator manage a '
+  'member''s role and a stricter one there would break that and nothing else. Four more '
+  'policies stopped depending on a clause that was never about authorization. A share '
+  'link''s file must now belong to the same organization as the link and the caller, and '
+  'created_by must be the caller, so the table path can no longer mint what '
   'create_file_share_link stopped minting in v91; the only UPDATE a share link admits is '
-  'its own revocation, where before a viewer could repoint file_id at another tenant''s '
-  'file or re-activate a link a remediation had just deactivated. Deciding a pending '
-  'review needs module:reviews:edit, matching the policy that gates asking for one, and '
+  'its own revocation, where before a viewer could repoint file_id at another tenant''s file '
+  'or re-activate a link a remediation had just deactivated. Deciding a pending review '
+  'needs module:reviews:edit, matching the policy that gates asking for one, and '
   'reviewed_by can only name the caller. Trashing a file needs module:explorer:delete '
   'rather than edit: deletion in this product is UPDATE files SET deleted_at, so an '
   'organization that deliberately withheld delete had still granted the ability to empty '
@@ -143,35 +143,49 @@ LANGUAGE sql IMMUTABLE AS $$ SELECT
   'sanctioned RPC; the rule for an unassigned gate already existed in '
   'get_my_pending_reviews, and both now call one may_review_gate() instead of keeping two '
   'answers to one question. The remediation that revokes cross-tenant share links computed '
-  'the creator''s organization and used it only as prose, so a link whose org_id agreed '
-  'with its file''s was left active and unlogged however foreign its creator was - it is a '
-  'term of the query now, in the remediation and in check_release_residue together. Six '
+  'the creator''s organization and used it only as prose, so a link whose org_id agreed with '
+  'its file''s was left active and unlogged however foreign its creator was - it is a term '
+  'of the query now, in the remediation and in check_release_residue together. Six '
   'authorization helpers named by eleven manifest rows are manifest entries in their own '
   'right, because requires is a substring search of the caller and a weakened helper left '
   'all eleven reading ok. The config-map repair receipt counts the entries a file that did '
   'not resolve asked for, so entries_requested minus entries_added stops reading zero for '
-  'the batch that dropped the most. '
-  'repair_config_maps() lets an administrator restore the per-configuration entries the '
-  'pre-87 checkin_file erased, and the guarantee that a repair cannot destroy anything is '
-  'enforced in the function rather than argued from the caller. The merge is written '
-  'computed || existing with the row on the right, so an entry the row already holds '
-  'survives however loudly the request disagrees, the key set can only grow, and a key '
-  'naming a configuration that no longer exists is carried through rather than removed. '
-  'The keys it writes come from a constant in the body and not from the request, and a map '
-  'the row never had is not created. Prior releases are unchanged. '
-  'Closing a hole and revoking what the hole produced now travel together. Applying a '
-  'release deactivates share links that grant access to a file in another organization '
-  'and redacts workflow history naming another organization''s workflow, recording both '
-  'verbatim in schema_remediation_log first; check_release_residue() withholds the stamp '
-  'while any remains, so a remediation cannot be forgotten. consume_share_link admits '
-  'exactly what validate_share_link admits, because both now call share_link_admission() '
-  'rather than restating the conditions - it used to spend a download on a file '
-  'validation refused. An org-scoped RPC is credited with a gate only for a call that '
-  'binds the caller to the organization named: auth.uid(), current_actor_id() and '
-  'is_org_admin() are who asked, not whether they may, and the ten RPCs that hand-wrote '
-  'the membership test with auth.uid() now call require_org_member or is_org_member. The '
-  'anon sweep sees partitioned and foreign tables, column-level grants, and a table whose '
-  'row-level security is enabled but whose policy admits anon to every row'
+  'the batch that dropped the most. seed_customer_categories is withdrawn from the roles a '
+  'browser holds, and the check that should have caught it stopped keeping a list of '
+  'functions it would not look at. The function is SECURITY DEFINER and writes into '
+  'whatever organization its argument names, and the REVOKE beside it named PUBLIC only - '
+  'which on Supabase is a different privilege from the explicit authenticated grant that '
+  'ALTER DEFAULT PRIVILEGES puts on every function, so a fresh install was exposed exactly '
+  'as an upgrade was and no application GRANT was involved. A user who administered one '
+  'organization and a user who belonged to none both called it over PostgREST against a '
+  'third organization and wrote 48 taxonomy rows into it; the write is ON CONFLICT DO '
+  'NOTHING and returns nothing, so what it bought was the resurrection of taxonomy rows an '
+  'administrator had deliberately deleted and an existence oracle for organization ids '
+  'through the foreign-key error, not the disclosure of anything. It stayed invisible '
+  'because check_org_gates() carried three function names it skipped, and skipping left no '
+  'trace - an unchecked function and a nonexistent one read identically. The list is gone: '
+  'an exclusion is now computed from the ACL in front of the checker, printed with the ACL '
+  'that justifies it, and expires the moment somebody grants the function back. A function '
+  'anon or authenticated can reach that the probe cannot show refuses a foreign '
+  'organization withholds the stamp instead of being reported as inconclusive and then '
+  'ignored. Two extension log sweeps are withdrawn from the roles a browser holds before '
+  'either ever reached a database. cleanup_extension_http_logs and '
+  'cleanup_extension_secret_access_logs are SECURITY DEFINER and delete by age alone, with '
+  'no organization named anywhere in the statement, and the same Supabase default ACL made '
+  'both of them live PostgREST endpoints: on a harness at this release a user belonging to '
+  'no organization at all called one over HTTP and took another tenant''s extension_http_log '
+  'from one row to none, and the other did the same to extension_secret_access. Nobody was '
+  'exposed, because neither function exists on any database yet - this is a hole that '
+  'applying release 95 would have installed, not one that was ever open. Nothing legitimate '
+  'calls them either: the retention path the application actually uses deletes from the '
+  'table filtered by org_id and extension_id under row-level security, and no scheduled job '
+  'or cron entry names them, so withdrawing the endpoint costs nothing and organization '
+  'scoping would gate a door with nobody behind it. check_org_gates() cannot judge this '
+  'shape at all - a function that takes no organization argument has no foreign id to be '
+  'handed and no refusal to require - so the ACL is asserted directly instead: '
+  'check_withdrawn_execute() names the five functions whose only protection is that no '
+  'PostgREST role may execute them, prints the ACL doing the work, and withholds the stamp '
+  'if any of them can be reached'
 $$;
 
 -- One row per object this release requires, scoped to the module that creates it.
@@ -267,8 +281,55 @@ LANGUAGE sql IMMUTABLE AS $$
     -- `v_actor UUID := auth.uid();` - a stamp of who asked, with no
     -- authorization anywhere - scored gated, was stamped, and served another
     -- tenant's parts over HTTP.
+    -- `org_gate_exclusion_reason` is the version in which the exclusion list
+    -- stopped being a list. A build carrying the previous copy skips three
+    -- functions by name whatever their ACL says, which is how a
+    -- SECURITY DEFINER function that authenticated could call was certified as
+    -- gated; `unverifiable` is the version in which a reachable function the
+    -- probe could not judge withholds the stamp instead of being reported and
+    -- then ignored.
+    -- `v_reachable` and not the word 'unverifiable': the latter appears in this
+    -- function only inside a string literal, and `requires` is matched against
+    -- the source with literals removed, so pinning on it would search for
+    -- something that is never there and withhold the stamp for ever. That is
+    -- the mistake this manifest has now had to be protected from four times.
+    -- v_reachable is the variable the new verdict is decided by.
     ('core', NULL, 'function', 'check_org_gates()',
-      'probe_literal_for_arg && c_gate_binding'),
+      'probe_literal_for_arg && c_gate_binding && org_gate_exclusion_reason && v_reachable'),
+    -- Its own entry, not merely a token in the row above: `requires` is a
+    -- substring search of the caller, so pinning check_org_gates() on the name
+    -- proves only that it still calls something so called. This is the object
+    -- that decides which functions are exempt from the org-gate probe, and a
+    -- weakened copy - one that answered 'withdrawn' without consulting the ACL -
+    -- would exempt everything while every row above it still read ok. Pinned on
+    -- has_function_privilege, which is the term that makes the answer a fact
+    -- about the database rather than a name on a list.
+    ('core', NULL, 'function', 'org_gate_exclusion_reason(oid)',
+      'has_function_privilege'),
+    -- requires NULL on purpose. Everything this function contains is a string
+    -- literal, and literals are stripped before `requires` is searched, so
+    -- there is no token to pin that would not resolve to nothing. Its behaviour
+    -- is covered where behaviour can be covered: NC18 in the harness grants
+    -- seed_customer_categories back to authenticated and requires the stamp to
+    -- be withheld, which is false unless this answers true for the verdict that
+    -- produces.
+    ('core', NULL, 'function', 'org_gate_status_blocks(text)', NULL),
+    -- The pair that asserts an ACL rather than a refusal, for functions taking
+    -- no organization argument.
+    --
+    -- requires NULL on the list, for the same reason org_gate_status_blocks()
+    -- carries NULL: every name in it is a string literal, and `requires` is
+    -- matched against the source with literals removed. Pinning it on
+    -- 'cleanup_extension_http_logs' - which is the token a reader reaches for
+    -- first, and which this row held until it was tested - searches for
+    -- something that is never there and withholds the stamp for ever. That is
+    -- the fifth time this file has had to be protected from that mistake.
+    -- What the list contains is covered by NC19, which regrants EXECUTE on one
+    -- of the two sweeps and requires the stamp to be withheld; a copy of the
+    -- list that had dropped the entry cannot pass that.
+    ('core', NULL, 'function', 'withdrawn_execute_manifest()', NULL),
+    ('core', NULL, 'function', 'check_withdrawn_execute()',
+      'has_function_privilege && withdrawn_execute_manifest'),
     ('core', NULL, 'function', 'migrate_uuid_defaults()', NULL),
     ('core', NULL, 'function', 'like_escape(text)', NULL),
     -- Closing a hole and revoking what the hole produced.
@@ -321,7 +382,7 @@ LANGUAGE sql IMMUTABLE AS $$
     -- the checks this function has to call, which cannot be present in a build
     -- that predates the others.
     ('core', NULL, 'function', 'verify_and_stamp_schema()',
-      'check_unbound_entity_args && check_release_residue'),
+      'check_unbound_entity_args && check_release_residue && org_gate_status_blocks && check_withdrawn_execute'),
 
     -- 10-source-files.sql - REQUIRED, so probe is NULL
     ('10-source-files', NULL, 'table', 'files', NULL),
@@ -911,29 +972,64 @@ REVOKE ALL ON FUNCTION probe_literal_for_arg(OID, TEXT, TEXT) FROM PUBLIC, anon,
 -- counted `is_org_admin()` too, which is a real check about the wrong
 -- organization. See c_gate_binding below for what is left and why, and for the
 -- ten RPCs that had to change so that removing them cost nothing true.
+
+-- WHY A FUNCTION IS NOT PROBED, DECIDED FROM THE ACL AND NOT FROM A LIST
+--
+-- check_org_gates() used to carry two hardcoded arrays of names it skipped.
+-- One of them, c_trigger_only, was described as "only ever called by a
+-- trigger", and it held seed_customer_categories - a SECURITY DEFINER function
+-- that anyone with a login could call over PostgREST against any organization,
+-- for as long as the array said not to look. The claim was about how the
+-- function is *called*; what mattered was who is *allowed* to call it, and
+-- nothing checked that.
+--
+-- So the question is asked of the database instead:
+--
+--   'predicate' - one of the two gates the other functions are gated BY.
+--                 Probing a gate for a refusal has no failing answer, so this
+--                 exemption is about the shape of the question, not the ACL.
+--                 posture-checks.sql exercises both directly.
+--   'withdrawn' - no PostgREST role may execute it. It cannot be handed a
+--                 foreign organization id because it cannot be called at all.
+--   NULL        - probe it.
+--
+-- 'withdrawn' is the important one: it lasts exactly as long as the ACL does.
+-- Grant the function back to anon or authenticated - which is what Supabase's
+-- default privileges do to every function postgres creates - and this returns
+-- NULL on the next run and the probe takes over.
+CREATE OR REPLACE FUNCTION org_gate_exclusion_reason(p_oid OID)
+RETURNS TEXT
+LANGUAGE sql STABLE AS $$
+  SELECT CASE
+    WHEN p.oid::regprocedure::TEXT IN ('is_org_member(uuid)', 'require_org_member(uuid)')
+      THEN 'predicate'
+    WHEN NOT has_function_privilege('authenticated', p.oid, 'EXECUTE')
+     AND NOT has_function_privilege('anon', p.oid, 'EXECUTE')
+      THEN 'withdrawn'
+  END
+  FROM pg_proc p
+  WHERE p.oid = p_oid;
+$$;
+
+REVOKE ALL ON FUNCTION org_gate_exclusion_reason(OID) FROM PUBLIC, anon, authenticated;
+
+-- Which check_org_gates() verdicts withhold the stamp, in one place, because
+-- the answer was previously a literal inside verify_and_stamp_schema() that
+-- named 'ungated' alone. 'unverifiable' - reachable, and not shown to refuse -
+-- has to block too, or a probe that failed to reach a verdict is worth exactly
+-- as much as one that certified the function.
+CREATE OR REPLACE FUNCTION org_gate_status_blocks(p_status TEXT)
+RETURNS BOOLEAN
+LANGUAGE sql IMMUTABLE AS $$
+  SELECT p_status IN ('ungated', 'unverifiable');
+$$;
+
+REVOKE ALL ON FUNCTION org_gate_status_blocks(TEXT) FROM PUBLIC, anon, authenticated;
+
 CREATE OR REPLACE FUNCTION check_org_gates()
 RETURNS TABLE (signature TEXT, status TEXT, detail TEXT)
 LANGUAGE plpgsql AS $$
 DECLARE
-  c_trigger_only TEXT[] := ARRAY[
-    'create_default_job_titles',
-    'create_default_permission_teams',
-    'seed_customer_categories'
-  ];
-  -- The gates themselves. Asking whether a gate is gated is a category error:
-  -- is_org_member(p_org_id) returning false for a foreign organization is the
-  -- gate working, and require_org_member(p_org_id) raising is the same thing
-  -- spelled with an exception. They are what every function below is gated
-  -- *by*. Neither discloses anything - a caller learns only whether they
-  -- themselves are a member - and neither is granted to anon.
-  --
-  -- Excluding them from the probe means nothing here watches them work, so
-  -- harness/sql/posture-checks.sql calls both directly, as four different
-  -- callers, and requires the answers a gate must give.
-  c_predicate TEXT[] := ARRAY[
-    'is_org_member',
-    'require_org_member'
-  ];
   -- WHAT MAKES A REFUSAL ATTRIBUTABLE
   --
   -- A call that ties the caller to the organization the function was asked
@@ -972,6 +1068,8 @@ DECLARE
   v_message TEXT;
   v_rows TEXT[];
   v_attributable BOOLEAN;
+  v_excuse TEXT;
+  v_reachable BOOLEAN;
 BEGIN
   FOR r IN
     SELECT p.oid,
@@ -990,10 +1088,54 @@ BEGIN
       -- sweep both cover procedures, so one is not invisible everywhere.
       AND p.prokind = 'f'
       AND pg_get_function_identity_arguments(p.oid) ~ '\mp_org_id\M'
-      AND NOT (p.proname = ANY (c_trigger_only))
-      AND NOT (p.proname = ANY (c_predicate))
     ORDER BY 1
   LOOP
+    -- AN EXCLUSION HAS TO EARN ITSELF, ON THE DATABASE IN FRONT OF IT
+    --
+    -- This loop used to skip three function names outright, and the skip was
+    -- silent: nothing downstream could tell an excluded function from one that
+    -- had never existed. seed_customer_categories was on that list with a
+    -- comment saying its grant had been withdrawn, the withdrawal named PUBLIC
+    -- and not authenticated, and the function stayed callable over PostgREST
+    -- for as long as the list said not to look. A list of names cannot notice
+    -- that; org_gate_exclusion_reason() reads the ACL, so the excuse expires
+    -- the moment the ACL does.
+    --
+    -- Excused functions are still returned, with the reason and the ACL that
+    -- justifies it, so "not checked" is a line in the report rather than an
+    -- absence from it.
+    v_excuse := org_gate_exclusion_reason(r.oid);
+    IF v_excuse IS NOT NULL THEN
+      signature := r.sig;
+      status := v_excuse;
+      detail := CASE v_excuse
+        WHEN 'withdrawn' THEN
+          'not probed: neither anon nor authenticated may execute it, so no '
+          || 'PostgREST caller can reach it and the argument it trusts cannot be '
+          || 'supplied by one. This is the whole of its defence - grant it back '
+          || 'to either role and it is probed like everything else. ACL: '
+          || COALESCE((SELECT p.proacl::TEXT FROM pg_proc p WHERE p.oid = r.oid),
+                      '(default - which on Supabase means anon and authenticated CAN execute it)')
+        ELSE
+          'not probed: this is one of the gates the others are gated BY. '
+          || 'is_org_member(p_org_id) answering false for a foreign organization '
+          || 'is the gate working, and require_org_member(p_org_id) raising is '
+          || 'the same answer spelled as an exception, so probing it for a '
+          || 'refusal asks a question with no failing answer. Neither discloses '
+          || 'anything beyond whether the caller themselves is a member. They '
+          || 'are exercised directly, as four different callers, by '
+          || 'harness/sql/posture-checks.sql.'
+      END;
+      RETURN NEXT;
+      CONTINUE;
+    END IF;
+
+    -- Whether a verdict of "could not tell" is survivable. For a function no
+    -- PostgREST caller can reach, not knowing costs nothing. For one they can,
+    -- it is the same silence the exclusion list used to provide.
+    v_reachable := has_function_privilege('authenticated', r.oid, 'EXECUTE')
+                OR has_function_privilege('anon', r.oid, 'EXECUTE');
+
     v_attributable := r.src ~ c_gate_binding;
 
     -- A random organization id for p_org_id, and for every other argument a
@@ -1089,11 +1231,41 @@ BEGIN
         ELSE
           -- Something else went wrong - a missing table from a module that is
           -- not installed, a NULL argument the function dereferenced before
-          -- reaching its gate. Not a pass and not a failure; say so rather than
-          -- score it either way.
+          -- reaching its gate, a foreign key the synthesized organization id
+          -- does not satisfy. Not a pass and not a failure.
+          --
+          -- WHICH DOES NOT MEAN IT CAN BE WAVED THROUGH
+          --
+          -- 'inconclusive' was reported and then ignored: verify_and_stamp_schema()
+          -- selected only 'ungated', so a reachable function this probe could
+          -- not judge was indistinguishable from one it had judged safe. That is
+          -- the exclusion list again, arrived at by accident instead of by a
+          -- list - and it is how a function whose defence is nothing but its ACL
+          -- gets stamped after somebody grants the ACL away.
+          --
+          -- So the verdict splits on reachability, which is the thing that
+          -- decides whether not knowing matters. 42P01 is carved out because an
+          -- undefined table means the module that owns it is not installed, and
+          -- a partial install must stay verifiable - that failure is about the
+          -- database's contents, not about this function's authorization.
           signature := r.sig;
-          status := 'inconclusive';
-          detail := v_sqlstate || ': ' || v_message;
+          IF v_reachable AND v_sqlstate <> '42P01' THEN
+            status := 'unverifiable';
+            detail := 'anon or authenticated may execute it and the probe could '
+                   || 'not establish that it refuses a foreign organization: it '
+                   || 'failed with ' || v_sqlstate || ': ' || left(v_message, 140)
+                   || '. That is not a refusal - nothing in it is attributable to '
+                   || 'an authorization check - and it is not a pass. Either gate '
+                   || 'the function with require_org_member(p_org_id), or withdraw '
+                   || 'it with REVOKE ALL ON FUNCTION ... FROM PUBLIC, anon, '
+                   || 'authenticated if it has no client caller.';
+          ELSE
+            status := 'inconclusive';
+            detail := v_sqlstate || ': ' || v_message
+                   || CASE WHEN NOT v_reachable
+                           THEN ' (not reachable by anon or authenticated, so this costs nothing)'
+                           ELSE ' (the module that owns the missing table is not installed)' END;
+          END IF;
           RETURN NEXT;
         END IF;
     END;
@@ -2166,6 +2338,103 @@ $$;
 
 REVOKE ALL ON FUNCTION check_release_residue() FROM PUBLIC, anon, authenticated;
 
+-- FUNCTIONS WHOSE ENTIRE DEFENCE IS THE ABSENCE OF AN EXECUTE GRANT
+--
+-- Some SECURITY DEFINER functions cannot be gated by an argument, because they
+-- take no organization to check the caller against. The two extension-log
+-- sweeps delete by age across every tenant at once; the three seeders run from
+-- the on_organization_created trigger, before the new organization has any
+-- members to be one of. For all five, not being callable is the whole of the
+-- protection, and check_org_gates() cannot express that: with no p_org_id there
+-- is no foreign id to substitute and no refusal to require.
+--
+-- So the ACL becomes the assertion. This list is small and hand-maintained on
+-- purpose - it is a statement that somebody looked at each of these and
+-- concluded the endpoint should not exist for a PostgREST caller, not a
+-- heuristic. Adding a function here is cheap; the cost of leaving one out is
+-- what release 95 nearly shipped.
+--
+-- Why this is separate from check_org_gates() rather than folded into it: that
+-- function decides a verdict for every SECURITY DEFINER function in the schema,
+-- and changing how it reaches one changes what the stamp means everywhere. This
+-- asks a single closed question about five named functions and can only ever
+-- add a problem for one of them.
+CREATE OR REPLACE FUNCTION withdrawn_execute_manifest()
+RETURNS TABLE (module TEXT, signature TEXT)
+LANGUAGE sql IMMUTABLE AS $$
+  VALUES
+    ('core',          'create_default_job_titles(uuid,uuid)'),
+    ('core',          'create_default_permission_teams(uuid,uuid)'),
+    ('60-customers',  'seed_customer_categories(uuid)'),
+    ('50-extensions', 'cleanup_extension_http_logs(integer)'),
+    ('50-extensions', 'cleanup_extension_secret_access_logs(integer)')
+$$;
+
+REVOKE ALL ON FUNCTION withdrawn_execute_manifest() FROM PUBLIC, anon, authenticated;
+
+-- 'reachable' is the only status that withholds the stamp. 'absent' is a module
+-- that is not installed - optional modules are the normal case here, and a
+-- function that does not exist cannot be called. 'withdrawn' is the healthy
+-- state and carries the ACL that proves it, so a reader can see what is doing
+-- the work rather than taking the word 'withdrawn' on trust.
+CREATE OR REPLACE FUNCTION check_withdrawn_execute()
+RETURNS TABLE (module TEXT, signature TEXT, status TEXT, detail TEXT)
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+  r        RECORD;
+  v_oid    OID;
+  v_roles  TEXT[];
+  v_acl    TEXT;
+BEGIN
+  FOR r IN SELECT m.module, m.signature FROM withdrawn_execute_manifest() m LOOP
+    module    := r.module;
+    signature := r.signature;
+    v_oid     := to_regprocedure(r.signature);
+
+    IF v_oid IS NULL THEN
+      status := 'absent';
+      detail := 'not installed on this database, so there is no endpoint to withdraw. '
+             || 'If the module owning it is installed, this row is a missing object and '
+             || 'check_schema_release() reports it as such.';
+      RETURN NEXT;
+      CONTINUE;
+    END IF;
+
+    -- The casts are load-bearing. `text[] || 'anon'` resolves to array_cat, so
+    -- the untyped literal is parsed as an array and the whole check dies with
+    -- 'malformed array literal: "authenticated"'. It only reaches that line
+    -- when a function IS reachable, so a clean database never executed it and
+    -- the bug read as a pass; NC19 is what found it.
+    v_roles := ARRAY[]::TEXT[];
+    IF has_function_privilege('anon', v_oid, 'EXECUTE') THEN
+      v_roles := v_roles || 'anon'::TEXT;
+    END IF;
+    IF has_function_privilege('authenticated', v_oid, 'EXECUTE') THEN
+      v_roles := v_roles || 'authenticated'::TEXT;
+    END IF;
+
+    SELECT COALESCE(p.proacl::TEXT, '(default: owner and PUBLIC)')
+      INTO v_acl
+    FROM pg_proc p WHERE p.oid = v_oid;
+
+    IF cardinality(v_roles) > 0 THEN
+      status := 'reachable';
+      detail := array_to_string(v_roles, ' and ') || ' may EXECUTE this, so it is a live '
+             || 'PostgREST endpoint. It takes no organization argument and checks no '
+             || 'membership, so whoever calls it acts on every tenant at once. Withdraw it: '
+             || 'REVOKE ALL ON FUNCTION ' || r.signature || ' FROM PUBLIC, anon, authenticated; '
+             || 'ACL: ' || v_acl;
+    ELSE
+      status := 'withdrawn';
+      detail := 'no PostgREST role may execute it. ACL: ' || v_acl;
+    END IF;
+    RETURN NEXT;
+  END LOOP;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION check_withdrawn_execute() FROM PUBLIC, anon, authenticated;
+
 -- The only writer of schema_version. Stamps the release number if and only if
 -- every requirement of every installed module is satisfied; on failure it
 -- leaves the recorded version exactly as it was and reports what is wrong,
@@ -2196,12 +2465,17 @@ BEGIN
     WHERE status IN ('missing', 'stale', 'extra')
 
     UNION ALL
+    -- 'unverifiable' blocks alongside 'ungated'. This clause used to name
+    -- 'ungated' alone, which meant a reachable function the probe could not
+    -- judge either way was treated exactly like one it had certified. A check
+    -- that cannot reach a verdict has to say so loudly or it is not a check;
+    -- see the ELSE branch of check_org_gates() for what separates the two.
     SELECT json_build_object(
-             'module', 'security', 'object', signature, 'status', 'ungated',
+             'module', 'security', 'object', signature, 'status', status,
              'detail', detail
            )
     FROM check_org_gates()
-    WHERE status = 'ungated'
+    WHERE org_gate_status_blocks(status)
 
     UNION ALL
     SELECT json_build_object(
@@ -2232,6 +2506,17 @@ BEGIN
              'detail', detail
            )
     FROM check_unbound_entity_args()
+
+    -- The class check_org_gates() structurally cannot judge: a SECURITY DEFINER
+    -- function with no organization argument, whose only protection is that no
+    -- PostgREST role may execute it. See withdrawn_execute_manifest().
+    UNION ALL
+    SELECT json_build_object(
+             'module', 'security', 'object', signature, 'status', 'execute-not-withdrawn',
+             'detail', detail
+           )
+    FROM check_withdrawn_execute()
+    WHERE status = 'reachable'
 
     -- What a closed hole already produced, which closing it does not undo.
     -- This is the half the manifest did not have: v92 shipped a correct fix

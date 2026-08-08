@@ -653,14 +653,37 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- No require_org_member() and no grant. Like create_default_permission_teams in
--- core.sql this runs from an AFTER INSERT trigger on organizations, before the
--- organization has a single member, so a membership check would stop
--- organizations being created. It also has no client caller: the trigger below
--- covers new organizations and the backfill loop covers existing ones. The
--- GRANT ... TO authenticated that used to sit here described an endpoint nobody
--- calls, so it is withdrawn rather than guarded.
-REVOKE ALL ON FUNCTION seed_customer_categories(UUID) FROM PUBLIC;
+-- No require_org_member(), for the same reason create_default_job_titles and
+-- create_default_permission_teams in core.sql have none: this runs from an
+-- AFTER INSERT trigger on organizations, at an instant when the new
+-- organization has no members at all, so a membership check would make creating
+-- an organization impossible. It has no client caller either - the trigger below
+-- covers new organizations and the backfill loop above covers existing ones - so
+-- withdrawing the endpoint is the fix rather than guarding it.
+--
+-- WITHDRAWING IT MEANS NAMING THE ROLES, AND THIS LINE DID NOT
+--
+-- Until this release the statement read `REVOKE ALL ... FROM PUBLIC` and the
+-- comment above it claimed the grant was withdrawn. It was not, and the reason
+-- is not a surviving GRANT anywhere in this tree: Supabase's bootstrap runs
+-- ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO postgres,
+-- anon, authenticated, service_role, so every function postgres creates is born
+-- with an explicit `authenticated=X/postgres` entry in its ACL. Revoking from
+-- PUBLIC strips the `=X/postgres` entry and does not touch a role-specific one.
+-- A fresh install of this release had the identical exposure to an upgrade; no
+-- v86 grant was involved.
+--
+-- Measured in the harness before the fix: a user who administers one
+-- organization and belongs to no other, and a user who belongs to none at all,
+-- both called POST /rpc/seed_customer_categories over PostgREST with a foreign
+-- organization id and got HTTP 204, taking that organization's
+-- customer_categories from 44 rows to 48.
+--
+-- The ACL is now the whole of this function's defence, so it is no longer left
+-- to a comment to assert: check_org_gates() probes any p_org_id function that
+-- anon or authenticated can reach, and excuses one only for an ACL it has just
+-- read. Granting this back to authenticated withholds the stamp.
+REVOKE ALL ON FUNCTION seed_customer_categories(UUID) FROM PUBLIC, anon, authenticated;
 
 -- Seed every organization that already exists
 DO $$

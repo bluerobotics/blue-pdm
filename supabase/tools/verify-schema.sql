@@ -16,7 +16,8 @@
 --
 -- These withhold the stamp and end this script with an error: a manifest object
 -- missing, stale or duplicated by a leftover overload; an org-scoped RPC that
--- acted on an organization the caller does not belong to; a membership test
+-- acted on an organization the caller does not belong to, or that anon or
+-- authenticated can reach and could not be shown to refuse one; a membership test
 -- that admits an account with no organization; a function that selects rows by
 -- more ids than it checks; anything in public reachable without authentication
 -- THAT THE CALLER IS PERMITTED TO REVOKE. The table, function and RLS
@@ -237,30 +238,74 @@ ORDER BY cmd, policyname;
 --
 -- Run this as postgres - the Supabase SQL editor does - so auth.uid() is NULL
 -- and a working gate has something to refuse.
+--
+-- NOTHING IS SKIPPED SILENTLY ANY MORE
+--
+-- Three functions used to be removed from the probe by name, inside
+-- check_org_gates(), and the removal left no trace: a function on that list and
+-- a function that did not exist looked identical from here.
+-- seed_customer_categories was on it, under a comment saying its EXECUTE grant
+-- had been withdrawn. The REVOKE beside it named PUBLIC and not authenticated,
+-- and on Supabase those are different things - ALTER DEFAULT PRIVILEGES puts an
+-- explicit `authenticated=X/postgres` on every function postgres creates, and
+-- revoking PUBLIC does not touch it. A user who administered one organization
+-- and a user who belonged to none both wrote 48 rows into a third
+-- organization's customer_categories over PostgREST, while this section printed
+-- an all-clear.
+--
+-- So the list is gone. An exclusion is now computed per database by
+-- org_gate_exclusion_reason(): 'withdrawn' means the ACL was read just now and
+-- neither anon nor authenticated may execute the function, and 'predicate'
+-- means the function IS one of the gates. Both are printed below rather than
+-- omitted, with the ACL that justifies the first, so an excuse can be read and
+-- disagreed with. Grant a withdrawn function back to authenticated and it stops
+-- being excused on the next run.
+--
+-- 'unverifiable' is the other half: a function anon or authenticated can reach
+-- that the probe could not judge either way. It withholds the stamp. It used to
+-- be reported as 'inconclusive' and then ignored by the stamper, which is the
+-- same silence the name list provided, arrived at by a different route.
 
 SELECT signature, status, detail
 FROM check_org_gates()
 WHERE status <> 'gated'
-ORDER BY CASE status WHEN 'ungated' THEN 0 ELSE 1 END, signature;
+ORDER BY CASE status WHEN 'ungated' THEN 0 WHEN 'unverifiable' THEN 1 ELSE 2 END, signature;
 
 DO $$
 DECLARE
   v_ungated INTEGER;
+  v_unverifiable INTEGER;
   v_unclear INTEGER;
+  v_withdrawn INTEGER;
+  v_predicate INTEGER;
+  r RECORD;
 BEGIN
   SELECT count(*) FILTER (WHERE status = 'ungated'),
-         count(*) FILTER (WHERE status = 'inconclusive')
-    INTO v_ungated, v_unclear
+         count(*) FILTER (WHERE status = 'unverifiable'),
+         count(*) FILTER (WHERE status = 'inconclusive'),
+         count(*) FILTER (WHERE status = 'withdrawn'),
+         count(*) FILTER (WHERE status = 'predicate')
+    INTO v_ungated, v_unverifiable, v_unclear, v_withdrawn, v_predicate
   FROM check_org_gates();
 
   IF v_ungated > 0 THEN
     RAISE WARNING '❌ % org-scoped RPC(s) acted on an organization the caller does not belong to. Listed above; the stamp is withheld.', v_ungated;
   ELSE
-    RAISE NOTICE '✅ Every org-scoped RPC refused a foreign organization when asked';
+    RAISE NOTICE '✅ Every org-scoped RPC that a PostgREST caller can reach refused a foreign organization when asked';
   END IF;
 
+  IF v_unverifiable > 0 THEN
+    RAISE WARNING '❌ % org-scoped RPC(s) are reachable by anon or authenticated and could not be shown to refuse a foreign organization. Listed above; the stamp is withheld. Gate the function, or withdraw it with REVOKE ALL ON FUNCTION ... FROM PUBLIC, anon, authenticated.', v_unverifiable;
+  END IF;
+
+  -- Printed even when there are none, because the whole finding this section
+  -- was rewritten for is that an unchecked function looked like no function at
+  -- all. A count of zero here is itself the statement that nothing was excused.
+  RAISE NOTICE 'ℹ️  % function(s) were not probed: % withdrawn (no PostgREST role may execute them) and % gate predicate(s). Each is listed above with the reason and, for a withdrawn one, the ACL that is doing the work. Grant a withdrawn function back to anon or authenticated and it will be probed on the next run.',
+    v_withdrawn + v_predicate, v_withdrawn, v_predicate;
+
   IF v_unclear > 0 THEN
-    RAISE NOTICE 'ℹ️  % could not be judged either way (listed above) - usually a module that is not installed.', v_unclear;
+    RAISE NOTICE 'ℹ️  % could not be judged either way and no PostgREST role can reach them, so it costs nothing (listed above) - usually a module that is not installed.', v_unclear;
   END IF;
 END $$;
 
@@ -390,6 +435,48 @@ BEGIN
     RAISE WARNING '❌ % function(s) check one argument and then act on another. Listed above; the stamp is withheld.', v_count;
   ELSE
     RAISE NOTICE '✅ Every function that selects rows by more than one id checks each of them';
+  END IF;
+END $$;
+
+-- ===========================================
+-- CHECK THE UNGATEABLE FUNCTIONS ARE STILL UNREACHABLE
+-- ===========================================
+-- Every check above asks a function to refuse something. A handful cannot be
+-- asked: they take no organization argument, so there is no foreign id to hand
+-- them and no refusal to require. cleanup_extension_http_logs(integer) deletes
+-- from extension_http_log filtered by age alone - every tenant, one statement -
+-- and an org-less signed-in caller took another tenant's log from 1 row to 0
+-- over PostgREST before this check existed. check_org_gates() returned no row
+-- for it, correctly and uselessly.
+--
+-- For these the ACL is the control, so the ACL is what gets asserted. The list
+-- is in withdrawn_execute_manifest(); 'reachable' withholds the stamp.
+
+SELECT signature, status, detail
+FROM check_withdrawn_execute()
+WHERE status <> 'withdrawn'
+ORDER BY signature;
+
+DO $$
+DECLARE
+  v_open    INTEGER;
+  v_absent  INTEGER;
+  v_ok      INTEGER;
+BEGIN
+  SELECT count(*) FILTER (WHERE status = 'reachable'),
+         count(*) FILTER (WHERE status = 'absent'),
+         count(*) FILTER (WHERE status = 'withdrawn')
+    INTO v_open, v_absent, v_ok
+  FROM check_withdrawn_execute();
+
+  IF v_open > 0 THEN
+    RAISE WARNING '❌ % function(s) that can only be protected by their ACL are executable by a PostgREST role. Listed above; the stamp is withheld.', v_open;
+  ELSE
+    RAISE NOTICE '✅ All % function(s) that can only be protected by their ACL are unreachable by anon and authenticated', v_ok;
+  END IF;
+
+  IF v_absent > 0 THEN
+    RAISE NOTICE 'ℹ️  % of them are not installed on this database (optional module), so there is no endpoint to withdraw.', v_absent;
   END IF;
 END $$;
 

@@ -397,6 +397,39 @@ BEGIN
 END;
 $$;
 
+-- Both cleanup routines sweep every organization at once: the DELETE is
+-- qualified by age only, never by org_id. That is correct for an operator
+-- maintenance sweep and catastrophic for anything a tenant can call, so the
+-- ACL is the entire boundary. Neither had a GRANT in this file, which is
+-- exactly why they looked safe; on Supabase, ALTER DEFAULT PRIVILEGES grants
+-- authenticated EXECUTE on every function postgres creates, and an absent
+-- GRANT means the default stands rather than that no one holds the privilege.
+--
+-- Measured before this revoke, on a harness at this release: a signed-in user
+-- belonging to NO organization called POST /rpc/cleanup_extension_http_logs
+-- with p_retention_days = 0 and got HTTP 200 with a row count, taking another
+-- tenant's extension_http_log from 1 row to 0. The same held for
+-- cleanup_extension_secret_access_logs against extension_secret_access. That
+-- is destruction of audit evidence by an unrelated tenant.
+--
+-- Withdrawing the endpoint is the whole fix, and org scoping would be the
+-- wrong shape, because nothing signed-in is supposed to call these at all:
+--   * no caller anywhere in src/, api/, electron/ or scripts/
+--   * no pg_cron schedule and no scheduled job in the tree
+--   * the retention path the application actually uses is cleanupHttpLogs()
+--     in api/src/extensions/http-logger.ts, which deletes straight from the
+--     table filtered by org_id and extension_id, under RLS, and never touches
+--     this RPC
+-- Adding a membership check would therefore gate a door with nobody behind it
+-- while leaving the sweep unable to do the one job it exists for. postgres and
+-- service_role keep EXECUTE and can still run the sweep.
+--
+-- check_org_gates() cannot police this pair - they take no organization
+-- argument, so there is no foreign id for it to substitute and no refusal for
+-- it to require. Coverage is negative control NC19, which regrants EXECUTE
+-- exactly as the default ACL had it and requires the stamp to be withheld.
+REVOKE ALL ON FUNCTION cleanup_extension_http_logs(INTEGER) FROM PUBLIC, anon, authenticated;
+
 -- Cleanup old secret access logs (run periodically)
 CREATE OR REPLACE FUNCTION cleanup_extension_secret_access_logs(
   p_retention_days INTEGER DEFAULT 90
@@ -412,6 +445,9 @@ BEGIN
   RETURN deleted_count;
 END;
 $$;
+
+-- Same shape, same reasoning, same measurement - see the comment above.
+REVOKE ALL ON FUNCTION cleanup_extension_secret_access_logs(INTEGER) FROM PUBLIC, anon, authenticated;
 
 -- ===========================================
 -- TRIGGERS
