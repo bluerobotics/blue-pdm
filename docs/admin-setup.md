@@ -282,7 +282,7 @@ itself is always allowed through CORS whatever else you configure.
 Earlier versions behaved differently. `NODE_ENV` defaulted to `development`,
 and because neither Railway nor Render sets it for a prebuilt image, an API
 deployed by following these steps returned full stack traces to anyone who
-asked. **If you deployed before BluePLM 3.25.0, pull the current image** —
+asked. **If you deployed before BluePLM 4.0.0, pull the current image** —
 `ghcr.io/bluerobotics/blueplm-api:latest`, then redeploy. You do not need to
 add a variable to fix it, and you should not add `NODE_ENV=development`.
 :::

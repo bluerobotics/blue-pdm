@@ -63,7 +63,14 @@ jobs:
           VERSION="${GITHUB_REF#refs/tags/v}"
           SECTION=$(awk "/^## \[${VERSION}\]/{flag=1; next} /^## \[/{flag=0} flag" CHANGELOG.md)
           if [ -n "$(printf '%s' "$SECTION" | tr -d '[:space:]')" ]; then
-            echo "Found a non-empty '## [${VERSION}]' section in CHANGELOG.md."
+            echo "Found a non-empty '## [${VERSION}]' section in CHANGELOG.md (${#SECTION} characters)."
+            # Reported here rather than only in the release job, which runs after the installers are
+            # built. The release job truncates and links the file; this is so the operator knows it
+            # is going to before waiting for the build.
+            if [ "${#SECTION}" -gt 120000 ]; then
+              echo "::warning::That section is longer than GitHub's 125,000-character release body" \
+                   "limit, so the published notes will be truncated with a link to CHANGELOG.md."
+            fi
             exit 0
           fi
           case "$VERSION" in
@@ -261,8 +268,17 @@ jobs:
       # repeated here because this is the step that actually produces the body: it should not be
       # able to publish an empty release regardless of what ran before it. Prereleases are exempt
       # for the reason given in that job.
+      #
+      # It also has to survive a section that is too long. GitHub refuses a release body over
+      # 125,000 characters with a 422, and this job runs after every build job has succeeded — so an
+      # oversized section costs the whole release at the last step, with the installers already
+      # built and nothing published. v4.0.0's section is 180,000 characters. Whole lines are kept up
+      # to a budget below the limit and the remainder is replaced by a link to the file, which is
+      # the only copy that was ever complete anyway.
       - name: Extract changelog for version
         id: changelog
+        env:
+          MAX_BODY: 120000
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
           CHANGELOG=$(awk "/^## \[${VERSION}\]/{flag=1; next} /^## \[/{flag=0} flag" CHANGELOG.md)
@@ -270,6 +286,23 @@ jobs:
             echo "::error::Refusing to publish ${VERSION} with an empty release body:" \
                  "CHANGELOG.md has no non-empty '## [${VERSION}]' section."
             exit 1
+          fi
+          if [ "${#CHANGELOG}" -gt "$MAX_BODY" ]; then
+            # `next` rather than `exit`: exiting closes the pipe while printf is still writing, which
+            # kills printf with SIGPIPE and fails the step under `pipefail`. This reads to the end.
+            KEPT=$(printf '%s\n' "$CHANGELOG" | awk -v max="$MAX_BODY" \
+              '{ if (full) next
+                 if (kept + length($0) + 1 > max) { full = 1; next }
+                 kept += length($0) + 1; print }')
+            # Built with printf rather than as a multi-line string: every line of a `run: |` block
+            # has to stay indented, and a literal markdown block written at column zero silently
+            # leaves the block scalar — which is a YAML parse error, not a formatting problem.
+            FOOTER=$(printf '\n\n---\n\n%s %s\n' \
+              "**These notes are truncated here.** GitHub will not accept a release body over 125,000 characters, and the notes for ${VERSION} are longer than that." \
+              "The complete set is in [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/CHANGELOG.md) at this tag.")
+            CHANGELOG="${KEPT}${FOOTER}"
+            echo "::warning::Release body truncated to ${MAX_BODY} characters to fit GitHub's" \
+                 "125,000-character limit. The full notes are linked from the body."
           fi
           echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
           echo "$CHANGELOG" >> $GITHUB_OUTPUT
