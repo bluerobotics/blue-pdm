@@ -1,0 +1,93 @@
+# Durability settings for a database that is thrown away every run.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.fast.yml up -d db
+#
+# An override, not an edit, so the file the other suites use is untouched and so
+# that a run either clearly used these settings or clearly did not. Both `-f`
+# flags are needed on every compose command in the session, including `down`.
+#
+# WHAT THIS CHANGES AND WHY IT IS SAFE HERE
+#
+# fsync=off tells Postgres not to wait for the operating system to put data on
+# the disk. On a real database that trades crash safety for speed and the trade
+# is almost never worth making. On this container the entire database is created
+# by reset.ps1 in about a minute and destroyed by `docker compose down -v`, so
+# the failure it exposes - the machine losing power mid-run, leaving an
+# unrecoverable data directory - is repaired by running reset.ps1 again.
+#
+# The reason it is worth doing is what the suite spends its time on. Applying
+# core.sql and five modules is thousands of small DDL statements, each one
+# writing catalogue rows; every negative control writes a schema_version row and
+# a verification's worth of catalogue churn. That is a commit-heavy,
+# small-transaction workload, which is the shape that waits on the disk most.
+#
+#   fsync=off              no flush at commit or checkpoint
+#   full_page_writes=off   no torn-page protection in the WAL, which on a
+#                          DDL-heavy load is a large share of the WAL volume
+#   synchronous_commit=off returns before the WAL is flushed. Redundant with
+#                          fsync=off for the most part, set for the case where
+#                          somebody turns fsync back on and keeps this file
+#   wal_level=minimal      no logical or replica WAL. Nothing here replicates
+#     + max_wal_senders=0  and minimal is refused unless senders are zero
+#
+# log_min_messages=warning is repeated from the base file because compose
+# replaces `command` wholesale rather than merging it. Dropping it would put
+# every NOTICE from every module into the container log, which is not a
+# correctness problem but is a large amount of writing.
+#
+# HOW MUCH FASTER - AN ESTIMATE, NOT A MEASUREMENT
+#
+# Nothing here was run; the other agent owns the harness. On commit-heavy
+# small-transaction workloads on local SSDs, disabling fsync is commonly worth
+# 2-5x, and that range is where the estimate in the write-up comes from. If the
+# Docker volume already sits on a disk that lies about flushing - which several
+# desktop virtualisation stacks do - the real gain is near zero. Compare a
+# reset.ps1 with and without the second -f before believing either number.
+#
+# WHY THIS CANNOT CHANGE ANY VERDICT
+#
+# Every setting here concerns when bytes reach the disk. None of them changes
+# what a transaction sees, when a lock is taken, what a catalogue query returns,
+# or which errors are raised. Postgres's visibility rules and constraint
+# enforcement are identical; a committed transaction is still committed to every
+# session, it is merely not yet guaranteed to survive the machine dying. No check
+# in verify-schema.sql, and nothing in any negative control, reads anything that
+# these settings affect.
+
+services:
+  db:
+    command:
+      - postgres
+      - -c
+      - log_min_messages=warning
+      - -c
+      - fsync=off
+      - -c
+      - full_page_writes=off
+      - -c
+      - synchronous_commit=off
+      - -c
+      - wal_level=minimal
+      - -c
+      - max_wal_senders=0
+      # The install writes a lot of catalogue rows in a short time. The default
+      # 128MB shared_buffers and 4MB maintenance_work_mem make that read back
+      # from the page cache more often than it needs to. Modest values, so the
+      # container does not need a memory limit raised to accept them.
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - maintenance_work_mem=256MB
+      # Checkpoints are the other thing a DDL-heavy load trips over. Spreading
+      # them out means fewer of them inside a run that will be discarded anyway.
+      - -c
+      - max_wal_size=4GB
+      - -c
+      - checkpoint_timeout=30min
+    healthcheck:
+      # The base file polls every 3 seconds, so reset.ps1 waits an average of
+      # 1.5 seconds after the database is actually up before compose admits it.
+      # Cheap to fix, and it is on the critical path of every reset.
+      interval: 1s
+      timeout: 5s
+      retries: 120
