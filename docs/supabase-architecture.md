@@ -1612,10 +1612,10 @@ Database and app versions must match to prevent compatibility issues.
 
 ```sql
 -- Database version
-SELECT version FROM schema_version;  -- e.g., 47
+SELECT version FROM schema_version;  -- e.g., 95
 
 -- App expected version
-EXPECTED_SCHEMA_VERSION = 47  -- src/lib/schemaVersion.ts
+EXPECTED_SCHEMA_VERSION = 95  -- src/lib/schemaVersion.ts
 ```
 
 ### Version Mismatch Handling

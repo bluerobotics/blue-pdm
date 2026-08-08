@@ -6,8 +6,6 @@
  * - Store (marketplace) extensions from the API
  * - Extension lifecycle states and updates
  * - Installation progress and UI state
- *
- * @see Agent 10 in extension-system-architecture-agents.plan.md
  */
 import { StateCreator } from 'zustand'
 import type {

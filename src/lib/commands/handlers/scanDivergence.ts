@@ -1,9 +1,10 @@
 /**
  * `scan-divergence` - the read-only divergence scanner.
  *
- * Phase 0 of `.cursor/plans/metadata-source-of-truth.plan.md`. Measures how far the database and
- * the SolidWorks files have drifted apart before anything is changed, because the files still hold
- * the only surviving copy of what the `jsonb ||` configuration-map wipe destroyed.
+ * Measures how far the database and the SolidWorks files have drifted apart before anything is
+ * changed, because the files still hold the only surviving copy of what the `jsonb ||`
+ * configuration-map wipe destroyed. Measuring first is the point: a repair written before the
+ * scale of the divergence is known would overwrite the last copy of the lost values.
  *
  * The scanner cannot write. Every import below is either the pure comparison logic, a SELECT-only
  * database read, or the report writer, which puts its artifact in the log directory. Nothing from

@@ -20,11 +20,12 @@
  * This describes one machine's attempt to write one working copy. Only that machine holds the file
  * and only it can retry, so the state is worthless to anyone else and would be actively misleading
  * on a second machine that has its own copy. The durable, shared record of whether a row was ever
- * confirmed against its file is `property_fingerprint` / `property_verified_at` - phase 5 of
- * `.cursor/plans/metadata-source-of-truth.plan.md` - which is a different fact with a different
- * lifetime. It is persisted to local storage beside `persistedPendingMetadata`, because a mark that
- * vanished when the app restarted would leave the value looking clean. Both are path-keyed and both
- * are declared in `src/stores/persistedPathKeys.ts`, which is what carries them across a rename.
+ * confirmed against its file is `property_fingerprint` / `property_verified_at`, which is a
+ * different fact with a different lifetime: shared and durable, where this is one machine's
+ * transient attempt. This state is persisted to local storage beside `persistedPendingMetadata`,
+ * because a mark that vanished when the app restarted would leave the value looking clean. Both
+ * are path-keyed and both are declared in `src/stores/persistedPathKeys.ts`, which is what
+ * carries them across a rename.
  *
  * Pure: no I/O, no store access, no React.
  */

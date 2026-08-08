@@ -49,8 +49,9 @@ export type ConfigurationRead =
  * `errorCode` reaches the renderer - `electron/handlers/solidworks.ts:1108` resolves the service's
  * reply object whole - but `getConfigurations`'s declaration in `src/electron.d.ts:733-747` and
  * `electron/preload.ts` omits the field, unlike the sibling commands that declare it. Both files
- * are outside this agent's boundary, so the field is narrowed here instead of being declared where
- * it belongs. Recorded as a typing-only follow-up in `C_AGENT_REPORT.md`.
+ * so the field is narrowed here instead of being declared where it belongs. Purely a typing gap -
+ * the value does reach the renderer at runtime - and the fix is to add `errorCode` to the
+ * `getConfigurations` declaration and delete this helper.
  */
 const ENUMERATION_FAILED = 'CONFIGURATION_ENUMERATION_FAILED'
 

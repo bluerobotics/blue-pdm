@@ -242,10 +242,25 @@ export async function sendSessionHeartbeat(
   //
   // Through the RPC rather than writing `public.users` directly. This was the last self-serve direct
   // table write to that table in the renderer, and while schema 95's `WITH CHECK` admits it either
-  // way, routing it here collapses the column grant `authenticated` needs on `users` from
-  // `last_online, role, org_id` down to `role` - which is what makes a follow-up
-  // `REVOKE UPDATE ON users; GRANT UPDATE (role)` worth issuing as a second lock on `org_id`,
-  // independent of any policy. Agent A's request; their report has the reasoning in full.
+  // way, routing it here is what makes a column-level grant on `users` possible at all:
+  //
+  // While this call site wrote `last_online` directly, the column union `authenticated` needed was
+  // `last_online, role, org_id`. Issuing that grant requires first
+  // `REVOKE UPDATE ON users FROM authenticated`, and the union contains `role` and `org_id` - the
+  // two columns schema 95's self-update `WITH CHECK` exists to pin - so the grant would have
+  // re-admitted the very privilege escalation that check closes. It bought nothing and was
+  // therefore never issued.
+  //
+  // With this write on the RPC, the only remaining direct writer is `teams.ts` setting `role`, so
+  // the union collapses to `role` alone and the grant becomes a genuine second lock on `org_id`,
+  // independent of any policy:
+  //
+  //   REVOKE UPDATE ON users FROM authenticated;
+  //   GRANT UPDATE (role) ON users TO authenticated;
+  //
+  // That is a follow-up release, not a prerequisite for 95, and it must be preceded by confirming
+  // that no path outside `src/` and `electron/` writes `public.users` directly - `api/**` was not
+  // covered by the audit that established the above.
   //
   // The timestamp now comes from the database rather than from this machine's clock, and the row is
   // chosen by `auth.uid()` rather than by the `userId` argument. Both are the same row here, and a

@@ -36,9 +36,24 @@ export const EXPECTED_API_VERSION = '2.7.0'
 //
 // This is a hard refusal, not a warning: raising it takes the app offline for every user whose
 // API is below the floor, until that API is redeployed. It should be raised only to exclude a
-// version that is unsafe to talk to - 2.6.0 is the candidate, being the release that stopped 5xx
-// responses returning the server's stack trace - and only once the deployed image is known to be
-// at or above the new floor. See D_AGENT_REPORT.md, "D10".
+// version that is unsafe to talk to, and only once the deployed image is known to be at or above
+// the new floor.
+//
+// The value it should become is 2.6.0, and it is deliberately not set yet:
+//
+// - **Why 2.6.0.** A floor should exclude the versions that are unsafe to talk to and nothing
+//   newer. Two entries in the history above are safety boundaries: 2.5.0 made extension endpoints
+//   require a token, and 2.6.0 stopped 5xx responses returning the server's error message and
+//   stack trace. 2.6.0 is the later of the two, so a floor there excludes both defects in one
+//   step - every version below it leaks stack traces on a 500, every version at or above it
+//   does not.
+// - **Why not 2.7.0.** 2.7.0's changes harden the server (request-id validation, extension audit
+//   fix). An API on 2.6.0 is entirely safe for a client to talk to, and refusing it would cost a
+//   user their app over a server-side observability improvement. A compatibility floor is about
+//   safety, not currency.
+// - **Why it is still 2.0.0.** The deployed API image predates 2.6.0. Raising the floor before the
+//   deployment is known to be at or above it would take every user offline. Raise this only after
+//   confirming the running image, and treat it as a major bump when it happens.
 export const MINIMUM_COMPATIBLE_API_VERSION = '2.0.0'
 
 // Human-readable descriptions for each version

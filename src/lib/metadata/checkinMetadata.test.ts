@@ -10,7 +10,8 @@
  * The SolidWorks service is stubbed. The convention it does not yet honour - an empty value must
  * write an empty property rather than delete it - lives in C# and is owned elsewhere, so what can be
  * tested here is that this side sends the empty value and treats its absence afterwards as the value
- * being right. See `.cursor/plans/service-empty-property-write.plan.md`.
+ * being right. When the service starts writing the empty property, these tests must keep passing
+ * unchanged: the value is the same either way, only the shape left behind differs.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'

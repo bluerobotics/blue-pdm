@@ -553,9 +553,15 @@ export default async function handler(api: ExtensionServerAPI) {
 
 ### OAuth Callback Handler (Public Endpoint)
 
+> **Not currently reachable.** `public` is accepted and recorded, but every extension endpoint
+> requires a token today, so an anonymous OAuth provider redirect is refused before this handler
+> runs. Do not ship a callback that depends on it — see
+> [Public Endpoints](./contributions.md#public-endpoints) for why and for what has to replace it.
+> The example below is the shape such a handler will take once it works.
+
 ```typescript
 // server/oauth-callback.ts
-// Manifest: { "public": true }
+// Manifest: { "public": true }  // see the note above - not reachable yet
 import type { ExtensionServerAPI } from '@blueplm/extension-api'
 
 export default async function handler(api: ExtensionServerAPI) {

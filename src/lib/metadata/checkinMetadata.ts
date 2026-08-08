@@ -5,8 +5,8 @@
  * the datacard's own write had already put the value in the document. When that write failed -
  * refused property, offline service, locked file - the assumption was false and nothing recorded it,
  * so the database silently took a value the file did not have. That is the divergence this phase
- * exists to remove, and decision D4 in `.cursor/plans/metadata-source-of-truth.plan.md` settles the
- * trade: check-in may get slower for files that were actually edited.
+ * exists to remove, and the trade it accepts is deliberate: check-in may get slower for files that
+ * were actually edited, because confirming a write is worth more than finishing quickly.
  *
  * The model is write, then promote, and mark what could not be confirmed.
  *

@@ -1,5 +1,5 @@
 /**
- * Read-only divergence scanner (phase 0 of `.cursor/plans/metadata-source-of-truth.plan.md`).
+ * Read-only divergence scanner: it measures, and it never repairs.
  *
  * Answers, over the real vault, how far the database and the SolidWorks files have drifted apart
  * on the fields the ownership table calls database-owned, and - for every value the database no

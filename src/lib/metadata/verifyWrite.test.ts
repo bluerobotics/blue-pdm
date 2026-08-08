@@ -240,9 +240,9 @@ describe('a configuration is judged on its own bag, not on the document undernea
   })
 
   it('verifies that clear the same way once the service writes empty properties instead of deleting', () => {
-    // `.cursor/plans/service-empty-property-write.plan.md` changes the shape the service leaves
-    // behind, not the value. Both shapes have to read the same or the plan would silently change
-    // what verification means.
+    // Having the service write an empty property instead of deleting it changes the shape it
+    // leaves behind, not the value. Both shapes have to read the same here, or that change would
+    // silently change what verification means.
     const outcomes = verifyWrite(
       [
         {

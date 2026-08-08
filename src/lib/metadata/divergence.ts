@@ -1,9 +1,9 @@
 /**
  * Divergence comparison and classification.
  *
- * Phase 0 of `.cursor/plans/metadata-source-of-truth.plan.md`: decide, for one file, how the
- * database row and the SolidWorks document disagree about the fields the ownership table calls
- * database-owned, and what can still be done about each disagreement.
+ * Measure-only, and it changes nothing: decide, for one file, how the database row and the
+ * SolidWorks document disagree about the fields the ownership table calls database-owned, and what
+ * can still be done about each disagreement.
  *
  * This module is deliberately pure. It performs no I/O, imports nothing that can reach Supabase,
  * the SolidWorks service or the file system, and holds no state. Everything it needs is passed in.

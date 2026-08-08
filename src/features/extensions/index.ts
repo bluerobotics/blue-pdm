@@ -3,8 +3,6 @@
  *
  * This module provides the UI for browsing, installing, and managing
  * BluePLM extensions within the Electron app.
- *
- * @see Agent 10 in extension-system-architecture-agents.plan.md
  */
 
 // Main views
