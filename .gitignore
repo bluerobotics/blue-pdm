@@ -42,3 +42,8 @@ image/REPORT/
 
 # Supabase CLI local state
 supabase/.temp/
+
+# Harness scratch. A leading underscore marks a one-shot probe written to answer
+# a single question during an investigation; durable tooling carries no prefix.
+# The convention predates this rule and was being kept by hand.
+harness/**/_*
