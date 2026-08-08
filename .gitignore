@@ -29,6 +29,10 @@ npm-debug.log*
 # TypeScript cache
 *.tsbuildinfo
 
+# Emitted by the composite tsconfig.node.json project alongside its .tsbuildinfo.
+# Nothing imports it, and a committed copy goes stale against vite.config.ts.
+vite.config.d.ts
+
 # Vite cache
 .vite/
 
