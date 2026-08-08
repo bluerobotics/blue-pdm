@@ -253,6 +253,7 @@ export const usePDMStore = create<PDMStoreState>()(
         // on purpose - see the note at the top of slices/vaultAuditSlice.ts.
         // ═══════════════════════════════════════════════════════════════
         vaultAuditScope: state.vaultAuditScope,
+        vaultAuditExpectRevisionOnModels: state.vaultAuditExpectRevisionOnModels,
       }),
       /**
        * Called when hydration starts and finishes.

@@ -1001,9 +1001,24 @@ SELECT enforce_anon_execute_posture();
 -- database recorded 88 while module 10's v87 work was absent, and the app,
 -- comparing 88 against its own 88, showed no mismatch warning at all. Nothing
 -- in this file can know what the rest of the database contains, so nothing in
--- this file is entitled to speak for it. Run supabase/tools/verify-schema.sql.
-
+-- this file is entitled to speak for it.
+--
+-- What replaces it asks instead of speaking. try_stamp_schema() in core.sql
+-- answers from the whole release manifest, so the answer does not depend on which
+-- file asked - this file applied alone to a v86 database is told no, which is the
+-- case above - and whichever file is run last is the one that records the version.
+--
+-- Guarded: this module may be applied over a core.sql that predates the helper,
+-- and an uncaught error here would roll back everything the file just installed.
 DO $$
 BEGIN
   RAISE NOTICE 'Supply Chain module installed successfully';
+
+  IF to_regprocedure('public.try_stamp_schema()') IS NULL THEN
+    RAISE NOTICE 'Schema version not recorded: this core.sql predates try_stamp_schema(). Apply core.sql, or run supabase/tools/verify-schema.sql.';
+    RETURN;
+  END IF;
+  PERFORM try_stamp_schema();
+EXCEPTION WHEN OTHERS THEN
+  RAISE WARNING 'Schema version not recorded: %', SQLERRM;
 END $$;

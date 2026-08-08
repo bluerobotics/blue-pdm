@@ -156,6 +156,7 @@ async function refreshHashAfterWrite(file: LocalFile, fullPath: string): Promise
 export async function pushPartAssemblyMetadata(
   file: LocalFile,
   fullPath: string,
+  options: { omitRevision?: boolean } = {},
 ): Promise<PushResult> {
   logSync('debug', 'PUSH: Writing metadata to part/assembly', { fullPath })
 
@@ -203,7 +204,13 @@ export async function pushPartAssemblyMetadata(
 
   const { configurations } = read
 
-  const groups = buildPartAssemblyPushPlan({ file, configurations, serialization, parity })
+  const groups = buildPartAssemblyPushPlan({
+    file,
+    configurations,
+    serialization,
+    parity,
+    omitRevision: options.omitRevision,
+  })
   if (groups.length === 0) {
     logSync('debug', 'No metadata to write', { fullPath })
     return { success: true }
@@ -214,7 +221,7 @@ export async function pushPartAssemblyMetadata(
     fullPath,
     baseNumber: resolvedText(resolved.partNumber),
     description: resolvedText(resolved.description).substring(0, 50),
-    revision: resolvedText(resolved.revision),
+    revision: options.omitRevision ? 'omitted' : resolvedText(resolved.revision),
     configurationCount: configurations.length,
   })
 

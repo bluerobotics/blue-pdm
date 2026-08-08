@@ -1,32 +1,33 @@
 /**
- * How check-in treats each write state.
+ * What check-in records about the pending values it hands to the database.
  *
- * Check-in used to promote whatever it found pending and clear it, on the assumption that the
- * datacard had already written the value into the file. When that write had failed, the database
- * silently took a value the file did not have and nothing recorded it. These tests pin the
- * replacement: write what is owed, promote either way, and keep the mark on anything that could not
- * be confirmed - so the pending value's disappearance never takes the record of doubt with it.
+ * Two defects are pinned here and they pull in opposite directions, which is why the tests are
+ * worth reading together. The first is the original one: a value reached the database while the
+ * file did not have it and nothing recorded that, so the mark disappeared along with the pending
+ * value that had been its only trace. The second is the fix's own overreach: check-in wrote the
+ * pending values into the document to guarantee the two agreed, which changed the bytes of the
+ * file being checked in and cut a version on every drawing carrying an edit.
  *
- * The SolidWorks service is stubbed. The convention it does not yet honour - an empty value must
- * write an empty property rather than delete it - lives in C# and is owned elsewhere, so what can be
- * tested here is that this side sends the empty value and treats its absence afterwards as the value
- * being right. When the service starts writing the empty property, these tests must keep passing
- * unchanged: the value is the same either way, only the shape left behind differs.
+ * So the line these tests draw is about what counts as evidence. An address with a `failed`,
+ * `unverified` or `unattempted` mark had a write run against it that did not confirm, and that
+ * survives. An address with nothing recorded had no write run against it, which is the ordinary
+ * case now - an item number typed into the file list is written on Enter and records its own
+ * outcome, and a drawing's value is pulled from its parent model and was never headed for the
+ * drawing at all. Treating that absence as suspicious would put a warning on the normal case.
+ *
+ * No SolidWorks stub, and no `window`: touching the document is the defect, so a call into the
+ * service would throw here rather than quietly pass.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
-import { settleMetadataForCheckin, unwrittenAddresses } from './checkinMetadata'
+import { promoteMetadataForCheckin } from './checkinMetadata'
 import { addressKey, applyWriteState, type MetadataWriteStateRecord } from './writeState'
 import type { LocalFile } from '@/stores/types'
 
-vi.mock('@/lib/serialization', () => ({
-  getSerializationSettings: vi.fn(async () => null),
-  combineBaseAndTab: (base: string, tab: string) => `${base}-${tab}`,
-  normalizeTabNumber: (value: string) => value,
-}))
-
 const AT = '2026-08-06T12:00:00.000Z'
+
+const PART_NUMBER = { scope: 'file', field: 'part_number' } as const
 
 function file(overrides: Partial<LocalFile> = {}): LocalFile {
   return {
@@ -41,226 +42,138 @@ function file(overrides: Partial<LocalFile> = {}): LocalFile {
   } as LocalFile
 }
 
-interface Stub {
-  setProperties: ReturnType<typeof vi.fn>
-  setPropertiesBatch: ReturnType<typeof vi.fn>
-  getProperties: ReturnType<typeof vi.fn>
-  getConfigurations: ReturnType<typeof vi.fn>
+/** One address in one state, as some earlier write would have left it. */
+function marked(state: 'verified' | 'failed' | 'unverified' | 'unattempted', reason?: string) {
+  return applyWriteState(undefined, [PART_NUMBER], state, { at: AT, reason })
 }
 
-let stub: Stub
-
-function installService(options: {
-  writeSucceeds?: boolean
-  readBack?: Record<string, string> | 'throw'
-  configurations?: string[]
-  configurationReadBack?: Record<string, Record<string, string>>
-}): Stub {
-  const configurations = options.configurations ?? []
-  const service: Stub = {
-    setProperties: vi.fn(async () => ({ success: options.writeSucceeds !== false })),
-    setPropertiesBatch: vi.fn(
-      async (_path: string, configProperties: Record<string, Record<string, string>>) => ({
-        success: options.writeSucceeds !== false,
-        data: { configurationsProcessed: Object.keys(configProperties).length },
-      }),
-    ),
-    getProperties: vi.fn(async () => {
-      if (options.readBack === 'throw') return { success: false, error: 'the document is locked' }
-      return {
-        success: true,
-        data: {
-          configurations,
-          fileProperties: options.readBack ?? {},
-          configurationProperties: options.configurationReadBack ?? {},
-        },
-      }
-    }),
-    getConfigurations: vi.fn(async () => ({
-      success: true,
-      data: { configurations: configurations.map((name) => ({ name })) },
-    })),
-  }
-
-  // @ts-expect-error the test only needs the SolidWorks surface this module touches
-  globalThis.window = { electronAPI: { solidworks: service } }
-  return service
-}
-
-beforeEach(() => {
-  stub = installService({ readBack: {} })
-})
-
-afterEach(() => {
-  vi.clearAllMocks()
-})
-
-describe('which addresses check-in still owes the file', () => {
-  it('owes a field with no recorded state, since nothing ever confirmed it', () => {
-    const owed = unwrittenAddresses(file({ pendingMetadata: { part_number: 'BR-202020' } }))
-
-    expect(owed.map(addressKey)).toEqual(['file:part_number'])
-  })
-
-  it('owes a field whose write failed', () => {
-    const record = applyWriteState(undefined, [{ scope: 'file', field: 'part_number' }], 'failed', {
-      at: AT,
-    })
-    const owed = unwrittenAddresses(
-      file({ pendingMetadata: { part_number: 'BR-202020' }, metadataWriteState: record }),
-    )
-
-    expect(owed).toHaveLength(1)
-  })
-
-  it('owes nothing for a confirmed field, so check-in does not redo work already done', () => {
-    const record = applyWriteState(
-      undefined,
-      [{ scope: 'file', field: 'part_number' }],
-      'verified',
-      { at: AT },
-    )
-    const owed = unwrittenAddresses(
-      file({ pendingMetadata: { part_number: 'BR-202020' }, metadataWriteState: record }),
-    )
-
-    expect(owed).toHaveLength(0)
-  })
-
-  it('does not owe a write for an unconfirmed field, because a second write could not settle it', () => {
-    const record = applyWriteState(
-      undefined,
-      [{ scope: 'file', field: 'part_number' }],
-      'unverified',
-      { at: AT },
-    )
-    const owed = unwrittenAddresses(
-      file({ pendingMetadata: { part_number: 'BR-202020' }, metadataWriteState: record }),
-    )
-
-    expect(owed).toHaveLength(0)
-  })
-})
-
-describe('a confirmed value is promoted with nothing left to say', () => {
-  it('keeps no record once the file and the database agree', async () => {
-    stub = installService({ readBack: { Number: 'BR-202020' } })
-
-    const outcome = await settleMetadataForCheckin(
+describe('a value with no write recorded against it', () => {
+  it('is promoted without a mark, because nothing was ever attempted against the file', () => {
+    // The ordinary case, and the one check-in used to write for. An edit committed in the file
+    // list has already been written and recorded; a drawing's pulled value belongs to the parent
+    // model. Neither leaves anything for check-in to doubt.
+    const outcome = promoteMetadataForCheckin(
       file({ pendingMetadata: { part_number: 'BR-202020' } }),
-      { organizationId: null, serviceAvailable: true },
     )
 
     expect(outcome.writeState).toBeUndefined()
     expect(outcome.promotedUnconfirmed).toHaveLength(0)
   })
 
-  it('writes the value before promoting it, rather than assuming the datacard did', async () => {
-    stub = installService({ readBack: { Number: 'BR-202020' } })
+  it('is promoted without a mark on a file that cannot hold custom properties at all', () => {
+    const outcome = promoteMetadataForCheckin(
+      file({ extension: '.step', pendingMetadata: { part_number: 'BR-202020' } }),
+    )
 
-    await settleMetadataForCheckin(file({ pendingMetadata: { part_number: 'BR-202020' } }), {
-      organizationId: null,
-      serviceAvailable: true,
-    })
-
-    expect(stub.setProperties).toHaveBeenCalledTimes(1)
-    expect(stub.getProperties).toHaveBeenCalledTimes(1)
+    expect(outcome.writeState).toBeUndefined()
+    expect(outcome.promotedUnconfirmed).toHaveLength(0)
   })
 
-  it('does not touch the file when everything is already confirmed', async () => {
-    const record = applyWriteState(
-      undefined,
-      [{ scope: 'file', field: 'part_number' }],
-      'verified',
-      { at: AT },
+  it('is promoted without a mark for a configuration the document may not even have', () => {
+    const outcome = promoteMetadataForCheckin(
+      file({ pendingMetadata: { config_descriptions: { 'AS568-014': 'O-ring, Viton' } } }),
     )
 
-    const outcome = await settleMetadataForCheckin(
-      file({ pendingMetadata: { part_number: 'BR-202020' }, metadataWriteState: record }),
-      { organizationId: null, serviceAvailable: true },
-    )
-
-    expect(stub.setProperties).not.toHaveBeenCalled()
     expect(outcome.writeState).toBeUndefined()
+    expect(outcome.promotedUnconfirmed).toHaveLength(0)
   })
 })
 
-describe('an unconfirmed value is promoted and marked', () => {
-  it('promotes a value the file refused, and says so rather than silently accepting it', async () => {
-    // The value is the user's and the database owns it, so withholding it would lose the edit. What
-    // must not happen is promoting it as though the file had taken it.
-    stub = installService({ readBack: { Number: 'BR-101010' } })
-
-    const outcome = await settleMetadataForCheckin(
-      file({ pendingMetadata: { part_number: 'BR-202020' } }),
-      { organizationId: null, serviceAvailable: true },
+describe('a value whose write ran and did not confirm', () => {
+  it('is promoted and keeps saying the file refused it', () => {
+    // The value is the user's and the database owns it, so withholding it would lose the edit.
+    // What must not happen is the record of doubt vanishing with the pending value.
+    const outcome = promoteMetadataForCheckin(
+      file({ pendingMetadata: { part_number: 'BR-202020' }, metadataWriteState: marked('failed') }),
     )
 
     expect(outcome.promotedUnconfirmed.map(addressKey)).toEqual(['file:part_number'])
-    expect(outcome.writeState?.fields?.part_number?.state).toBe('failed')
-    expect(outcome.writeState?.fields?.part_number?.promoted).toBe(true)
+    expect(outcome.writeState?.fields?.part_number).toMatchObject({
+      state: 'failed',
+      promoted: true,
+    })
   })
 
-  it('marks a write it could not read back as unconfirmed, not as failed', async () => {
-    stub = installService({ readBack: 'throw' })
-
-    const outcome = await settleMetadataForCheckin(
-      file({ pendingMetadata: { part_number: 'BR-202020' } }),
-      { organizationId: null, serviceAvailable: true },
+  it('keeps `unverified` as `unverified`, which is not the same claim as `failed`', () => {
+    const outcome = promoteMetadataForCheckin(
+      file({
+        pendingMetadata: { part_number: 'BR-202020' },
+        metadataWriteState: marked('unverified'),
+      }),
     )
 
-    expect(outcome.writeState?.fields?.part_number?.state).toBe('unverified')
-    expect(outcome.writeState?.fields?.part_number?.promoted).toBe(true)
+    expect(outcome.writeState?.fields?.part_number).toMatchObject({
+      state: 'unverified',
+      promoted: true,
+    })
   })
 
-  it('marks a write it could not issue as unattempted, and does not block the check-in', async () => {
-    const outcome = await settleMetadataForCheckin(
-      file({ pendingMetadata: { part_number: 'BR-202020' } }),
-      { organizationId: null, serviceAvailable: false },
+  it('keeps `unattempted`, so a user whose service was off is not told the file might have changed', () => {
+    const outcome = promoteMetadataForCheckin(
+      file({
+        pendingMetadata: { part_number: 'BR-202020' },
+        metadataWriteState: marked('unattempted'),
+      }),
     )
 
-    expect(stub.setProperties).not.toHaveBeenCalled()
-    expect(outcome.writeState?.fields?.part_number?.state).toBe('unattempted')
-    expect(outcome.writeState?.fields?.part_number?.promoted).toBe(true)
+    expect(outcome.writeState?.fields?.part_number).toMatchObject({
+      state: 'unattempted',
+      promoted: true,
+    })
   })
 
-  it('marks a refused write as failed', async () => {
-    stub = installService({ writeSucceeds: false })
-
-    const outcome = await settleMetadataForCheckin(
-      file({ pendingMetadata: { part_number: 'BR-202020' } }),
-      { organizationId: null, serviceAvailable: true },
+  it('records when the write failed rather than when the check-in ran', () => {
+    // `at` answers "when did this go wrong", and check-in is not that event. Restamping it would
+    // make a mark earned last week read as one earned during this check-in.
+    const outcome = promoteMetadataForCheckin(
+      file({
+        pendingMetadata: { part_number: 'BR-202020' },
+        metadataWriteState: marked('failed', 'the document is read-only'),
+      }),
     )
 
-    expect(outcome.writeState?.fields?.part_number?.state).toBe('failed')
-    expect(stub.getProperties).not.toHaveBeenCalled()
+    expect(outcome.writeState?.fields?.part_number?.at).toBe(AT)
+    expect(outcome.writeState?.fields?.part_number?.reason).toBe('the document is read-only')
+  })
+})
+
+describe('a value the file is known to hold', () => {
+  it('is forgotten, since the file and the database now agree', () => {
+    const outcome = promoteMetadataForCheckin(
+      file({
+        pendingMetadata: { part_number: 'BR-202020' },
+        metadataWriteState: marked('verified'),
+      }),
+    )
+
+    expect(outcome.writeState).toBeUndefined()
+    expect(outcome.promotedUnconfirmed).toHaveLength(0)
   })
 
-  it('keeps the mark for the two configurations that refused and drops the 66 that did not', async () => {
-    const configurations = Array.from({ length: 68 }, (_, index) => `AS568-${String(index).padStart(3, '0')}`)
-    const service = installService({ configurations })
-    service.getProperties = vi.fn(async () => ({
-      success: true,
-      data: {
-        configurations,
-        fileProperties: {},
-        configurationProperties: Object.fromEntries(
-          configurations.map((name, index) => [
-            name,
-            index < 66 ? { 'Tab Number': String(index) } : {},
-          ]),
-        ),
-      },
-    }))
-    stub = service
+  it('is forgotten one configuration at a time, leaving only the two that refused', () => {
+    const configurations = Array.from(
+      { length: 68 },
+      (_, index) => `AS568-${String(index).padStart(3, '0')}`,
+    )
+    let record: MetadataWriteStateRecord | undefined
+    for (const [index, configuration] of configurations.entries()) {
+      record = applyWriteState(
+        record,
+        [{ scope: 'configuration', field: 'config_tab', configuration }],
+        index < 66 ? 'verified' : 'failed',
+        { at: AT },
+      )
+    }
 
-    const outcome = await settleMetadataForCheckin(
+    const outcome = promoteMetadataForCheckin(
       file({
         pendingMetadata: {
-          config_tabs: Object.fromEntries(configurations.map((name, index) => [name, String(index)])),
+          config_tabs: Object.fromEntries(
+            configurations.map((name, index) => [name, String(index)]),
+          ),
         },
+        metadataWriteState: record,
       }),
-      { organizationId: null, serviceAvailable: true },
     )
 
     expect(outcome.promotedUnconfirmed).toHaveLength(2)
@@ -268,170 +181,51 @@ describe('an unconfirmed value is promoted and marked', () => {
   })
 })
 
-describe('an address the write never reached is not a confirmed one', () => {
-  // `keepOnlyUnconfirmed` used to read an unrecorded address as confirmed, twelve lines after
-  // `unwrittenAddresses` had read the same absence as owing a write. The confirmed reading ran
-  // last, so the value went to the database, the mark was cleared and the file was never touched.
-  // Each of these is an ordinary edit that produced no verdict at all.
-
-  it('does not confirm a pending edit for a configuration the document no longer has', async () => {
-    stub = installService({ configurations: ['Default'] })
-
-    const outcome = await settleMetadataForCheckin(
-      file({ pendingMetadata: { config_descriptions: { 'AS568-014': 'O-ring, Viton' } } }),
-      { organizationId: null, serviceAvailable: true },
-    )
-
-    expect(outcome.promotedUnconfirmed.map(addressKey)).toEqual([
-      'configuration:config_description:AS568-014',
-    ])
-    expect(outcome.writeState?.config_descriptions?.['AS568-014']).toMatchObject({
-      state: 'unattempted',
-      promoted: true,
-    })
-  })
-
-  it('writes a file-scope tab number on a multi-configuration document rather than dropping it', async () => {
-    // Reachable through the Sync Metadata pull. The plan emitted no group for it, so nothing was
-    // written and nothing was recorded.
-    stub = installService({ configurations: ['Default', 'AS568-014'] })
-
-    const outcome = await settleMetadataForCheckin(
-      file({ pendingMetadata: { tab_number: '014' } }),
-      { organizationId: null, serviceAvailable: true },
-    )
-
-    expect(stub.setProperties).toHaveBeenCalledTimes(1)
-    expect(outcome.promotedUnconfirmed.map(addressKey)).toEqual(['file:tab_number'])
-  })
-
-  it('confirms the file-level description separately from the base configuration’s own', async () => {
-    // Editing both took the per-configuration branch and never emitted the file-scope intent, so
-    // the file-level description reached the database unwritten and unmarked.
-    stub = installService({
-      configurations: ['Default'],
-      readBack: {},
-      configurationReadBack: { Default: { Description: 'Viton, 014' } },
-    })
-
-    const outcome = await settleMetadataForCheckin(
-      file({
-        pendingMetadata: {
-          description: 'Viton o-ring',
-          config_descriptions: { Default: 'Viton, 014' },
-        },
-      }),
-      { organizationId: null, serviceAvailable: true },
-    )
-
-    expect(outcome.promotedUnconfirmed.map(addressKey)).toEqual(['file:description'])
-    expect(outcome.writeState?.config_descriptions?.['Default']).toBeUndefined()
-  })
-
-  it('writes nothing when the document’s configurations could not be read', async () => {
-    // An empty list and a failed call used to be the same value. Planning a file-scope write off a
-    // failed call is the worst available answer: the read-back finds what the write just put at
-    // file level and reports `verified`, while the configurations keep the old number.
-    const service = installService({ readBack: { Number: 'BR-202020' } })
-    service.getConfigurations = vi.fn(async () => ({
-      success: false,
-      error: 'the document is locked',
-    }))
-    stub = service
-
-    const outcome = await settleMetadataForCheckin(
-      file({ pendingMetadata: { part_number: 'BR-202020' } }),
-      { organizationId: null, serviceAvailable: true },
-    )
-
-    expect(stub.setProperties).not.toHaveBeenCalled()
-    expect(outcome.writeState?.fields?.part_number).toMatchObject({
-      state: 'unattempted',
-      promoted: true,
-    })
-  })
-
-  it('still writes a drawing, which has no configurations to read', async () => {
-    const service = installService({ readBack: { Revision: 'B' } })
-    service.getConfigurations = vi.fn(async () => ({ success: false, error: 'not a model' }))
-    stub = service
-
-    const outcome = await settleMetadataForCheckin(
-      file({ name: 'ORING.SLDDRW', extension: '.slddrw', pendingMetadata: { revision: 'B' } }),
-      { organizationId: null, serviceAvailable: true },
-    )
-
-    expect(stub.getConfigurations).not.toHaveBeenCalled()
-    expect(outcome.writeState).toBeUndefined()
-  })
-})
-
-describe('files with nothing to write', () => {
-  it('has nothing to confirm on a file that cannot hold custom properties', async () => {
-    const outcome = await settleMetadataForCheckin(
-      file({ extension: '.step', pendingMetadata: { part_number: 'BR-202020' } }),
-      { organizationId: null, serviceAvailable: true },
-    )
-
-    expect(stub.setProperties).not.toHaveBeenCalled()
-    expect(outcome.writeState).toBeUndefined()
-    expect(outcome.promotedUnconfirmed).toHaveLength(0)
-  })
-
-  it('leaves a file with no pending edits alone', async () => {
-    const outcome = await settleMetadataForCheckin(file(), {
-      organizationId: null,
-      serviceAvailable: true,
-    })
-
-    expect(stub.setProperties).not.toHaveBeenCalled()
-    expect(outcome.writeState).toBeUndefined()
-  })
-
-  it('keeps a record about a value an earlier check-in already promoted', async () => {
-    // The mark outliving the pending value is the point: a previous check-in put this in the database
-    // without confirming it in the file, and a check-in that finds nothing pending must not read that
-    // as nothing to say.
+describe('marks that outlive the edit that produced them', () => {
+  it('leaves a previous check-in’s mark alone when nothing is pending', () => {
+    // The mark outliving the pending value is the whole point: an earlier check-in put this in
+    // the database unconfirmed, and a check-in finding nothing pending must not read that as
+    // nothing to say.
     const record: MetadataWriteStateRecord = {
       fields: { part_number: { state: 'failed', at: AT, promoted: true } },
     }
 
-    const outcome = await settleMetadataForCheckin(file({ metadataWriteState: record }), {
-      organizationId: null,
-      serviceAvailable: true,
+    const outcome = promoteMetadataForCheckin(file({ metadataWriteState: record }))
+
+    expect(outcome.writeState?.fields?.part_number).toMatchObject({
+      state: 'failed',
+      promoted: true,
     })
-
-    expect(outcome.writeState?.fields?.part_number?.state).toBe('failed')
-    expect(outcome.writeState?.fields?.part_number?.promoted).toBe(true)
-  })
-})
-
-describe('clearing a field at check-in', () => {
-  it('sends the empty value rather than omitting the property', async () => {
-    stub = installService({ readBack: {} })
-
-    await settleMetadataForCheckin(file({ pendingMetadata: { description: null } }), {
-      organizationId: null,
-      serviceAvailable: true,
-    })
-
-    const [, properties] = stub.setProperties.mock.calls[0]
-
-    expect('Description' in (properties as Record<string, string>)).toBe(true)
-    expect((properties as Record<string, string>)['Description']).toBe('')
   })
 
-  it('counts a cleared field as confirmed when the file reads back with no value', async () => {
-    // The service deletes the property instead of emptying it, so the read-back finds it absent. By
-    // value that is correct, and by value is what this side can honestly check.
-    stub = installService({ readBack: {} })
+  it('does not re-report an old mark as something this check-in promoted', () => {
+    const record: MetadataWriteStateRecord = {
+      fields: { part_number: { state: 'failed', at: AT, promoted: true } },
+    }
 
-    const outcome = await settleMetadataForCheckin(
-      file({ pendingMetadata: { description: null } }),
-      { organizationId: null, serviceAvailable: true },
-    )
+    const outcome = promoteMetadataForCheckin(file({ metadataWriteState: record }))
 
     expect(outcome.promotedUnconfirmed).toHaveLength(0)
-    expect(outcome.writeState).toBeUndefined()
+  })
+
+  it('leaves a file with neither edits nor marks with nothing at all', () => {
+    expect(promoteMetadataForCheckin(file())).toEqual({
+      writeState: undefined,
+      promotedUnconfirmed: [],
+    })
+  })
+
+  it('does not disturb an unrelated address while clearing a settled one', () => {
+    const record = applyWriteState(marked('verified'), [{ scope: 'file', field: 'revision' }], 'failed', {
+      at: AT,
+    })
+
+    const outcome = promoteMetadataForCheckin(
+      file({ pendingMetadata: { part_number: 'BR-202020' }, metadataWriteState: record }),
+    )
+
+    expect(outcome.writeState?.fields?.part_number).toBeUndefined()
+    expect(outcome.writeState?.fields?.revision?.state).toBe('failed')
+    expect(outcome.writeState?.fields?.revision?.promoted).toBeUndefined()
   })
 })

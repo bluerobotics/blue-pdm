@@ -3,13 +3,22 @@ import { describe, expect, it } from 'vitest'
 import {
   compareOwnedMetadata,
   summarizeDivergence,
+  type ComparedFileType,
   type DatabaseMetadata,
   type FileDivergence,
   type FileMetadata,
 } from '@/lib/metadata/divergence'
-import { DIVERGENCE_REPORT_SCHEMA_VERSION, type DivergenceReport } from '@/lib/metadata/divergenceScan'
+import {
+  DIVERGENCE_REPORT_SCHEMA_VERSION,
+  type DivergenceReport,
+} from '@/lib/metadata/divergenceScan'
 
-import { buildVaultAuditView } from './vaultAuditView'
+import {
+  buildVaultAuditView,
+  documentCarriesField,
+  hasEvidence,
+  resolutionOf,
+} from './vaultAuditView'
 
 // ============================================
 // Fixtures
@@ -32,13 +41,14 @@ function compare(
   fileName: string,
   database: DatabaseMetadata,
   file: FileMetadata,
+  fileType: ComparedFileType = 'part',
 ): FileDivergence {
   return compareOwnedMetadata(
     {
       fileId: fileName,
       relativePath: `0 - SHARED\\01-TOOLBOX\\${fileName}`,
       fileName,
-      fileType: 'part',
+      fileType,
     },
     database,
     file,
@@ -237,6 +247,62 @@ describe('buildVaultAuditView - what the run did not compare', () => {
 
     expect(view.notCompared.total).toBe(0)
   })
+
+  /**
+   * A folder path that matches no row produces no findings, nothing uncompared and nothing unread
+   * - numerically indistinguishable from a spotless vault, and the page rendered it in green. The
+   * denominator is the only thing that separates the two, so the view has to carry it.
+   */
+  it('carries the denominator, so a scope that matched no rows cannot pass for a clean one', () => {
+    const view = buildVaultAuditView(
+      reportOf([], {
+        rowsFetched: 8019,
+        rowsInScope: 0,
+        rowsConsidered: 0,
+        filesCompared: 0,
+      }),
+    )
+
+    expect(view.rowsInScope).toBe(0)
+    expect(view.filesCompared).toBe(0)
+    expect(view.findings).toHaveLength(0)
+    expect(view.notCompared.total).toBe(0)
+  })
+
+  it('carries the denominator on a run that did compare something', () => {
+    const view = buildVaultAuditView(reportOf([conflicting()], { rowsInScope: 8015 }))
+
+    expect(view.rowsInScope).toBe(8015)
+  })
+})
+
+describe('hasEvidence', () => {
+  it('is false for a scope that matched no rows', () => {
+    const view = buildVaultAuditView(
+      reportOf([], { rowsInScope: 0, rowsConsidered: 0, filesCompared: 0 }),
+    )
+
+    expect(hasEvidence(view)).toBe(false)
+  })
+
+  /**
+   * Rows matched and every one of them was open in SOLIDWORKS or absent from disk. Nothing was
+   * read, so the coverage and category sections have no files to be true about, even though the
+   * scope itself was fine.
+   */
+  it('is false when rows matched but none of them could be read', () => {
+    const view = buildVaultAuditView(
+      reportOf([], { rowsInScope: 12, rowsConsidered: 12, filesCompared: 0, filesUnreadable: 12 }),
+    )
+
+    expect(hasEvidence(view)).toBe(false)
+  })
+
+  it('is true once a single file has been compared', () => {
+    const view = buildVaultAuditView(reportOf([conflicting()], { rowsInScope: 1 }))
+
+    expect(hasEvidence(view)).toBe(true)
+  })
 })
 
 describe('buildVaultAuditView - configuration coverage', () => {
@@ -306,12 +372,13 @@ describe('buildVaultAuditView - categories', () => {
       'lost',
       'conflicting',
       'recoverable',
+      'absent-from-file',
       'unattributed',
     ])
   })
 
   it('always lists every category, including the empty ones', () => {
-    expect(view.categories).toHaveLength(4)
+    expect(view.categories).toHaveLength(5)
   })
 
   it('partitions every finding into exactly one category', () => {
@@ -339,11 +406,72 @@ describe('buildVaultAuditView - categories', () => {
   })
 })
 
+describe('resolutionOf', () => {
+  it('offers exactly one direction when only one side holds the value', () => {
+    expect(resolutionOf('recoverable', 'config_tab', 'part')).toBe('adopt-file-value')
+    expect(resolutionOf('absent-from-file', 'description', 'part')).toBe('push-vault-value')
+    expect(resolutionOf('recoverable', 'revision', 'part')).toBe('adopt-file-value')
+    expect(resolutionOf('absent-from-file', 'revision', 'part')).toBe('file-is-authoritative')
+  })
+
+  it('asks a person to pick only when both copies are candidates', () => {
+    expect(resolutionOf('conflicting', 'part_number', 'part')).toBe('choose-a-side')
+  })
+
+  it('lets the file revision settle a conflict without asking', () => {
+    expect(resolutionOf('conflicting', 'revision', 'part')).toBe('adopt-file-value')
+    expect(resolutionOf('conflicting', 'revision', 'drawing')).toBe('adopt-file-value')
+  })
+
+  it("sends a conflict over a drawing's projected fields to the model", () => {
+    expect(resolutionOf('conflicting', 'part_number', 'drawing')).toBe('fix-on-parent-model')
+    expect(resolutionOf('unattributed', 'description', 'drawing')).toBe('fix-on-parent-model')
+  })
+
+  // The projection rule guards the direction that reads the document as evidence. Filling a
+  // drawing's empty title block from the row is not that direction - the row's copy already came
+  // from the model - so it stays a plain push.
+  it('still pushes into a drawing the row already describes', () => {
+    expect(resolutionOf('absent-from-file', 'part_number', 'drawing')).toBe('push-vault-value')
+  })
+
+  it('names no write where there is nothing to copy or nothing to claim', () => {
+    expect(resolutionOf('lost', 'config_description', 'part')).toBe('nothing-to-restore')
+    expect(resolutionOf('unattributed', 'description', 'part')).toBe('leave-alone')
+  })
+})
+
+describe('buildVaultAuditView - a value the record holds and the file does not', () => {
+  const view = buildVaultAuditView(
+    reportOf([
+      compare('SPACER.SLDPRT', rowOf({ description: 'Spacer, mild steel' }), {
+        configurations: ['Default'],
+        fileProperties: {},
+        configurationProperties: { Default: {} },
+      }),
+    ]),
+  )
+
+  // It used to be classified `intact` alongside the agreements, so the page showed nothing at all
+  // for a document whose description had never been written.
+  it('reports it rather than counting it as agreement', () => {
+    const finding = view.findings.find((candidate) => candidate.field === 'description')
+    expect(finding?.kind).toBe('absent-from-file')
+    expect(finding?.databaseValue).toBe('Spacer, mild steel')
+    expect(finding?.fileValue).toBeNull()
+  })
+
+  it('names the write that settles it', () => {
+    const finding = view.findings.find((candidate) => candidate.field === 'description')
+    expect(finding?.resolution).toBe('push-vault-value')
+  })
+})
+
 describe('buildVaultAuditView - an empty run', () => {
   const view = buildVaultAuditView(reportOf([]))
 
   it('produces every category at zero rather than none at all', () => {
-    expect(view.categories).toHaveLength(4)
+    expect(view.categories).toHaveLength(5)
     expect(view.categories.every((category) => category.valueCount === 0)).toBe(true)
     expect(view.findings).toEqual([])
     expect(view.coverage.files).toEqual([])
@@ -364,5 +492,109 @@ describe('the finding a repair is built from', () => {
     expect(finding?.kind).toBe('recoverable')
     expect(finding?.repairValue).toBe('-001')
     expect(finding?.databaseValue).toBeNull()
+  })
+})
+
+// ============================================
+// Whose field the revision is
+// ============================================
+
+describe('documentCarriesField', () => {
+  const drawingDriven = { expectRevisionOnModels: false }
+  const modelRevised = { expectRevisionOnModels: true }
+
+  it('does not expect a revision on a model when the drawings drive them', () => {
+    expect(documentCarriesField('revision', 'part', drawingDriven)).toBe(false)
+    expect(documentCarriesField('revision', 'assembly', drawingDriven)).toBe(false)
+  })
+
+  // The option exists to serve the drawing-driven convention, so the drawing itself is the one
+  // document it must never write - a drawing states its own revision under either setting.
+  it('always expects a revision on a drawing', () => {
+    expect(documentCarriesField('revision', 'drawing', drawingDriven)).toBe(true)
+    expect(documentCarriesField('revision', 'drawing', modelRevised)).toBe(true)
+  })
+
+  it('expects one on a model for a shop that revises models', () => {
+    expect(documentCarriesField('revision', 'part', modelRevised)).toBe(true)
+  })
+
+  it('never withholds any other field', () => {
+    for (const field of [
+      'part_number',
+      'description',
+      'config_tab',
+      'config_description',
+    ] as const) {
+      expect(documentCarriesField(field, 'part', drawingDriven)).toBe(true)
+    }
+  })
+})
+
+describe('buildVaultAuditView - a model with no revision under a drawing-driven convention', () => {
+  /** BluePLM holds `A`; the model states nothing, which is the intended state rather than a gap. */
+  function modelMissingRevision() {
+    return compare('SCREW.SLDPRT', rowOf({ revision: 'A', description: 'Phillips Screw' }), {
+      configurations: ['Default'],
+      fileProperties: {},
+      configurationProperties: { Default: {} },
+    })
+  }
+
+  const hidden = buildVaultAuditView(reportOf([modelMissingRevision()]))
+  const shown = buildVaultAuditView(reportOf([modelMissingRevision()]), {
+    expectRevisionOnModels: true,
+  })
+
+  it('reports no finding for the revision by default', () => {
+    expect(hidden.findings.some((finding) => finding.field === 'revision')).toBe(false)
+  })
+
+  // The exclusion is the largest one on the page in a vault like this, and a filter whose effect is
+  // invisible is how a reassuring total comes to stand over values nobody was told about.
+  it('says how many it left out rather than dropping them silently', () => {
+    expect(hidden.revisionOnModelsHidden).toBe(1)
+  })
+
+  it('leaves the other fields on the same model alone', () => {
+    const description = hidden.findings.find((finding) => finding.field === 'description')
+    expect(description?.kind).toBe('absent-from-file')
+  })
+
+  it('keeps the excluded value out of the category counts too, not just the table', () => {
+    const absent = hidden.categories.find((category) => category.kind === 'absent-from-file')
+    expect(absent?.valueCount).toBe(1)
+  })
+
+  it('brings it back, as a finding and out of the hidden count, when asked to', () => {
+    const revision = shown.findings.find((finding) => finding.field === 'revision')
+    expect(revision?.kind).toBe('absent-from-file')
+    expect(revision?.resolution).toBe('file-is-authoritative')
+    expect(shown.revisionOnModelsHidden).toBe(0)
+  })
+})
+
+describe('buildVaultAuditView - a drawing is never covered by the model revision rule', () => {
+  const view = buildVaultAuditView(
+    reportOf([
+      compare(
+        'SCREW.SLDDRW',
+        rowOf({ revision: 'A' }),
+        {
+          configurations: ['Default'],
+          fileProperties: { Revision: 'B' },
+          configurationProperties: { Default: {} },
+        },
+        'drawing',
+      ),
+    ]),
+  )
+
+  it('still reports a drawing whose revision disagrees with the record', () => {
+    const finding = view.findings.find((candidate) => candidate.field === 'revision')
+    expect(finding?.kind).toBe('conflicting')
+    // The file states its own revision, so there is nothing for a person to choose.
+    expect(finding?.resolution).toBe('adopt-file-value')
+    expect(view.revisionOnModelsHidden).toBe(0)
   })
 })

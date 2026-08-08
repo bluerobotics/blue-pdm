@@ -456,7 +456,7 @@ function initializeApp() {
       // Note: Logging is already initialized before single instance lock check
 
       // Perform migration check BEFORE creating window
-      // This handles clean install when upgrading from 2.x to 3.0+
+      // Major upgrades clear disposable caches only; org/session/vault config is preserved
       log('Checking for version migration...')
       const migrationResult = await performMigrationCheck()
       if (migrationResult.performed) {

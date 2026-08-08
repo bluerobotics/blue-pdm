@@ -1,10 +1,13 @@
 import { useState, useEffect, useCallback } from 'react'
 import { usePDMStore, LocalFile } from '@/stores/pdmStore'
 import { syncSolidWorksFileMetadata, getWhereUsed } from '@/lib/supabase'
+import { t } from '@/lib/i18n'
 import { log } from '@/lib/logger'
+import { syncMetadata } from '@/lib/commands'
 import { beginWatcherSuppression } from '@/lib/fileWatcherSuppression'
 import { refreshLocalFileFacts } from '@/lib/refreshLocalFileFacts'
 import { resolvedPropertyView } from '@/lib/metadata/divergence'
+import { lockedDrawingFields, withoutLockedDrawingFields } from '@/lib/metadata/drawingLockouts'
 import { resolveFileMetadata } from '@/lib/metadata/overlay'
 import { buildMetadataWritePlan } from '@/lib/metadata/writePlan'
 import type { PendingMetadata } from '@/stores/types'
@@ -23,6 +26,7 @@ import {
   Package,
   Search,
   ArrowUpRight,
+  ArrowDownLeft,
 } from 'lucide-react'
 
 // Types for SolidWorks data
@@ -827,13 +831,31 @@ export function SWPropertiesTab({ file }: { file: LocalFile }) {
   const [isExporting, setIsExporting] = useState<string | null>(null)
   const [showExportOptions, setShowExportOptions] = useState(false)
   const { status, startService, isStarting } = useSolidWorksService()
-  const { addToast, user, updateFileInStore } = usePDMStore()
+  const {
+    addToast,
+    user,
+    updateFileInStore,
+    lockDrawingItemNumber,
+    lockDrawingDescription,
+    lockDrawingRevision,
+  } = usePDMStore()
 
   const ext = file.extension?.toLowerCase() || ''
   const isSolidWorks = ['.sldprt', '.sldasm', '.slddrw'].includes(ext)
   const fileType = ext === '.sldprt' ? 'Part' : ext === '.sldasm' ? 'Assembly' : 'Drawing'
   const isPartOrAsm = ['.sldprt', '.sldasm'].includes(ext)
   const isDrawing = ext === '.slddrw'
+
+  // The drawing fields that belong to the referenced model. This button pushes BluePLM's values
+  // into the document, which is exactly what these settings exist to prevent, so when they cover
+  // everything it would write there is nothing left for it to do and Sync from Parent - which
+  // reads the model and writes the model's own values - is offered in its place.
+  const lockedDrawing = lockedDrawingFields(ext, {
+    lockDrawingItemNumber,
+    lockDrawingDescription,
+    lockDrawingRevision,
+  })
+  const drawingFullyInherited = lockedDrawing.has('part_number') && lockedDrawing.has('description')
 
   // Load properties when service is running
   useEffect(() => {
@@ -1072,6 +1094,26 @@ export function SWPropertiesTab({ file }: { file: LocalFile }) {
     }
   }
 
+  // Read a drawing's metadata from the model it references.
+  //
+  // The `sync-metadata` command rather than a read written here: it is the half of that command
+  // that already knows how to find a drawing's parent, and it corrects the drawing's own
+  // properties when they have drifted from it. Scoped to this one file, since that is what the
+  // panel is showing.
+  const handleSyncFromParent = async () => {
+    if (!status.running) {
+      addToast('info', 'Start SolidWorks service first')
+      return
+    }
+
+    setIsSyncing(true)
+    try {
+      await syncMetadata([file])
+    } finally {
+      setIsSyncing(false)
+    }
+  }
+
   // Write PDM metadata back to SW file
   const handleWriteToSwFile = async () => {
     if (!status.running || !file.pdmData) {
@@ -1111,14 +1153,23 @@ export function SWPropertiesTab({ file }: { file: LocalFile }) {
         pending.description = resolved.description.value ?? ''
       }
 
+      // A drawing's inherited fields are dropped here rather than at the button, because the
+      // button still appears when only some of them are locked. What survives is written; what
+      // does not reaches the drawing through Sync from Parent, carrying the model's own value.
+      const writable = withoutLockedDrawingFields(pending, lockedDrawing)
+      if (Object.keys(writable).length === 0) {
+        addToast('info', t('metadataWrite.drawingNothingToWrite'))
+        return
+      }
+
       // Through the shared planner rather than built here, so this button writes the same
       // properties as the datacard, check-in and Sync Metadata. It used to set `Base Item Number`
       // and not `Number`, while "Sync from SolidWorks" reads `Number` first - so pressing the two
       // in the obvious order read back the number this write had left stale and wrote it to the
       // database, silently reverting the edit the user had just pushed.
       const [group] = buildMetadataWritePlan({
-        pending,
-        committed: { partNumber: pending.part_number, description: pending.description },
+        pending: writable,
+        committed: { partNumber: writable.part_number, description: writable.description },
         configurations: [],
         serialization: null,
       })
@@ -1254,21 +1305,40 @@ export function SWPropertiesTab({ file }: { file: LocalFile }) {
               <span className="text-[10px] text-plm-fg-muted uppercase tracking-wide">
                 PDM Metadata
               </span>
-              {file.pdmData.checked_out_by === user?.id && (
-                <button
-                  onClick={handleWriteToSwFile}
-                  disabled={isSyncing}
-                  className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-plm-accent/20 text-plm-accent hover:bg-plm-accent/30 transition-colors disabled:opacity-50"
-                  title="Write PDM metadata to SolidWorks file"
-                >
-                  {isSyncing ? (
-                    <Loader2 size={10} className="animate-spin" />
-                  ) : (
-                    <ArrowUpRight size={10} />
-                  )}
-                  Write to File
-                </button>
-              )}
+              {file.pdmData.checked_out_by === user?.id &&
+                (drawingFullyInherited ? (
+                  <button
+                    onClick={handleSyncFromParent}
+                    disabled={isSyncing}
+                    className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-plm-accent/20 text-plm-accent hover:bg-plm-accent/30 transition-colors disabled:opacity-50"
+                    title={t('metadataWrite.drawingSyncFromParentTooltip')}
+                  >
+                    {isSyncing ? (
+                      <Loader2 size={10} className="animate-spin" />
+                    ) : (
+                      <ArrowDownLeft size={10} />
+                    )}
+                    {t('metadataWrite.drawingSyncFromParent')}
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleWriteToSwFile}
+                    disabled={isSyncing}
+                    className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-plm-accent/20 text-plm-accent hover:bg-plm-accent/30 transition-colors disabled:opacity-50"
+                    title={
+                      lockedDrawing.size > 0
+                        ? t('metadataWrite.drawingInheritedFieldsSkipped')
+                        : 'Write PDM metadata to SolidWorks file'
+                    }
+                  >
+                    {isSyncing ? (
+                      <Loader2 size={10} className="animate-spin" />
+                    ) : (
+                      <ArrowUpRight size={10} />
+                    )}
+                    Write to File
+                  </button>
+                ))}
             </div>
             {/* Committed values, for the same reason handleSyncFromSwFile compares against them:
                 this block is the database side of a database-versus-file comparison, and the
@@ -1293,7 +1363,9 @@ export function SWPropertiesTab({ file }: { file: LocalFile }) {
             </div>
             {!file.pdmData.checked_out_by && (
               <div className="text-[10px] text-plm-fg-muted mt-1">
-                Check out to write metadata to file
+                {drawingFullyInherited
+                  ? 'Check out to sync metadata from the referenced model'
+                  : 'Check out to write metadata to file'}
               </div>
             )}
           </div>

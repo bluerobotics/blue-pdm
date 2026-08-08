@@ -264,20 +264,22 @@ describe('classifyRecoverability', () => {
     })
   })
 
-  it('leaves a database-only value intact - the database is the owner', () => {
-    expect(classifyRecoverability('file-empty', context())).toEqual({ recoverability: 'intact' })
+  it('calls a database-only value absent from the file rather than intact', () => {
+    expect(classifyRecoverability('file-empty', context())).toEqual({
+      recoverability: 'absent-from-file',
+    })
     expect(classifyRecoverability('agrees', context())).toEqual({ recoverability: 'intact' })
   })
 })
 
 describe('ownerOf', () => {
-  it('gives every owned field on a model to the database', () => {
+  it('gives model metadata to the database except revision', () => {
     expect(ownerOf('part_number', 'part')).toBe('database')
-    expect(ownerOf('revision', 'assembly')).toBe('database')
+    expect(ownerOf('revision', 'assembly')).toBe('file')
     expect(ownerOf('config_description', 'part')).toBe('database')
   })
 
-  it("gives a drawing's revision to the drawing and its part number to the parent model", () => {
+  it("gives revision to the file and a drawing's projected fields to the parent model", () => {
     expect(ownerOf('revision', 'drawing')).toBe('file')
     expect(ownerOf('part_number', 'drawing')).toBe('parent-model')
     expect(ownerOf('description', 'drawing')).toBe('parent-model')
@@ -367,7 +369,7 @@ describe('compareOwnedMetadata - file scope', () => {
 
     const description = result.fieldComparisons.find((c) => c.field === 'description')
     expect(description?.divergence).toBe('file-empty')
-    expect(description?.recoverability).toBe('intact')
+    expect(description?.recoverability).toBe('absent-from-file')
   })
 
   it('does not let a $PRP placeholder pass as the file value', () => {

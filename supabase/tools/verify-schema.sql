@@ -97,7 +97,8 @@ DECLARE
     'user_has_permission', 'get_best_price', 'calculate_bom_cost',
     'generate_rfq_number', 'instantiate_process_template', 'approve_eco_gate',
     'execute_workflow_transition', 'complete_gate_review', 'get_my_pending_reviews',
-    'import_workflow_graph', 'require_org_member', 'verify_and_stamp_schema'
+    'import_workflow_graph', 'require_org_member', 'verify_and_stamp_schema',
+    'try_stamp_schema'
   ];
   missing_funcs TEXT[] := '{}';
   f TEXT;

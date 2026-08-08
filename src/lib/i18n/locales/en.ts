@@ -990,6 +990,8 @@ export const en: TranslationDict = {
     recoverableHeading: '3. Values the file still holds - recoverable',
     recoverableSummary:
       '  {{count}} values are missing from the database, present in the file under the key BluePLM itself writes, and on a file the database demonstrably once recorded. Those three together are what makes writing them back a repair rather than a guess.',
+    absentFromFileSummary:
+      '  {{count}} values run the other way: the database holds them and the file does not. Nothing was lost - the document is behind the record - and the only write that settles one goes database to file.',
     unattributedHeading:
       '4. Values the file holds that the database never recorded - NEEDS A DECISION',
     unattributedNone: '  None found.',
@@ -1062,6 +1064,16 @@ export const en: TranslationDict = {
       'A metadata write is still running against this file, so it was not checked in. Try again once it finishes',
     promotedUnconfirmed:
       '{{count}} field(s) were saved to BluePLM but could not be confirmed in the file. The rows are marked; open the file and save again to settle them',
+    // A drawing's metadata belongs to the model it references, so BluePLM offers to fetch it
+    // rather than to push its own. Named for what the user gets, not for the command behind it.
+    drawingSyncFromParent: 'Sync from Parent',
+    drawingSyncFromParentTooltip:
+      'Read this drawing’s item number and description from the model it references',
+    drawingInheritedFieldsSkipped:
+      'Fields this drawing inherits from its model are not written — use Sync from Parent for those',
+    drawingNothingToWrite:
+      'This drawing inherits its metadata from the model it references. Use Sync from Parent to read it in.',
+    drawingFieldInherited: 'Inherited from the referenced model — change it on the model instead',
   },
 
   // Context menu translations
@@ -1134,6 +1146,14 @@ export const en: TranslationDict = {
       // available then: it would be an all-clear over files nothing looked at.
       noFindingsInCompared:
         'Every value compared agrees. Files that were not compared are listed below.',
+      // A run with no evidence must not borrow the language of a run that found none. Both produce
+      // an empty findings list, and the earlier wording made an unmatched scope read as an all-clear.
+      scopeMatchedNothing:
+        'No parts or assemblies matched this scope, so nothing was compared. This is not an all-clear.',
+      folderMatchedNothing:
+        'No file’s path begins with “{{path}}”. The folder is relative to the vault root, like “0 - SHARED\\00 - REGRESSION TESTS” — the browser’s Copy Path buttons give a full path starting with a drive letter, which never matches.',
+      comparedNothing:
+        '{{rows}} files matched this scope and none of them could be read, so nothing was compared. See below for why.',
       filesWithFindings: '{{files}} of {{compared}} files have at least one finding',
       multiConfiguration: '{{count}} of them have more than one configuration',
       noEvidence:
@@ -1191,20 +1211,109 @@ export const en: TranslationDict = {
 
     category: {
       heading: 'Findings',
-      lost: 'Lost from both sides',
+      lost: 'Nothing to copy either way',
       lostDescription:
-        'Neither BluePLM nor the file holds these any more. No tool can bring them back.',
-      conflicting: 'The two disagree',
+        'Lost from both sides. Neither BluePLM nor the file holds these any more, so no write restores them — someone has to author the value again.',
+      conflicting: 'Choose which value wins',
       conflictingDescription:
-        'Both hold a value and they differ. Someone has to decide which is right.',
-      recoverable: 'The file still has it',
+        'Both hold a value and they differ. Whichever you keep overwrites the other, so someone has to decide.',
+      recoverable: 'Copy the file’s value into BluePLM',
       recoverableDescription:
-        'Missing from BluePLM, still in the file under the key BluePLM itself writes. Restorable.',
-      unattributed: 'Not BluePLM’s to hold',
+        'Missing from BluePLM, still in the file under the key BluePLM itself writes. The file is the surviving copy.',
+      absentFromFile: 'Copy BluePLM’s value into the file',
+      absentFromFileDescription:
+        'BluePLM holds these and the file does not. Nothing was lost — the document is behind the record.',
+      unattributed: 'Leave these alone',
       unattributedDescription:
-        'The file holds a value BluePLM never owned. Adopting one would invent a record rather than restore it.',
+        'The file holds a value BluePLM never owned. Adopting one would invent a record rather than restore it, and erasing it is not BluePLM’s to do.',
       values: '{{count}} values',
       files: '{{count}} files',
+    },
+
+    resolution: {
+      adoptFileValue: 'Use the file’s value',
+      adoptFileValueHint:
+        'The file holds the surviving copy. Resolving this writes it into BluePLM and changes no document.',
+      pushVaultValue: 'Use BluePLM’s value',
+      pushVaultValueHint:
+        'BluePLM holds the surviving copy. Resolving this writes it into the document, which needs the file closed and checked out.',
+      fileAuthoritative: 'Leave revision to the file',
+      fileAuthoritativeHint:
+        'The file is the source of truth for revision, so the audit never writes BluePLM’s value into a document that has no revision.',
+      chooseASide: 'Pick a side',
+      chooseASideHint:
+        'Both sides hold a value and neither is automatically right. Whichever you keep overwrites the other.',
+      nothingToRestore: 'Nothing to copy',
+      nothingToRestoreHint:
+        'Neither side holds a value, so there is nothing to write in either direction. The value has to be authored again.',
+      fixOnParentModel: 'Fix on the parent model',
+      fixOnParentModelHint:
+        'A drawing’s part number and description are copies of the model’s. Writing either copy over the other leaves the model — the actual record — untouched.',
+      leaveAlone: 'Leave alone',
+      leaveAloneHint:
+        'BluePLM never owned this value, so writing it into BluePLM would invent a record and clearing it from the file would delete someone else’s data.',
+    },
+
+    revisionRule: {
+      label: 'Parts and assemblies carry their own revision',
+      hint: 'Leave this off if your drawings drive revisions and the model never states one — a model file without a revision is expected and the difference is not a finding. Turning it on shows those comparisons; revision remains driven by the file and the audit never writes BluePLM’s revision into a document. Drawings always own their own revision, and changing this re-reads the scan you already have rather than running a new one.',
+      hidden:
+        '{{count}} revision comparisons on parts and assemblies are not counted above, because your drawings own revision.',
+    },
+
+    blocked: {
+      noWriteResolvesIt: 'nothing to write',
+      noVaultWriterForField: 'BluePLM cannot write this field from an audit yet',
+      entryAlreadyRecorded: 'the record already has an entry here',
+      heldByAnotherUser: 'someone else has this file checked out',
+      fileNotLoaded: 'the file is not loaded, so BluePLM cannot safely preserve its other metadata',
+      heldBy: 'checked out by {{user}}',
+    },
+
+    difference: {
+      caseOnly: 'differs only in capitalisation',
+      whitespaceOnly: 'differs only in spacing',
+      caseAndWhitespace: 'differs only in capitalisation and spacing',
+    },
+
+    actions: {
+      noneAvailable:
+        'Nothing in this category can be written from here. The rows above say why for each one.',
+    },
+
+    push: {
+      wholeFileNote:
+        'This runs Sync Metadata, which rebuilds every BluePLM-owned property except file-driven revision in the documents you tick — at file scope and in every configuration — and verifies each write by reading it back. It is per file, not per value, so a ticked row selects the whole document.',
+      eligible: '{{eligible}} of {{selected}} selected files can be written now.',
+      heldByOthers:
+        '{{count}} files in this category are checked out by other people and cannot be ticked. Writing to a document somebody is working in would be overwritten by their check-in, so the audit leaves them alone.',
+      notCheckedOut:
+        '{{count}} are not checked out to you. Sync Metadata will not touch a file you do not hold; check them out in the file browser and they become writable.',
+      notLoaded:
+        '{{count}} have no local copy loaded, so there is nothing on disk to write to. Download them first.',
+      selectPrompt: 'Tick the files whose documents should take BluePLM’s values.',
+      selectedSummary: '{{files}} files selected.',
+      apply: 'Write {{count}} files',
+      running: 'Writing…',
+    },
+
+    conflict: {
+      instruction:
+        'Each conflict needs an explicit choice. “Use BluePLM” writes the whole document from BluePLM’s metadata; “Use file” copies only the selected file values into BluePLM.',
+      useBluePlm: 'Use BluePLM',
+      useFile: 'Use file',
+      fileSelectPrompt: 'Choose “Use file” on the rows whose values should enter BluePLM.',
+      fileSelectedSummary: '{{values}} file values selected.',
+      applyFile: 'Use {{count}} file values',
+      applying: 'Updating BluePLM…',
+      bluePlmSelectPrompt: 'Choose “Use BluePLM” on the files whose documents should be rewritten.',
+      bluePlmSelectedSummary: '{{files}} files selected.',
+      applyBluePlm: 'Write {{files}} files',
+      bluePlmNote:
+        'The BluePLM direction is per file, so it rewrites every BluePLM-owned property in each selected document, not only the conflict row you clicked.',
+      noUser: 'No signed-in user is available to apply this choice.',
+      appliedToast: 'Applied {{values}} file values to BluePLM.',
+      updateFailed: 'Metadata update failed',
     },
 
     findings: {
@@ -1219,6 +1328,15 @@ export const en: TranslationDict = {
       columnField: 'Field',
       columnDatabase: 'BluePLM',
       columnFile2: 'File',
+      columnResolution: 'To resolve',
+      directionNote:
+        'Unambiguous rows show the write direction with an arrow. “Pick a side” rows have action buttons so you can choose which value wins.',
+      selectAll: 'Select all {{count}} {{unit}}',
+      selectNone: 'Clear the selection ({{count}})',
+      unitFiles: 'files',
+      unitValues: 'values',
+      rangeHint: 'Shift-click a second box to select the rows between.',
+      settled: 'Already written in this session',
       fileScope: 'file',
       empty: '—',
       reveal: 'Show in file browser',
@@ -1226,35 +1344,15 @@ export const en: TranslationDict = {
     },
 
     repair: {
-      heading: 'Repair configuration records',
-      description:
-        'Put back the per-configuration entries a check-in erased, reading the values from what the audit just found in your files. Nothing is written until you choose what to write.',
       guarantee:
         'This can only add entries your record is missing. Every value BluePLM already holds wins over the one proposed here, including entries added since the scan, and entries for configurations that no longer exist are left alone. That is enforced by the database, not by this screen — the merge puts your record on the winning side, so an overwrite or a deletion cannot be expressed.',
       notInstalled:
         'Your database does not have the repair function yet. It ships in schema 94; ask your admin to apply the latest schema (core.sql, then the modules, then tools/verify-schema.sql) and the repair appears here. The audit above works either way.',
-      nothingToRepair:
-        'Nothing to put back. Every configuration your files have is already described by its record.',
       noOrganization: 'No organization is loaded, so there is nothing to repair against.',
-
-      available: '{{entries}} entries could be restored across {{files}} files.',
-      availableSplit: '({{recovered}} recovered, {{derived}} reconstructed)',
 
       includeDerived: 'Also reconstruct tabs from each configuration’s Number',
       includeDerivedHint:
         'For configurations where neither BluePLM nor the file holds a tab, take the part after the last dash of the configuration’s Number — what the browser shows. This is a reconstruction, not a recovery: the value was never separately recorded, and it may not match the convention your vault uses. Off by default, and every such row is marked.',
-
-      selectAll: 'Select all {{count}}',
-      selectNone: 'Clear all {{count}}',
-      filterPlaceholder: 'Filter by path, configuration or value',
-      noMatches: 'No proposed values match that filter.',
-      showing: 'Showing {{shown}} of {{total}}',
-      columnFile: 'File',
-      columnConfiguration: 'Configuration',
-      columnField: 'Field',
-      columnValue: 'Value to write',
-      derivedTag: 'reconstructed',
-      derivedHint: 'Taken from the configuration’s Number. BluePLM never recorded this separately.',
 
       selectPrompt: 'Tick the entries you want written. Nothing is selected, so nothing will be.',
       selectedSummary:

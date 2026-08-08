@@ -66,6 +66,18 @@ export interface PartAssemblyPushPlanInput {
   serialization: PlanSerialization | null
   /** The `Date` and `DrawnBy` properties BluePLM keeps in step with SolidWorks PDM. */
   parity: { date: string; drawnBy: string }
+  /**
+   * Leave the document's `Revision` alone, at file scope and in every configuration.
+   *
+   * For a vault where drawings drive revisions and the model never carries one. Without it a sync
+   * stamps the row's revision into the model on the way past - which is correct for a shop that
+   * revises models and is silent damage for a shop that does not, because the property appears in
+   * a document nobody expected to have one and then goes stale the next time the drawing moves.
+   *
+   * Off by default, so nothing that already calls this changes. Drawings never reach this planner;
+   * `pushDrawingMetadata` is a separate path and this option has no bearing on it.
+   */
+  omitRevision?: boolean
 }
 
 /** Whether BluePLM has anything to say about a field, as opposed to holding it empty. */
@@ -76,7 +88,7 @@ function held(field: ResolvedMetadataField): boolean {
 export function buildPartAssemblyPushPlan(
   input: PartAssemblyPushPlanInput,
 ): MetadataWriteGroup[] {
-  const { file, configurations, serialization, parity } = input
+  const { file, configurations, serialization, parity, omitRevision = false } = input
 
   const resolved = resolveFileMetadata(file)
   const tabs = resolveConfigurationTabs(file)
@@ -86,7 +98,10 @@ export function buildPartAssemblyPushPlan(
   const pending: PendingMetadata = {}
   if (held(resolved.partNumber)) pending.part_number = resolved.partNumber.value ?? ''
   if (held(resolved.description)) pending.description = resolved.description.value ?? ''
-  if (held(resolved.revision)) pending.revision = resolved.revision.value ?? ''
+  // Left out of both halves below, which is what makes this an omission rather than a clear. The
+  // planner writes `Revision` when the field is edited *or* when the committed value is non-empty,
+  // so naming it in `committed` alone would still stamp it.
+  if (!omitRevision && held(resolved.revision)) pending.revision = resolved.revision.value ?? ''
 
   const knowsSomething =
     Object.keys(pending).length > 0 ||

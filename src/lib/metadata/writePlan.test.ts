@@ -286,10 +286,11 @@ describe('the write paths all ask this module', () => {
   it.each([
     join('features', 'source', 'details', 'DetailsPanel.tsx'),
     join('features', 'source', 'browser', 'hooks', 'useConfigHandlers.ts'),
-    join('lib', 'metadata', 'checkinMetadata.ts'),
+    join('lib', 'commands', 'handlers', 'syncMetadataPlan.ts'),
   ])('%s builds its properties here rather than its own way', (relativePath) => {
     // Three callers previously mapped logical fields to property names themselves, and the details
     // panel's copy filtered empties out, which is what made a full clear unexpressible there.
+    // Check-in was a fourth until it stopped writing documents; Sync Metadata took its place here.
     const source = readFileSync(join(SOURCE_ROOT, relativePath), 'utf8')
 
     expect(source).toContain('buildMetadataWritePlan')

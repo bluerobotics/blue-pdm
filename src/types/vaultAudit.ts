@@ -13,6 +13,7 @@
 
 import type { ConfigMapKey } from '@/lib/metadata/configMapRepair'
 import type {
+  ComparedFileType,
   ConfigScopeField,
   OwnedField,
   UnattributedReason,
@@ -70,11 +71,15 @@ export interface VaultAuditProgress {
 // ============================================
 
 /**
- * The four things that can be true of one value, ordered by how little can be done about it.
+ * The five things that can be true of one value, ordered by how little can be done about it.
  *
  * They partition the scanner's `Recoverability`: `intact` and `no-evidence` are not findings and
  * are reported as counts elsewhere. Because they partition it, a value appears in exactly one
  * category and the totals add up.
+ *
+ * A category says what the *evidence* is, not what to do about it. What to do is
+ * `VaultAuditResolution`, which is derived from the category and the ownership table together,
+ * because the same evidence resolves differently on a drawing than on a part.
  */
 export type VaultAuditCategoryKind =
   /** Neither the database nor the file holds it any more. No tool can bring it back. */
@@ -83,11 +88,49 @@ export type VaultAuditCategoryKind =
   | 'conflicting'
   /** Gone from the database, still in the file under the key BluePLM writes. Mechanically fixable. */
   | 'recoverable'
+  /** In the database, absent from the file. Nothing lost; the document is behind the record. */
+  | 'absent-from-file'
   /** In the file, never the database's to hold. Adopting one invents data rather than restoring it. */
   | 'unattributed'
 
 /** Drives colour only; the ordering is the array order from `buildVaultAuditView`. */
 export type VaultAuditTone = 'critical' | 'warning' | 'repairable' | 'neutral'
+
+/**
+ * What resolving one finding would actually consist of.
+ *
+ * There are only ever two writes available - the file's value into BluePLM, or BluePLM's value
+ * into the file - and this enumerates the cases in which each is on the table. The three entries
+ * that are not a write exist because a finding can fail to offer either direction: there may be no
+ * value anywhere to copy, both copies may be candidates with nothing to choose between them, or
+ * the row under comparison may not be the field's owner, in which case writing either way settles
+ * an argument at the wrong end of it.
+ *
+ * Naming the outcome per row is the point. The categories above say what the evidence is, and an
+ * administrator reading "Not BluePLM's to hold" still has to work out that the answer is to do
+ * nothing.
+ */
+export type VaultAuditResolution =
+  /** Write the file's value into BluePLM. The file is the surviving copy. */
+  | 'adopt-file-value'
+  /** Write BluePLM's value into the file. The record is the surviving copy. */
+  | 'push-vault-value'
+  /**
+   * The file is authoritative, but it has no revision to promote. The audit never writes the
+   * database's revision into the document.
+   */
+  | 'file-is-authoritative'
+  /** Both sides hold a value and the ownership table does not settle it. A person must pick. */
+  | 'choose-a-side'
+  /** Neither side holds a value. Nothing can be copied; someone has to author one. */
+  | 'nothing-to-restore'
+  /**
+   * The value on this row is a projection of the parent model's. Writing either copy over the
+   * other leaves the source untouched, so the fix belongs on the model.
+   */
+  | 'fix-on-parent-model'
+  /** The file's value was never BluePLM's. Adopting it invents a record; erasing it is not ours. */
+  | 'leave-alone'
 
 export interface VaultAuditCategory {
   kind: VaultAuditCategoryKind
@@ -103,9 +146,13 @@ export interface VaultAuditFinding {
   /** Stable across renders and unique within a report. */
   id: string
   kind: VaultAuditCategoryKind
+  /** What resolving this would consist of. Derived from `kind` and the field's owner. */
+  resolution: VaultAuditResolution
   fileId: string
   relativePath: string
   fileName: string
+  /** Carried because the ownership table, and so the resolution, differs on a drawing. */
+  fileType: ComparedFileType
   field: OwnedField
   scope: MetadataScope
   /** Configuration name for configuration-scope findings, null at file scope. */
@@ -216,17 +263,33 @@ export interface VaultAuditView {
     configurationRecordedOnly: boolean
     includeDrawings: boolean
   }
+  /**
+   * Rows the scope named, before anything narrowed or failed. The denominator.
+   *
+   * Zero is the case the page exists to not misreport: a folder path that matches no row produces
+   * no findings and nothing uncompared, which every other number here reads as perfect health.
+   */
+  rowsInScope: number
   filesCompared: number
   filesWithFindings: number
   filesWithMultipleConfigurations: number
   /** Values absent from both sides on a row that never described the file. Absence, not loss. */
   noEvidenceValues: number
+  /**
+   * Revision comparisons on parts and assemblies left out because the documents are not expected
+   * to carry one. Zero when the reader has asked to see them.
+   *
+   * Reported rather than merely applied: this is usually the largest single exclusion on the page,
+   * and a count that is quietly smaller than the vault would support is the failure mode the whole
+   * audit exists to avoid.
+   */
+  revisionOnModelsHidden: number
   /** In-scope files the run never opened. The headline is not allowed to ignore these. */
   notCompared: VaultAuditNotCompared
   unread: VaultAuditUnread
   integrity: VaultAuditIntegrity
   coverage: VaultAuditCoverage
-  /** Ordered worst first. Always holds all four kinds, including empty ones. */
+  /** Ordered worst first. Always holds all five kinds, including empty ones. */
   categories: VaultAuditCategory[]
   findings: VaultAuditFinding[]
   /** The scanner's per-field breakdown, passed through unchanged. */

@@ -929,12 +929,6 @@ const DELIBERATE: readonly Allowance[] = [
       'Reads back the synthetic pending set it just built out of resolveFileMetadata, to hand the planner a committed side that agrees with it.',
   },
   {
-    file: 'lib/metadata/checkinMetadata.ts',
-    symbols: ['settleMetadataForCheckin'],
-    reason:
-      'The write plan check-in hands over wants the committed side by definition: it rewrites the fields the file never took, and the database row is what they should hold.',
-  },
-  {
     file: 'lib/metadata/configurationMaps.ts',
     symbols: ['ConfigurationMapPayload', 'buildConfigurationMapPayload'],
     reason:

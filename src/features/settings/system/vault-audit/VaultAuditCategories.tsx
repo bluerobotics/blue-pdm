@@ -10,10 +10,15 @@ interface VaultAuditCategoriesProps {
 }
 
 /**
- * The four categories, worst first.
+ * The five categories, worst first.
  *
- * All four are always shown, including the empty ones, because "no values are lost" is the answer
+ * All five are always shown, including the empty ones, because "no values are lost" is the answer
  * an administrator came for and a card that disappears when it hits zero cannot give it.
+ *
+ * Each is titled by what resolving it consists of rather than by what the evidence is. The two
+ * read very differently at a glance: "The file still has it" describes a state and leaves the
+ * reader to work out which way the fix runs, where "Copy the file's value into BluePLM" is the
+ * fix. The evidence has not gone anywhere - it is the sentence underneath.
  */
 export function VaultAuditCategories({
   categories,

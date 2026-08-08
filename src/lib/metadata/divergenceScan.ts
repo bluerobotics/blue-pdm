@@ -63,8 +63,12 @@ import {
  * carries `rowsFetched` and `rowsConsidered` and nothing between them, so a reader cannot tell a
  * run that compared everything from one that compared a seventh of it - and the page above this
  * read "no findings" as "every value agrees" over 6,363 models it had never opened.
+ *
+ * 4 - `recoverability` gained `absent-from-file`, for the values the database holds and the file
+ * does not. A version 3 report calls those `intact`, alongside the values both sides agree on, so
+ * a reader cannot tell the two apart and the count of them is not in the summary at all.
  */
-export const DIVERGENCE_REPORT_SCHEMA_VERSION = 3
+export const DIVERGENCE_REPORT_SCHEMA_VERSION = 4
 
 /** Supabase caps a single response; rows are pulled in pages of this size. */
 const ROW_PAGE_SIZE = 1000
@@ -239,7 +243,7 @@ export interface DivergenceReport {
 }
 
 /** One row, narrowed to what the comparison needs. */
-interface ScanRow extends FileRowMetadata {
+export interface ScanRow extends FileRowMetadata {
   id: string
   file_path: string
   file_name: string
@@ -252,6 +256,25 @@ interface ScanRow extends FileRowMetadata {
 
 function normalizeSeparators(value: string): string {
   return value.replace(/\//g, '\\')
+}
+
+/**
+ * A vault-relative path reduced to the form folder scoping compares on.
+ *
+ * Lower-cased because the vault is on Windows and the rows' own uniqueness index is on
+ * `LOWER(file_path)`; separators folded to `\` because rows written before the forward-slash
+ * convention still carry the other kind; stripped at both ends and trimmed so a path pasted with a
+ * leading separator or a trailing space still names the folder the operator meant.
+ *
+ * It cannot rescue an absolute path. `C:\Vault\Parts` shares no prefix with `Parts`, and the
+ * browser's copy-path buttons hand out absolute paths, so that mistake is easy to make and
+ * impossible to detect here - which is why the run reports how many rows its scope matched instead
+ * of leaving an empty scope to look like a clean one.
+ */
+function normalizeRelativePath(value: string): string {
+  return normalizeSeparators(value.trim())
+    .replace(/^\\+|\\+$/g, '')
+    .toLowerCase()
 }
 
 /** Absolute path of a row's file inside the working copy. */
@@ -536,8 +559,11 @@ function recordsConfigurations(row: ScanRow): boolean {
  * Kept apart from the narrowing options below so the report can say how many rows each one
  * dropped. Folded together, the only numbers available were "rows in the organisation" and "rows
  * compared", and the gap between those two is mostly PDFs.
+ *
+ * Exported for its tests. It is the only part of the scan that decides what a folder scope means,
+ * and the rest of the run needs Electron and a database to stand up.
  */
-function inFileScope(row: ScanRow, options: DivergenceScanOptions): boolean {
+export function inFileScope(row: ScanRow, options: DivergenceScanOptions): boolean {
   const extension = extensionOf(row)
   const isModel = (MODEL_EXTENSIONS as readonly string[]).includes(extension)
   const isDrawing = extension === DRAWING_EXTENSION
@@ -545,8 +571,11 @@ function inFileScope(row: ScanRow, options: DivergenceScanOptions): boolean {
   if (!isModel && !(options.includeDrawings && isDrawing)) return false
 
   if (options.pathPrefix) {
-    const prefix = normalizeSeparators(options.pathPrefix).toLowerCase()
-    if (!normalizeSeparators(row.file_path).toLowerCase().startsWith(prefix)) return false
+    // The trailing separator is what stops a scope of `Parts` from also claiming `Parts-Old`, for
+    // the same reason `isInsideFixtureRoot` above appends one. A bare `startsWith` quietly widened
+    // every folder run to its similarly named siblings.
+    const prefix = normalizeRelativePath(options.pathPrefix)
+    if (prefix && !normalizeRelativePath(row.file_path).startsWith(`${prefix}\\`)) return false
   }
 
   return true

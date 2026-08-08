@@ -18,13 +18,19 @@
  *   - Requires SolidWorks service with Document Manager available
  *   - Never auto-triggered (explicit user action only)
  *
+ * That last requirement is load-bearing, and the file watcher used to break it: it ran a
+ * read-only pull whenever a checked-out document changed on disk. A watcher event cannot say
+ * whether the app or the user made the change, so check-in's own property write came back as
+ * an edit, landed in `pendingMetadata`, and made the next check-in write the file and cut a
+ * version. Nothing in this module may be wired to an event again.
+ *
  * The two halves live beside this file: `syncMetadataPull.ts` finds the model a drawing documents
  * and reads it, `syncMetadataPush.ts` writes BluePLM's values into a document and confirms them,
  * and `syncMetadataPlan.ts` decides what those values are. What is left here is the command
- * itself - eligibility, ordering, progress and the summary - plus the read-only background refresh.
+ * itself - eligibility, ordering, progress and the summary.
  */
 
-import type { Command, CommandResult, LocalFile, BaseCommandParams } from '../types'
+import type { Command, CommandResult, LocalFile, SyncMetadataParams } from '../types'
 import { buildFullPath } from '../types'
 import { ProgressTracker } from '../executor'
 import { usePDMStore } from '../../../stores/pdmStore'
@@ -37,31 +43,19 @@ import {
   SW_EXTENSIONS,
   logSync,
 } from './syncMetadataCommon'
-import { extractMetadataFromProperties, isParentAuthoritative } from './syncMetadataProperties'
+import { isParentAuthoritative } from './syncMetadataProperties'
 import { pullDrawingMetadata } from './syncMetadataPull'
 import { pushDrawingMetadata, pushPartAssemblyMetadata } from './syncMetadataPush'
 
 /**
  * Parameters for the sync-metadata command.
- */
-export interface SyncMetadataParams extends BaseCommandParams {}
-
-/**
- * Per-outcome counts from a background metadata refresh pass.
  *
- * `unchanged` and `failed` are tracked separately because a pass that reads every file and
- * finds them all already in sync looks identical, from the outside, to one that errored.
+ * Re-exported from `../types` rather than declared here. This module used to carry its own empty
+ * `extends BaseCommandParams` copy, which compiled and shadowed the canonical one at every call
+ * site inside this file while `CommandMap` went on resolving the other - so a field added here was
+ * accepted by the handler and rejected by `executeCommand`.
  */
-export interface MetadataRefreshSummary {
-  /** Files whose pending metadata was updated from the file on disk */
-  refreshed: number
-  /** Files read successfully whose metadata already matched the database */
-  unchanged: number
-  /** Files that could not be read */
-  failed: number
-  /** Files never attempted: not SolidWorks files, not checked out, or service unavailable */
-  skipped: number
-}
+export type { SyncMetadataParams }
 
 /**
  * Get SolidWorks files from selection (handles folders)
@@ -88,192 +82,6 @@ function getSwFilesFromSelection(allFiles: LocalFile[], selectedFiles: LocalFile
 
   // Deduplicate by path
   return [...new Map(result.map((f) => [f.path, f])).values()]
-}
-
-/**
- * Lightweight metadata refresh for specific files.
- * Used by file watcher for auto-refresh on save.
- * Only PULLs metadata (reads from file), does not PUSH.
- *
- * INVARIANT: this is a background pass and MUST stay read-only. Never call
- * setProperties/setPropertiesBatch here - writing properties to a document the user has
- * open in SolidWorks mutates their file mid-session. Property writes belong only in the
- * explicit, user-initiated syncMetadataCommand (pushPartAssemblyMetadata).
- *
- * This is a silent operation - no toasts or progress indicators.
- * Skips gracefully if SW service is unavailable.
- *
- * @param files - Files to refresh (will filter to checked-out SW files)
- * @param vaultPath - The vault root path for constructing full paths
- * @param userId - Current user ID for filtering to checked-out files
- * @returns Per-outcome counts for the refresh pass
- */
-export async function refreshMetadataForFiles(
-  files: LocalFile[],
-  vaultPath: string,
-  userId: string | undefined,
-): Promise<MetadataRefreshSummary> {
-  // Filter to SolidWorks files checked out by the current user
-  const swFiles = files.filter((f) => {
-    if (f.isDirectory) return false
-    const ext = f.extension?.toLowerCase() || ''
-    if (!SW_EXTENSIONS.includes(ext)) return false
-    // Must be checked out by current user (or local-only)
-    const isLocalOnly = !f.pdmData?.id
-    const isCheckedOutByMe = f.pdmData?.checked_out_by === userId
-    return isLocalOnly || isCheckedOutByMe
-  })
-
-  if (swFiles.length === 0) {
-    return { refreshed: 0, unchanged: 0, failed: 0, skipped: files.length }
-  }
-
-  // Check if SolidWorks service is running - skip silently if not
-  try {
-    const status = await window.electronAPI?.solidworks?.getServiceStatus?.()
-    if (!status?.data?.running || !status?.data?.documentManagerAvailable) {
-      logSync('debug', 'Auto-refresh skipped - SW service not available', {
-        running: status?.data?.running,
-        dmAvailable: status?.data?.documentManagerAvailable,
-        fileCount: swFiles.length,
-      })
-      return { refreshed: 0, unchanged: 0, failed: 0, skipped: swFiles.length }
-    }
-  } catch {
-    // If we can't check status, skip silently
-    return { refreshed: 0, unchanged: 0, failed: 0, skipped: swFiles.length }
-  }
-
-  logSync('info', 'Auto-refreshing metadata for changed files', {
-    fileCount: swFiles.length,
-    files: swFiles.map((f) => f.name),
-  })
-
-  const store = usePDMStore.getState()
-  let refreshed = 0
-  let unchanged = 0
-  let failed = 0
-
-  for (const file of swFiles) {
-    try {
-      const fullPath = buildFullPath(vaultPath, file.relativePath)
-      const ext = file.extension.toLowerCase()
-      const isDrawing = DRAWING_EXTENSIONS.includes(ext)
-
-      // For drawings: PULL metadata from file
-      if (isDrawing) {
-        const metadata = await pullDrawingMetadata(fullPath, file)
-
-        if (metadata) {
-          const pendingUpdates: PendingMetadata = {}
-
-          if (metadata.partNumber !== null) {
-            pendingUpdates.part_number = metadata.partNumber
-          }
-          if (metadata.tabNumber !== null) {
-            pendingUpdates.tab_number = metadata.tabNumber
-          }
-          if (metadata.description !== null) {
-            pendingUpdates.description = metadata.description
-          }
-          if (metadata.revision !== null) {
-            pendingUpdates.revision = metadata.revision
-          }
-
-          const changes = dropCommittedPendingMetadata(pendingUpdates, file.pdmData)
-          if (changes) {
-            store.updatePendingMetadata(file.path, changes)
-            refreshed++
-            logSync('info', 'Auto-refresh: updated metadata from file', {
-              filePath: file.relativePath,
-              revision: metadata.revision,
-              partNumber: metadata.partNumber,
-            })
-          } else {
-            unchanged++
-            logSync('info', 'Auto-refresh: file already in sync, nothing to update', {
-              filePath: file.relativePath,
-              revision: metadata.revision,
-              partNumber: metadata.partNumber,
-              inheritedFromParent: metadata.inheritedFromParent ?? false,
-            })
-          }
-        } else {
-          failed++
-          logSync('warn', 'Auto-refresh: could not read drawing metadata', {
-            filePath: file.relativePath,
-          })
-        }
-      } else {
-        // For parts/assemblies: Only refresh REVISION from file
-        // BluePLM is the source of truth for part_number, tab_number, and description.
-        // Auto-refreshing these from file would overwrite DB values with potentially
-        // stale file-level properties (e.g., legacy values from before BluePLM managed the file).
-        // Only revision is refreshed since it may be updated via SW revision tables.
-        const result = await window.electronAPI?.solidworks?.getProperties?.(fullPath)
-        const data = result?.data as
-          | {
-              fileProperties?: Record<string, string>
-              configurationProperties?: Record<string, Record<string, string>>
-            }
-          | undefined
-
-        if (result?.success && data) {
-          const allProps = { ...data.fileProperties }
-          const configProps = data.configurationProperties
-          if (configProps) {
-            const configNames = Object.keys(configProps)
-            const preferredConfig =
-              configNames.find((k) => k.toLowerCase() === 'default') ||
-              configNames.find((k) => k.toLowerCase() === 'standard') ||
-              configNames[0]
-            if (preferredConfig && configProps[preferredConfig]) {
-              Object.assign(allProps, configProps[preferredConfig])
-            }
-          }
-
-          const metadata = extractMetadataFromProperties(allProps)
-          const pendingUpdates: PendingMetadata = {}
-
-          // Only update revision - BluePLM is source of truth for part_number, tab_number, description
-          if (metadata.revision !== null) {
-            pendingUpdates.revision = metadata.revision
-          }
-
-          const changes = dropCommittedPendingMetadata(pendingUpdates, file.pdmData)
-          if (changes) {
-            store.updatePendingMetadata(file.path, changes)
-            refreshed++
-            logSync('info', 'Auto-refresh: updated revision from file', {
-              filePath: file.relativePath,
-              revision: metadata.revision,
-            })
-          } else {
-            unchanged++
-            logSync('info', 'Auto-refresh: revision already in sync, nothing to update', {
-              filePath: file.relativePath,
-              revision: metadata.revision,
-            })
-          }
-        } else {
-          failed++
-          logSync('warn', 'Auto-refresh: could not read properties', {
-            filePath: file.relativePath,
-            error: result?.error,
-          })
-        }
-      }
-    } catch (error) {
-      failed++
-      // Silent failure - user can manually refresh if needed
-      logSync('warn', 'Auto-refresh failed for file', {
-        filePath: file.relativePath,
-        error: String(error),
-      })
-    }
-  }
-
-  return { refreshed, unchanged, failed, skipped: 0 }
 }
 
 export const syncMetadataCommand: Command<SyncMetadataParams> = {
@@ -313,7 +121,7 @@ export const syncMetadataCommand: Command<SyncMetadataParams> = {
     return null
   },
 
-  async execute({ files }, ctx): Promise<CommandResult> {
+  async execute({ files, omitRevisionOnModels }, ctx): Promise<CommandResult> {
     const operationId = `sync-metadata-${Date.now()}`
     const userId = ctx.user?.id
 
@@ -525,7 +333,9 @@ export const syncMetadataCommand: Command<SyncMetadataParams> = {
           // PUSH: Write metadata from BluePLM -> into SW file
           logSync('debug', 'Processing part/assembly (PUSH)', { fullPath })
 
-          const result = await pushPartAssemblyMetadata(file, fullPath)
+          const result = await pushPartAssemblyMetadata(file, fullPath, {
+            omitRevision: omitRevisionOnModels,
+          })
 
           if (result.success) {
             pushed++

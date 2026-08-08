@@ -270,6 +270,7 @@ DROP FUNCTION IF EXISTS schema_release_description() CASCADE;
 DROP FUNCTION IF EXISTS schema_release_manifest() CASCADE;
 DROP FUNCTION IF EXISTS check_schema_release() CASCADE;
 DROP FUNCTION IF EXISTS verify_and_stamp_schema() CASCADE;
+DROP FUNCTION IF EXISTS try_stamp_schema() CASCADE;
 DROP FUNCTION IF EXISTS get_webhooks_for_event(UUID, webhook_event) CASCADE;
 DROP FUNCTION IF EXISTS use_admin_recovery_code(TEXT, TEXT) CASCADE;
 DROP FUNCTION IF EXISTS notify_file_watchers() CASCADE;

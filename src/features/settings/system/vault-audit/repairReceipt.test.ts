@@ -9,9 +9,13 @@
 
 import { describe, expect, it } from 'vitest'
 
-import type { VaultAuditRepairFileOutcome, VaultAuditRepairOutcome } from '@/types/vaultAudit'
+import type {
+  VaultAuditRepairCandidate,
+  VaultAuditRepairFileOutcome,
+  VaultAuditRepairOutcome,
+} from '@/types/vaultAudit'
 
-import { describeShortfall } from './repairReceipt'
+import { describeShortfall, settledCandidateIds } from './repairReceipt'
 
 function file(overrides: Partial<VaultAuditRepairFileOutcome> = {}): VaultAuditRepairFileOutcome {
   return {
@@ -124,5 +128,92 @@ describe('reading the shortfall', () => {
 
     expect(shortfall.total).toBe(0)
     expect(shortfall.alreadyPresent).toBe(0)
+  })
+})
+
+describe('which candidates the receipt settles', () => {
+  function candidate(
+    overrides: Partial<VaultAuditRepairCandidate> = {},
+  ): VaultAuditRepairCandidate {
+    return {
+      id: 'file-1:config_tab:Short',
+      fileId: 'file-1',
+      relativePath: 'Parts/BRACKET.SLDPRT',
+      fileName: 'BRACKET.SLDPRT',
+      field: 'config_tab',
+      configuration: 'Short',
+      value: '-001',
+      provenance: 'recovered',
+      ...overrides,
+    }
+  }
+
+  const tab = candidate()
+  const description = candidate({
+    id: 'file-1:config_description:Short',
+    field: 'config_description',
+    value: 'Short bracket',
+  })
+
+  it('settles every entry on a file the row accepted', () => {
+    const ids = settledCandidateIds(
+      [tab, description],
+      receipt({ entriesRequested: 2, entriesAdded: 2, files: [file({ entriesRequested: 2 })] }),
+    )
+
+    expect(ids).toEqual([tab.id, description.id])
+  })
+
+  /** The row was ahead of the scan. The entry is there, which is the state the repair wanted. */
+  it('settles an entry the row already held, which is as done as one that was added', () => {
+    const ids = settledCandidateIds(
+      [tab],
+      receipt({ entriesRequested: 1, entriesAdded: 0, files: [file({ entriesRequested: 1 })] }),
+    )
+
+    expect(ids).toEqual([tab.id])
+  })
+
+  it('settles nothing on a file whose row could not be resolved', () => {
+    const ids = settledCandidateIds(
+      [tab, description],
+      receipt({
+        entriesRequested: 2,
+        entriesAdded: 0,
+        files: [file({ entriesRequested: 2, refused: 'row-not-found' })],
+      }),
+    )
+
+    expect(ids).toEqual([])
+  })
+
+  /**
+   * The reason this is read per map rather than per file. One map was absent and the other was
+   * not, so half this file's entries were dropped and half landed - and hiding the dropped half
+   * would be telling the operator a value is in the database when it is not.
+   */
+  it('leaves the entries sent under an absent map, and settles the rest of that file', () => {
+    const ids = settledCandidateIds(
+      [tab, description],
+      receipt({
+        entriesRequested: 2,
+        entriesAdded: 1,
+        files: [
+          file({
+            entriesRequested: 2,
+            mapsAbsent: ['_config_descriptions'],
+            entriesUnderAbsentMap: 1,
+          }),
+        ],
+      }),
+    )
+
+    expect(ids).toEqual([tab.id])
+  })
+
+  it('settles nothing for a file the receipt never mentions', () => {
+    const ids = settledCandidateIds([candidate({ fileId: 'file-9' })], receipt({ files: [file()] }))
+
+    expect(ids).toEqual([])
   })
 })

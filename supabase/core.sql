@@ -113,79 +113,12 @@ ON CONFLICT (id) DO NOTHING;
 -- what a database must contain to be allowed to claim it.
 
 CREATE OR REPLACE FUNCTION schema_release_version() RETURNS INTEGER
-LANGUAGE sql IMMUTABLE AS $$ SELECT 95 $$;
+LANGUAGE sql IMMUTABLE AS $$ SELECT 96 $$;
 
 CREATE OR REPLACE FUNCTION schema_release_description() RETURNS TEXT
 LANGUAGE sql IMMUTABLE AS $$ SELECT
-  'The anchor every other gate rests on is finally held down. users.org_id and users.role '
-  'are what is_org_admin, require_org_member and every membership subquery in this schema '
-  'resolve against, and the self-update policy on users had no WITH CHECK - a policy '
-  'without one reuses its USING expression, which tested the new row''s id and not its '
-  'org_id or role. One PATCH moved a viewer into another organization as its administrator, '
-  'and every gate schemas 89-94 added then answered honestly against a row the caller had '
-  'just rewritten. Both users UPDATE policies now carry an explicit check and a TO '
-  'authenticated qualifier they were the only policies in that block to be missing; the '
-  'self policy pins role and org_id to their pre-update values, and the admin policy''s '
-  'check is written out unchanged, because it is what lets an administrator manage a '
-  'member''s role and a stricter one there would break that and nothing else. Four more '
-  'policies stopped depending on a clause that was never about authorization. A share '
-  'link''s file must now belong to the same organization as the link and the caller, and '
-  'created_by must be the caller, so the table path can no longer mint what '
-  'create_file_share_link stopped minting in v91; the only UPDATE a share link admits is '
-  'its own revocation, where before a viewer could repoint file_id at another tenant''s file '
-  'or re-activate a link a remediation had just deactivated. Deciding a pending review '
-  'needs module:reviews:edit, matching the policy that gates asking for one, and '
-  'reviewed_by can only name the caller. Trashing a file needs module:explorer:delete '
-  'rather than edit: deletion in this product is UPDATE files SET deleted_at, so an '
-  'organization that deliberately withheld delete had still granted the ability to empty '
-  'its vault into the trash. complete_gate_review enforced reviewer identity only when the '
-  'review named an assignee, so any member could approve an unassigned gate through the '
-  'sanctioned RPC; the rule for an unassigned gate already existed in '
-  'get_my_pending_reviews, and both now call one may_review_gate() instead of keeping two '
-  'answers to one question. The remediation that revokes cross-tenant share links computed '
-  'the creator''s organization and used it only as prose, so a link whose org_id agreed with '
-  'its file''s was left active and unlogged however foreign its creator was - it is a term '
-  'of the query now, in the remediation and in check_release_residue together. Six '
-  'authorization helpers named by eleven manifest rows are manifest entries in their own '
-  'right, because requires is a substring search of the caller and a weakened helper left '
-  'all eleven reading ok. The config-map repair receipt counts the entries a file that did '
-  'not resolve asked for, so entries_requested minus entries_added stops reading zero for '
-  'the batch that dropped the most. seed_customer_categories is withdrawn from the roles a '
-  'browser holds, and the check that should have caught it stopped keeping a list of '
-  'functions it would not look at. The function is SECURITY DEFINER and writes into '
-  'whatever organization its argument names, and the REVOKE beside it named PUBLIC only - '
-  'which on Supabase is a different privilege from the explicit authenticated grant that '
-  'ALTER DEFAULT PRIVILEGES puts on every function, so a fresh install was exposed exactly '
-  'as an upgrade was and no application GRANT was involved. A user who administered one '
-  'organization and a user who belonged to none both called it over PostgREST against a '
-  'third organization and wrote 48 taxonomy rows into it; the write is ON CONFLICT DO '
-  'NOTHING and returns nothing, so what it bought was the resurrection of taxonomy rows an '
-  'administrator had deliberately deleted and an existence oracle for organization ids '
-  'through the foreign-key error, not the disclosure of anything. It stayed invisible '
-  'because check_org_gates() carried three function names it skipped, and skipping left no '
-  'trace - an unchecked function and a nonexistent one read identically. The list is gone: '
-  'an exclusion is now computed from the ACL in front of the checker, printed with the ACL '
-  'that justifies it, and expires the moment somebody grants the function back. A function '
-  'anon or authenticated can reach that the probe cannot show refuses a foreign '
-  'organization withholds the stamp instead of being reported as inconclusive and then '
-  'ignored. Two extension log sweeps are withdrawn from the roles a browser holds before '
-  'either ever reached a database. cleanup_extension_http_logs and '
-  'cleanup_extension_secret_access_logs are SECURITY DEFINER and delete by age alone, with '
-  'no organization named anywhere in the statement, and the same Supabase default ACL made '
-  'both of them live PostgREST endpoints: on a harness at this release a user belonging to '
-  'no organization at all called one over HTTP and took another tenant''s extension_http_log '
-  'from one row to none, and the other did the same to extension_secret_access. Nobody was '
-  'exposed, because neither function exists on any database yet - this is a hole that '
-  'applying release 95 would have installed, not one that was ever open. Nothing legitimate '
-  'calls them either: the retention path the application actually uses deletes from the '
-  'table filtered by org_id and extension_id under row-level security, and no scheduled job '
-  'or cron entry names them, so withdrawing the endpoint costs nothing and organization '
-  'scoping would gate a door with nobody behind it. check_org_gates() cannot judge this '
-  'shape at all - a function that takes no organization argument has no foreign id to be '
-  'handed and no refusal to require - so the ACL is asserted directly instead: '
-  'check_withdrawn_execute() names the five functions whose only protection is that no '
-  'PostgREST role may execute them, prints the ACL doing the work, and withholds the stamp '
-  'if any of them can be reached'
+  'Every schema file asks try_stamp_schema() after installation, so the last file records '
+  'the verified release automatically while partial installs remain unstamped'
 $$;
 
 -- One row per object this release requires, scoped to the module that creates it.
@@ -222,6 +155,7 @@ LANGUAGE sql IMMUTABLE AS $$
     ('core', NULL, 'function', 'require_org_member(uuid)', NULL),
     ('core', NULL, 'function', 'is_org_member(uuid)', NULL),
     ('core', NULL, 'function', 'schema_release_version()', NULL),
+    ('core', NULL, 'function', 'try_stamp_schema()', NULL),
     -- The checks themselves are release content. A database carrying v90's
     -- copy of check_anon_reach() would look at no views at all and report a
     -- clean schema over the parts_with_pricing leak, so the manifest pins the
@@ -2575,6 +2509,68 @@ $$;
 -- PRIVILEGES puts on every new function, which is how anon came to be able to
 -- call this at all.
 REVOKE ALL ON FUNCTION verify_and_stamp_schema() FROM PUBLIC, anon, authenticated;
+
+-- What a schema file calls as its last act: ask to be verified, and report the
+-- answer in one line. core.sql and every module end with this, so the version is
+-- recorded by whichever file the operator happens to run last and there is no
+-- separate step to forget.
+--
+-- WHY EVERY FILE MAY ASK, WHEN NO FILE MAY STAMP
+--
+-- Until 89 each file stamped the head version unconditionally at its end, and
+-- that had to stop: the number is one global value while the files are
+-- per-module, so `SELECT update_schema_version(88)` at the bottom of
+-- 30-supply-chain.sql was a claim about seven files that module cannot see. It
+-- recorded 88 over a database missing module 10's v87 work, and the app compared
+-- 88 to its own 88 and showed no warning.
+--
+-- Delegating to verify_and_stamp_schema() removes the defect rather than the
+-- convenience. The answer is computed from the whole release manifest and every
+-- security check, so it does not depend on which file asked, and a file that
+-- asks too early is simply told no. What was wrong was never that a schema file
+-- did the asking; it was that being run counted as an answer.
+--
+-- This is deliberately quiet about failure - one line, no object list. During a
+-- normal install every file but the last one gets a no, and seven paragraphs of
+-- missing objects scrolling past on a correct install is how an operator learns
+-- to ignore the output. tools/verify-schema.sql is the detailed report, and it
+-- ends with an error rather than a notice.
+--
+-- It cannot raise, and that is load-bearing rather than defensive. The Supabase
+-- SQL editor wraps a run in a single transaction, so an exception thrown here
+-- would roll back the file that had just been applied successfully: an unstamped
+-- install is a warning, a rolled-back one is an outage. verify_and_stamp_schema()
+-- does raise, by design, when the caller may not write schema_version - which is
+-- every role but two.
+CREATE OR REPLACE FUNCTION try_stamp_schema()
+RETURNS VOID
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_result JSON;
+  v_total INTEGER;
+BEGIN
+  BEGIN
+    v_result := verify_and_stamp_schema();
+  EXCEPTION WHEN OTHERS THEN
+    RAISE WARNING 'Schema version not recorded: %', SQLERRM;
+    RAISE WARNING 'The recorded version is unchanged. Run supabase/tools/verify-schema.sql from the Supabase SQL editor, which connects as postgres.';
+    RETURN;
+  END;
+
+  IF (v_result->>'stamped')::BOOLEAN THEN
+    RAISE NOTICE 'Schema verified and stamped at version %', v_result->>'version';
+    RETURN;
+  END IF;
+
+  v_total := json_array_length(v_result->'problems');
+
+  RAISE NOTICE 'Schema version not stamped: % outstanding item(s). Recorded version stays at %, this release is %.',
+    v_total, v_result->>'version', v_result->>'target_version';
+  RAISE NOTICE 'Expected until every file of this release has been applied - the last one records the version. supabase/tools/verify-schema.sql names each outstanding item.';
+END;
+$$;
+
+REVOKE ALL ON FUNCTION try_stamp_schema() FROM PUBLIC, anon, authenticated;
 
 -- Superseded by verify_and_stamp_schema(). Kept as a no-op so that an old copy
 -- of a module file - which calls this at the end - neither fails halfway
@@ -5582,13 +5578,18 @@ SELECT migrate_uuid_defaults();
 
 SELECT enforce_anon_execute_posture();
 
--- No schema version stamp here. core.sql knows nothing about which modules are
--- installed or how old they are, so anything it wrote about the database as a
--- whole would be a guess. Run supabase/tools/verify-schema.sql once the modules
--- are in; that checks the release manifest and stamps the version if it holds.
-
+-- Ask to be verified and stamped, in case this is the last file of the run.
+--
+-- On a fresh install it is the first, so the answer is no: the modules are not
+-- there yet, and core.sql cannot honestly say anything about them. Apply the
+-- modules and the last of them records the version. On an upgrade where only
+-- this file changed, core.sql *is* the last file and stamps here.
+--
+-- Either way the number itself lives in one place, schema_release_version()
+-- above, which is the line to bump when the release moves. See
+-- try_stamp_schema() for why asking is safe when stamping was not.
 DO $$
 BEGIN
   RAISE NOTICE 'Core schema installed successfully';
-  RAISE NOTICE 'Run supabase/tools/verify-schema.sql after installing the modules to verify and stamp the schema version';
+  PERFORM try_stamp_schema();
 END $$;

@@ -1,5 +1,5 @@
 // Migration handler for major version upgrades
-// Handles clean install when upgrading from 2.x to 3.0+
+// Clears disposable caches/logs while preserving user configuration
 
 import { app, session } from 'electron'
 import fs from 'fs'
@@ -88,7 +88,7 @@ function getMajorVersion(version: string): number {
   return match ? parseInt(match[1], 10) : 0
 }
 
-function shouldPerformCleanInstall(fromVersion: string | null, toVersion: string): boolean {
+function shouldPerformMajorUpgradeCleanup(fromVersion: string | null, toVersion: string): boolean {
   // If no previous version stored, this might be:
   // 1. A fresh install (no migration needed)
   // 2. An upgrade from an older version that didn't track versions
@@ -113,8 +113,7 @@ function shouldPerformCleanInstall(fromVersion: string | null, toVersion: string
   const fromMajor = getMajorVersion(fromVersion)
   const toMajor = getMajorVersion(toVersion)
 
-  // Clean install on ANY major version upgrade (2→3, 3→4, 4→5, etc.)
-  // This ensures a fresh start with each major release
+  // Cache cleanup on ANY major version upgrade (2→3, 3→4, 4→5, etc.)
   return toMajor > fromMajor
 }
 
@@ -145,34 +144,34 @@ function deleteRecursive(targetPath: string): boolean {
   }
 }
 
-function cleanUserData(): { cleaned: string[]; errors: string[] } {
+/**
+ * Delete disposable caches/logs only.
+ *
+ * Intentionally preserved (user configuration):
+ * - Local Storage / Session Storage — org config, login session, vault bindings,
+ *   onboarding, "Help improve BluePLM", SolidWorks prefs, UI state (`blue-plm-storage`)
+ * - IndexedDB — vault file cache / sync index
+ * - analytics-settings.json, log-settings.json — telemetry / logging prefs
+ * - window-state.json — window geometry
+ * - app-version.json — written after migration
+ */
+function cleanDisposableUserData(): { cleaned: string[]; errors: string[] } {
   const userDataPath = app.getPath('userData')
   const cleaned: string[] = []
   const errors: string[] = []
 
-  // Files/folders to delete in userData
   const itemsToDelete = [
-    'window-state.json',
-    'analytics-settings.json',
-    'log-settings.json',
-    'log-recording-state.json',
     'update-reminder.json',
+    'log-recording-state.json',
     'logs',
     'Crashpad',
-    // Electron's internal storage
-    'Local Storage',
-    'Session Storage',
-    'IndexedDB',
     'Cache',
     'Code Cache',
     'GPUCache',
     'blob_storage',
-    'databases',
-    'Network',
-    'Preferences',
-    'TransportSecurity',
     'Service Worker',
-    // Don't delete app-version.json - we need to write to it after
+    'Network',
+    'TransportSecurity',
   ]
 
   for (const item of itemsToDelete) {
@@ -233,17 +232,21 @@ export async function performMigrationCheck(): Promise<MigrationResult> {
     errors: [],
   }
 
-  if (shouldPerformCleanInstall(previousVersion, currentVersion)) {
+  if (shouldPerformMajorUpgradeCleanup(previousVersion, currentVersion)) {
     const fromMajor = previousVersion ? getMajorVersion(previousVersion) : 'legacy'
     const toMajor = getMajorVersion(currentVersion)
-    writeLog('info', '[Migration] ===== PERFORMING CLEAN INSTALL MIGRATION =====')
+    writeLog('info', '[Migration] ===== PERFORMING MAJOR UPGRADE CACHE CLEANUP =====')
     writeLog('info', `[Migration] Major version upgrade: ${fromMajor} → ${toMajor}`)
     writeLog('info', `[Migration] Upgrading from ${previousVersion ?? 'pre-3.0 (legacy)'} to ${currentVersion}`)
+    writeLog(
+      'info',
+      '[Migration] Preserving Local Storage (org config, session, vault bindings, onboarding)'
+    )
 
     result.performed = true
 
-    // Clean user data
-    const userDataResult = cleanUserData()
+    // Clean disposable caches/logs only — keep configuration
+    const userDataResult = cleanDisposableUserData()
     result.cleanedPaths.push(...userDataResult.cleaned)
     result.errors.push(...userDataResult.errors)
 
@@ -252,28 +255,20 @@ export async function performMigrationCheck(): Promise<MigrationResult> {
     result.cleanedPaths.push(...tempResult.cleaned)
     result.errors.push(...tempResult.errors)
 
-    // Clear session storage (localStorage, IndexedDB, cookies, etc.)
-    // This needs to happen after app is ready
+    // Clear only ephemeral session caches. Do NOT clear localstorage, cookies,
+    // or IndexedDB — those hold org config, auth session, vault bindings, and
+    // onboarding choices ("Help improve BluePLM", language, etc.).
     try {
       await session.defaultSession.clearStorageData({
-        storages: [
-          'cookies',
-          'filesystem',
-          'indexdb',
-          'localstorage',
-          'shadercache',
-          'websql',
-          'serviceworkers',
-          'cachestorage',
-        ],
+        storages: ['shadercache', 'serviceworkers', 'cachestorage'],
       })
-      writeLog('info', '[Migration] Cleared Electron session storage')
+      writeLog('info', '[Migration] Cleared ephemeral Electron session caches')
     } catch (error) {
-      writeLog('error', '[Migration] Failed to clear session storage', { error: String(error) })
-      result.errors.push(`Failed to clear session storage: ${String(error)}`)
+      writeLog('error', '[Migration] Failed to clear session caches', { error: String(error) })
+      result.errors.push(`Failed to clear session caches: ${String(error)}`)
     }
 
-    writeLog('info', `[Migration] Clean install complete. Cleaned ${result.cleanedPaths.length} items.`)
+    writeLog('info', `[Migration] Major upgrade cleanup complete. Cleaned ${result.cleanedPaths.length} items.`)
     if (result.errors.length > 0) {
       writeLog('warn', `[Migration] Encountered ${result.errors.length} errors`, { errors: result.errors })
     }

@@ -55,6 +55,9 @@ export interface UseVaultAuditResult {
   serviceTooOld: boolean
   scope: VaultAuditScope
   setScope: (scope: VaultAuditScope) => void
+  /** Whether a part or assembly is expected to carry a revision. Re-reads the report, never rescans. */
+  expectRevisionOnModels: boolean
+  setExpectRevisionOnModels: (expect: boolean) => void
   isRunning: boolean
   progress: { completed: number; total: number; message: string }
   /** Null until a run finishes; survives leaving and returning to the tab. */
@@ -130,6 +133,10 @@ export function useVaultAudit(): UseVaultAuditResult {
 
   const scope = usePDMStore((state) => state.vaultAuditScope)
   const setScope = usePDMStore((state) => state.setVaultAuditScope)
+  const expectRevisionOnModels = usePDMStore((state) => state.vaultAuditExpectRevisionOnModels)
+  const setExpectRevisionOnModels = usePDMStore(
+    (state) => state.setVaultAuditExpectRevisionOnModels,
+  )
   const run = usePDMStore((state) => state.vaultAuditRun)
   const startVaultAuditRun = usePDMStore((state) => state.startVaultAuditRun)
   const setVaultAuditProgress = usePDMStore((state) => state.setVaultAuditProgress)
@@ -153,10 +160,13 @@ export function useVaultAudit(): UseVaultAuditResult {
   }, [])
 
   // Rebuilding the view walks every comparison in the report, so it is keyed on the report itself
-  // rather than on the run: progress updates replace the run object many times a second.
+  // rather than on the run: progress updates replace the run object many times a second. The
+  // revision option is the other key, and it is what makes the toggle instant - the report already
+  // holds every comparison, so changing which of them count is a re-read rather than a rescan.
   const view = useMemo(
-    () => (run?.report ? buildVaultAuditView(run.report) : null),
-    [run?.report],
+    () =>
+      run?.report ? buildVaultAuditView(run.report, { expectRevisionOnModels }) : null,
+    [run?.report, expectRevisionOnModels],
   )
 
   const isRunning = run?.state === 'running'
@@ -252,6 +262,8 @@ export function useVaultAudit(): UseVaultAuditResult {
     canScan,
     serviceCheck,
     serviceTooOld: blocksScan(serviceCheck),
+    expectRevisionOnModels,
+    setExpectRevisionOnModels,
     scope,
     setScope,
     isRunning,

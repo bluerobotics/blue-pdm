@@ -104,8 +104,15 @@ export function useLoadFiles() {
       })
       if (!window.electronAPI || !loadingForVaultPath) return
 
-      // Clear configuration caches on refresh to ensure fresh data from SolidWorks
-      usePDMStore.getState().clearAllConfigCaches()
+      // A watcher delta refresh can be caused by BluePLM's own SolidWorks metadata write. Clearing
+      // every configuration cache here would collapse the tree while the user is editing, even
+      // when the file watcher delivers the event after watcher suppression expires. The edit path
+      // already updates its cached configuration row, so keep the cache for targeted refreshes.
+      // Full/manual refreshes still clear everything so they always reload SolidWorks data.
+      const isWatcherDeltaRefresh = silent && (changedRelativePaths?.length ?? 0) > 0
+      if (!isWatcherDeltaRefresh) {
+        usePDMStore.getState().clearAllConfigCaches()
+      }
 
       if (!silent) {
         setIsLoading(true)

@@ -5236,10 +5236,26 @@ SELECT enforce_anon_execute_posture();
 -- one module - the usual way a single RPC fix is applied - should advance the
 -- recorded version. That is exactly what made the number untrustworthy: this file
 -- cannot know what state the other modules are in, so the number it wrote was a
--- claim about a database it had only partly seen. Verification stamps now;
--- see core.sql and supabase/tools/verify-schema.sql.
-
+-- claim about a database it had only partly seen.
+--
+-- The reasoning was sound about the workflow and wrong about the mechanism, so
+-- the workflow is back and the claim is not: this file asks, and
+-- try_stamp_schema() in core.sql answers from the whole release manifest. The
+-- answer does not depend on which file asked, so re-running one module does
+-- advance the version - but only when the rest of the database is already at this
+-- release, which is the case the old stamp could not tell apart.
+--
+-- Guarded: this module may be applied over a core.sql that predates the helper,
+-- and an uncaught error here would roll back everything the file just installed.
 DO $$
 BEGIN
   RAISE NOTICE 'Source Files module installed successfully';
+
+  IF to_regprocedure('public.try_stamp_schema()') IS NULL THEN
+    RAISE NOTICE 'Schema version not recorded: this core.sql predates try_stamp_schema(). Apply core.sql, or run supabase/tools/verify-schema.sql.';
+    RETURN;
+  END IF;
+  PERFORM try_stamp_schema();
+EXCEPTION WHEN OTHERS THEN
+  RAISE WARNING 'Schema version not recorded: %', SQLERRM;
 END $$;

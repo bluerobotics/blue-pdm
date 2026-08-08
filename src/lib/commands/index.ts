@@ -219,8 +219,16 @@ export async function forceRelease(files: LocalFile[], onRefresh?: (silent?: boo
  * - For parts/assemblies: PUSH (writes from pendingMetadata to SW file)
  * Only works on files checked out by the current user.
  */
-export async function syncMetadata(files: LocalFile[], onRefresh?: (silent?: boolean) => void) {
-  return executeCommand('sync-metadata', { files }, { onRefresh })
+export async function syncMetadata(
+  files: LocalFile[],
+  onRefresh?: (silent?: boolean) => void,
+  options?: { omitRevisionOnModels?: boolean },
+) {
+  return executeCommand(
+    'sync-metadata',
+    { files, omitRevisionOnModels: options?.omitRevisionOnModels },
+    { onRefresh },
+  )
 }
 
 /**

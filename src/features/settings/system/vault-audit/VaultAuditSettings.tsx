@@ -11,11 +11,17 @@
  * The scan reads. Nothing in it opens a vault file for writing, and the documents are the only
  * surviving copy of what the configuration-map wipe destroyed, so that is not going to change.
  *
- * `VaultAuditRepair` at the bottom writes, to the database only, and only what the administrator
- * has ticked. It can add a configuration entry the record is missing and it can do nothing else -
- * not because this component is careful, but because the merge behind it is `computed || existing`
- * inside a `SECURITY DEFINER` function that gates on organization membership and admin role. The
- * admin check here decides what is worth rendering; it is not what makes the repair safe.
+ * The writes live inside `VaultAuditFindings`, one category at a time, and only over what the
+ * administrator has ticked. There used to be a separate repair section at the bottom of this page;
+ * it was a second list of the same values with checkboxes the findings table did not have, and
+ * nothing on screen explained how the two related. Choosing what is wrong and fixing it are one
+ * task and are now in one place.
+ *
+ * Neither writer is made safe by anything in this file. The database one is bounded by a
+ * `computed || existing` merge inside a `SECURITY DEFINER` function that gates on organization
+ * membership and admin role; the document one is the Sync Metadata command, which refuses any file
+ * that is not local-only or checked out by the caller. The admin check here decides what is worth
+ * rendering, and that is all it decides.
  */
 
 import { useState } from 'react'
@@ -33,8 +39,9 @@ import { VaultAuditFieldTable } from './VaultAuditFieldTable'
 import { VaultAuditFindings } from './VaultAuditFindings'
 import { VaultAuditOverview } from './VaultAuditOverview'
 import { VaultAuditProgress } from './VaultAuditProgress'
-import { VaultAuditRepair } from './VaultAuditRepair'
+import { VaultAuditRevisionRule } from './VaultAuditRevisionRule'
 import { VaultAuditScopeForm } from './VaultAuditScopeForm'
+import { hasEvidence } from './vaultAuditView'
 
 function AdminOnlyNotice() {
   return (
@@ -100,21 +107,35 @@ export function VaultAuditSettings() {
             <div className="space-y-6 pt-4 border-t border-plm-border">
               <VaultAuditOverview view={audit.view} artifactPath={audit.artifactPath} />
 
-              <VaultAuditCoverage coverage={audit.view.coverage} />
+              {/*
+                Every section below is a count over files that were read, and every one of them
+                reads as an all-clear at zero - "no findings", "every record describes exactly the
+                configurations its file has", in green. A run that compared nothing earns none of
+                those statements, so it gets the overview's explanation on its own.
+              */}
+              {hasEvidence(audit.view) && (
+                <>
+                  <VaultAuditCoverage coverage={audit.view.coverage} />
 
-              <VaultAuditCategories
-                categories={audit.view.categories}
-                selected={selectedCategory}
-                onSelect={setSelectedCategory}
-              />
+                  {/* Above the categories because it changes their counts. Reading a total and
+                      then finding the rule that produced it underneath is the wrong order. */}
+                  <VaultAuditRevisionRule
+                    expectRevisionOnModels={audit.expectRevisionOnModels}
+                    hiddenCount={audit.view.revisionOnModelsHidden}
+                    onChange={audit.setExpectRevisionOnModels}
+                  />
 
-              <VaultAuditFindings findings={audit.view.findings} kind={selectedCategory} />
+                  <VaultAuditCategories
+                    categories={audit.view.categories}
+                    selected={selectedCategory}
+                    onSelect={setSelectedCategory}
+                  />
 
-              <VaultAuditFieldTable tallies={audit.view.fieldTallies} />
+                  <VaultAuditFindings findings={audit.view.findings} kind={selectedCategory} />
 
-              <div className="pt-4 border-t border-plm-border">
-                <VaultAuditRepair />
-              </div>
+                  <VaultAuditFieldTable tallies={audit.view.fieldTallies} />
+                </>
+              )}
 
               <div className="flex items-center justify-between pt-2 border-t border-plm-border">
                 <p className="text-xs text-plm-fg-muted max-w-2xl">

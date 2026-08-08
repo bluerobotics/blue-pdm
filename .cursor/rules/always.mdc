@@ -45,8 +45,17 @@ Terminal is also for: `git`, `npm`, `npx`, build scripts.
 
 Mismatch = users see "database newer/older than app" warnings.
 
-Never stamp `schema_version` from a module or from `core.sql`. Only
-`supabase/tools/verify-schema.sql` writes it, and only after the manifest checks out.
+Never write `schema_version` directly, and never stamp it as a side effect of a file
+having been run. `verify_and_stamp_schema()` is the only writer, and it writes only
+after the manifest and the security checks hold.
+
+Every schema file ends by *asking* — `core.sql` and each module call
+`try_stamp_schema()`, so whichever file is applied last records the version and there
+is no separate step. Asking is safe because the answer is computed from the whole
+release; claiming was not. Two rules for that call: it must never raise (the Supabase
+SQL editor would roll back the file that just installed), and in a module it must be
+guarded by `to_regprocedure('public.try_stamp_schema()')`, since the module may be
+applied over an older `core.sql`.
 
 ## API Versioning (BOTH files, every time)
 

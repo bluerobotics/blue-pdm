@@ -36,14 +36,10 @@ import {
 import type { LocalFile } from '../../../stores/pdmStore'
 import { usePDMStore } from '../../../stores/pdmStore'
 import { resolveRevision, resolvedText } from '@/lib/metadata/overlay'
-import { settleMetadataForCheckin } from '@/lib/metadata/checkinMetadata'
-import type { CheckinMetadataOutcome } from '@/lib/metadata/checkinMetadata'
+import { promoteMetadataForCheckin } from '@/lib/metadata/checkinMetadata'
 import { hasPendingMetadata } from '@/lib/metadata/pendingEdits'
 import {
   awaitFileWritesSettled,
-  beginMetadataWrite,
-  endMetadataWrite,
-  fileWriteKey,
   isFileWriteInFlight,
   metadataWritesInFlight,
 } from '@/lib/metadata/writeInFlight'
@@ -860,7 +856,7 @@ export const checkinCommand: Command<CheckinParams> = {
      * Values that reached the database without being confirmed in the file.
      *
      * The per-address record and the row marker already carry this, but neither is something a
-     * user sees while watching a check-in: `settleMetadataForCheckin` could report sixty-eight
+     * user sees while watching a check-in: `promoteMetadataForCheckin` could report sixty-eight
      * unconfirmed addresses and the operation would still end on a green "Checked in 1 file".
      * Collected here so the summary can say so, in the same shape the drift warning uses.
      */
@@ -989,10 +985,11 @@ export const checkinCommand: Command<CheckinParams> = {
         // as an edit - which cost the fast path on a file where nothing had actually changed.
         const filePendingMetadata = hasPendingMetadata(file.pendingMetadata)
 
-        // Wait for any metadata write already running against this document. The UI disables the
-        // check-in button while one is in flight, but a button is not a guard: a `ci` from the
-        // command line during an inline configuration edit used to start its own write against a
-        // document mid-write, with neither knowing about the other.
+        // Wait for any metadata write already running against this document. Check-in issues none
+        // of its own any more, so this is no longer about two writes colliding - it is about the
+        // hash below. An edit committed in the file list or a Sync Metadata still in flight is
+        // changing the bytes this is about to hash and upload, and a `ci` from the command line
+        // does not know the UI disabled its button.
         if (isFileWriteInFlight(metadataWritesInFlight(), file.path)) {
           logCheckin('info', 'Waiting for a metadata write already running against this file', {
             operationId,
@@ -1008,33 +1005,16 @@ export const checkinCommand: Command<CheckinParams> = {
           file = usePDMStore.getState().files.find((f) => f.path === file.path) ?? file
         }
 
-        // Get the pending values into the file before the database takes them.
+        // Hand the pending values to the database, carrying forward any mark a write already
+        // earned against them.
         //
-        // Check-in used to promote whatever it found pending on the assumption that the datacard had
-        // already written it. When that write had failed, the database silently accepted a value the
-        // file did not have. This writes what is still owed, reads it back, and returns the record of
-        // anything it could not confirm - which travels with the file update below rather than being
-        // thrown away with the pending value. Decision D4: check-in may be slower for files that were
-        // actually edited.
-        //
-        // Before the hash, deliberately: this write changes the document, so hashing first would
-        // record a hash the file no longer has and the fast path would compare against it.
-        // Declared in the same registry it just consulted, so the guard runs both ways: an inline
-        // configuration edit started while this settle is writing waits for it, rather than the
-        // wait only ever protecting check-in from the UI.
+        // Check-in used to write those values into the document and read them back first, so the
+        // database could not take a value the file did not have. It no longer touches the
+        // document: the write changed the bytes of the very file being checked in, the hash below
+        // read that as new content, and drawings nobody had edited climbed a version every time
+        // the folder was checked in. Putting a value into a document is Sync Metadata's job now.
         const metadataSettleStart = performance.now()
-        const swStatus = usePDMStore.getState().integrations.solidworks.status
-        const writeKey = fileWriteKey(file.path)
-        beginMetadataWrite(writeKey)
-        let metadataSettlement: CheckinMetadataOutcome
-        try {
-          metadataSettlement = await settleMetadataForCheckin(file, {
-            organizationId: orgId,
-            serviceAvailable: swStatus === 'online' || swStatus === 'partial',
-          })
-        } finally {
-          endMetadataWrite(writeKey)
-        }
+        const metadataSettlement = promoteMetadataForCheckin(file)
         recordSubstepTiming('settleMetadata', performance.now() - metadataSettleStart)
 
         if (metadataSettlement.promotedUnconfirmed.length > 0) {

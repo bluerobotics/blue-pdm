@@ -267,6 +267,80 @@ describe('the write says what it is meant to establish', () => {
   })
 })
 
+/**
+ * A vault where the drawing carries the revision and the model states none. Writing the row's
+ * revision into the model on the way past is the damage `omitRevision` exists to prevent, and it
+ * has to be prevented in both places the planner emits `Revision` - the document's own property bag
+ * and every configuration group.
+ */
+describe('omitting the revision for a vault whose drawings drive it', () => {
+  it('writes no Revision into the document bag', () => {
+    const groups = buildPartAssemblyPushPlan({
+      file: ORING,
+      configurations: ORING_CONFIGURATIONS,
+      serialization: SERIALIZATION,
+      parity: PARITY,
+      omitRevision: true,
+    })
+
+    expect(group(groups).properties).not.toHaveProperty('Revision')
+  })
+
+  it('writes no Revision into any configuration either', () => {
+    const groups = buildPartAssemblyPushPlan({
+      file: ORING,
+      configurations: ORING_CONFIGURATIONS,
+      serialization: SERIALIZATION,
+      parity: PARITY,
+      omitRevision: true,
+    })
+
+    for (const configuration of ORING_CONFIGURATIONS) {
+      expect(group(groups, configuration.name).properties).not.toHaveProperty('Revision')
+    }
+  })
+
+  it('leaves everything else the sync would have written exactly as it was', () => {
+    const input = {
+      file: ORING,
+      configurations: ORING_CONFIGURATIONS,
+      serialization: SERIALIZATION,
+      parity: PARITY,
+    }
+    const withRevision = group(buildPartAssemblyPushPlan(input)).properties
+    const without = group(buildPartAssemblyPushPlan({ ...input, omitRevision: true })).properties
+
+    const { Revision, ...rest } = withRevision
+    expect(Revision).toBe('B')
+    expect(without).toEqual(rest)
+  })
+
+  it('still writes the revision when the option is not asked for', () => {
+    const groups = buildPartAssemblyPushPlan({
+      file: ORING,
+      configurations: ORING_CONFIGURATIONS,
+      serialization: SERIALIZATION,
+      parity: PARITY,
+    })
+
+    expect(group(groups).properties.Revision).toBe('B')
+  })
+
+  // A model whose row holds nothing but a revision has nothing left to say once the revision is
+  // withheld, and a plan with no properties would be a write that opens a document to do nothing.
+  it('plans no write at all for a file whose only value was the revision', () => {
+    const groups = buildPartAssemblyPushPlan({
+      file: file(undefined, row({ revision: 'B' })),
+      configurations: [],
+      serialization: SERIALIZATION,
+      parity: PARITY,
+      omitRevision: true,
+    })
+
+    expect(groups).toEqual([])
+  })
+})
+
 describe('the document bag is written alongside the configurations', () => {
   it('keeps the base number out of the tab on the document itself', () => {
     const groups = buildPartAssemblyPushPlan({

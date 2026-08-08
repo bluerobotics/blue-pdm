@@ -424,7 +424,20 @@ export interface ShowInExplorerParams {
  *
  * Only works on files checked out by the current user.
  */
-export interface SyncMetadataParams extends BaseCommandParams {}
+export interface SyncMetadataParams extends BaseCommandParams {
+  /**
+   * Leave `Revision` alone on parts and assemblies, at file scope and in every configuration.
+   *
+   * For a vault where drawings drive revisions and the model is not supposed to carry one. Without
+   * it a sync stamps the row's revision into every model it touches, which is correct for a shop
+   * that revises models and unwanted for a shop that does not — the caller knows which, and the
+   * command does not try to infer it.
+   *
+   * Undefined means write it, so the context menus and the service tab are unchanged. Drawings are
+   * never affected: they take the PULL path, and a drawing's revision is the drawing's own.
+   */
+  omitRevisionOnModels?: boolean
+}
 
 /**
  * Parameters for the extract-references command.

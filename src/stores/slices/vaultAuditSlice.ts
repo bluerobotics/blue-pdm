@@ -63,6 +63,16 @@ export interface VaultAuditRun {
 export interface VaultAuditRepairState {
   /** Candidate ids the admin has ticked. Empty until they tick something. */
   selectedIds: string[]
+  /**
+   * Candidate ids the database has since accounted for, accumulated across every apply in this
+   * run.
+   *
+   * The report is frozen at scan time and a repair does not change it, so without this the rows
+   * just written stay in the list looking exactly like outstanding work. Which ids belong here is
+   * read from the receipt per reserved map - see `settledCandidateIds` - so an entry that was
+   * dropped is never counted as done.
+   */
+  settledIds: string[]
   /** Offer tabs reconstructed from the configuration's `Number`. Off unless asked for. */
   includeDerivedTabs: boolean
   /** True while the RPC is in flight; the apply button is not clickable twice. */
@@ -76,11 +86,65 @@ export interface VaultAuditRepairState {
 
 export const EMPTY_VAULT_AUDIT_REPAIR: VaultAuditRepairState = {
   selectedIds: [],
+  settledIds: [],
   includeDerivedTabs: false,
   applying: false,
   outcome: null,
   error: null,
   notInstalled: false,
+}
+
+/**
+ * What the admin has approved for writing into documents.
+ *
+ * Kept apart from the repair above because the two writers work at different granularities and
+ * merging the selections would hide that. A configuration-map repair is approved value by value;
+ * a document write is the Sync Metadata command, which rebuilds every BluePLM-owned property in
+ * the file it is given, so the unit of approval is the file and the ids here are file ids.
+ */
+export interface VaultAuditPushState {
+  /** File ids ticked for a document write. Empty until the admin ticks something. */
+  selectedFileIds: string[]
+  /** True while Sync Metadata is running, so the button is not clickable twice. */
+  running: boolean
+  /**
+   * File ids a completed run in this session already wrote.
+   *
+   * Same purpose as the repair's `settledIds`: the report is frozen at scan time and a write does
+   * not change it, so without this the rows just written stay in the list looking like outstanding
+   * work.
+   */
+  writtenFileIds: string[]
+}
+
+export const EMPTY_VAULT_AUDIT_PUSH: VaultAuditPushState = {
+  selectedFileIds: [],
+  running: false,
+  writtenFileIds: [],
+}
+
+/**
+ * What the administrator chose for conflict rows where neither side is automatically authoritative.
+ *
+ * The file direction is kept separate from `vaultAuditPush` because pushing is per file while
+ * adopting a file value is per finding. A single file can therefore have several independent
+ * database decisions, but only one document write.
+ */
+export interface VaultAuditConflictState {
+  /** Finding ids whose file values are approved for writing into BluePLM. */
+  selectedFindingIds: string[]
+  /** Finding ids successfully adopted during this audit session. */
+  settledFindingIds: string[]
+  /** True while the selected file values are being written into BluePLM. */
+  applying: boolean
+  error: string | null
+}
+
+export const EMPTY_VAULT_AUDIT_CONFLICT: VaultAuditConflictState = {
+  selectedFindingIds: [],
+  settledFindingIds: [],
+  applying: false,
+  error: null,
 }
 
 export interface VaultAuditSlice {
@@ -90,6 +154,18 @@ export interface VaultAuditSlice {
 
   /** The scope the admin last chose. Persisted; a preference, not a result. */
   vaultAuditScope: VaultAuditScope
+
+  /**
+   * Whether a part or assembly document is expected to carry a `Revision` property.
+   *
+   * Persisted alongside the scope and for the same reason: it is a statement about how this vault
+   * is run, not about any one scan. Off by default - a shop where drawings drive revisions is the
+   * common case, and on such a vault this is the single largest source of findings.
+   *
+   * It changes how the report is read, never how it is gathered, so flipping it is instant and
+   * costs no rescan.
+   */
+  vaultAuditExpectRevisionOnModels: boolean
 
   /** The current or most recent run. Session-scoped, never persisted. */
   vaultAuditRun: VaultAuditRun | null
@@ -101,11 +177,18 @@ export interface VaultAuditSlice {
    */
   vaultAuditRepair: VaultAuditRepairState
 
+  /** The document writes built on top of the current run. Session-scoped, never persisted. */
+  vaultAuditPush: VaultAuditPushState
+
+  /** Explicit choices for conflict rows. Session-scoped, never persisted. */
+  vaultAuditConflict: VaultAuditConflictState
+
   // ═══════════════════════════════════════════════════════════════
   // Actions
   // ═══════════════════════════════════════════════════════════════
 
   setVaultAuditScope: (scope: VaultAuditScope) => void
+  setVaultAuditExpectRevisionOnModels: (expect: boolean) => void
   startVaultAuditRun: (scope: VaultAuditScope) => string
   setVaultAuditProgress: (runId: string, progress: Partial<VaultAuditProgress>) => void
   finishVaultAuditRun: (
@@ -127,6 +210,20 @@ export interface VaultAuditSlice {
     outcome?: VaultAuditRepairOutcome | null
     error?: string | null
     notInstalled?: boolean
+    /** Candidates the receipt accounted for, to be added to what earlier applies settled. */
+    settledIds?: readonly string[]
+  }) => void
+
+  setVaultAuditPushSelection: (fileIds: readonly string[]) => void
+  startVaultAuditPush: () => void
+  /** `writtenFileIds` names the files the command actually processed, not the ones it was given. */
+  finishVaultAuditPush: (writtenFileIds: readonly string[]) => void
+
+  setVaultAuditConflictSelection: (findingIds: readonly string[]) => void
+  startVaultAuditConflict: () => void
+  finishVaultAuditConflict: (result: {
+    settledFindingIds?: readonly string[]
+    error?: string | null
   }) => void
 }
 
@@ -143,10 +240,20 @@ export const createVaultAuditSlice: StateCreator<
   VaultAuditSlice
 > = (set, get) => ({
   vaultAuditScope: DEFAULT_VAULT_AUDIT_SCOPE,
+  vaultAuditExpectRevisionOnModels: false,
   vaultAuditRun: null,
   vaultAuditRepair: EMPTY_VAULT_AUDIT_REPAIR,
+  vaultAuditPush: EMPTY_VAULT_AUDIT_PUSH,
+  vaultAuditConflict: EMPTY_VAULT_AUDIT_CONFLICT,
 
   setVaultAuditScope: (scope: VaultAuditScope) => set({ vaultAuditScope: scope }),
+
+  // Deliberately does not clear the selection or the run. It changes which findings are shown, and
+  // a value that goes out of view goes out of the list a selection is built from, so a tick on a
+  // hidden row cannot be sent - `useVaultAuditRepair` selects out of the candidate list rather
+  // than out of the id set for exactly this reason.
+  setVaultAuditExpectRevisionOnModels: (expect: boolean) =>
+    set({ vaultAuditExpectRevisionOnModels: expect }),
 
   startVaultAuditRun: (scope: VaultAuditScope) => {
     const id = `vault-audit-${Date.now()}`
@@ -154,6 +261,7 @@ export const createVaultAuditSlice: StateCreator<
       // A new scan invalidates every candidate the old one produced, and a selection carried
       // across would name ids from a report that no longer exists.
       vaultAuditRepair: EMPTY_VAULT_AUDIT_REPAIR,
+      vaultAuditPush: EMPTY_VAULT_AUDIT_PUSH,
       vaultAuditRun: {
         id,
         startedAt: Date.now(),
@@ -165,6 +273,7 @@ export const createVaultAuditSlice: StateCreator<
         error: null,
         cancelRequested: false,
       },
+      vaultAuditConflict: EMPTY_VAULT_AUDIT_CONFLICT,
     })
     return id
   },
@@ -198,7 +307,12 @@ export const createVaultAuditSlice: StateCreator<
   },
 
   clearVaultAuditRun: () =>
-    set({ vaultAuditRun: null, vaultAuditRepair: EMPTY_VAULT_AUDIT_REPAIR }),
+    set({
+      vaultAuditRun: null,
+      vaultAuditRepair: EMPTY_VAULT_AUDIT_REPAIR,
+      vaultAuditPush: EMPTY_VAULT_AUDIT_PUSH,
+      vaultAuditConflict: EMPTY_VAULT_AUDIT_CONFLICT,
+    }),
 
   setVaultAuditRepairSelection: (ids: readonly string[]) =>
     set((state) => ({
@@ -248,6 +362,73 @@ export const createVaultAuditSlice: StateCreator<
         // re-sending a request whose entries the row now holds - which the merge would refuse
         // anyway, but which would read as a repair that did nothing.
         selectedIds: result.outcome ? [] : state.vaultAuditRepair.selectedIds,
+        // Accumulated rather than replaced: a vault-wide repair is applied in batches, and the
+        // second batch's receipt says nothing about the first one's rows.
+        settledIds: result.settledIds
+          ? [...new Set([...state.vaultAuditRepair.settledIds, ...result.settledIds])]
+          : state.vaultAuditRepair.settledIds,
       },
     })),
+
+  setVaultAuditPushSelection: (fileIds: readonly string[]) =>
+    set((state) => ({
+      vaultAuditPush: { ...state.vaultAuditPush, selectedFileIds: [...fileIds] },
+    })),
+
+  startVaultAuditPush: () =>
+    set((state) => ({ vaultAuditPush: { ...state.vaultAuditPush, running: true } })),
+
+  finishVaultAuditPush: (writtenFileIds: readonly string[]) =>
+    set((state) => ({
+      vaultAuditPush: {
+        selectedFileIds: [],
+        running: false,
+        // Accumulated across every write in this run, for the same reason the repair accumulates:
+        // a vault-wide push happens in batches and the second says nothing about the first.
+        writtenFileIds: [
+          ...new Set([...state.vaultAuditPush.writtenFileIds, ...writtenFileIds]),
+        ],
+      },
+    })),
+
+  setVaultAuditConflictSelection: (findingIds: readonly string[]) =>
+    set((state) => ({
+      vaultAuditConflict: {
+        ...state.vaultAuditConflict,
+        selectedFindingIds: [...findingIds],
+        error: null,
+      },
+    })),
+
+  startVaultAuditConflict: () =>
+    set((state) => ({
+      vaultAuditConflict: {
+        ...state.vaultAuditConflict,
+        applying: true,
+        error: null,
+      },
+    })),
+
+  finishVaultAuditConflict: (result) =>
+    set((state) => {
+      const settled = new Set(result.settledFindingIds ?? [])
+      return {
+        vaultAuditConflict: {
+          ...state.vaultAuditConflict,
+          applying: false,
+          error: result.error ?? null,
+          selectedFindingIds: result.settledFindingIds
+            ? state.vaultAuditConflict.selectedFindingIds.filter((id) => !settled.has(id))
+            : state.vaultAuditConflict.selectedFindingIds,
+          settledFindingIds: result.settledFindingIds
+            ? [
+                ...new Set([
+                  ...state.vaultAuditConflict.settledFindingIds,
+                  ...result.settledFindingIds,
+                ]),
+              ]
+            : state.vaultAuditConflict.settledFindingIds,
+        },
+      }
+    }),
 })

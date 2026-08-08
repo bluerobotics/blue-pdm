@@ -9,9 +9,11 @@
  * ## Two rules this module keeps
  *
  * **Nothing is re-decided here.** The scanner has already worked out, for every value, whether it
- * can be recovered and from where. This maps its five `Recoverability` states onto four categories
- * and drops the two that are not findings; it never looks at a pair of values and forms its own
- * opinion. A category is therefore never wrong in a way the report was not already wrong.
+ * can be recovered and from where. This maps its seven `Recoverability` states onto five
+ * categories and drops the two that are not findings, then names the resolution each category
+ * admits by consulting the same ownership table the scanner used. It never looks at a pair of
+ * values and forms its own opinion, so a category is never wrong in a way the report was not
+ * already wrong.
  *
  * **Configurations are compared by name, never by count.** The count comparison is the trap the
  * vault census turned up: one part carries twenty-six configuration entries in the database against
@@ -22,10 +24,13 @@
  * loss. Every number below comes from `ConfigMapCoverage`, whose own membership tests are by name.
  */
 
+import { ownerOf } from '@/lib/metadata/divergence'
 import type {
+  ComparedFileType,
   ConfigMapCoverage,
   FieldComparison,
   FileDivergence,
+  OwnedField,
   Recoverability,
 } from '@/lib/metadata/divergence'
 import type { DivergenceReport } from '@/lib/metadata/divergenceScan'
@@ -35,6 +40,7 @@ import type {
   VaultAuditCoverage,
   VaultAuditFileCoverage,
   VaultAuditFinding,
+  VaultAuditResolution,
   VaultAuditTone,
   VaultAuditView,
 } from '@/types/vaultAudit'
@@ -58,13 +64,22 @@ const CATEGORY_ORDER: readonly VaultAuditCategoryKind[] = [
   'lost',
   'conflicting',
   'recoverable',
+  'absent-from-file',
   'unattributed',
 ]
 
+/**
+ * Colour by how settled the answer is, not by how alarming the count looks.
+ *
+ * `recoverable` and `absent-from-file` share a tone deliberately: they are opposite directions of
+ * the same unambiguous case, one copy present and one absent, and neither asks anything of the
+ * person reading them beyond agreeing to the write.
+ */
 const CATEGORY_TONES: Record<VaultAuditCategoryKind, VaultAuditTone> = {
   lost: 'critical',
   conflicting: 'warning',
   recoverable: 'repairable',
+  'absent-from-file': 'repairable',
   unattributed: 'neutral',
 }
 
@@ -83,12 +98,111 @@ function categoryOf(recoverability: Recoverability): VaultAuditCategoryKind | nu
       return 'conflicting'
     case 'recoverable':
       return 'recoverable'
+    case 'absent-from-file':
+      return 'absent-from-file'
     case 'unattributed':
       return 'unattributed'
     case 'intact':
     case 'no-evidence':
       return null
   }
+}
+
+// ============================================
+// Resolutions
+// ============================================
+
+/**
+ * What resolving one finding would consist of.
+ *
+ * Only two writes exist - the file's value into the database, or the database's into the file -
+ * and most of the work here is saying which findings have neither available. Nothing is
+ * re-decided: the category comes from the scanner and the owner comes from `ownerOf`, and this
+ * reads the pair rather than looking at the values again.
+ *
+ * The ownership table settles two cases the category alone leaves open. A file states its own
+ * revision, so the file wins a conflict about one outright and there is nothing for a person to
+ * choose. A drawing's part number and description are copies of the parent model's, so neither
+ * copy is the record and writing either over the other leaves the disagreement where it started -
+ * on the model.
+ *
+ * That second rule governs the direction that would take the *file's* value as authoritative, and
+ * only that direction. A drawing whose title block is missing a part number the row already holds
+ * is not an argument about which copy is right: the row's copy came from the model in the first
+ * place, and putting it in the document is how a projection is meant to arrive.
+ */
+export function resolutionOf(
+  kind: VaultAuditCategoryKind,
+  field: OwnedField,
+  fileType: ComparedFileType,
+): VaultAuditResolution {
+  // Neither of these reads the file's value as evidence, so neither can be misled by a projection.
+  if (kind === 'lost') return 'nothing-to-restore'
+  if (kind === 'absent-from-file') {
+    // Revision is file-owned. A database-only revision must not be pushed into a document that
+    // does not carry one; there is no file value for the audit to promote instead.
+    return field === 'revision' ? 'file-is-authoritative' : 'push-vault-value'
+  }
+
+  const owner = ownerOf(field, fileType)
+  if (owner === 'parent-model') return 'fix-on-parent-model'
+
+  switch (kind) {
+    case 'conflicting':
+      return owner === 'file' ? 'adopt-file-value' : 'choose-a-side'
+    case 'recoverable':
+      return 'adopt-file-value'
+    case 'unattributed':
+      return 'leave-alone'
+  }
+}
+
+// ============================================
+// What the document is supposed to carry at all
+// ============================================
+
+/**
+ * Reading choices that change which comparisons count as findings, without changing the scan.
+ *
+ * Applied here rather than in the scanner on purpose. The report is the measurement and it stays
+ * complete: every comparison is in the artifact whatever these say, so turning one of these on is
+ * instant and turning it off does not cost another three-minute walk of the vault. A rule that
+ * lived in `divergence.ts` would bake an opinion about one shop's convention into the evidence.
+ */
+export interface VaultAuditViewOptions {
+  /**
+   * Expect a part or an assembly document to carry a `Revision` property.
+   *
+   * Off by default, because in a vault where drawings drive revisions the model never carries one
+   * and BluePLM's row holding `A` against a model that states nothing is the intended state rather
+   * than a document that has fallen behind. On such a vault this is the single largest source of
+   * findings and all of them are noise. When enabled, revision remains file-owned: the audit may
+   * read it into BluePLM, but never writes BluePLM's value into the document.
+   *
+   * Drawings are unaffected either way - their revision is always file-owned.
+   */
+  expectRevisionOnModels: boolean
+}
+
+export const DEFAULT_VAULT_AUDIT_VIEW_OPTIONS: VaultAuditViewOptions = {
+  expectRevisionOnModels: false,
+}
+
+/**
+ * Whether this kind of document is supposed to hold this field at all.
+ *
+ * Distinct from ownership, which asks who wins when both sides hold something. This asks the prior
+ * question: a model that carries no revision under a drawing-driven convention is not empty, it is
+ * correct, and no comparison of the two values can say anything useful about it.
+ */
+export function documentCarriesField(
+  field: OwnedField,
+  fileType: ComparedFileType,
+  options: VaultAuditViewOptions,
+): boolean {
+  if (field !== 'revision') return true
+  if (fileType === 'drawing') return true
+  return options.expectRevisionOnModels
 }
 
 // ============================================
@@ -107,9 +221,11 @@ function toFinding(
   return {
     id: findingIdOf(file, comparison),
     kind,
+    resolution: resolutionOf(kind, comparison.field, file.fileType),
     fileId: file.fileId,
     relativePath: file.relativePath,
     fileName: file.fileName,
+    fileType: file.fileType,
     field: comparison.field,
     scope: comparison.scope,
     configuration: comparison.configuration ?? null,
@@ -222,12 +338,16 @@ function buildCoverage(files: readonly FileDivergence[]): VaultAuditCoverage {
 // ============================================
 
 /** Build everything the page renders from one report. */
-export function buildVaultAuditView(report: DivergenceReport): VaultAuditView {
+export function buildVaultAuditView(
+  report: DivergenceReport,
+  options: VaultAuditViewOptions = DEFAULT_VAULT_AUDIT_VIEW_OPTIONS,
+): VaultAuditView {
   const findings: VaultAuditFinding[] = []
   const valueCounts = new Map<VaultAuditCategoryKind, number>()
   const filesPerCategory = new Map<VaultAuditCategoryKind, Set<string>>()
   const filesWithFindings = new Set<string>()
   let noEvidenceValues = 0
+  let revisionOnModelsHidden = 0
 
   for (const file of report.files) {
     for (const comparison of file.fieldComparisons) {
@@ -235,6 +355,13 @@ export function buildVaultAuditView(report: DivergenceReport): VaultAuditView {
 
       const kind = categoryOf(comparison.recoverability)
       if (!kind) continue
+
+      // Counted before it is dropped, and reported. A filter whose effect is invisible is how a
+      // page comes to show a reassuring number over values it decided not to mention.
+      if (!documentCarriesField(comparison.field, file.fileType, options)) {
+        revisionOnModelsHidden += 1
+        continue
+      }
 
       findings.push(toFinding(file, comparison, kind))
       valueCounts.set(kind, (valueCounts.get(kind) ?? 0) + 1)
@@ -265,16 +392,17 @@ export function buildVaultAuditView(report: DivergenceReport): VaultAuditView {
       configurationRecordedOnly: report.scope.configurationRecordedOnly,
       includeDrawings: report.scope.includeDrawings,
     },
+    rowsInScope: report.counts.rowsInScope,
     filesCompared: report.counts.filesCompared,
     filesWithFindings: filesWithFindings.size,
     filesWithMultipleConfigurations: report.summary.filesWithMultipleConfigurations,
     noEvidenceValues,
+    revisionOnModelsHidden,
     // Passed through rather than derived from `rowsInScope - filesCompared`: that difference also
     // contains the files the run tried to read and could not, which are a different statement and
     // already have their own line.
     notCompared: {
-      total:
-        report.counts.rowsSkippedNoConfigurationRecord + report.counts.rowsSkippedByLimit,
+      total: report.counts.rowsSkippedNoConfigurationRecord + report.counts.rowsSkippedByLimit,
       noConfigurationRecord: report.counts.rowsSkippedNoConfigurationRecord,
       beyondLimit: report.counts.rowsSkippedByLimit,
     },
@@ -293,4 +421,17 @@ export function buildVaultAuditView(report: DivergenceReport): VaultAuditView {
     findings,
     fieldTallies: report.summary.fieldTallies,
   }
+}
+
+/**
+ * Whether the run opened anything, and so whether its zeroes mean anything.
+ *
+ * Every summary the page draws is a count over compared files, and every one of them reads as
+ * reassurance at zero: no findings, no undescribed configurations, no stale keys, records "aligned"
+ * in green. A run whose folder path matched no row produces exactly that picture, which is how a
+ * scope typo came to look like a healthy folder. Sections that can only say something true about
+ * files that were read are gated on this.
+ */
+export function hasEvidence(view: VaultAuditView): boolean {
+  return view.rowsInScope > 0 && view.filesCompared > 0
 }

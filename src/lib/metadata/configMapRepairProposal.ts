@@ -54,8 +54,14 @@ import type {
   VaultAuditRepairFile,
 } from '@/types/vaultAudit'
 
-/** Which reserved map each configuration-scope field is stored in. */
-const FIELD_TO_MAP: Record<ConfigScopeField, ConfigMapKey> = {
+/**
+ * Which reserved map each configuration-scope field is stored in.
+ *
+ * Exported because the receipt reports refusals per map rather than per entry, so reading what
+ * became of one candidate means knowing which map it was sent under - and that has to be the same
+ * answer the request was built from.
+ */
+export const FIELD_TO_MAP: Record<ConfigScopeField, ConfigMapKey> = {
   config_tab: CONFIG_TABS_KEY,
   config_description: CONFIG_DESCRIPTIONS_KEY,
 }

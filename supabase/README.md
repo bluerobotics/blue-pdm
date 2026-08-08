@@ -47,16 +47,18 @@ Run these SQL files in order in your Supabase SQL Editor:
 Numeric order (`core → 10 → 15 → 20 → 30 → 40 → 50 → 60`) always works. Skipping a
 module is only safe if it is marked Optional above.
 
-### 3. Verify (Required — this is what records the version)
+### 3. Nothing — the last file records the version
 
-```sql
--- tools/verify-schema.sql
-```
+Every file above ends by asking to be verified, so the last one you apply prints
+`Schema verified and stamped at version 96` and the install is done. The earlier ones
+print `Schema version not stamped: N outstanding item(s)`, which is what a file applied
+before the rest of the release is supposed to say.
 
-Nothing else writes `schema_version`. Until you run this, the app keeps reporting the
-version the database was on before, so the install is not finished when the last module
-succeeds — it is finished when this script prints `Schema verified and stamped`. See
-[Schema Version](#schema-version).
+Run `tools/verify-schema.sql` when that last line does *not* appear. It is the same
+check with the full object-by-object report, and it ends with an error rather than a
+notice, so it cannot scroll past unnoticed. The schema files themselves never raise —
+an exception in the Supabase SQL editor would roll back the file that had just been
+applied successfully. See [Schema Version](#schema-version).
 
 > **15-inspection.sql is not optional.** `checkin_file()` — the check-in RPC, defined in
 > `10-source-files.sql` — reads `inspection_characteristics` and writes
@@ -92,13 +94,23 @@ against this schema.
 The app reads `schema_version.version` on startup and warns if it does not match
 `EXPECTED_SCHEMA_VERSION` in `src/lib/schemaVersion.ts`.
 
-- Current schema version: **95** (keep in sync with `schema_release_version()` in `core.sql`)
-- The number is written by **verification only**: `tools/verify-schema.sql` calls
-  `verify_and_stamp_schema()`, which checks the release manifest in `core.sql` and stamps
-  the version only if every object the release requires is present. Running `core.sql` or
-  a module stamps nothing.
+- Current schema version: **96** (keep in sync with `schema_release_version()` in `core.sql`)
+- The number is written by **verification only**: `verify_and_stamp_schema()` checks the
+  release manifest in `core.sql`, and every security check, and stamps the version only if
+  all of it holds.
+- Every schema file asks it to, via `try_stamp_schema()`, so the version is recorded by
+  whichever file you happen to apply last. No file can advance the version on its own
+  account.
 
-### Why running a file no longer stamps a version
+### Upgrading
+
+Apply `core.sql`, then the modules, in the usual order — the last one records the version.
+Order does not actually matter, because the answer is computed from the whole database
+rather than from the file that asked; what matters is that the file carrying your change
+is among the ones you apply. Applying a single module is enough to move the version, and
+only if the rest of the database is already at this release.
+
+### Why a file no longer stamps a version as a side effect
 
 Until 89, `core.sql` and each module stamped the head version as a side effect of being
 run. That could not be right, because the number is one global value while the files are
@@ -119,9 +131,19 @@ in. Three things followed from it, all reproduced in a container:
 The scheme now has one property, and it is the only one worth having: **the recorded
 version can only be reached by verification, so it never describes a database that does
 not exist.** A partial application leaves the old number in place, which shows up as
-"database out of date" — a warning you can act on rather than a false all-clear. The
-cost is one extra file to run at the end, and losing the ability to advance the version
-by re-running a single module. That ability is what produced the bug.
+"database out of date" — a warning you can act on rather than a false all-clear.
+
+Note what that property does *not* require. It says the number must be **earned**; it says
+nothing about which file may ask for it. A file asking to be verified at the end of its own
+run is safe for the same reason `tools/verify-schema.sql` is — the check reads the whole
+database, so the answer cannot depend on who asked, and a file applied before the rest of
+the release is simply told no. What was never safe was a file stamping *because it had been
+run*, which is a claim about seven files it cannot see.
+
+So the convenience is back and the defect is not. Applying the files advances the version
+with no separate step, exactly as before 89; the three failures listed above now all end in
+a refusal instead of a false all-clear, because in each case the database really was short
+of the release and the manifest says so.
 
 `check_schema_release()` is read-only and can be called on its own at any time to see
 what a database is missing without writing anything.

@@ -916,7 +916,23 @@ COMMENT ON TABLE eco_checklist_activity IS 'Audit trail for ECO checklist change
 
 SELECT enforce_anon_execute_posture();
 
+-- The version is asked for here rather than claimed. A module cannot claim one -
+-- it speaks for its own objects and cannot see the others - but it can ask and be
+-- told no. try_stamp_schema() in core.sql answers from the whole release manifest,
+-- so the answer does not depend on which file asked, and whichever file is run
+-- last is the one that records the version.
+--
+-- Guarded: this module may be applied over a core.sql that predates the helper,
+-- and an uncaught error here would roll back everything the file just installed.
 DO $$
 BEGIN
   RAISE NOTICE 'Change Control module installed successfully';
+
+  IF to_regprocedure('public.try_stamp_schema()') IS NULL THEN
+    RAISE NOTICE 'Schema version not recorded: this core.sql predates try_stamp_schema(). Apply core.sql, or run supabase/tools/verify-schema.sql.';
+    RETURN;
+  END IF;
+  PERFORM try_stamp_schema();
+EXCEPTION WHEN OTHERS THEN
+  RAISE WARNING 'Schema version not recorded: %', SQLERRM;
 END $$;

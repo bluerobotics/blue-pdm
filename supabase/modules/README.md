@@ -56,14 +56,16 @@ Always install in this order:
 
    ```
 
-5. **Verify (Required)**
+5. **Verify (only if the version was not recorded)**
    ```sql
    \i tools/verify-schema.sql
    ```
 
-   No module records a schema version any more. This script is the only thing that
-   does, and it does so only after confirming the objects the release requires are
-   present, so a run that ends here is a run whose result the app can be told about.
+   Every file above ends by asking to be verified, so the last one applied records the
+   version and prints `Schema verified and stamped at version N`. No file records one on
+   its own account — the answer comes from `verify_and_stamp_schema()`, which confirms the
+   objects the release requires are present first. Run this script when that line does not
+   appear: it is the same check with the full report, and it fails loudly.
 
    Use `psql -v ON_ERROR_STOP=1` if you drive this from the command line. Plain `\i`
    keeps going after an error, which used to mean a module that failed partway through

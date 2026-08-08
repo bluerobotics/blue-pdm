@@ -37,14 +37,20 @@ import {
 import { usePDMStore } from '@/stores/pdmStore'
 import type { VaultAuditRepairCandidate, VaultAuditRepairOutcome } from '@/types/vaultAudit'
 
+import { settledCandidateIds } from './repairReceipt'
+
 export interface UseVaultAuditRepairResult {
   /** Every value that could be written, given the derivation setting. */
   candidates: VaultAuditRepairCandidate[]
-  /** What the whole set amounts to, for the section's opening line. */
+  /** What the whole set amounts to, settled entries included. Says whether there is a job at all. */
   available: RepairProposalSummary
+  /** What is left of it. This is what the section leads with, because it is the work remaining. */
+  outstanding: RepairProposalSummary
   /** What the ticked subset amounts to. This is what Apply will send. */
   selected: RepairProposalSummary
   selectedIds: ReadonlySet<string>
+  /** Candidates an earlier apply in this run accounted for. Hidden by default in the preview. */
+  settledIds: ReadonlySet<string>
   includeDerivedTabs: boolean
   applying: boolean
   outcome: VaultAuditRepairOutcome | null
@@ -82,13 +88,23 @@ export function useVaultAuditRepair(): UseVaultAuditRepairResult {
   )
 
   const selectedIds = useMemo(() => new Set(repair.selectedIds), [repair.selectedIds])
+  const settledIds = useMemo(() => new Set(repair.settledIds), [repair.settledIds])
 
   const selectedCandidates = useMemo(
     () => candidates.filter((candidate) => selectedIds.has(candidate.id)),
     [candidates, selectedIds],
   )
 
+  const outstandingCandidates = useMemo(
+    () => candidates.filter((candidate) => !settledIds.has(candidate.id)),
+    [candidates, settledIds],
+  )
+
   const available = useMemo(() => summarizeCandidates(candidates), [candidates])
+  const outstanding = useMemo(
+    () => summarizeCandidates(outstandingCandidates),
+    [outstandingCandidates],
+  )
   const selected = useMemo(() => summarizeCandidates(selectedCandidates), [selectedCandidates])
 
   const toggle = useCallback(
@@ -132,7 +148,9 @@ export function useVaultAuditRepair(): UseVaultAuditRepairResult {
 
     try {
       const outcome = await applyConfigMapRepair(organization.id, request)
-      finishRepair({ outcome })
+      // Settled against what was sent, not against what is ticked: the tick is cleared by this
+      // same call, and the receipt only speaks about the files this request named.
+      finishRepair({ outcome, settledIds: settledCandidateIds(selectedCandidates, outcome) })
 
       log.info('[VaultAudit]', 'Configuration-map repair applied', {
         filesUpdated: outcome.filesUpdated,
@@ -161,8 +179,10 @@ export function useVaultAuditRepair(): UseVaultAuditRepairResult {
   return {
     candidates,
     available,
+    outstanding,
     selected,
     selectedIds,
+    settledIds,
     includeDerivedTabs: repair.includeDerivedTabs,
     applying: repair.applying,
     outcome: repair.outcome,

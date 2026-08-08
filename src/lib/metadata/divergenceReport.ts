@@ -197,6 +197,9 @@ export function formatDivergenceReport(report: DivergenceReport): string[] {
   lines.push(
     t('divergence.recoverableSummary', { count: summary.recoverableValues }),
   )
+  lines.push(
+    t('divergence.absentFromFileSummary', { count: summary.absentFromFileValues }),
+  )
 
   lines.push('')
   lines.push(

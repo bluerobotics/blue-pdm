@@ -1,5 +1,6 @@
 export { VaultAuditSettings } from './VaultAuditSettings'
-export { buildVaultAuditView } from './vaultAuditView'
+export { buildVaultAuditView, documentCarriesField, resolutionOf } from './vaultAuditView'
 export { useVaultAudit } from './useVaultAudit'
+export { useVaultAuditConflict } from './useVaultAuditConflict'
 export { useVaultAuditRepair } from './useVaultAuditRepair'
-export { VaultAuditRepair } from './VaultAuditRepair'
+export { useVaultAuditPush } from './useVaultAuditPush'

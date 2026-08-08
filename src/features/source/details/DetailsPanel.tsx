@@ -19,6 +19,12 @@ import {
 } from '@/lib/metadata/overlay'
 import { propertiesToMirror } from '@/lib/metadata/configurationMirror'
 import { configurationScopeProperties } from '@/lib/metadata/divergence'
+import {
+  currentLockedDrawingFields,
+  lockedDrawingFields,
+  withoutLockedDrawingFields,
+  type LockableDrawingField,
+} from '@/lib/metadata/drawingLockouts'
 import { reportMetadataWrite } from '@/lib/metadata/reportMetadataWrite'
 import { writeMetadataWithVerification } from '@/lib/metadata/writeMetadataToFile'
 import { buildMetadataWritePlan } from '@/lib/metadata/writePlan'
@@ -62,6 +68,18 @@ import {
   RotateCw,
   Sparkles,
 } from 'lucide-react'
+
+// Which lockable drawing field each editable row stands for. `state` has none: it is a workflow
+// transition rather than a property the referenced model owns.
+const EDITABLE_FIELD_LOCKS: Record<
+  'itemNumber' | 'description' | 'revision' | 'state',
+  LockableDrawingField | null
+> = {
+  itemNumber: 'part_number',
+  description: 'description',
+  revision: 'revision',
+  state: null,
+}
 
 // Component to load OS icon for files
 function DetailsPanelIcon({ file, size = 32 }: { file: LocalFile; size?: number }) {
@@ -134,6 +152,9 @@ export function DetailsPanel() {
     files,
     organization,
     updatePendingMetadata,
+    lockDrawingItemNumber,
+    lockDrawingDescription,
+    lockDrawingRevision,
   } = usePDMStore(
     useShallow((s) => ({
       selectedFiles: s.selectedFiles,
@@ -153,6 +174,9 @@ export function DetailsPanel() {
       files: s.files,
       organization: s.organization,
       updatePendingMetadata: s.updatePendingMetadata,
+      lockDrawingItemNumber: s.lockDrawingItemNumber,
+      lockDrawingDescription: s.lockDrawingDescription,
+      lockDrawingRevision: s.lockDrawingRevision,
     })),
   )
 
@@ -281,7 +305,25 @@ export function DetailsPanel() {
   const fileExt = file?.extension?.toLowerCase()
   const isModelFile = fileExt === '.sldprt' || fileExt === '.sldasm'
   const allowModelRevision = organization?.settings?.allow_file_level_revision_for_models
-  const isRevisionEditable = !!isFileEditable && !(isModelFile && !allowModelRevision)
+
+  // Per-user: the drawing fields that belong to the referenced model rather than to BluePLM. The
+  // file list and the file grid have always honoured these; this panel did not, so the same value
+  // was read-only in one place and writable straight into the .slddrw in another.
+  const lockedDrawing = useMemo(
+    () =>
+      lockedDrawingFields(fileExt, {
+        lockDrawingItemNumber,
+        lockDrawingDescription,
+        lockDrawingRevision,
+      }),
+    [fileExt, lockDrawingItemNumber, lockDrawingDescription, lockDrawingRevision],
+  )
+
+  const isRevisionEditable =
+    !!isFileEditable && !(isModelFile && !allowModelRevision) && !lockedDrawing.has('revision')
+
+  const drawingFieldTooltip = (field: LockableDrawingField): string | undefined =>
+    lockedDrawing.has(field) ? t('metadataWrite.drawingFieldInherited') : undefined
 
   // Handle starting edit of a property field
   const handleStartEdit = (field: 'itemNumber' | 'description' | 'revision' | 'state') => {
@@ -290,6 +332,15 @@ export function DetailsPanel() {
     // For synced files, require checkout (except state changes)
     if (file.pdmData?.id && file.pdmData.checked_out_by !== user?.id) {
       addToast('info', 'Check out file to edit metadata')
+      return
+    }
+
+    // Refused rather than written and then dropped at the write, so the value never enters
+    // pendingMetadata: a pending edit the file was never going to take is the divergence between
+    // BluePLM and the drawing that check-in would go on to make permanent.
+    const lockedField = EDITABLE_FIELD_LOCKS[field]
+    if (lockedField && lockedDrawing.has(lockedField)) {
+      addToast('info', t('metadataWrite.drawingFieldInherited'))
       return
     }
     // Unsynced files (no pdmData.id) are always editable - allows setting metadata before first sync
@@ -326,6 +377,13 @@ export function DetailsPanel() {
       // of it until check-in promotes it.
       if (!['.sldprt', '.sldasm', '.slddrw'].includes(ext)) return
 
+      // The second guard, after `handleStartEdit`, and the one that covers the callers that reach
+      // here without passing through an edit row - `handleGenerateSerial` most of all. Read from
+      // the store rather than from the memo above because this callback outlives the render that
+      // built it and the setting can be toggled in between.
+      const writable = withoutLockedDrawingFields(updates, currentLockedDrawingFields(ext))
+      if (Object.keys(writable).length === 0) return
+
       const watcherKey = targetFile.relativePath
       let watcherSuppressed = false
       // If this write is still pending after a moment, it likely triggered a cold
@@ -341,7 +399,7 @@ export function DetailsPanel() {
         // which made a full clear the one edit that could never reach the file.
         const resolved = resolveFileMetadata(targetFile)
         const [group] = buildMetadataWritePlan({
-          pending: updates,
+          pending: writable,
           committed: {
             partNumber: resolvedText(resolved.partNumber),
             description: resolvedText(resolved.description),
@@ -873,7 +931,7 @@ export function DetailsPanel() {
                             isEditing={editingField === 'itemNumber'}
                             editValue={editValue}
                             isSaving={isSavingEdit}
-                            editable={!!isFileEditable}
+                            editable={!!isFileEditable && !lockedDrawing.has('part_number')}
                             onStartEdit={() => handleStartEdit('itemNumber')}
                             onSave={handleSaveEdit}
                             onCancel={handleCancelEdit}
@@ -881,6 +939,7 @@ export function DetailsPanel() {
                             placeholder="-"
                             onGenerate={handleGenerateSerial}
                             isGenerating={isGeneratingSerial}
+                            tooltip={drawingFieldTooltip('part_number')}
                           />
                           <EditablePropertyItem
                             icon={<FileText size={14} />}
@@ -889,12 +948,13 @@ export function DetailsPanel() {
                             isEditing={editingField === 'description'}
                             editValue={editValue}
                             isSaving={isSavingEdit}
-                            editable={!!isFileEditable}
+                            editable={!!isFileEditable && !lockedDrawing.has('description')}
                             onStartEdit={() => handleStartEdit('description')}
                             onSave={handleSaveEdit}
                             onCancel={handleCancelEdit}
                             onEditValueChange={setEditValue}
                             placeholder="-"
+                            tooltip={drawingFieldTooltip('description')}
                           />
                           <EditablePropertyItem
                             icon={<Hash size={14} />}
@@ -912,7 +972,7 @@ export function DetailsPanel() {
                             tooltip={
                               isModelFile && !allowModelRevision
                                 ? 'Revision is controlled from drawings (org policy)'
-                                : undefined
+                                : drawingFieldTooltip('revision')
                             }
                           />
                           {/* State - display only, changes via workflow transitions */}

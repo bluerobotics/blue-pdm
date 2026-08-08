@@ -1,7 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { usePDMStore } from '@/stores/pdmStore'
 import { log } from '@/lib/logger'
-import { refreshMetadataForFiles } from '@/lib/commands/handlers/syncMetadata'
 import { recordMetric } from '@/lib/performanceMetrics'
 import { startLongTaskMonitor } from '@/lib/longTaskMonitor'
 import { SetupScreen } from '@/components/shared/Screens'
@@ -576,9 +575,7 @@ export function App() {
         // instead of walking every entry in the vault.
         await loadFiles(true, false, unexpectedChanges)
 
-        // Files on disk just changed, so anything read before this batch is stale. Clearing
-        // here also lets the two consumers below share a single getReferences call per
-        // drawing instead of each paying for its own trip through the SolidWorks queue.
+        // Files on disk just changed, so anything read before this batch is stale.
         clearSwReferencesCache()
 
         // Sync drawing references in background (fire-and-forget).
@@ -586,47 +583,12 @@ export function App() {
         // and upsert to file_references DB table so the reverse lookup stays in sync.
         syncDrawingReferencesInBackground(unexpectedChanges)
 
-        // Auto-refresh metadata for checked-out SolidWorks files that changed
-        // This ensures revision/part number updates in SW are immediately visible
-        const swExtensions = ['.sldprt', '.sldasm', '.slddrw']
-        const changedSwPaths = unexpectedChanges.filter((path) =>
-          swExtensions.some((ext) => path.toLowerCase().endsWith(ext)),
-        )
-
-        if (changedSwPaths.length > 0) {
-          const { files: currentFiles, user } = usePDMStore.getState()
-          const filesToRefresh = currentFiles.filter(
-            (f) =>
-              changedSwPaths.some(
-                (p) =>
-                  f.relativePath.toLowerCase() === p.toLowerCase() ||
-                  f.relativePath.replace(/\\/g, '/').toLowerCase() === p.toLowerCase(),
-              ) && f.pdmData?.checked_out_by === user?.id,
-          )
-
-          if (filesToRefresh.length > 0 && vaultPath) {
-            window.electronAPI?.log('info', '[FileWatcher] Auto-refreshing metadata', {
-              fileCount: filesToRefresh.length,
-              files: filesToRefresh.map((f) => f.name),
-            })
-            refreshMetadataForFiles(filesToRefresh, vaultPath, user?.id)
-              .then((result) => {
-                // Logged even when nothing changed: a refresh that reads the files and finds
-                // them already in sync is otherwise indistinguishable from one that silently
-                // failed or never ran.
-                window.electronAPI?.log(
-                  'info',
-                  '[FileWatcher] Metadata auto-refresh complete',
-                  result,
-                )
-              })
-              .catch((error) => {
-                window.electronAPI?.log('warn', '[FileWatcher] Metadata auto-refresh failed', {
-                  error: String(error),
-                })
-              })
-          }
-        }
+        // Metadata is deliberately not synced here. A watcher event cannot tell a user's edit
+        // in SolidWorks apart from a write the app itself just made, and check-in writes
+        // pending metadata into the document before hashing it. Refreshing on that event put
+        // the values straight back into `pendingMetadata`, so the next check-in wrote them to
+        // the file again and cut another version - drawings nobody had touched climbing a
+        // version per cycle. Metadata now moves only when the user runs `sync-metadata`.
 
         refreshTimeout = null
       }, 1000)

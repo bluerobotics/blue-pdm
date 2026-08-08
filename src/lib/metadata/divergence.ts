@@ -35,9 +35,9 @@
  * repeating. Per the plan's measurement the ORING fixture has both set to the same string
  * deliberately, so equality is not evidence of inheritance and nothing here guesses at it.
  *
- * `both-set-differ` is always `disagreeing`, including for a drawing's revision, which the
- * ownership table gives to the file. The direction that conflict resolves in is a repair-phase
- * decision made from `fileType`; this module only refuses to make it automatically.
+ * `both-set-differ` is always `disagreeing`, including for revision, which the ownership table
+ * gives to the file. The direction that conflict resolves in is a repair-phase decision made from
+ * `fileType`; this module only refuses to make it automatically.
  */
 
 import {
@@ -117,8 +117,18 @@ export type DivergenceClass =
  * invent database state rather than restore it.
  */
 export type Recoverability =
-  /** The database still holds the value. Nothing to recover. */
+  /** Both sides hold the same value. Nothing to do. */
   | 'intact'
+  /**
+   * The database holds the value and the file does not.
+   *
+   * Nothing has been lost - which is why this used to be reported as `intact` - but the two sides
+   * do not say the same thing, and a reader looking at the document sees an absence where the
+   * record has a value. Naming it apart is what lets the audit state a direction for it: the only
+   * write that resolves one of these goes database to file, and `intact` could not say that
+   * without also saying it about the agreements it was lumped in with.
+   */
+  | 'absent-from-file'
   /** Missing from the database, still present in the file, and safe to write back. */
   | 'recoverable'
   /** Missing from both, on a file that demonstrably had per-configuration metadata authored. */
@@ -165,7 +175,7 @@ export type UnattributedReason =
 export type FieldOwner =
   /** This `files` row. Every owned field on a part or an assembly. */
   | 'database'
-  /** The document. A drawing's revision, whose own revision table is the record. */
+  /** The document. Revision is driven by the file's own property/revision table. */
   | 'file'
   /**
    * Neither this row nor this document: a drawing's part number and description are a projection
@@ -175,8 +185,9 @@ export type FieldOwner =
 
 /** Apply the ownership table to one field on one kind of file. */
 export function ownerOf(field: OwnedField, fileType: ComparedFileType): FieldOwner {
+  if (field === 'revision') return 'file'
   if (fileType !== 'drawing') return 'database'
-  return field === 'revision' ? 'file' : 'parent-model'
+  return 'parent-model'
 }
 
 // ============================================
@@ -267,7 +278,7 @@ function classifyDatabaseEmpty(context: RecoveryContext): RecoverabilityVerdict 
     return { recoverability: 'unattributed', unattributedReason: 'no-transcribable-value' }
   }
 
-  // A drawing's revision is the drawing's to state, so the database taking it is not a guess.
+  // Revision is the file's state, so the database taking it is not a guess.
   if (context.owner === 'file') return { recoverability: 'recoverable' }
 
   return context.databaseEverHeldField
@@ -293,7 +304,7 @@ export function classifyRecoverability(
     case 'agrees':
       return { recoverability: 'intact' }
     case 'file-empty':
-      return { recoverability: 'intact' }
+      return { recoverability: 'absent-from-file' }
     case 'database-empty':
       return classifyDatabaseEmpty(context)
     case 'both-set-differ':
@@ -720,6 +731,8 @@ export interface DivergenceSummary {
   disagreeingValues: number
   unattributedValues: number
   noEvidenceValues: number
+  /** Values the database holds that the file does not. Not a loss; the file is behind the record. */
+  absentFromFileValues: number
 
   unrecoverable: UnrecoverableValue[]
   disagreeing: DisagreeingValue[]
@@ -781,6 +794,7 @@ export function summarizeDivergence(files: readonly FileDivergence[]): Divergenc
   let totalMissingConfigurationEntries = 0
   let recoverableValues = 0
   let noEvidenceValues = 0
+  let absentFromFileValues = 0
 
   for (const file of files) {
     if (file.configurations.length > 1) filesWithMultipleConfigurations += 1
@@ -833,6 +847,9 @@ export function summarizeDivergence(files: readonly FileDivergence[]): Divergenc
           break
         case 'no-evidence':
           noEvidenceValues += 1
+          break
+        case 'absent-from-file':
+          absentFromFileValues += 1
           break
         case 'intact':
           break
@@ -892,6 +909,7 @@ export function summarizeDivergence(files: readonly FileDivergence[]): Divergenc
     disagreeingValues: disagreeing.length,
     unattributedValues: unattributed.length,
     noEvidenceValues,
+    absentFromFileValues,
     unrecoverable,
     disagreeing,
     unattributed,

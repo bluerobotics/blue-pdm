@@ -2479,15 +2479,28 @@ COMMENT ON FUNCTION customer_rfm(UUID, TIMESTAMPTZ, TIMESTAMPTZ, INTEGER) IS
 
 SELECT enforce_anon_execute_posture();
 
--- No stamp. A module speaks for its own objects and nothing else, and the schema
--- version is a statement about the whole database, so it is written only by
--- supabase/tools/verify-schema.sql once every installed module has been checked.
+-- The version is asked for at the end of this file rather than claimed. A module
+-- cannot claim one - it speaks for its own objects and cannot see the others - but
+-- it can ask and be told no. try_stamp_schema() in core.sql answers from the whole
+-- release manifest, so the answer does not depend on which file asked, and
+-- whichever file is run last is the one that records the version.
 
 -- ===========================================
 -- END OF CUSTOMERS MODULE
 -- ===========================================
 
+-- Guarded: this module may be applied over a core.sql that predates
+-- try_stamp_schema(), and an uncaught error here would roll back everything the
+-- file just installed.
 DO $$
 BEGIN
   RAISE NOTICE 'Customers module installed successfully';
+
+  IF to_regprocedure('public.try_stamp_schema()') IS NULL THEN
+    RAISE NOTICE 'Schema version not recorded: this core.sql predates try_stamp_schema(). Apply core.sql, or run supabase/tools/verify-schema.sql.';
+    RETURN;
+  END IF;
+  PERFORM try_stamp_schema();
+EXCEPTION WHEN OTHERS THEN
+  RAISE WARNING 'Schema version not recorded: %', SQLERRM;
 END $$;

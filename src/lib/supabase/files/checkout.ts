@@ -234,7 +234,7 @@ export async function syncSolidWorksFileMetadata(
     part_number?: string | null
     description?: string | null
     revision?: string | null
-    custom_properties?: Record<string, string | number | null>
+    custom_properties?: Record<string, unknown>
   },
 ): Promise<{ success: boolean; file?: any; error?: string | null }> {
   const client = getSupabaseClient()
