@@ -1,0 +1,43 @@
+-- NC19: put back the audit-log deletion hole release 95 closed, the way it
+-- actually existed.
+--
+-- Not by editing either function and not by deleting the REVOKE from
+-- modules/50-extensions.sql, because neither is how it got there. Neither
+-- cleanup routine ever had a GRANT in the source tree; both were reachable
+-- because Supabase's bootstrap runs
+--
+--   ALTER DEFAULT PRIVILEGES IN SCHEMA public
+--     GRANT ALL ON FUNCTIONS TO postgres, anon, authenticated, service_role;
+--
+-- so every function postgres creates is born with an explicit
+-- `authenticated=X/postgres` in its ACL. An absent GRANT does not mean nobody
+-- holds the privilege - that is the whole lesson of this release - so one GRANT
+-- reproduces the exposure exactly: both functions unchanged, the module file
+-- unchanged, and the only difference is the ACL entry that made them live
+-- PostgREST endpoints.
+--
+-- What that bought, measured on this harness before the fix: a signed-in user
+-- belonging to no organization at all called
+-- POST /rpc/cleanup_extension_http_logs with p_retention_days = 0 and took
+-- another tenant's extension_http_log from one row to none. Same for
+-- cleanup_extension_secret_access_logs against extension_secret_access. The
+-- DELETE in each is qualified by age alone; no organization appears in either
+-- statement.
+--
+-- What must happen next is that verification refuses. check_org_gates() cannot
+-- be what refuses: it only probes functions taking a p_org_id, and these take a
+-- retention window, so it returns no row for either and has no verdict to
+-- offer. check_withdrawn_execute() is what catches this - it asserts the ACL
+-- itself for the five functions whose only protection is that no PostgREST role
+-- may execute them.
+--
+-- Only the http_log one is granted back. The two are the same shape and the
+-- same list entry, so granting both would not test anything the first does not,
+-- and leaving the second withdrawn keeps the control's report unambiguous about
+-- which row was caught.
+--
+-- anon is deliberately not granted, for the same reason as NC18:
+-- enforce_anon_execute_posture() would take it straight back and the control
+-- would be testing that sweep instead of this check. authenticated is the role
+-- that was exposed, and no sweep touches it.
+GRANT EXECUTE ON FUNCTION cleanup_extension_http_logs(INTEGER) TO authenticated;

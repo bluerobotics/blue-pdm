@@ -32,7 +32,11 @@
 # silently substitute its own.
 #
 param(
-  [int]$ExpectRelease = 0
+  [int]$ExpectRelease = 0,
+  # Control ids to run, e.g. -Only NC18,NC19. Empty means all of them, which is
+  # the only setting a release should be signed off on: a filtered run proves
+  # the controls named and nothing about the ones skipped.
+  [string[]]$Only = @()
 )
 
 $ErrorActionPreference = 'Continue'
@@ -111,6 +115,8 @@ function Test-Control {
     [string[]]$CleanupFiles,
     [string]$HoleRole = 'postgres'
   )
+  if ($Only.Count -gt 0 -and $Only -notcontains $Id) { return }
+
   Write-Host "`n--- $Id  $What" -ForegroundColor Cyan
   $script:Ran = $script:Ran + 1
 
@@ -278,6 +284,53 @@ Test-Control -Id 'NC17' -What 'consume_share_link restating validate_share_link'
   -HoleFile '/sql/nc17-consume-restated.sql' `
   -ExpectToken @('stale', 'consume_share_link') `
   -RepairFiles @('/blueplm/modules/10-source-files.sql')
+
+# NC18 is the control for the exclusion list, and it is a different kind of hole
+# from every one above it: nothing about the schema changes. The function is
+# byte-identical, the module file is byte-identical, and the only difference is
+# one entry in one ACL - the entry Supabase's ALTER DEFAULT PRIVILEGES puts on
+# every function postgres creates and which `REVOKE ALL ... FROM PUBLIC` does
+# not remove.
+#
+# That is exactly the state release 95 shipped in before this change, and the
+# reason it shipped is that check_org_gates() carried a list of three function
+# names it would not probe, with seed_customer_categories on it. So this control
+# is testing the removal of the list, not the REVOKE: with the list still in
+# place the grant below is invisible and the database stamps clean.
+#
+# 'unverifiable' rather than 'ungated' is the verdict, and that is the honest
+# one. Probed with a synthesized organization id that no organizations row
+# matches, the function does not get as far as writing anything - it fails on
+# the foreign key - so the probe cannot say it acted on a foreign organization.
+# What it can say is that a role a browser holds may execute it and nothing
+# established that it would refuse, which is the condition that must not be
+# stampable.
+Test-Control -Id 'NC18' -What 'seed_customer_categories granted back to authenticated, exactly as the default ACL had it' `
+  -HoleFile '/sql/nc18-regrant-seed.sql' `
+  -ExpectToken @('unverifiable', 'seed_customer_categories') `
+  -RepairFiles @('/blueplm/modules/60-customers.sql')
+
+# NC19 is NC18's shape with the one difference that matters: this function takes
+# no organization argument, so check_org_gates() has nothing to probe and returns
+# no row for it at all. NC18 passes because a probe reached a verdict it could
+# not stand behind; NC19 has to pass without any probe existing.
+#
+# That is why check_withdrawn_execute() is a separate check rather than a wider
+# check_org_gates(). The status token below is what tells the two apart in the
+# report: if this control ever starts passing on 'unverifiable', the org-gate
+# probe has grown to cover a function with no p_org_id, and this control is no
+# longer testing what it says it is.
+#
+# The hole here is more serious than NC18's. seed_customer_categories appends
+# constant taxonomy rows; cleanup_extension_http_logs deletes audit evidence for
+# every tenant in one statement, and an org-less caller did exactly that on this
+# harness. It never reached a production database - the function does not exist
+# on schema 85 - so this control guards a hole applying release 95 would have
+# installed rather than one anybody ran.
+Test-Control -Id 'NC19' -What 'cleanup_extension_http_logs granted back to authenticated, exactly as the default ACL had it' `
+  -HoleFile '/sql/nc19-regrant-cleanup-logs.sql' `
+  -ExpectToken @('execute-not-withdrawn', 'cleanup_extension_http_logs') `
+  -RepairFiles @('/blueplm/modules/50-extensions.sql')
 
 # ---------------------------------------------------------------------------
 # NC7 is the other direction, and it needs its own test.

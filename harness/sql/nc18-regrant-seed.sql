@@ -1,0 +1,24 @@
+-- NC18: put back the exposure release 95 closed, in the exact way it existed.
+--
+-- Not by editing the function and not by removing the REVOKE from the module
+-- file, because neither is how it happened. Supabase's bootstrap runs
+--
+--   ALTER DEFAULT PRIVILEGES IN SCHEMA public
+--     GRANT ALL ON FUNCTIONS TO postgres, anon, authenticated, service_role;
+--
+-- so seed_customer_categories was born with an explicit
+-- `authenticated=X/postgres` in its ACL, and the `REVOKE ALL ... FROM PUBLIC`
+-- beside it removed a different entry. One GRANT reproduces the state exactly:
+-- the function is unchanged, the module file is unchanged, and the only
+-- difference is the one ACL entry that made it callable over PostgREST.
+--
+-- What must happen next is that verification refuses. Before this release it
+-- did not, because check_org_gates() carried a list of three function names it
+-- would not probe and this was on it - so the check that exists to catch this
+-- shape had been told not to look at the one instance of it.
+--
+-- anon is deliberately not granted. enforce_anon_execute_posture() would take
+-- it straight back and the control would be testing that sweep instead of this
+-- check; authenticated is the role that was actually exposed, and no sweep
+-- touches it.
+GRANT EXECUTE ON FUNCTION seed_customer_categories(UUID) TO authenticated;
