@@ -2,6 +2,11 @@ import type { TranslationDict } from '../types'
 
 // English translations (default/fallback)
 export const en: TranslationDict = {
+  vaultLoad: {
+    loading: 'Loading vault...',
+    stalled: 'Still loading. This is taking longer than expected.',
+    retry: 'Retry',
+  },
   checkoutDisplay: {
     you: 'You',
     loadingOwner: 'Loading checkout owner',

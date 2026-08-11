@@ -16,6 +16,7 @@ export function useVaultManagement() {
     isOfflineMode,
     vaultPath,
     isVaultConnected,
+    filesLoaded,
     connectedVaults,
     activeVaultId,
     setVaultPath,
@@ -195,6 +196,17 @@ export function useVaultManagement() {
       lastLoadKey.current = ''
     }
   }, [isVaultConnected])
+
+  // Anything that clears the file store (a session boundary, a vault switch) must also
+  // clear the load key, otherwise the load effect sees an unchanged key, skips the load,
+  // and the Explorer is left on its loading overlay with nothing on the way to fill it.
+  // Keyed to the transition rather than the value so a load that legitimately produces
+  // no files cannot re-trigger itself.
+  useEffect(() => {
+    if (!filesLoaded) {
+      lastLoadKey.current = ''
+    }
+  }, [filesLoaded])
 
   // Initialize working directory on startup
   // This runs BEFORE auth to ensure electron's workingDirectory is set when we have persisted vaults

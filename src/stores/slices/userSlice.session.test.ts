@@ -67,6 +67,7 @@ describe('user session reset', () => {
       activeVaultId: 'vault-a',
       recentVaults: ['C:\\vault-a'],
       autoConnect: true,
+      isVaultConnected: true,
       files: [
         {
           name: 'part.sldprt',
@@ -124,5 +125,19 @@ describe('user session reset', () => {
     expect(store.activeVaultId).toBe('vault-a')
     expect(store.recentVaults).toEqual(['C:\\vault-a'])
     expect(store.autoConnect).toBe(true)
+  })
+
+  it('can keep the vault connected across an account switch', () => {
+    // Only explicit user actions set isVaultConnected back to true, and the Explorer's
+    // load effect returns early without it. Clearing it on an account switch therefore
+    // strands the next user on a vault nothing reconnects.
+    store.resetSessionState({ preserveVaultConnection: true })
+
+    expect(store.isVaultConnected).toBe(true)
+    expect(store.files).toEqual([])
+    expect(store.serverFiles).toEqual([])
+    expect(store.filesLoaded).toBe(false)
+    expect(store.user).toBeNull()
+    expect(store.organization).toBeNull()
   })
 })

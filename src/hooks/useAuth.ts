@@ -40,12 +40,14 @@ export function advanceAuthSessionBoundary(
   authenticatedUserId: string | null,
 ): AuthSessionBoundary {
   const userChanged = current.authenticatedUserId !== authenticatedUserId
-  const startsNewSession =
-    event === 'SIGNED_IN' ||
-    event === 'SIGNED_OUT' ||
-    (event === 'INITIAL_SESSION' && authenticatedUserId !== null)
 
-  if (!userChanged && !startsNewSession) return current
+  // Supabase re-emits SIGNED_IN from its own session recovery every time the window
+  // becomes visible, carrying an identical session. Keying the boundary off the event
+  // name alone tore the signed-in session down on every window restore, so only a
+  // genuine identity change or a sign-out counts as a boundary.
+  const startsNewSession = event === 'SIGNED_OUT' || userChanged
+
+  if (!startsNewSession) return current
 
   return {
     authenticatedUserId,
@@ -58,11 +60,22 @@ export function shouldResetAuthSessionState(
   event: string,
   authenticatedUserId: string | null,
 ): boolean {
-  return !(
+  // Establishing the first stored session is not a teardown - there is no previous
+  // account whose state needs clearing.
+  if (
     event === 'INITIAL_SESSION' &&
     current.authenticatedUserId === null &&
     authenticatedUserId !== null
-  )
+  ) {
+    return false
+  }
+
+  // Re-notification for the account we are already signed in as is a continuation.
+  if (current.authenticatedUserId !== null && current.authenticatedUserId === authenticatedUserId) {
+    return false
+  }
+
+  return true
 }
 
 export function shouldDeferAutoConnectLoad(context: AutoConnectLoadContext): boolean {
@@ -138,20 +151,27 @@ export function useAuth() {
   const authListenerEpochRef = useRef(0)
 
   const advanceSession = useCallback(
-    (event: string, authenticatedUserId: string | null): AuthSessionBoundary => {
+    (
+      event: string,
+      authenticatedUserId: string | null,
+    ): { boundary: AuthSessionBoundary; advanced: boolean } => {
       const previous = sessionBoundaryRef.current
       const next = advanceAuthSessionBoundary(previous, event, authenticatedUserId)
       sessionBoundaryRef.current = next
 
-      if (next.sessionGeneration !== previous.sessionGeneration) {
+      const advanced = next.sessionGeneration !== previous.sessionGeneration
+      if (advanced) {
         setSessionGeneration(next.sessionGeneration)
         if (shouldResetAuthSessionState(previous, event, authenticatedUserId)) {
-          resetSessionState()
+          // The SIGNED_OUT branch below clears vault connection explicitly. Preserving it
+          // here keeps an account switch from stranding the next user on a disconnected
+          // vault that nothing automatically reconnects.
+          resetSessionState({ preserveVaultConnection: true })
         }
         setLoadFilesSessionContext(next)
       }
 
-      return next
+      return { boundary: next, advanced }
     },
     [resetSessionState],
   )
@@ -190,7 +210,27 @@ export function useAuth() {
       const eventSequence = ++authEventSequenceRef.current
       const sessionUserId = session?.user?.id ?? null
 
-      const handlerBoundary = advanceSession(event, sessionUserId)
+      const { boundary: handlerBoundary, advanced: sessionAdvanced } = advanceSession(
+        event,
+        sessionUserId,
+      )
+
+      // A re-notification for the account we already have fully hydrated carries nothing
+      // new but a possibly refreshed token. Returning here keeps a window restore from
+      // costing a profile fetch and an organization fetch, and from flipping
+      // authInitialized off. If hydration is incomplete we fall through and retry it,
+      // which is how a startup that failed to reach the network recovers.
+      if (!sessionAdvanced && session?.user) {
+        const { user: hydratedUser, organization: hydratedOrg } = usePDMStore.getState()
+        if (hydratedUser?.id === session.user.id && hydratedOrg) {
+          setCurrentAccessToken(session.access_token)
+          log.debug('[Auth]', 'Session re-notified without a boundary change, skipping rehydrate', {
+            event,
+          })
+          return
+        }
+      }
+
       if (event === 'INITIAL_SESSION' || event === 'SIGNED_IN') {
         setAuthInitialized(false)
       }
@@ -378,7 +418,10 @@ export function useAuth() {
                 'No organization found. Please enter an organization code or contact your administrator.',
             )
           }
-          if (event === 'INITIAL_SESSION' && isCurrentHandler()) {
+          // Every terminal path must restore this, not just INITIAL_SESSION. It gates
+          // the auto-connect load, so leaving it false after a SIGNED_IN stops the vault
+          // from ever loading again.
+          if (isCurrentHandler()) {
             setAuthInitialized(true)
           }
         } catch (error) {
@@ -386,9 +429,7 @@ export function useAuth() {
           if (!isCurrentHandler()) return
           if (connectingTimeout) clearTimeout(connectingTimeout)
           setIsConnecting(false)
-          if (event === 'INITIAL_SESSION') {
-            setAuthInitialized(true)
-          }
+          setAuthInitialized(true)
         }
       } else if (event === 'INITIAL_SESSION' && !session?.user) {
         if (!isCurrentHandler()) return
@@ -408,6 +449,11 @@ export function useAuth() {
         setTimeout(() => {
           if (isCurrentHandler()) setStatusMessage('')
         }, STATUS_MESSAGE_CLEAR_MS)
+      } else if (isCurrentHandler()) {
+        // Anything that reaches here matched no branch above - a SIGNED_IN carrying no
+        // user, say. It must still clear the flag it may have set, because the flag gates
+        // the vault load and nothing else will come along to restore it.
+        setAuthInitialized(true)
       }
     })
 

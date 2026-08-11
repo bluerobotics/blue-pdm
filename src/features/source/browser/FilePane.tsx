@@ -1920,7 +1920,7 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
               )}
 
             {vaultPath && connectedVaults.length > 0 && (isLoading || !filesLoaded) && (
-              <LoadingState message="Loading vault..." />
+              <LoadingState overlay={sortedFiles.length === 0} onRetry={() => onRefresh()} />
             )}
           </div>
 

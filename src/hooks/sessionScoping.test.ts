@@ -70,7 +70,41 @@ describe('auth session boundaries', () => {
 
     expect(restored.sessionGeneration).toBe(1)
     expect(shouldResetAuthSessionState(initial, 'INITIAL_SESSION', 'user-a')).toBe(false)
-    expect(shouldResetAuthSessionState(restored, 'SIGNED_IN', 'user-a')).toBe(true)
+    expect(shouldResetAuthSessionState(restored, 'SIGNED_IN', 'user-a')).toBe(false)
+  })
+
+  it('treats a repeated SIGNED_IN for the same account as a continuation', () => {
+    // Supabase re-emits SIGNED_IN from its own session recovery whenever the window
+    // becomes visible. Advancing the boundary there tore down the signed-in session on
+    // every minimize/restore, wiping the file store and stalling the Explorer's loader.
+    const signedIn = advanceAuthSessionBoundary(
+      { authenticatedUserId: null, sessionGeneration: 0 },
+      'INITIAL_SESSION',
+      'user-a',
+    )
+
+    const afterRestore = advanceAuthSessionBoundary(signedIn, 'SIGNED_IN', 'user-a')
+
+    expect(afterRestore).toBe(signedIn)
+    expect(afterRestore.sessionGeneration).toBe(1)
+    expect(shouldResetAuthSessionState(signedIn, 'SIGNED_IN', 'user-a')).toBe(false)
+  })
+
+  it('still starts a new session when the account actually changes', () => {
+    const userA = advanceAuthSessionBoundary(
+      { authenticatedUserId: null, sessionGeneration: 0 },
+      'SIGNED_IN',
+      'user-a',
+    )
+    const userB = advanceAuthSessionBoundary(userA, 'SIGNED_IN', 'user-b')
+
+    expect(userB.sessionGeneration).toBe(2)
+    expect(userB.authenticatedUserId).toBe('user-b')
+    expect(shouldResetAuthSessionState(userA, 'SIGNED_IN', 'user-b')).toBe(true)
+
+    const signedOut = advanceAuthSessionBoundary(userB, 'SIGNED_OUT', null)
+    expect(signedOut.sessionGeneration).toBe(3)
+    expect(shouldResetAuthSessionState(userB, 'SIGNED_OUT', null)).toBe(true)
   })
 
   it('rejects an old profile handler after sign-out and account change', async () => {

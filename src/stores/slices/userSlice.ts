@@ -114,19 +114,23 @@ export const createUserSlice: StateCreator<
       expectedFileChanges: new Set<string>(),
     })
   },
-  resetSessionState: () => {
+  resetSessionState: (options) => {
     get().resetFileSessionState()
     const state = get()
     state.clearOrganizationData()
     state.clearOrganizationMetadata()
 
+    // Vault connection is derived from connectedVaults, which survives this reset. An
+    // account switch should not tear it down, because only explicit user actions restore
+    // it and a stranded isVaultConnected=false gates the Explorer's load effect off.
+    // A real sign-out still clears it, both here and at the SIGNED_OUT handler.
     set({
       user: null,
       organization: null,
       isAuthenticated: false,
       isOfflineMode: false,
       isConnecting: false,
-      isVaultConnected: false,
+      ...(options?.preserveVaultConnection ? {} : { isVaultConnected: false }),
       impersonatedUser: null,
       userTeams: null,
       userPermissions: null,

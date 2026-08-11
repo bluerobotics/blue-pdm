@@ -4,6 +4,20 @@ All notable changes to BluePLM will be documented in this file.
 
 ![1774273238438](image/CHANGELOG/1774273238438.png)
 
+## [4.2.1] - 2026-08-11
+
+### Fixed
+
+- **The vault stopped loading on 4.2.0, and minimizing the window broke it again.** Supabase re-announces the signed-in session every time the window becomes visible — its own session recovery emits `SIGNED_IN` on `visibilitychange`, carrying a session identical to the one already held. 4.2.0's new session-boundary tracking read that event as a new session: it advanced the generation, which cleared the file store from two separate places, and it set `authInitialized` to false on a path that only ever set it back to true for `INITIAL_SESSION`. Nothing restored it, so the flag that gates the Explorer's load stayed off for the rest of the run and the vault never loaded again. The overlay spun on an empty store, and Refresh — which scans local files without re-querying the server — filled the pane with rows carrying no status colours, because those are derived from the server records the wipe had discarded. Restoring the window did it every time; on startup it was a race between the redundant event and the first load, which a large vault loses often enough to look constant. **A session boundary is now an actual change of account, or a sign-out.** A re-announcement of the account already signed in is a continuation: no generation bump, no teardown, and no repeated profile and organization fetch on every window restore. `authInitialized` is restored on every path that finishes handling an auth event rather than on one of them, so even a genuine account switch cannot strand the loader.
+- **A cleared file store now always re-triggers a load.** The load effect skips when its key is unchanged, which is correct for a redundant render and wrong for a store that has just been emptied — the key was the same, so nothing refilled it. Clearing the store now clears the key, keyed to the transition so a load that legitimately finds no files cannot re-trigger itself.
+- **An account switch no longer leaves the next user on a disconnected vault.** The session reset cleared the vault connection flag, but only explicit user actions set it back, and the Explorer's load returns early without it. Signing out still clears it, both in the reset and at the sign-out handler.
+- **The loading overlay admits when it is stuck, and stops hiding files you already have.** A load that could never finish looked exactly like a slow one. After twenty seconds the overlay now says so and offers Retry, and when the pane already has rows the indicator is a strip along the bottom rather than a sheet over the content.
+
+### Changed
+
+- **Rename detection no longer hashes the whole vault to find a handful of moves.** The pass that hashes local files with no server match ran over every unmatched file, regardless of how many server records had actually gone missing — on one vault, 691 files hashed against 7 candidates on every cold load, about 1.3 seconds, finding nothing. A rename preserves content and therefore size, so only local files whose size matches a missing record are hashed now; where the server reports no sizes the previous behaviour still applies.
+- **A folder rename that has not been reconciled no longer buries the session log.** Inode rename detection and moved-file metadata logged one line per file at info, which on a vault carrying an unreconciled folder move meant roughly nine hundred lines per load and four fifths of the log. Both are debug now, with the counts kept in the existing summaries and a `moved` count added to the merge summary — a number that stays high across loads is the signal that moves are being re-detected rather than reconciled. A moved file whose part number failed to survive the move still logs, as a warning, because that is the failure the per-file line was added to catch.
+
 ## [4.2.0] - 2026-08-10
 
 ### Added

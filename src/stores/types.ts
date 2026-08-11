@@ -2313,5 +2313,5 @@ export type {
 /** Clears session-owned state without removing persisted vault preferences. */
 export interface UserSlice {
   resetFileSessionState: () => void
-  resetSessionState: () => void
+  resetSessionState: (options?: { preserveVaultConnection?: boolean }) => void
 }

@@ -769,16 +769,33 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
             // hashes for unmatched local files when there are also missing checked-out-by-me
             // server files — a strong signal that an external rename occurred.
             if (checkedOutByMeByHash.size > 0 && window.electronAPI?.computeFileHashes) {
-              const unmatchedLocalFiles = localFiles.filter(
-                (f) => !f.isDirectory && !f.localHash && !pdmMap.has(f.relativePath.toLowerCase()),
-              )
-
+              // Only the checked-out-by-me records that have gone missing locally can be
+              // the source side of a rename, so they alone define what we are looking for.
               const missingServerPaths = new Set<string>()
+              const missingServerSizes = new Set<number>()
               for (const [, pdmFile] of checkedOutByMeByHash) {
                 if (!localPathSet.has(pdmFile.file_path.toLowerCase())) {
                   missingServerPaths.add(pdmFile.file_path.toLowerCase())
+                  if (typeof pdmFile.file_size === 'number') {
+                    missingServerSizes.add(pdmFile.file_size)
+                  }
                 }
               }
+
+              // A rename preserves content, so it preserves size. Hashing only the local
+              // files whose size matches a missing record keeps this pass proportional to
+              // the number of renames rather than to the size of the vault: the Blue
+              // Robotics vault was hashing 691 files against 7 candidates on every load,
+              // for ~1.3s and zero matches. Fall back to the unfiltered set when the
+              // server reports no sizes, so older records still get rename detection.
+              const canFilterBySize = missingServerSizes.size > 0
+              const unmatchedLocalFiles = localFiles.filter(
+                (f) =>
+                  !f.isDirectory &&
+                  !f.localHash &&
+                  !pdmMap.has(f.relativePath.toLowerCase()) &&
+                  (!canFilterBySize || missingServerSizes.has(f.size)),
+              )
 
               if (unmatchedLocalFiles.length > 0 && missingServerPaths.size > 0) {
                 window.electronAPI?.log(
@@ -787,6 +804,7 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
                   {
                     unmatchedLocal: unmatchedLocalFiles.length,
                     missingServer: missingServerPaths.size,
+                    sizeFiltered: canFilterBySize,
                     unmatchedSamples: unmatchedLocalFiles.slice(0, 3).map((f) => f.relativePath),
                     missingSamples: Array.from(missingServerPaths).slice(0, 3),
                   },
@@ -873,7 +891,10 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
                     const isCheckedOutByMe = user?.id
                       ? serverFile.checked_out_by === user.id
                       : !!serverFile.checked_out_by
-                    window.electronAPI?.log('info', '[LoadFiles] Inode rename detected', {
+                    // Per-file, and an unreconciled folder rename produces hundreds of
+                    // these on every load - they were 80% of one 4.5 MB session log, which
+                    // buried the events worth reading. The summary below carries the count.
+                    window.electronAPI?.log('debug', '[LoadFiles] Inode rename detected', {
                       oldPath: serverFile.file_path,
                       newPath: localFile.relativePath,
                       ino: localFile.ino,
@@ -887,6 +908,9 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
                   window.electronAPI?.log('info', '[LoadFiles] Inode rename summary', {
                     matches: inodeRenameMap.size,
                     remainingUnresolved: inodeToServerFile.size,
+                    samples: Array.from(inodeRenameMap.entries())
+                      .slice(0, 5)
+                      .map(([newPath, serverFile]) => `${serverFile.file_path} -> ${newPath}`),
                   })
                 }
               }
@@ -1163,15 +1187,23 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
                 }
               }
 
-              // Diagnostic logging for moved files to help debug BR number preservation issues
+              // Diagnostic logging for moved files to help debug BR number preservation
+              // issues. Only the failure - a server part number that did not survive the
+              // move - is worth an info line per file; an unreconciled folder rename makes
+              // the success case hundreds of lines per load. The count is in Merge summary.
               if (isMovedFile) {
-                window.electronAPI?.log('info', '[LoadFiles] Moved file metadata', {
-                  oldPath: pdmData?.file_path,
-                  newPath: localFile.relativePath,
-                  pdmPartNumber: pdmData?.part_number ?? null,
-                  preservedPartNumber: preservedPending?.part_number ?? null,
-                  finalPartNumber: finalPending?.part_number ?? null,
-                })
+                const partNumberLost = !!pdmData?.part_number && !finalPending?.part_number
+                window.electronAPI?.log(
+                  partNumberLost ? 'warn' : 'debug',
+                  '[LoadFiles] Moved file metadata',
+                  {
+                    oldPath: pdmData?.file_path,
+                    newPath: localFile.relativePath,
+                    pdmPartNumber: pdmData?.part_number ?? null,
+                    preservedPartNumber: preservedPending?.part_number ?? null,
+                    finalPartNumber: finalPending?.part_number ?? null,
+                  },
+                )
               }
 
               // Determine localVersion:
@@ -1433,6 +1465,9 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
             const deletedCount = localFiles.filter(
               (f) => !f.isDirectory && f.diffStatus === 'deleted',
             ).length
+            const movedCount = localFiles.filter(
+              (f) => !f.isDirectory && f.diffStatus === 'moved',
+            ).length
             window.electronAPI?.log('info', '[LoadFiles] Merge summary', {
               serverFiles: pdmFiles.length,
               localFilesAfterMerge: localFiles.filter((f) => !f.isDirectory).length,
@@ -1441,6 +1476,9 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
               cloudOnly: cloudCount,
               orphaned: orphanedCount,
               ghostFiles: deletedCount,
+              // A count that stays high across loads means moves are being re-detected
+              // rather than reconciled, which is what made cold loads expensive.
+              moved: movedCount,
             })
 
             // Update the local sync index with all server file paths
