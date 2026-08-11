@@ -11,7 +11,12 @@ import {
 } from '@/lib/realtime'
 import { buildFullPath } from '@/lib/commands/types'
 import { log } from '@/lib/logger'
-import type { Organization, PDMFile } from '@/types/pdm'
+import {
+  hashCheckoutIdentifier,
+  isCheckoutProfileForOwner,
+  type Organization,
+  type PDMFile,
+} from '@/types/pdm'
 
 const LOCATION_FLUSH_DEBOUNCE_MS = 100
 const NOTIFICATION_BATCH_MS = 500
@@ -28,6 +33,7 @@ const NOTIFICATION_BATCH_MS = 500
 export function useRealtimeSubscriptions(
   organization: Organization | null,
   isOfflineMode: boolean,
+  sessionKey = '',
 ) {
   const setOrganization = usePDMStore((s) => s.setOrganization)
   const addToast = usePDMStore((s) => s.addToast)
@@ -52,6 +58,9 @@ export function useRealtimeSubscriptions(
     const pendingNotifications: Map<string, PendingNotification> = new Map()
     let flushTimeout: ReturnType<typeof setTimeout> | null = null
     const userNameCache: Map<string, string> = new Map()
+    let subscriptionActive = true
+    let checkoutEventSequence = 0
+    const latestCheckoutEventByFile = new Map<string, number>()
 
     // Batch file location updates to prevent render cascade when folder is moved
     // When a folder moves, each file inside sends its own UPDATE event - without batching,
@@ -339,20 +348,72 @@ export function useRealtimeSubscriptions(
 
                 if (isNewlyCheckedOut && newFile.checked_out_by !== currentUserId) {
                   // Fetch user info for the person who checked out the file
-                  import('@/lib/supabase').then(({ getUserBasicInfo }) => {
-                    getUserBasicInfo(newFile.checked_out_by!).then(({ user }) => {
-                      if (user) {
-                        // Update with user info
-                        updateFilePdmData(newFile.id, {
-                          ...newFile,
-                          checked_out_user: user,
-                        } as Partial<PDMFile>)
-                      } else {
-                        // Still update even without user info
-                        updateFilePdmData(newFile.id, newFile)
-                      }
+                  const ownerId = newFile.checked_out_by
+                  if (!ownerId) break
+                  // Commit the authoritative owner first. The merge path removes any
+                  // profile from the previous checkout before enrichment resolves.
+                  updateFilePdmData(newFile.id, newFile)
+                  const eventSequence = ++checkoutEventSequence
+                  latestCheckoutEventByFile.set(newFile.id, eventSequence)
+                  const eventVaultId = newFile.vault_id ?? activeVaultId ?? null
+                  const scope = {
+                    orgId: organization.id,
+                    vaultId: eventVaultId,
+                    fileId: newFile.id,
+                  }
+                  void import('@/lib/supabase')
+                    .then(({ getUserBasicInfo }) =>
+                      getUserBasicInfo(ownerId, scope).then(({ user }) => {
+                        const currentState = usePDMStore.getState()
+                        const currentFile = currentState.files.find(
+                          (file) => file.pdmData?.id === newFile.id,
+                        )
+                        const ownerStillMatches =
+                          currentFile?.pdmData?.checked_out_by === ownerId
+                        const eventStillLatest =
+                          latestCheckoutEventByFile.get(newFile.id) === eventSequence
+                        const currentActiveVaultId =
+                          currentState.activeVaultId ?? currentState.connectedVaults[0]?.id ?? null
+                        const vaultStillMatches =
+                          currentActiveVaultId === eventVaultId
+
+                        if (
+                          !subscriptionActive ||
+                          !ownerStillMatches ||
+                          !eventStillLatest ||
+                          !vaultStillMatches
+                        ) {
+                          log.debug('[Realtime]', 'Discarding stale checkout profile', {
+                            fileId: hashCheckoutIdentifier(newFile.id),
+                            ownerId: hashCheckoutIdentifier(ownerId),
+                            eventSequence,
+                            ownerStillMatches,
+                            eventStillLatest,
+                            vaultStillMatches,
+                            stale: true,
+                          })
+                          return
+                        }
+
+                        if (user && isCheckoutProfileForOwner(user, ownerId)) {
+                          updateFilePdmData(newFile.id, {
+                            ...newFile,
+                            checked_out_user: user,
+                          } as Partial<PDMFile>)
+                        } else {
+                          // Commit the authoritative checkout fields while removing any
+                          // profile that could belong to a previous checkout owner.
+                          updateFilePdmData(newFile.id, newFile)
+                        }
+                      }),
+                    )
+                    .catch((error: unknown) => {
+                      log.warn('[Realtime]', 'Checkout profile hydration failed', {
+                        fileId: hashCheckoutIdentifier(newFile.id),
+                        ownerId: hashCheckoutIdentifier(ownerId),
+                        error: error instanceof Error ? error.message : String(error),
+                      })
                     })
-                  })
                 } else {
                   // No new checkout by others, just update normally
                   updateFilePdmData(newFile.id, newFile)
@@ -776,6 +837,7 @@ export function useRealtimeSubscriptions(
     })
 
     return () => {
+      subscriptionActive = false
       // Clear any pending notification timeout
       if (flushTimeout) {
         clearTimeout(flushTimeout)
@@ -793,5 +855,5 @@ export function useRealtimeSubscriptions(
       unsubscribeVaults()
       unsubscribeAll()
     }
-  }, [organization, isOfflineMode, setOrganization, addToast])
+  }, [organization, isOfflineMode, sessionKey, setOrganization, addToast])
 }

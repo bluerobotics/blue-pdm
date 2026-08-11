@@ -175,7 +175,7 @@ export function useSelectionBox(options: UseSelectionBoxOptions): UseSelectionBo
         }
       })
 
-      setSelectedFiles(selectedPaths)
+      setSelectedFiles([...new Set(selectedPaths)])
     },
     [selectionBox, containerRef, rowSelector, setSelectedFiles, axis],
   )

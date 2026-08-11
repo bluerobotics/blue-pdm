@@ -4,7 +4,7 @@ import type { ConfigBomItem } from '@/stores/types'
 
 export interface ConfigBomRowProps {
   item: ConfigBomItem
-  /** Depth within the configuration (currently always 0) */
+  /** Nesting depth within the configuration section */
   depth: number
   /** Depth of the parent configuration in the file's config tree */
   configDepth: number

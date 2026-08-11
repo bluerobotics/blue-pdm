@@ -7,7 +7,7 @@
 // TODO(decompose) markers below record the intended seams; take them one at a time
 // in a change that does nothing else.
 
-import { useCallback, startTransition } from 'react'
+import { useCallback, useRef, startTransition } from 'react'
 // flushSync removed - causes React crashes when called during existing render cycles
 import { usePDMStore } from '@/stores/pdmStore'
 import { useShallow } from 'zustand/react/shallow'
@@ -16,7 +16,13 @@ import { executeCommand } from '@/lib/commands'
 import { buildFullPath } from '@/lib/commands/types'
 import { dropCommittedPendingMetadata } from '@/lib/pendingMetadata'
 import { recordMetric } from '@/lib/performanceMetrics'
-import { getFilesWithCache, updateCachedUserInfo } from '@/lib/cache/vaultFileCache'
+import { log } from '@/lib/logger'
+import {
+  getFilesWithCache,
+  updateCachedUserInfo,
+  type CacheWriteContext,
+  type CachedServerFile,
+} from '@/lib/cache/vaultFileCache'
 import {
   getSyncIndex,
   updateSyncIndexFromServer,
@@ -25,7 +31,17 @@ import {
   updateInodes,
 } from '@/lib/cache/localSyncIndex'
 import { logExplorer } from '@/lib/userActionLogger'
-import type { LightweightFile } from '@/lib/supabase/files/queries'
+import type { CheckoutProfileScope } from '@/lib/supabase/files/queries'
+import {
+  hashCheckoutIdentifier,
+  isCheckoutProfileForOwner,
+  mergePdmFileData,
+  reconcileCheckoutProfile,
+  type CheckoutLoadContext,
+  type CheckoutUserProfile,
+  type LoadFilesSessionContext,
+  type PDMFile,
+} from '@/types/pdm'
 import {
   computeLocalScanFingerprint,
   consumeSupersededLoad,
@@ -37,6 +53,100 @@ import {
 } from './loadFilesCoordination'
 import { getFileMutationEpoch } from '@/lib/fileMutationEpoch'
 
+const CHECKOUT_PROFILE_MAX_ATTEMPTS = 3
+const CHECKOUT_PROFILE_RETRY_BASE_MS = 200
+let loadRequestSequence = 0
+const latestLoadRequestByVault = new Map<string, string>()
+
+function createLoadRequestId(): string {
+  loadRequestSequence += 1
+  return `load-${Date.now()}-${loadRequestSequence}`
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function waitForCheckoutRetry(attempt: number): Promise<void> {
+  const delayMs = CHECKOUT_PROFILE_RETRY_BASE_MS * 2 ** (attempt - 1)
+  return new Promise((resolve) => setTimeout(resolve, delayMs))
+}
+
+interface CheckoutProfileFetchResult {
+  users: Record<string, CheckoutUserProfile>
+  error: unknown
+  attempts: number
+}
+
+async function fetchCheckoutProfilesWithRetry(
+  fileIds: string[],
+  scope: CheckoutProfileScope,
+  requestId: string,
+  isCurrent?: () => boolean,
+): Promise<CheckoutProfileFetchResult> {
+  let lastError: unknown = null
+
+  for (let attempt = 1; attempt <= CHECKOUT_PROFILE_MAX_ATTEMPTS; attempt++) {
+    if (isCurrent && !isCurrent()) {
+      return { users: {}, error: null, attempts: attempt - 1 }
+    }
+
+    const fetchStart = performance.now()
+    let result: { users: Record<string, CheckoutUserProfile>; error: unknown }
+    try {
+      result = await getCheckedOutUsers(fileIds, scope)
+    } catch (error) {
+      result = { users: {}, error }
+    }
+    const latencyMs = Math.round(performance.now() - fetchStart)
+
+    if (isCurrent && !isCurrent()) {
+      log.info('[CheckoutHydration]', 'Discarding profile response after context change', {
+        requestId,
+        orgId: hashCheckoutIdentifier(scope.orgId),
+        vaultId: hashCheckoutIdentifier(scope.vaultId),
+        attempt,
+        latencyMs,
+        stale: true,
+      })
+      return { users: {}, error: null, attempts: attempt }
+    }
+
+    if (!result.error) {
+      log.info('[CheckoutHydration]', 'Checkout profiles fetched', {
+        requestId,
+        orgId: hashCheckoutIdentifier(scope.orgId),
+        vaultId: hashCheckoutIdentifier(scope.vaultId),
+        fileCount: fileIds.length,
+        hitCount: Object.keys(result.users).length,
+        missCount: fileIds.length - Object.keys(result.users).length,
+        attempt,
+        latencyMs,
+        stale: false,
+      })
+      return { users: result.users, error: null, attempts: attempt }
+    }
+
+    lastError = result.error
+    log.warn('[CheckoutHydration]', 'Checkout profile lookup failed', {
+      requestId,
+      orgId: hashCheckoutIdentifier(scope.orgId),
+      vaultId: hashCheckoutIdentifier(scope.vaultId),
+      fileCount: fileIds.length,
+      attempt,
+      latencyMs,
+      error: getErrorMessage(result.error),
+      retrying: attempt < CHECKOUT_PROFILE_MAX_ATTEMPTS,
+    })
+
+    if (attempt < CHECKOUT_PROFILE_MAX_ATTEMPTS) {
+      await waitForCheckoutRetry(attempt)
+    }
+  }
+
+  return { users: {}, error: lastError, attempts: CHECKOUT_PROFILE_MAX_ATTEMPTS }
+}
+
 /**
  * Hook to load files from working directory and merge with PDM data
  * Handles:
@@ -45,8 +155,11 @@ import { getFileMutationEpoch } from '@/lib/fileMutationEpoch'
  * - Diff status computation (added, modified, outdated, moved, cloud, deleted)
  * - Background hash computation
  * - Auto-download of cloud files and updates
+ *
+ * @param sessionContext Optional auth boundary supplied by useAuth:
+ * `{ authenticatedUserId: string | null; sessionGeneration: number }`.
  */
-export function useLoadFiles() {
+export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
   const {
     vaultPath,
     organization,
@@ -77,6 +190,15 @@ export function useLoadFiles() {
     })),
   )
 
+  const latestSessionContext = useRef<LoadFilesSessionContext | undefined>(sessionContext)
+  latestSessionContext.current = sessionContext
+
+  const authenticatedUserId =
+    sessionContext?.authenticatedUserId !== undefined
+      ? sessionContext.authenticatedUserId
+      : (user?.id ?? null)
+  const sessionGeneration = sessionContext?.sessionGeneration ?? 0
+
   // Get current vault ID (from activeVaultId or first connected vault)
   const currentVaultId = activeVaultId || connectedVaults[0]?.id
 
@@ -95,12 +217,31 @@ export function useLoadFiles() {
       // Capture vault context at start - used to detect if vault changed during async operations
       const loadingForVaultId = currentVaultId
       const loadingForVaultPath = vaultPath
+      const loadContext: CheckoutLoadContext = {
+        orgId: organization?.id ?? null,
+        vaultId: loadingForVaultId ?? null,
+        vaultPath: loadingForVaultPath,
+        authenticatedUserId,
+        sessionGeneration,
+        requestId: createLoadRequestId(),
+      }
+      if (loadContext.vaultId) {
+        latestLoadRequestByVault.set(loadContext.vaultId, loadContext.requestId)
+      }
 
       window.electronAPI?.log('info', '[LoadFiles] Called with', {
         vaultPath: loadingForVaultPath,
         currentVaultId: loadingForVaultId,
         silent,
         forceHashComputation,
+      })
+      log.info('[CheckoutHydration]', 'Load context captured', {
+        requestId: loadContext.requestId,
+        orgId: hashCheckoutIdentifier(loadContext.orgId),
+        vaultId: hashCheckoutIdentifier(loadContext.vaultId),
+        vaultPath: hashCheckoutIdentifier(loadContext.vaultPath),
+        authenticatedUserId: hashCheckoutIdentifier(loadContext.authenticatedUserId),
+        sessionGeneration: loadContext.sessionGeneration,
       })
       if (!window.electronAPI || !loadingForVaultPath) return
 
@@ -123,11 +264,33 @@ export function useLoadFiles() {
         await new Promise((resolve) => setTimeout(resolve, 0))
       }
 
-      // Helper to check if vault changed during async operation
-      const isVaultStale = () => {
+      // Every asynchronous stage uses the same org/vault/path/session boundary.
+      const isLoadContextCurrent = () => {
         const currentState = usePDMStore.getState()
         const currentActive = currentState.activeVaultId || currentState.connectedVaults[0]?.id
-        return currentActive !== loadingForVaultId
+        const currentSession = latestSessionContext.current
+        const currentUserId = currentState.user?.id ?? null
+        const sessionMatches =
+          currentSession === undefined ||
+          (currentSession.authenticatedUserId === loadContext.authenticatedUserId &&
+            currentSession.sessionGeneration === loadContext.sessionGeneration)
+        const requestMatches =
+          !loadContext.vaultId ||
+          latestLoadRequestByVault.get(loadContext.vaultId) === loadContext.requestId
+
+        return (
+          currentState.organization?.id === loadContext.orgId &&
+          (currentActive ?? null) === loadContext.vaultId &&
+          currentState.vaultPath === loadContext.vaultPath &&
+          currentUserId === loadContext.authenticatedUserId &&
+          sessionMatches &&
+          requestMatches
+        )
+      }
+      const isVaultStale = () => !isLoadContextCurrent()
+      const cacheContext: CacheWriteContext = {
+        requestId: loadContext.requestId,
+        isCurrent: isLoadContextCurrent,
       }
 
       // Gates the auto-discard below. The catch swallows errors rather than
@@ -179,8 +342,11 @@ export function useLoadFiles() {
         // First load: Full fetch via RPC + cache in IndexedDB
         // Subsequent loads: Load from cache instantly + fetch only changes (delta sync)
         const serverPromise = shouldFetchServer
-          ? getFilesWithCache(organization.id, currentVaultId, () =>
-              getFilesLightweight(organization.id, currentVaultId),
+          ? getFilesWithCache(
+              organization.id,
+              currentVaultId,
+              () => getFilesLightweight(organization.id, currentVaultId),
+              cacheContext,
             )
           : Promise.resolve({
               files: null,
@@ -233,7 +399,7 @@ export function useLoadFiles() {
 
         // Extract files from cache result
         const serverResult = {
-          files: serverResultWithCache.files as LightweightFile[] | null,
+          files: serverResultWithCache.files as CachedServerFile[] | null,
           error: serverResultWithCache.error,
         }
 
@@ -266,6 +432,16 @@ export function useLoadFiles() {
             hasWorkingDir: !!localResult,
           })
           setStatusMessage(errorMsg)
+          return
+        }
+
+        if (!isLoadContextCurrent()) {
+          log.info('[CheckoutHydration]', 'Discarding load before merge', {
+            requestId: loadContext.requestId,
+            orgId: hashCheckoutIdentifier(loadContext.orgId),
+            vaultId: hashCheckoutIdentifier(loadContext.vaultId),
+            stale: true,
+          })
           return
         }
 
@@ -320,7 +496,7 @@ export function useLoadFiles() {
           vaultId: currentVaultId,
           shouldFetchServer,
           serverFileCount: serverResult.files?.length || 0,
-          serverError: serverResult.error?.message,
+          serverError: serverResult.error ? getErrorMessage(serverResult.error) : undefined,
         })
 
         // Debug: Log first few paths for comparison (helps debug path matching issues)
@@ -386,7 +562,15 @@ export function useLoadFiles() {
 
             // Create a map of pdm data by file path (case-insensitive for Windows compatibility)
             // Windows filesystems are case-insensitive, so we normalize to lowercase for matching
-            const pdmMap = new Map(pdmFiles.map((f: any) => [f.file_path.toLowerCase(), f]))
+            // The fast RPC intentionally returns a lightweight row, while LocalFile.pdmData
+            // remains the established full-domain shape. The existing consumers only read the
+            // lightweight fields here; keep the boundary explicit instead of leaking `any`.
+            const pdmMap = new Map<string, PDMFile>(
+              pdmFiles.map((file) => [
+                file.file_path.toLowerCase(),
+                file as unknown as PDMFile,
+              ]),
+            )
 
             // Create a map of server folders by path (case-insensitive for Windows compatibility)
             // These are explicit folder records from the folders table (for empty folder sync)
@@ -406,25 +590,25 @@ export function useLoadFiles() {
             })
 
             // Store server files for tracking deletions
-            const serverFilesList = pdmFiles.map((f: any) => ({
-              id: f.id,
-              file_path: f.file_path,
-              name: f.file_name,
-              extension: f.extension,
-              content_hash: f.content_hash || '',
+            const serverFilesList = pdmFiles.map((file) => ({
+              id: file.id,
+              file_path: file.file_path,
+              name: file.file_name,
+              extension: file.extension ?? '',
+              content_hash: file.content_hash || '',
             }))
             setServerFiles(serverFilesList)
 
             // Clean up auto-download exclusions for files that no longer exist on the server
             if (currentVaultId) {
-              const serverFilePaths = new Set(pdmFiles.map((f: any) => f.file_path))
+              const serverFilePaths = new Set(pdmFiles.map((file) => file.file_path))
               usePDMStore.getState().cleanupStaleExclusions(currentVaultId, serverFilePaths)
             }
 
             // Compute all folder paths that exist on the server (from file paths + explicit folder records)
             const serverFolderPathsSet = new Set<string>()
             // Add folders implied by file paths
-            for (const file of pdmFiles as any[]) { // TODO: type this
+            for (const file of pdmFiles) {
               const pathParts = file.file_path.split('/')
               let currentPath = ''
               for (let i = 0; i < pathParts.length - 1; i++) {
@@ -526,18 +710,15 @@ export function useLoadFiles() {
               }
             }
 
-            // Create a map of existing checked_out_user info to preserve avatar data
-            // This prevents avatars from showing "SO" (Someone) during file refreshes
-            // The user info is fetched in a background task and should not be lost
-            type CheckedOutUserInfo = {
-              email: string
-              full_name: string | null
-              avatar_url?: string
-            }
-            const existingCheckedOutUsers = new Map<string, CheckedOutUserInfo>()
+            // Preserve only profiles whose IDs still match the current owner.
+            const existingCheckedOutUsers = new Map<string, CheckoutUserProfile>()
             for (const f of currentFiles) {
-              if (f.pdmData?.id && (f.pdmData as any).checked_out_user) { // TODO: type this
-                existingCheckedOutUsers.set(f.pdmData.id, (f.pdmData as any).checked_out_user) // TODO: type this
+              const profile = f.pdmData?.checked_out_user
+              if (
+                f.pdmData?.id &&
+                isCheckoutProfileForOwner(profile, f.pdmData.checked_out_by)
+              ) {
+                existingCheckedOutUsers.set(f.pdmData.id, profile)
               }
             }
 
@@ -567,10 +748,13 @@ export function useLoadFiles() {
             // This allows us to detect moved files (same content, different path) and preserve their pdmData
             // IMPORTANT: Only track checked-out-by-me files - if a file isn't checked out by me,
             // I couldn't have moved it, so matching hashes should be treated as new files, not moves.
-            const checkedOutByMeByHash = new Map<string, any>()
-            for (const pdmFile of pdmFiles as any[]) { // TODO: type this
+            const checkedOutByMeByHash = new Map<string, PDMFile>()
+            for (const pdmFile of pdmFiles) {
               if (pdmFile.content_hash && pdmFile.checked_out_by === user?.id) {
-                checkedOutByMeByHash.set(pdmFile.content_hash, pdmFile)
+                checkedOutByMeByHash.set(
+                  pdmFile.content_hash,
+                  pdmFile as unknown as PDMFile,
+                )
               }
             }
 
@@ -652,7 +836,7 @@ export function useLoadFiles() {
             // We use previously persisted inodes from the sync index to match "new" local
             // files to "missing" server files. This handles all rename scenarios including
             // modified-then-renamed files where hash matching fails.
-            const inodeRenameMap = new Map<string, any>() // localPath(lower) -> pdmFile
+            const inodeRenameMap = new Map<string, PDMFile>() // localPath(lower) -> pdmFile
             const inodeMatchedServerPaths = new Set<string>() // old server paths matched by inode
 
             if (savedInodeMap.size > 0) {
@@ -664,7 +848,7 @@ export function useLoadFiles() {
               // are per-machine and file-unique, making false positives extremely unlikely.
               // Restricting to checked-out files caused ghost/orphan pairs after a checkin
               // that updated the server path and released the checkout.
-              const inodeToServerFile = new Map<number, any>()
+              const inodeToServerFile = new Map<number, PDMFile>()
               for (const [ino, oldRelativePaths] of savedInodeMap) {
                 for (const oldRelativePath of oldRelativePaths) {
                   const pdmFile = pdmMap.get(oldRelativePath)
@@ -687,8 +871,8 @@ export function useLoadFiles() {
                     inodeMatchedServerPaths.add(serverFile.file_path.toLowerCase())
                     inodeToServerFile.delete(localFile.ino)
                     const isCheckedOutByMe = user?.id
-                      ? (serverFile as any).checked_out_by === user.id // TODO: type this
-                      : !!(serverFile as any).checked_out_by // TODO: type this
+                      ? serverFile.checked_out_by === user.id
+                      : !!serverFile.checked_out_by
                     window.electronAPI?.log('info', '[LoadFiles] Inode rename detected', {
                       oldPath: serverFile.file_path,
                       newPath: localFile.relativePath,
@@ -930,9 +1114,12 @@ export function useLoadFiles() {
               // at render time through src/lib/metadata/overlay.ts.
               let finalPdmData = pdmData
 
-              if (recentlyModifiedData) {
+              if (recentlyModifiedData && pdmData) {
                 // Recently modified - keep the local pdmData to prevent reversion
-                finalPdmData = recentlyModifiedData
+                finalPdmData = mergePdmFileData(recentlyModifiedData, {
+                  checked_out_by: pdmData.checked_out_by,
+                  checked_out_at: pdmData.checked_out_at,
+                })
                 window.electronAPI?.log(
                   'debug',
                   '[LoadFiles] SKIP merge for recently modified file',
@@ -945,18 +1132,15 @@ export function useLoadFiles() {
                 )
               }
 
-              // Preserve checked_out_user info if the checkout user hasn't changed
-              // This prevents "SO" (Someone) avatars during file refreshes
               if (finalPdmData?.id) {
                 const preservedUserInfo = existingCheckedOutUsers.get(finalPdmData.id)
-                if (preservedUserInfo && finalPdmData.checked_out_by) {
-                  // If checkout user is the same, preserve the user info
-                  // The server data doesn't include the joined user info
-                  finalPdmData = {
-                    ...finalPdmData,
-                    checked_out_user: preservedUserInfo,
-                  } as any // TODO: type this
-                }
+                const profile = isCheckoutProfileForOwner(
+                  preservedUserInfo,
+                  finalPdmData.checked_out_by,
+                )
+                  ? preservedUserInfo
+                  : finalPdmData.checked_out_user
+                finalPdmData = reconcileCheckoutProfile(finalPdmData, profile)
               }
 
               // CRITICAL: Preserve 'modified' status for files with pending metadata changes
@@ -1006,7 +1190,7 @@ export function useLoadFiles() {
                 pdmData.content_hash &&
                 effectiveLocalHash &&
                 pdmData.content_hash === effectiveLocalHash
-              const computedLocalVersion = isSyncedWithServer
+              const computedLocalVersion = isSyncedWithServer && pdmData
                 ? existingLocalVersion !== undefined && existingLocalVersion >= pdmData.version
                   ? existingLocalVersion
                   : pdmData.version
@@ -1052,7 +1236,7 @@ export function useLoadFiles() {
               localFiles.filter((f) => !f.isDirectory && f.localHash).map((f) => f.localHash),
             )
 
-            for (const pdmFile of pdmFiles as any[]) { // TODO: type this
+            for (const pdmFile of pdmFiles) {
               if (!localPathSet.has(pdmFile.file_path.toLowerCase())) {
                 // Check if this file was MOVED (same content exists at a different location locally)
                 // or matched by inode-based rename detection
@@ -1082,13 +1266,16 @@ export function useLoadFiles() {
                   }
                 }
 
-                // Add the cloud-only file (not synced locally)
-                // Preserve checked_out_user info if we have it cached
+                // Add the cloud-only file (not synced locally), retaining only
+                // owner-matching profile enrichment.
                 const preservedCloudUserInfo = existingCheckedOutUsers.get(pdmFile.id)
-                const cloudFilePdmData =
-                  preservedCloudUserInfo && pdmFile.checked_out_by
-                    ? { ...pdmFile, checked_out_user: preservedCloudUserInfo }
-                    : pdmFile
+                const cloudPdmFile = pdmFile as unknown as PDMFile
+                const cloudFilePdmData = reconcileCheckoutProfile(
+                  cloudPdmFile,
+                  isCheckoutProfileForOwner(preservedCloudUserInfo, cloudPdmFile.checked_out_by)
+                    ? preservedCloudUserInfo
+                    : cloudPdmFile.checked_out_user,
+                )
 
                 localFiles.push({
                   name: pdmFile.file_name,
@@ -1259,7 +1446,7 @@ export function useLoadFiles() {
             // Update the local sync index with all server file paths
             // This ensures we track which files have been synced for orphan detection
             if (currentVaultId) {
-              const serverPaths = pdmFiles.map((f: any) => f.file_path as string)
+              const serverPaths = pdmFiles.map((file) => file.file_path)
 
               // Persist inodes (and localVersion/localHash) for all matched local files
               // so the next load can use inodes for rename detection and version/hash
@@ -1540,55 +1727,92 @@ export function useLoadFiles() {
             const userInfoStart = performance.now()
             const checkedOutFileIds = localFiles
               .filter((f) => !f.isDirectory && f.pdmData?.checked_out_by)
-              .map((f) => f.pdmData!.id)
+              .map((f) => f.pdmData?.id)
+              .filter((fileId): fileId is string => Boolean(fileId))
 
-            if (checkedOutFileIds.length > 0 && organization) {
-              const fetchStart = performance.now()
-              const { users: userInfo } = await getCheckedOutUsers(checkedOutFileIds)
-              const fetchDuration = performance.now() - fetchStart
+            const hydrationOwners = new Map<string, string>()
+            for (const file of localFiles) {
+              if (!file.isDirectory && file.pdmData?.id && file.pdmData.checked_out_by) {
+                hydrationOwners.set(file.pdmData.id, file.pdmData.checked_out_by)
+              }
+            }
 
-              const userInfoMap = userInfo as Record<
-                string,
-                { email: string; full_name: string; avatar_url?: string }
-              >
-              if (Object.keys(userInfoMap).length > 0 && !isVaultStale()) {
-                // Update files in store with user info
-                const updateStart = performance.now()
-                const currentFiles = usePDMStore.getState().files
-                const updatedFiles = currentFiles.map((f) => {
-                  const fileId = f.pdmData?.id
-                  if (fileId && fileId in userInfoMap && f.pdmData) {
-                    return {
-                      ...f,
-                      pdmData: {
-                        ...f.pdmData,
-                        checked_out_user: userInfoMap[fileId],
-                      },
-                    } as typeof f
-                  }
-                  return f
-                })
-                setFiles(updatedFiles)
-                const updateDuration = performance.now() - updateStart
-
-                // Also persist user info to IndexedDB cache for next app boot
-                // This prevents "SO" avatars on subsequent loads
-                if (loadingForVaultId) {
-                  updateCachedUserInfo(loadingForVaultId, userInfoMap).catch((error) => {
-                    window.electronAPI?.log(
-                      'warn',
-                      '[LoadFiles] Failed to update cache with user info',
-                      { error: String(error) },
-                    )
-                  })
-                }
-
-                recordMetric('VaultLoad', 'User info update complete', {
-                  durationMs: Math.round(updateDuration),
-                  fetchMs: Math.round(fetchDuration),
-                  usersFound: Object.keys(userInfoMap).length,
+            if (checkedOutFileIds.length > 0 && organization && loadingForVaultId) {
+              const uniqueFileIds = [...new Set(checkedOutFileIds)]
+              const hydrationAction = usePDMStore.getState()
+              for (const fileId of uniqueFileIds) {
+                const ownerId = hydrationOwners.get(fileId)
+                if (!ownerId) continue
+                hydrationAction.setCheckoutHydrationStatus(fileId, {
+                  ownerId,
+                  state: 'pending',
+                  attempt: 0,
+                  lastError: null,
+                  requestId: loadContext.requestId,
+                  updatedAt: Date.now(),
                 })
               }
+
+              const scope: CheckoutProfileScope = {
+                orgId: organization.id,
+                vaultId: loadingForVaultId,
+              }
+              const profileResult = await fetchCheckoutProfilesWithRetry(
+                uniqueFileIds,
+                scope,
+                loadContext.requestId,
+                isLoadContextCurrent,
+              )
+
+              if (!isLoadContextCurrent()) {
+                log.info('[CheckoutHydration]', 'Discarding stale profile response', {
+                  requestId: loadContext.requestId,
+                  orgId: hashCheckoutIdentifier(scope.orgId),
+                  vaultId: hashCheckoutIdentifier(scope.vaultId),
+                  responseCount: Object.keys(profileResult.users).length,
+                  stale: true,
+                })
+                return
+              }
+
+              const usersFound = Object.keys(profileResult.users).length
+              const updateStart = performance.now()
+              hydrationAction.applyCheckoutUserProfiles(profileResult.users)
+
+              for (const fileId of uniqueFileIds) {
+                const ownerId = hydrationOwners.get(fileId)
+                if (!ownerId) continue
+                const profile = profileResult.users[fileId]
+                if (profile && isCheckoutProfileForOwner(profile, ownerId)) {
+                  hydrationAction.clearCheckoutHydrationStatus(fileId)
+                } else {
+                  hydrationAction.setCheckoutHydrationStatus(fileId, {
+                    ownerId,
+                    state: 'error',
+                    attempt: profileResult.attempts,
+                    lastError: profileResult.error
+                      ? getErrorMessage(profileResult.error)
+                      : 'profile_not_found',
+                    requestId: loadContext.requestId,
+                    updatedAt: Date.now(),
+                  })
+                }
+              }
+
+              // This call is queued after the base cache write, and the context is
+              // checked again inside the IndexedDB transaction.
+              void updateCachedUserInfo(
+                organization.id,
+                loadingForVaultId,
+                profileResult.users,
+                cacheContext,
+              )
+
+              recordMetric('VaultLoad', 'User info update complete', {
+                durationMs: Math.round(performance.now() - updateStart),
+                fetchMs: Math.round(performance.now() - userInfoStart),
+                usersFound,
+              })
             }
             recordMetric('VaultLoad', 'User info task complete', {
               durationMs: Math.round(performance.now() - userInfoStart),
@@ -2005,6 +2229,8 @@ export function useLoadFiles() {
       isOfflineMode,
       currentVaultId,
       user,
+      authenticatedUserId,
+      sessionGeneration,
       setFiles,
       setServerFiles,
       setServerFolderPaths,

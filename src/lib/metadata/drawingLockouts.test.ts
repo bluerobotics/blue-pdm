@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { lockedDrawingFields, withoutLockedDrawingFields } from './drawingLockouts'
+import { lockedDrawingFields } from './drawingLockouts'
 
 const ALL_LOCKED = {
   lockDrawingItemNumber: true,
@@ -60,58 +60,5 @@ describe('lockedDrawingFields', () => {
 
   it('locks nothing on a drawing once the user turns the settings off', () => {
     expect(lockedDrawingFields('.slddrw', NONE_LOCKED).size).toBe(0)
-  })
-})
-
-describe('withoutLockedDrawingFields', () => {
-  it('returns the pending set untouched when nothing is locked', () => {
-    const pending = { part_number: 'BR-100', description: 'Bracket' }
-
-    expect(withoutLockedDrawingFields(pending, new Set())).toBe(pending)
-  })
-
-  it('takes the tab out with the item number it belongs to', () => {
-    const remaining = withoutLockedDrawingFields(
-      { part_number: 'BR-100', tab_number: '02', description: 'Bracket' },
-      new Set(['part_number'] as const),
-    )
-
-    expect(remaining).toEqual({ description: 'Bracket' })
-  })
-
-  it('takes the per-configuration descriptions out with the description', () => {
-    const remaining = withoutLockedDrawingFields(
-      { description: 'Bracket', config_descriptions: { Default: 'Bracket' }, revision: 'B' },
-      new Set(['description'] as const),
-    )
-
-    expect(remaining).toEqual({ revision: 'B' })
-  })
-
-  it('leaves nothing to write when every field is locked', () => {
-    const remaining = withoutLockedDrawingFields(
-      { part_number: 'BR-100', description: 'Bracket', revision: 'B' },
-      new Set(['part_number', 'description', 'revision'] as const),
-    )
-
-    expect(Object.keys(remaining)).toHaveLength(0)
-  })
-
-  it('keeps a cleared value rather than reading it as an absent one', () => {
-    // `null` is a field the user emptied on purpose, and the write planner turns it into an empty
-    // property. Dropping it here because it is falsy would leave the old value in the document.
-    const remaining = withoutLockedDrawingFields(
-      { part_number: null, description: null },
-      new Set(['part_number'] as const),
-    )
-
-    expect(remaining).toEqual({ description: null })
-  })
-
-  it('does not mutate the pending set it was given', () => {
-    const pending = { part_number: 'BR-100', description: 'Bracket' }
-    withoutLockedDrawingFields(pending, new Set(['part_number'] as const))
-
-    expect(pending.part_number).toBe('BR-100')
   })
 })

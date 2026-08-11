@@ -2,6 +2,16 @@ import type { TranslationDict } from '../types'
 
 // Simplified Chinese translations (简体中文)
 export const zhCN: TranslationDict = {
+  checkoutDisplay: {
+    you: '你',
+    loadingOwner: '正在加载签出者',
+    ownerUnavailable: '签出者不可用',
+    checkedOutBy: '由 {{name}} 签出',
+    checkedOutByOnComputer: '由 {{name}} 在 {{computer}} 上签出',
+    anotherComputer: '另一台电脑',
+    differentComputer: '不同电脑',
+    otherComputer: '其他电脑',
+  },
   common: {
     save: '保存',
     cancel: '取消',
@@ -142,6 +152,38 @@ export const zhCN: TranslationDict = {
     enterOrgCode: '请输入组织代码',
     invalidCode: '组织代码无效。请检查后重试。',
     failedWithCode: '使用提供的代码连接 Supabase 失败',
+  },
+
+  source: {
+    configTree: {
+      drawings: '工程图',
+      ebom: 'eBOM',
+      noDrawings: '没有工程图引用此配置',
+      noComponents: '此配置中没有组件',
+      expand: '展开',
+      collapse: '折叠',
+    },
+    configCommit: {
+      write: '写入文件',
+      writeAndSync: '写入并更新工程图',
+      writeAndSyncCount: '写入并更新 {{count}} 个配置的工程图',
+      pending: '尚未写入文档',
+      swOffline: '启动 SolidWorks 服务以写入配置元数据',
+      summary:
+        '已写入配置：{{configurations}}；工程图已更新：{{updated}}，已跳过：{{skipped}}，失败：{{failed}}',
+    },
+    configDrawings: {
+      dialogTitle: '工程图引用此配置',
+      dialogBody: '部分引用的工程图未由您签出。必须先签出，才能接收更新。',
+      checkOutAndUpdate: '签出并更新',
+      forceModelOnly: '仅写入模型',
+      heldBy: '由 {{name}} 持有',
+      blocked: '由其他用户持有',
+      notInVault: '不在此保险库中',
+      ready: '准备更新',
+      available: '可签出',
+      modelOnlyWarning: '仅写入模型会使未由您签出的工程图保持不变。',
+    },
   },
 
   settings: {

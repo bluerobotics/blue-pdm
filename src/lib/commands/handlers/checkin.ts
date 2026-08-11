@@ -37,7 +37,9 @@ import type { LocalFile } from '../../../stores/pdmStore'
 import { usePDMStore } from '../../../stores/pdmStore'
 import { resolveRevision, resolvedText } from '@/lib/metadata/overlay'
 import { promoteMetadataForCheckin } from '@/lib/metadata/checkinMetadata'
+import { currentUnwritableFieldGroups } from '@/lib/metadata/writeOwnership'
 import { hasPendingMetadata } from '@/lib/metadata/pendingEdits'
+import { writeStateOf, type MetadataFieldGroup } from '@/lib/metadata/writeState'
 import {
   awaitFileWritesSettled,
   isFileWriteInFlight,
@@ -47,6 +49,8 @@ import { t } from '@/lib/i18n'
 import { log } from '@/lib/logger'
 import { isRetryableError, getBackoffDelay, sleep } from '../../network'
 import { FileOperationTracker } from '../../fileOperationTracker'
+import { swRefsToFileReferences } from '../../solidworks/referenceRows'
+import type { SWServiceReference } from '../../solidworks/types'
 
 // SolidWorks file extensions that support metadata extraction
 const SW_EXTENSIONS = ['.sldprt', '.sldasm', '.slddrw']
@@ -59,6 +63,43 @@ const REFERENCE_FILE_EXTENSIONS = ['.sldasm', '.slddrw']
 
 // Drawing extensions (need special handling for reference type)
 const DRAWING_EXTENSIONS = ['.slddrw']
+
+function pendingConfigurationNames(
+  file: LocalFile,
+  unwritableGroups: ReadonlySet<MetadataFieldGroup>,
+): string[] {
+  const names = new Set([
+    ...Object.keys(file.pendingMetadata?.config_tabs ?? {}),
+    ...Object.keys(file.pendingMetadata?.config_descriptions ?? {}),
+  ])
+
+  return [...names].filter((configuration) => {
+    const tabPending =
+      !unwritableGroups.has('tab_number') &&
+      Object.prototype.hasOwnProperty.call(
+        file.pendingMetadata?.config_tabs ?? {},
+        configuration,
+      ) &&
+      writeStateOf(file.metadataWriteState, {
+        scope: 'configuration',
+        field: 'config_tab',
+        configuration,
+      }) === 'pending'
+    const descriptionPending =
+      !unwritableGroups.has('description') &&
+      Object.prototype.hasOwnProperty.call(
+        file.pendingMetadata?.config_descriptions ?? {},
+        configuration,
+      ) &&
+      writeStateOf(file.metadataWriteState, {
+        scope: 'configuration',
+        field: 'config_description',
+        configuration,
+      }) === 'pending'
+
+    return tabPending || descriptionPending
+  })
+}
 
 /**
  * Incremental Store Update Configuration
@@ -325,12 +366,7 @@ async function extractAndStoreReferences(
       return
     }
 
-    const swRefs = result.data.references as Array<{
-      path: string
-      fileName: string
-      exists: boolean
-      fileType: string
-    }>
+    const swRefs = result.data.references as SWServiceReference[]
 
     logCheckin('debug', 'Got references from SW service', {
       fileName: file.name,
@@ -339,23 +375,18 @@ async function extractAndStoreReferences(
       firstRef: swRefs[0]?.fileName,
     })
 
-    // Convert SW service format to our SWReference format
-    // The SW service returns one entry per unique component path
-    // Reference types differ based on file type:
-    // - Assemblies: components (parts and sub-assemblies)
-    // - Drawings: model references (the parts/assemblies the drawing documents)
-    const references: SWReference[] = swRefs.map((ref) => ({
-      childFilePath: ref.path,
-      quantity: 1, // SW service doesn't provide quantity in getReferences, default to 1
-      referenceType: isDrawing
-        ? 'reference' // Drawings reference models they document
-        : ref.fileType === 'assembly'
-          ? 'component'
-          : ref.fileType === 'part'
-            ? 'component'
-            : 'reference',
-      configuration: undefined, // Will be populated if we have BOM data
-    }))
+    // The shared mapper expands drawing configurations. Assemblies retain their existing component
+    // semantics because the service response does not include the parent file type.
+    const referenceTypesByPath = new Map(
+      swRefs.map((ref) => [normalizePath(ref.path), ref.fileType.toLowerCase()]),
+    )
+    const references: SWReference[] = swRefsToFileReferences(swRefs).map((reference) => {
+      const fileType = referenceTypesByPath.get(normalizePath(reference.childFilePath))
+      const referenceType: SWReference['referenceType'] =
+        isDrawing || (fileType !== 'assembly' && fileType !== 'part') ? 'reference' : 'component'
+
+      return { ...reference, referenceType }
+    })
 
     // Store references in database (pass vault root for better path matching)
     const upsertResult = await upsertFileReferences(
@@ -863,6 +894,13 @@ export const checkinCommand: Command<CheckinParams> = {
     const unconfirmed: Array<{ name: string; count: number }> = []
 
     /**
+     * Configuration edits that were stashed but never sent to SolidWorks before check-in.
+     * `promoteMetadataForCheckin` deliberately clears their pending mark, so the final warning is
+     * the only immediate indication that the database now holds a value the document does not.
+     */
+    const uncommittedConfigurationEdits: Array<{ name: string; configurations: string[] }> = []
+
+    /**
      * Detect post-check-in drift: re-hash the file after readonly is set
      * and compare to the hash that was uploaded. SolidWorks can modify open
      * files (e.g., reference rebuild) between upload and readonly, leaving
@@ -1013,8 +1051,16 @@ export const checkinCommand: Command<CheckinParams> = {
         // document: the write changed the bytes of the very file being checked in, the hash below
         // read that as new content, and drawings nobody had edited climbed a version every time
         // the folder was checked in. Putting a value into a document is Sync Metadata's job now.
+        const unwritableGroups = currentUnwritableFieldGroups(file.extension)
+        const pendingConfigurations = pendingConfigurationNames(file, unwritableGroups)
+        if (pendingConfigurations.length > 0) {
+          uncommittedConfigurationEdits.push({
+            name: file.name,
+            configurations: pendingConfigurations,
+          })
+        }
         const metadataSettleStart = performance.now()
-        const metadataSettlement = promoteMetadataForCheckin(file)
+        const metadataSettlement = promoteMetadataForCheckin(file, unwritableGroups)
         recordSubstepTiming('settleMetadata', performance.now() - metadataSettleStart)
 
         if (metadataSettlement.promotedUnconfirmed.length > 0) {
@@ -1692,7 +1738,7 @@ export const checkinCommand: Command<CheckinParams> = {
     // Respects the serial stdin/stdout pipe limit of the SW service
     // Sets batch flag to pause status polling during heavy operations
     // ========================================
-    let swResults: Array<{ success: boolean; error?: string; file?: LocalFile }> = []
+    const swResults: Array<{ success: boolean; error?: string; file?: LocalFile }> = []
 
     // OPTIMIZATION: Fetch open documents ONCE before processing SW files
     // Then we only call setDocumentReadOnly for files that are actually open
@@ -2082,6 +2128,20 @@ export const checkinCommand: Command<CheckinParams> = {
         operationId,
         count: unconfirmedCount,
         files: unconfirmed.map((entry) => entry.name),
+      })
+    }
+
+    if (uncommittedConfigurationEdits.length > 0) {
+      const details = uncommittedConfigurationEdits.map(
+        (entry) =>
+          `${entry.name}: ${t('source.metadataWrite.affectedConfigurations', {
+            names: entry.configurations.join(', '),
+          })}`,
+      )
+      ctx.addToast('warning', `${t('source.metadataWrite.statePending')} — ${details.join('; ')}`)
+      logCheckin('warn', 'Checked in stashed configuration edits without a model write', {
+        operationId,
+        files: uncommittedConfigurationEdits,
       })
     }
 

@@ -5,6 +5,7 @@ export {
   InlineUploadButton,
   InlineStageCheckinButton,
   InlineSyncButton,
+  InlineConfigSyncButton,
   FolderDownloadButton,
   FolderUploadButton,
   InlineCheckinButton,

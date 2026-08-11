@@ -437,6 +437,7 @@ export const checkoutCommand: Command<CheckoutParams> = {
                 ...file.pdmData!,
                 checked_out_by: user.id,
                 checked_out_user: {
+                  id: user.id,
                   full_name: user.full_name,
                   email: user.email,
                   avatar_url: user.avatar_url,

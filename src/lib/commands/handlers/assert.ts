@@ -16,6 +16,7 @@
  * useful for letting async operations settle between test steps.
  */
 
+import { getCheckoutProfileForOwner } from '@/lib/checkout/checkoutDisplay'
 import { usePDMStore, LocalFile } from '../../../stores/pdmStore'
 import { resolveDescription, resolvePartNumber, resolveRevision } from '@/lib/metadata/overlay'
 import { registerTerminalCommand } from '../registry'
@@ -54,7 +55,7 @@ type WorkflowStateAssertion = 'wip' | 'in_review' | 'released' | 'obsolete'
  * Copied from info.ts to keep this module self-contained per the spec.
  */
 function resolvePathPattern(pattern: string, files: LocalFile[]): LocalFile[] {
-  let normalizedPattern = pattern.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '')
+  const normalizedPattern = pattern.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '')
 
   if (normalizedPattern.includes('*')) {
     const regexPattern = normalizedPattern
@@ -311,7 +312,7 @@ export async function handleAssert(
       )
     } else {
       // Compare with email — look up the email from the checked_out_user join
-      const actualEmail = file.pdmData?.checked_out_user?.email ?? null
+      const actualEmail = getCheckoutProfileForOwner(file)?.email ?? null
       check(
         `checked-out-by of ${file.name}`,
         expectedBy,

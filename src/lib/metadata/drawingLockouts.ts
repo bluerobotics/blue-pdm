@@ -17,12 +17,15 @@
  * a locked field reaches a drawing is `syncMetadataPush.pushDrawingMetadata`, which writes the
  * parent's own properties verbatim rather than anything BluePLM composed.
  *
+ * This module answers whether a user may edit a drawing field. The separate question of whether
+ * BluePLM will ever write a field into a document, including non-SolidWorks files and drawing
+ * revision, is answered by `writeOwnership.ts`.
+ *
  * Revision is listed for completeness and is never written to a drawing by any path: the drawing's
  * own revision table is authoritative, which is why `pushDrawingMetadata` omits it outright.
  */
 
 import { usePDMStore } from '@/stores/pdmStore'
-import type { PendingMetadata } from '@/stores/types'
 
 const DRAWING_EXTENSION = '.slddrw'
 
@@ -67,33 +70,4 @@ export function currentLockedDrawingFields(
     lockDrawingDescription,
     lockDrawingRevision,
   })
-}
-
-/**
- * The pending set with the locked fields taken out, so what remains can be written as it stands.
- *
- * The tab goes with the item number rather than having a lock of its own: it is one component of
- * the number the planner composes, and leaving it behind would write a drawing a tab belonging to
- * a base number this call just declined to write.
- */
-export function withoutLockedDrawingFields(
-  pending: PendingMetadata,
-  locked: ReadonlySet<LockableDrawingField>,
-): PendingMetadata {
-  if (locked.size === 0) return pending
-
-  const remaining: PendingMetadata = { ...pending }
-  if (locked.has('part_number')) {
-    delete remaining.part_number
-    delete remaining.tab_number
-    delete remaining.config_tabs
-  }
-  if (locked.has('description')) {
-    delete remaining.description
-    delete remaining.config_descriptions
-  }
-  if (locked.has('revision')) {
-    delete remaining.revision
-  }
-  return remaining
 }

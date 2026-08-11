@@ -9,7 +9,7 @@
  * synced one whose references have not been resolved into the database yet.
  */
 
-import { useCallback } from 'react'
+import { useCallback, useRef } from 'react'
 
 import { log } from '@/lib/logger'
 import { getContainsByConfiguration } from '@/lib/supabase/files/queries'
@@ -26,23 +26,40 @@ export interface ConfigBomHandlersDeps {
 export function useConfigBomHandlers(deps: ConfigBomHandlersDeps) {
   const { files, addToast } = deps
 
-  const expandedConfigBoms = usePDMStore((s) => s.expandedConfigBoms)
-  const configBomData = usePDMStore((s) => s.configBomData)
   const toggleConfigBomExpansionStore = usePDMStore((s) => s.toggleConfigBomExpansion)
   const setConfigBomData = usePDMStore((s) => s.setConfigBomData)
   const addLoadingConfigBom = usePDMStore((s) => s.addLoadingConfigBom)
   const removeLoadingConfigBom = usePDMStore((s) => s.removeLoadingConfigBom)
+  const configBomLoadGenerations = useRef(new Map<string, number>())
+
+  const cancelConfigBomLoad = useCallback(
+    (configKey: string): void => {
+      const nextGeneration = (configBomLoadGenerations.current.get(configKey) ?? 0) + 1
+      configBomLoadGenerations.current.set(configKey, nextGeneration)
+      removeLoadingConfigBom(configKey)
+    },
+    [removeLoadingConfigBom],
+  )
 
   const fetchFromSolidWorks = useCallback(
-    async (file: LocalFile, configName: string, configKey: string): Promise<void> => {
+    async (
+      file: LocalFile,
+      configName: string,
+      configKey: string,
+      isCurrentLoad: () => boolean,
+    ): Promise<void> => {
       log.debug('[ConfigHandlers]', 'Loading BOM from SolidWorks', {
         path: file.path,
         configName,
       })
 
+      if (!isCurrentLoad()) return
+
       const result = await window.electronAPI?.solidworks?.getBom(file.path, {
         configuration: configName,
       })
+
+      if (!isCurrentLoad()) return
 
       if (result?.success && result.data?.items) {
         const swItems = transformSwBomToConfigBomItems(
@@ -84,21 +101,34 @@ export function useConfigBomHandlers(deps: ConfigBomHandlersDeps) {
       const configKey = `${file.path}::${configName}`
 
       // If already expanded, just collapse
-      if (expandedConfigBoms.has(configKey)) {
+      if (usePDMStore.getState().expandedConfigBoms.has(configKey)) {
+        cancelConfigBomLoad(configKey)
         toggleConfigBomExpansionStore(configKey)
         return
       }
 
       // Expand and load BOM data if not cached
       toggleConfigBomExpansionStore(configKey)
-      if (configBomData.has(configKey)) return
+      if (usePDMStore.getState().configBomData.has(configKey)) return
 
       const fileId = file.pdmData?.id
 
+      const generation = (configBomLoadGenerations.current.get(configKey) ?? 0) + 1
+      configBomLoadGenerations.current.set(configKey, generation)
       addLoadingConfigBom(configKey)
+
+      const isCurrentLoad = (): boolean => {
+        const state = usePDMStore.getState()
+        return (
+          configBomLoadGenerations.current.get(configKey) === generation &&
+          state.expandedConfigSections.has(configKey) &&
+          state.expandedConfigBoms.has(configKey)
+        )
+      }
+
       try {
         if (!fileId) {
-          await fetchFromSolidWorks(file, configName, configKey)
+          await fetchFromSolidWorks(file, configName, configKey, isCurrentLoad)
           return
         }
 
@@ -109,9 +139,9 @@ export function useConfigBomHandlers(deps: ConfigBomHandlersDeps) {
             error,
             configKey,
           })
-          await fetchFromSolidWorks(file, configName, configKey)
+          await fetchFromSolidWorks(file, configName, configKey, isCurrentLoad)
         } else if (items && items.length > 0) {
-          setConfigBomData(configKey, items)
+          if (isCurrentLoad()) setConfigBomData(configKey, items)
           log.debug('[ConfigHandlers]', 'Loaded config BOM from database', {
             configKey,
             itemCount: items.length,
@@ -120,26 +150,28 @@ export function useConfigBomHandlers(deps: ConfigBomHandlersDeps) {
           log.debug('[ConfigHandlers]', 'Database BOM empty, falling back to SolidWorks', {
             configKey,
           })
-          await fetchFromSolidWorks(file, configName, configKey)
+          await fetchFromSolidWorks(file, configName, configKey, isCurrentLoad)
         }
       } catch (error) {
+        if (!isCurrentLoad()) return
         log.error('[ConfigHandlers]', 'Exception loading config BOM', { error, configKey })
         addToast('error', 'Failed to load BOM data')
       } finally {
-        removeLoadingConfigBom(configKey)
+        if (configBomLoadGenerations.current.get(configKey) === generation) {
+          removeLoadingConfigBom(configKey)
+        }
       }
     },
     [
-      expandedConfigBoms,
-      configBomData,
       toggleConfigBomExpansionStore,
       setConfigBomData,
       addLoadingConfigBom,
       removeLoadingConfigBom,
+      cancelConfigBomLoad,
       addToast,
       fetchFromSolidWorks,
     ],
   )
 
-  return { toggleConfigBomExpansion }
+  return { toggleConfigBomExpansion, cancelConfigBomLoad }
 }

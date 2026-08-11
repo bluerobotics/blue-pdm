@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
+import { deriveCheckoutDisplay } from '@/lib/checkout/checkoutDisplay'
 import { t } from '@/lib/i18n'
 import { log } from '@/lib/logger'
 import { usePDMStore, LocalFile, DetailsPanelTab } from '@/stores/pdmStore'
@@ -20,16 +21,14 @@ import {
 import { propertiesToMirror } from '@/lib/metadata/configurationMirror'
 import { configurationScopeProperties } from '@/lib/metadata/divergence'
 import {
-  currentLockedDrawingFields,
   lockedDrawingFields,
-  withoutLockedDrawingFields,
   type LockableDrawingField,
 } from '@/lib/metadata/drawingLockouts'
 import { reportMetadataWrite } from '@/lib/metadata/reportMetadataWrite'
 import { writeMetadataWithVerification } from '@/lib/metadata/writeMetadataToFile'
+import { currentUnwritableFieldGroups } from '@/lib/metadata/writeOwnership'
 import { buildMetadataWritePlan } from '@/lib/metadata/writePlan'
-import { MetadataWriteStateMarker } from '@/components/MetadataWriteStateMarker'
-import { listWriteAddresses } from '@/lib/metadata/writeState'
+import { listWriteAddresses, pendingWithoutGroups } from '@/lib/metadata/writeState'
 import type { PendingMetadataEdit } from '@/stores/types'
 import { WhereUsedTab, SWPropertiesTab } from '@/features/integrations/solidworks'
 import { SWDatacardPanel } from '@/features/integrations/solidworks'
@@ -150,6 +149,7 @@ export function DetailsPanel() {
     cadPreviewMode,
     lowercaseExtensions,
     files,
+    checkoutHydration,
     organization,
     updatePendingMetadata,
     lockDrawingItemNumber,
@@ -172,6 +172,7 @@ export function DetailsPanel() {
       cadPreviewMode: s.cadPreviewMode,
       lowercaseExtensions: s.lowercaseExtensions,
       files: s.files,
+      checkoutHydration: s.checkoutHydration,
       organization: s.organization,
       updatePendingMetadata: s.updatePendingMetadata,
       lockDrawingItemNumber: s.lockDrawingItemNumber,
@@ -183,6 +184,11 @@ export function DetailsPanel() {
   const selectedFileObjects = getSelectedFileObjects()
   const file = selectedFileObjects.length === 1 ? selectedFileObjects[0] : null
   const isFolder = file?.isDirectory || false
+  const checkoutDisplay = deriveCheckoutDisplay(
+    file,
+    user,
+    file?.pdmData?.id ? checkoutHydration[file.pdmData.id]?.state : undefined,
+  )
 
   // Editable property state
   const [editingField, setEditingField] = useState<
@@ -381,8 +387,13 @@ export function DetailsPanel() {
       // here without passing through an edit row - `handleGenerateSerial` most of all. Read from
       // the store rather than from the memo above because this callback outlives the render that
       // built it and the setting can be toggled in between.
-      const writable = withoutLockedDrawingFields(updates, currentLockedDrawingFields(ext))
-      if (Object.keys(writable).length === 0) return
+      // Keep fields BluePLM does not own out of the plan, including a drawing revision even when
+      // its editability lock is disabled. This prevents the automatic save from mutating them.
+      const writable = pendingWithoutGroups(
+        updates,
+        currentUnwritableFieldGroups(targetFile.extension),
+      )
+      if (!writable) return
 
       const watcherKey = targetFile.relativePath
       let watcherSuppressed = false
@@ -908,22 +919,6 @@ export function DetailsPanel() {
                       ) : (
                         // File properties (non-SW files)
                         <>
-                          {/* Values the user typed that are not in the file, kept and labelled with
-                              a retry rather than discarded. */}
-                          <MetadataWriteStateMarker
-                            file={file}
-                            onRetry={(target, retry) => {
-                              void saveMetadataToSWFile(
-                                target,
-                                {
-                                  part_number: retry.pending.part_number,
-                                  description: retry.pending.description,
-                                  revision: retry.pending.revision ?? undefined,
-                                },
-                                retry,
-                              )
-                            }}
-                          />
                           <EditablePropertyItem
                             icon={<Tag size={14} />}
                             label={t('fileBrowser.itemNumber')}
@@ -1044,11 +1039,10 @@ export function DetailsPanel() {
                             icon={<User size={14} />}
                             label={t('source.details.checkedOut')}
                             value={
-                              file.pdmData?.checked_out_by
-                                ? (file.pdmData as any).checked_out_user?.full_name || // TODO: type this
-                                  (file.pdmData as any).checked_out_user?.email || // TODO: type this
-                                  t('source.details.someone')
-                                : t('source.details.notCheckedOut')
+                              checkoutDisplay.state === 'none'
+                                ? t('source.details.notCheckedOut')
+                                : checkoutDisplay.displayName ??
+                                  t('checkoutDisplay.ownerUnavailable')
                             }
                           />
                           <PropertyItem

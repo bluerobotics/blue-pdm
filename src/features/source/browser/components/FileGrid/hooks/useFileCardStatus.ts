@@ -1,14 +1,14 @@
 import { useMemo } from 'react'
 import type { LocalFile } from '@/stores/pdmStore'
+import { usePDMStore } from '@/stores/pdmStore'
 import type { OperationType } from '@/stores/types'
 import { computeFolderVisualState } from '@/components/shared/FileItem'
+import {
+  getCheckoutDisplayUser,
+  type CheckoutDisplayUser,
+} from '@/lib/checkout/checkoutDisplay'
 
-export interface CheckoutUser {
-  id: string
-  name: string
-  email?: string
-  avatar_url?: string
-  isMe: boolean
+export interface CheckoutUser extends CheckoutDisplayUser {
   isDifferentMachine?: boolean
   machineName?: string
   /** For folders: list of file IDs this user has checked out */
@@ -116,7 +116,17 @@ function getCheckoutUsers(
   userEmail: string | undefined,
   userAvatarUrl: string | undefined,
   currentMachineId: string | null,
+  checkoutHydration: ReturnType<typeof usePDMStore.getState>['checkoutHydration'],
 ): CheckoutUser[] {
+  const currentUser = userId
+    ? {
+        id: userId,
+        full_name: userFullName,
+        email: userEmail,
+        avatar_url: userAvatarUrl,
+      }
+    : null
+
   if (file.isDirectory) {
     const folderPrefix = file.relativePath + '/'
     const folderFiles = allFiles.filter(
@@ -141,34 +151,30 @@ function getCheckoutUsers(
       userFileIds.get(checkoutUserId)!.push(fileId)
 
       if (!usersMap.has(checkoutUserId)) {
-        const isMe = checkoutUserId === userId
+        const displayUser = getCheckoutDisplayUser(
+          f,
+          currentUser,
+          f.pdmData?.id ? checkoutHydration[f.pdmData.id]?.state : undefined,
+        )
+        if (
+          !displayUser ||
+          (displayUser.displayState !== 'mine' && displayUser.displayState !== 'resolved')
+        ) {
+          continue
+        }
+
+        const isMe = displayUser.isMe
         const checkoutMachineId = f.pdmData?.checked_out_by_machine_id
         const checkoutMachineName = f.pdmData?.checked_out_by_machine_name
         const isDifferentMachine =
           isMe && checkoutMachineId && currentMachineId && checkoutMachineId !== currentMachineId
 
-        if (isMe) {
-          usersMap.set(checkoutUserId, {
-            id: checkoutUserId,
-            name: userFullName || userEmail || 'You',
-            email: userEmail,
-            avatar_url: userAvatarUrl,
-            isMe: true,
-            isDifferentMachine: isDifferentMachine || false,
-            machineName: checkoutMachineName ?? undefined,
-            fileIds: [], // Will be filled below
-          })
-        } else {
-          const checkedOutUser = f.pdmData?.checked_out_user
-          usersMap.set(checkoutUserId, {
-            id: checkoutUserId,
-            name: checkedOutUser?.full_name || checkedOutUser?.email?.split('@')[0] || 'Someone',
-            email: checkedOutUser?.email ?? undefined,
-            avatar_url: checkedOutUser?.avatar_url ?? undefined,
-            isMe: false,
-            fileIds: [], // Will be filled below
-          })
-        }
+        usersMap.set(checkoutUserId, {
+          ...displayUser,
+          isDifferentMachine: Boolean(isDifferentMachine),
+          machineName: checkoutMachineName ?? undefined,
+          fileIds: [], // Will be filled below
+        })
       }
     }
 
@@ -180,36 +186,26 @@ function getCheckoutUsers(
 
     return users
   } else if (file.pdmData?.checked_out_by) {
-    const isMe = file.pdmData.checked_out_by === userId
+    const displayUser = getCheckoutDisplayUser(
+      file,
+      currentUser,
+      file.pdmData.id ? checkoutHydration[file.pdmData.id]?.state : undefined,
+    )
+    if (!displayUser) return []
+
+    const isMe = displayUser.isMe
     const checkoutMachineId = file.pdmData.checked_out_by_machine_id
     const checkoutMachineName = file.pdmData.checked_out_by_machine_name
     const isDifferentMachine =
       isMe && checkoutMachineId && currentMachineId && checkoutMachineId !== currentMachineId
 
-    if (isMe) {
-      return [
-        {
-          id: file.pdmData.checked_out_by,
-          name: userFullName || userEmail || 'You',
-          email: userEmail,
-          avatar_url: userAvatarUrl,
-          isMe: true,
-          isDifferentMachine: isDifferentMachine || false,
-          machineName: checkoutMachineName ?? undefined,
-        },
-      ]
-    } else {
-      const checkedOutUser = file.pdmData.checked_out_user
-      return [
-        {
-          id: file.pdmData.checked_out_by,
-          name: checkedOutUser?.full_name || checkedOutUser?.email?.split('@')[0] || 'Someone',
-          email: checkedOutUser?.email ?? undefined,
-          avatar_url: checkedOutUser?.avatar_url ?? undefined,
-          isMe: false,
-        },
-      ]
-    }
+    return [
+      {
+        ...displayUser,
+        isDifferentMachine: Boolean(isDifferentMachine),
+        machineName: checkoutMachineName ?? undefined,
+      },
+    ]
   }
   return []
 }
@@ -332,6 +328,8 @@ export function useFileCardStatus({
   currentMachineId,
   processingPaths,
 }: UseFileCardStatusParams): FileCardStatus {
+  const checkoutHydration = usePDMStore((state) => state.checkoutHydration)
+
   return useMemo(() => {
     const operationType = getProcessingOperation(
       processingPaths,
@@ -350,6 +348,7 @@ export function useFileCardStatus({
       userEmail,
       userAvatarUrl,
       currentMachineId,
+      checkoutHydration,
     )
     const folderIconColor = getFolderIconColor(file, allFiles, userId)
     const folderCheckoutInfo = getFolderCheckoutInfo(file, allFiles, userId)
@@ -373,5 +372,6 @@ export function useFileCardStatus({
     userAvatarUrl,
     currentMachineId,
     processingPaths,
+    checkoutHydration,
   ])
 }

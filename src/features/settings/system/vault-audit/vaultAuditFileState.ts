@@ -24,6 +24,7 @@
  */
 
 import type { LocalFile } from '@/stores/pdmStore'
+import { isCheckoutProfileForOwner } from '@/types/pdm'
 
 export type VaultAuditFileAvailability =
   /** Local-only, or checked out by this user. Sync Metadata will accept it. */
@@ -37,8 +38,9 @@ export type VaultAuditFileAvailability =
 
 /** Who is holding it, as the rest of the app would name them. Null when the row does not say. */
 function holderOf(file: LocalFile): string | null {
+  const ownerId = file.pdmData?.checked_out_by ?? null
   const user = file.pdmData?.checked_out_user
-  if (!user) return null
+  if (!isCheckoutProfileForOwner(user, ownerId)) return null
   return user.full_name || user.email || null
 }
 

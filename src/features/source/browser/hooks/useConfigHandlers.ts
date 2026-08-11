@@ -33,17 +33,17 @@ import { resolvePartNumber, resolvedText } from '@/lib/metadata/overlay'
 import { reportMetadataWrite, unattemptedWrite } from '@/lib/metadata/reportMetadataWrite'
 import {
   beginMetadataWrite,
-  configurationWriteKey,
   endMetadataWrite,
   fileWriteKey,
 } from '@/lib/metadata/writeInFlight'
 import { writeMetadataWithVerification } from '@/lib/metadata/writeMetadataToFile'
+import { currentUnwritableFieldGroups } from '@/lib/metadata/writeOwnership'
 import {
   buildMetadataWritePlan,
   type PlanConfiguration,
   type PlanSerialization,
 } from '@/lib/metadata/writePlan'
-import { listWriteAddresses } from '@/lib/metadata/writeState'
+import { listWriteAddresses, pendingWithoutGroups } from '@/lib/metadata/writeState'
 import { refreshLocalFileFacts } from '@/lib/refreshLocalFileFacts'
 import { combineBaseAndTab, getSerializationSettings, normalizeTabNumber } from '@/lib/serialization'
 import { getTabValidationOptions } from '@/lib/tabValidation'
@@ -54,40 +54,11 @@ import type { Organization, PendingMetadataEdit } from '@/stores/types'
 import type { ConfigWithDepth } from '../types'
 
 import { buildConfigurationExportMetadata } from './configExportMetadata'
-import {
-  buildConfigurationDescriptionWritePlan,
-  buildConfigurationTabWritePlan,
-} from './configWritePlan'
 import { loadFileConfigurations } from './loadFileConfigurations'
+import { useConfigSectionHandlers } from './useConfigSectionHandlers'
 import { useConfigBomHandlers } from './useConfigBomHandlers'
 import type { ConfigContextMenuState } from './useContextMenuState'
 import { useDrawingRefHandlers } from './useDrawingRefHandlers'
-
-/**
- * If a SolidWorks write is still pending after this long, it almost certainly
- * triggered a cold launch of SolidWorks (the first write when SW isn't warm can
- * take ~40s). Surface a non-blocking hint so the edit doesn't look frozen.
- */
-const SLOW_WRITE_FEEDBACK_MS = 1500
-
-/**
- * Runs a SolidWorks write and, if it takes longer than SLOW_WRITE_FEEDBACK_MS,
- * shows a one-off info toast explaining the delay (cold SolidWorks launch).
- * The toast is skipped entirely for fast writes (SW already warm).
- */
-async function withSlowWriteFeedback<T>(
-  op: () => Promise<T>,
-  addToast: (type: 'success' | 'error' | 'info' | 'warning', message: string) => void,
-): Promise<T> {
-  const timer = setTimeout(() => {
-    addToast('info', 'Starting SolidWorks — the first edit can take up to a minute…')
-  }, SLOW_WRITE_FEEDBACK_MS)
-  try {
-    return await op()
-  } finally {
-    clearTimeout(timer)
-  }
-}
 
 /** The serialization rules the write planner needs, read once per write. */
 async function readPlanSerialization(
@@ -188,6 +159,14 @@ export interface UseConfigHandlersReturn {
   retryDrawingRefs: (file: LocalFile) => Promise<void>
   /** Toggle config-level drawing expansion (which drawings reference this config) */
   toggleConfigDrawingExpansion: (file: LocalFile, configName: string) => Promise<void>
+  /** Toggle the section owned by a configuration row */
+  toggleConfigSectionsExpansion: (file: LocalFile, configName: string) => Promise<void>
+  /** Toggle one group nested under a configuration row */
+  toggleConfigGroupExpansion: (
+    file: LocalFile,
+    configName: string,
+    group: 'drawings' | 'ebom',
+  ) => Promise<void>
 }
 
 /**
@@ -219,16 +198,28 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
   const clearFileConfigurations = usePDMStore((s) => s.clearFileConfigurations)
   const addLoadingConfig = usePDMStore((s) => s.addLoadingConfig)
   const removeLoadingConfig = usePDMStore((s) => s.removeLoadingConfig)
-  const configBomData = usePDMStore((s) => s.configBomData)
-  const clearConfigBomData = usePDMStore((s) => s.clearConfigBomData)
+  const clearConfigSectionData = usePDMStore((s) => s.clearConfigSectionData)
 
-  const { toggleConfigBomExpansion } = useConfigBomHandlers({ files, addToast })
+  const { toggleConfigBomExpansion, cancelConfigBomLoad } = useConfigBomHandlers({
+    files,
+    addToast,
+  })
   const {
     canHaveDrawingRefs,
     toggleDrawingRefExpansion,
     retryDrawingRefs,
     toggleConfigDrawingExpansion,
+    cancelConfigDrawingLoad,
   } = useDrawingRefHandlers({ files, addToast })
+  const {
+    toggleConfigSectionsExpansion,
+    toggleConfigGroupExpansion,
+  } = useConfigSectionHandlers({
+    toggleConfigBomExpansion,
+    toggleConfigDrawingExpansion,
+    cancelConfigDrawingLoad,
+    cancelConfigBomLoad,
+  })
 
   // Update file-level tab number (for single-config or no-config files)
   const handleFileTabChange = useCallback(
@@ -244,28 +235,18 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
     [files],
   )
 
-  // Update config tab number
-  // NOTE: We read state from store via getState() to avoid stale closure issues.
-  // Same pattern as handleConfigDescriptionChange - prevents data loss when switching inputs.
-  // IMPORTANT: This immediately writes to the SW file so sync-metadata on drawings
-  // always reads fresh data.
+  // Update config tab number. Read state through getState() so switching inputs cannot use a stale
+  // configuration cache.
   const handleConfigTabChange = useCallback(
-    async (filePath: string, configName: string, value: string) => {
-      // Read current state from store, not closure (prevents stale data when switching inputs)
+    (filePath: string, configName: string, value: string): void => {
       const { files, fileConfigurations } = usePDMStore.getState()
 
       const file = files.find((f) => f.path === filePath)
       if (!file) return
 
-      const swStatus = usePDMStore.getState().integrations.solidworks.status
-      if (swStatus !== 'online' && swStatus !== 'partial') {
-        addToast('error', 'Start the SolidWorks service to edit configuration metadata')
-        return
-      }
-
       const upperValue = value.toUpperCase()
 
-      // Update config in store (for immediate UI feedback)
+      // Update config in store for immediate UI feedback.
       const configs = fileConfigurations.get(filePath)
       if (configs) {
         const updated = configs.map((c) =>
@@ -279,88 +260,23 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
       // values into it would defeat dropCommittedPendingMetadata and mark every configuration as
       // owing the database a value forever.
       const existingTabs = file.pendingMetadata?.config_tabs || {}
-      const edit = usePDMStore.getState().updatePendingMetadata(filePath, {
+      usePDMStore.getState().updatePendingMetadata(filePath, {
         config_tabs: { ...existingTabs, [configName]: upperValue },
       })
-
-      const tabAddress = {
-        scope: 'configuration' as const,
-        field: 'config_tab' as const,
-        configuration: configName,
-      }
-
-      // Write to SW file immediately so sync-metadata on drawings reads the updated value
-      // Mark file change as expected so file watcher doesn't trigger a refresh that collapses configs
-      const releaseWatcher = beginWatcherSuppression([file.relativePath])
-      // The row shows a spinner while this runs, and the check-in guards see the file as busy.
-      const inFlightKey = configurationWriteKey(filePath, configName)
-      beginMetadataWrite(inFlightKey)
-
-      try {
-        const groups = buildConfigurationTabWritePlan({
-          file,
-          configuration: configName,
-          tabNumber: upperValue,
-          serialization: await readPlanSerialization(organization?.id),
-          parity: writeParity(),
-        })
-
-        const result = await withSlowWriteFeedback(
-          () => writeMetadataWithVerification({ path: filePath, groups }),
-          addToast,
-        )
-        reportMetadataWrite(edit, result)
-        if (result.outcome === 'verified' || result.outcome === 'unverified') {
-          // The watcher-driven reload is suppressed, so refresh disk facts here.
-          await refreshLocalFileFacts(file)
-        }
-      } catch (error) {
-        log.error('[ConfigHandlers]', 'Failed to write config tab to SW file', {
-          filePath,
-          configName,
-          error: error,
-        })
-        // The value stays in the store, marked as not in the file, with a retry on the row.
-        reportMetadataWrite(edit, {
-          outcome: 'failed',
-          addresses: [
-            {
-              address: tabAddress,
-              state: 'failed',
-              reason: error instanceof Error ? error.message : String(error),
-            },
-          ],
-        })
-      } finally {
-        releaseWatcher()
-        endMetadataWrite(inFlightKey)
-      }
     },
-    [addToast, organization],
+    [],
   )
 
-  // Update config description
-  // NOTE: We read state from store via getState() to avoid stale closure issues.
-  // When clicking between config description inputs, the blur handler may be called
-  // with a stale callback reference (due to memoization). Reading from store ensures
-  // we always get the current fileConfigurations and files arrays.
-  // IMPORTANT: This immediately writes to the SW file so sync-metadata on drawings
-  // always reads fresh data.
+  // Update config description. The value remains in pending metadata until the row commit action
+  // writes the configuration and any drawings that reference it.
   const handleConfigDescriptionChange = useCallback(
-    async (filePath: string, configName: string, value: string) => {
-      // Read current state from store, not closure (prevents stale data when switching inputs)
+    (filePath: string, configName: string, value: string): void => {
       const { files, fileConfigurations } = usePDMStore.getState()
 
       const file = files.find((f) => f.path === filePath)
       if (!file) return
 
-      const swStatus = usePDMStore.getState().integrations.solidworks.status
-      if (swStatus !== 'online' && swStatus !== 'partial') {
-        addToast('error', 'Start the SolidWorks service to edit configuration metadata')
-        return
-      }
-
-      // Update config in store (for immediate UI feedback)
+      // Update config in store for immediate UI feedback.
       const configs = fileConfigurations.get(filePath)
       if (configs) {
         const updated = configs.map((c) =>
@@ -372,69 +288,11 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
       // Update pending metadata (for persistence across app restart). See handleConfigTabChange
       // for why the committed map is deliberately not merged in here.
       const existingDescs = file.pendingMetadata?.config_descriptions || {}
-      const edit = usePDMStore.getState().updatePendingMetadata(filePath, {
+      usePDMStore.getState().updatePendingMetadata(filePath, {
         config_descriptions: { ...existingDescs, [configName]: value },
       })
-
-      const descriptionAddress = {
-        scope: 'configuration' as const,
-        field: 'config_description' as const,
-        configuration: configName,
-      }
-
-      // Write to SW file immediately so sync-metadata on drawings reads the updated value
-      // Mark file change as expected so file watcher doesn't trigger a refresh that collapses configs
-      const releaseWatcher = beginWatcherSuppression([file.relativePath])
-      // The row shows a spinner while this runs, and the check-in guards see the file as busy.
-      const inFlightKey = configurationWriteKey(filePath, configName)
-      beginMetadataWrite(inFlightKey)
-
-      try {
-        const groups = buildConfigurationDescriptionWritePlan({
-          file,
-          configuration: configName,
-          description: value,
-          // The tab this configuration read out of the document, for the fields the planner
-          // rewrites around the description.
-          documentTabNumber: fileConfigurations
-            .get(filePath)
-            ?.find((c) => c.name === configName)?.tabNumber,
-          serialization: await readPlanSerialization(organization?.id),
-          parity: writeParity(),
-        })
-
-        const result = await withSlowWriteFeedback(
-          () => writeMetadataWithVerification({ path: filePath, groups }),
-          addToast,
-        )
-        reportMetadataWrite(edit, result)
-        if (result.outcome === 'verified' || result.outcome === 'unverified') {
-          // The watcher-driven reload is suppressed, so refresh disk facts here.
-          await refreshLocalFileFacts(file)
-        }
-      } catch (error) {
-        log.error('[ConfigHandlers]', 'Failed to write config description to SW file', {
-          filePath,
-          configName,
-          error: error,
-        })
-        // The value stays in the store, marked as not in the file, with a retry on the row.
-        reportMetadataWrite(edit, {
-          outcome: 'failed',
-          addresses: [
-            {
-              address: descriptionAddress,
-              state: 'failed',
-              reason: error instanceof Error ? error.message : String(error),
-            },
-          ],
-        })
-      } finally {
-        releaseWatcher()
-        endMetadataWrite(inFlightKey)
-      }
     },
-    [addToast, organization],
+    [],
   )
 
   // Check if file can have configurations (sldprt or sldasm)
@@ -483,11 +341,27 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
   // Save ALL pending metadata to SolidWorks file (base + config metadata)
   const saveConfigsToSWFile = useCallback(
     async (file: LocalFile, edit: PendingMetadataEdit) => {
+      // Read the pending values before checking service status so an edit with no writable fields
+      // cannot produce an offline obligation or reach the configuration reader.
+      const storeFile = usePDMStore.getState().files.find((f) => f.path === file.path)
+      const pm = file.pendingMetadata || storeFile?.pendingMetadata
+      const writablePending = pendingWithoutGroups(
+        pm,
+        currentUnwritableFieldGroups(file.extension),
+      )
+      if (!writablePending) {
+        log.debug('[ConfigHandlers]', 'saveConfigsToSWFile: no writable metadata to save', {
+          path: file.path,
+          extension: file.extension,
+        })
+        return
+      }
+
       const swStatus = usePDMStore.getState().integrations.solidworks.status
       if (swStatus !== 'online' && swStatus !== 'partial') {
         // The write cannot be attempted at all. The value stays - it is the user's - and every
         // address it touches is marked as not in the file, so check-in knows not to promote it as
-        // confirmed and the row offers a retry.
+        // confirmed; the next Sync Metadata command can make the write attempt.
         reportMetadataWrite(edit, unattemptedWrite(edit, 'the SolidWorks service was not running'))
         return
       }
@@ -528,28 +402,14 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
       const releaseWatcher = beginWatcherSuppression([file.relativePath])
 
       try {
-        // Check what pending changes we have
-        // Read fresh pendingMetadata from store as fallback in case the file parameter has stale data
-        const storeFile = usePDMStore.getState().files.find((f) => f.path === file.path)
-        const pm = file.pendingMetadata || storeFile?.pendingMetadata
-        if (!pm) {
-          log.warn('[ConfigHandlers]', 'saveConfigsToSWFile: no pending metadata found', {
-            path: file.path,
-            hasFileParam: !!file.pendingMetadata,
-            hasStore: !!storeFile?.pendingMetadata,
-          })
-          addToast('info', 'No metadata changes to save')
-          return
-        }
-
         const hasBaseChanges =
-          pm.part_number !== undefined ||
-          pm.description !== undefined ||
-          pm.revision !== undefined ||
-          pm.tab_number !== undefined
+          writablePending.part_number !== undefined ||
+          writablePending.description !== undefined ||
+          writablePending.revision !== undefined ||
+          writablePending.tab_number !== undefined
         const hasConfigChanges =
-          Object.keys(pm.config_tabs || {}).length > 0 ||
-          Object.keys(pm.config_descriptions || {}).length > 0
+          Object.keys(writablePending.config_tabs || {}).length > 0 ||
+          Object.keys(writablePending.config_descriptions || {}).length > 0
 
         if (!hasBaseChanges && !hasConfigChanges) {
           addToast('info', 'No metadata changes to save')
@@ -574,11 +434,11 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
         )
         const parity = writeParity()
 
-        // Presence decides, not truthiness. `pm.part_number !== undefined` is the whole test: an
-        // item number cleared to nothing is an edit like any other, and the propagation below has
-        // to carry it into every configuration or the file ends up with an empty document bag and
-        // 68 configurations still holding the number the user deleted.
-        const itemNumberEdited = pm.part_number !== undefined
+        // Presence decides, not truthiness. `writablePending.part_number !== undefined` is the
+        // whole test: an item number cleared to nothing is an edit like any other, and the
+        // propagation below has to carry it into every configuration or the file ends up with an
+        // empty document bag and 68 configurations still holding the number the user deleted.
+        const itemNumberEdited = writablePending.part_number !== undefined
         const baseNumber = resolvedText(resolvePartNumber(file))
 
         // Every scope's properties and what they are meant to establish there, built before anything
@@ -588,7 +448,7 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
         // drift, and check-in writing something subtly different from the datacard is the exact bug
         // this phase exists to remove.
         const groups = buildMetadataWritePlan({
-          pending: pm,
+          pending: writablePending,
           committed: {
             // The committed row, on purpose: the planner consults it only for the fields this edit
             // does not name, and for those the database value is what the document should hold.
@@ -659,7 +519,7 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
         log.error('[ConfigHandlers]', 'Failed to save to SW', { error: error })
         reportMetadataWrite(edit, {
           outcome: 'failed',
-          addresses: listWriteAddresses(edit.pending).map((address) => ({
+          addresses: listWriteAddresses(writablePending).map((address) => ({
             address,
             state: 'failed' as const,
             reason: error instanceof Error ? error.message : String(error),
@@ -904,11 +764,32 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
         setSelectedConfigs(newSelected)
         // Clear cached configs so next expansion fetches fresh data from SolidWorks
         clearFileConfigurations(file.path)
-        // Clear any cached BOM data for this file's configurations
-        const bomKeysToDelete = [...configBomData.keys()].filter((key) =>
-          key.startsWith(file.path + '::'),
+        // Clear section/group state and both group caches for this file's configurations.
+        const {
+          expandedConfigSections,
+          expandedConfigDrawings,
+          configDrawingData,
+          loadingConfigDrawings,
+          expandedConfigBoms,
+          configBomData,
+          loadingConfigBoms,
+        } = usePDMStore.getState()
+        const configKeys = new Set(
+          [
+            ...expandedConfigSections,
+            ...expandedConfigDrawings,
+            ...configDrawingData.keys(),
+            ...loadingConfigDrawings,
+            ...expandedConfigBoms,
+            ...configBomData.keys(),
+            ...loadingConfigBoms,
+          ].filter((key) => key.startsWith(file.path + '::')),
         )
-        bomKeysToDelete.forEach((key) => clearConfigBomData(key))
+        configKeys.forEach((key) => {
+          cancelConfigDrawingLoad(key)
+          cancelConfigBomLoad(key)
+          clearConfigSectionData(key)
+        })
         return
       }
 
@@ -930,12 +811,13 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
       expandedConfigFiles,
       selectedConfigs,
       fileConfigurations,
-      configBomData,
       setExpandedConfigFiles,
       setSelectedConfigs,
       setFileConfigurations,
       clearFileConfigurations,
-      clearConfigBomData,
+      clearConfigSectionData,
+      cancelConfigDrawingLoad,
+      cancelConfigBomLoad,
       addLoadingConfig,
       removeLoadingConfig,
     ],
@@ -959,6 +841,8 @@ export function useConfigHandlers(deps: ConfigHandlersDeps): UseConfigHandlersRe
     toggleDrawingRefExpansion,
     retryDrawingRefs,
     toggleConfigDrawingExpansion,
+    toggleConfigSectionsExpansion,
+    toggleConfigGroupExpansion,
   }
 }
 

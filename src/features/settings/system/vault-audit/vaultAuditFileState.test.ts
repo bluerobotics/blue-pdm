@@ -48,7 +48,12 @@ describe('availabilityOf', () => {
     const held = fileOf({
       id: 'f1',
       checked_out_by: SARAH,
-      checked_out_user: { full_name: 'Sarah Chen', email: 's@example.com', avatar_url: null },
+      checked_out_user: {
+        id: SARAH,
+        full_name: 'Sarah Chen',
+        email: 's@example.com',
+        avatar_url: null,
+      },
     })
     expect(availabilityOf(held, ME)).toEqual({ state: 'held-by-other', holder: 'Sarah Chen' })
   })
@@ -57,9 +62,23 @@ describe('availabilityOf', () => {
     const held = fileOf({
       id: 'f1',
       checked_out_by: SARAH,
-      checked_out_user: { full_name: null, email: 's@example.com', avatar_url: null },
+      checked_out_user: { id: SARAH, full_name: null, email: 's@example.com', avatar_url: null },
     })
     expect(availabilityOf(held, ME)).toEqual({ state: 'held-by-other', holder: 's@example.com' })
+  })
+
+  it('does not attribute a mismatched profile to the checkout owner', () => {
+    const held = fileOf({
+      id: 'f1',
+      checked_out_by: SARAH,
+      checked_out_user: {
+        id: ME,
+        full_name: 'Current User',
+        email: 'me@example.com',
+        avatar_url: null,
+      },
+    })
+    expect(availabilityOf(held, ME)).toEqual({ state: 'held-by-other', holder: null })
   })
 
   it('reports a file that is not loaded rather than guessing about it', () => {

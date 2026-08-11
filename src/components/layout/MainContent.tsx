@@ -1,9 +1,12 @@
-import { Suspense, lazy } from 'react'
+import { Profiler, Suspense, lazy, type ProfilerOnRenderCallback } from 'react'
 import { Loader2, FileSearch } from 'lucide-react'
+import { log } from '@/lib/logger'
+import { REACT_COMMIT_THRESHOLD_MS } from '@/lib/performanceThresholds'
 import { usePDMStore } from '@/stores/pdmStore'
 import { useLoadFiles, useVaultManagement } from '@/hooks'
 import { SettingsContent } from '@/features/settings'
 import { WelcomeScreen } from '@/components/shared/Screens'
+
 import { TabBar } from './TabBar'
 import { ResizeHandle } from './ResizeHandle'
 
@@ -40,6 +43,17 @@ function ContentLoading() {
       <Loader2 size={24} className="animate-spin text-plm-fg-muted" />
     </div>
   )
+}
+
+const logExplorerCommit: ProfilerOnRenderCallback = (id, phase, actualDuration, baseDuration) => {
+  if (actualDuration < REACT_COMMIT_THRESHOLD_MS) return
+
+  log.warn('[Perf]', 'React commit', {
+    id,
+    phase,
+    actualDuration: Math.round(actualDuration),
+    baseDuration: Math.round(baseDuration),
+  })
 }
 
 interface MainContentProps {
@@ -126,11 +140,13 @@ export function MainContent({
       ) : (
         <>
           {/* File Pane (lazy loaded) */}
-          <div className="flex-1 flex flex-col overflow-hidden min-h-0 min-w-0">
-            <Suspense fallback={<ContentLoading />}>
-              <FilePane onRefresh={loadFiles} onRefreshFolder={refreshCurrentFolder} />
-            </Suspense>
-          </div>
+          <Profiler id="explorer" onRender={logExplorerCommit}>
+            <div className="flex-1 flex flex-col overflow-hidden min-h-0 min-w-0">
+              <Suspense fallback={<ContentLoading />}>
+                <FilePane onRefresh={loadFiles} onRefreshFolder={refreshCurrentFolder} />
+              </Suspense>
+            </div>
+          </Profiler>
 
           {/* Details Panel (lazy loaded) */}
           {detailsPanelVisible && (

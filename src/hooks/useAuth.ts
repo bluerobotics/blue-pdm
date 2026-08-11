@@ -1,8 +1,9 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 
 import { usePDMStore } from '@/stores/pdmStore'
 import { setAnalyticsUser, clearAnalyticsUser } from '@/lib/analytics'
+import { setLoadFilesSessionContext } from '@/hooks/loadFilesCoordination'
 import {
   supabase,
   isSupabaseConfigured,
@@ -20,6 +21,65 @@ import { recordMetric } from '@/lib/performanceMetrics'
 
 const STATUS_MESSAGE_CLEAR_MS = 3_000
 const CONNECT_TIMEOUT_MS = 90_000
+
+export interface AuthSessionBoundary {
+  authenticatedUserId: string | null
+  sessionGeneration: number
+}
+
+export interface AutoConnectLoadContext {
+  isOfflineMode: boolean
+  authenticatedUserId: string | null
+  sessionGeneration: number
+  authInitialized: boolean
+}
+
+export function advanceAuthSessionBoundary(
+  current: AuthSessionBoundary,
+  event: string,
+  authenticatedUserId: string | null,
+): AuthSessionBoundary {
+  const userChanged = current.authenticatedUserId !== authenticatedUserId
+  const startsNewSession =
+    event === 'SIGNED_IN' ||
+    event === 'SIGNED_OUT' ||
+    (event === 'INITIAL_SESSION' && authenticatedUserId !== null)
+
+  if (!userChanged && !startsNewSession) return current
+
+  return {
+    authenticatedUserId,
+    sessionGeneration: current.sessionGeneration + 1,
+  }
+}
+
+export function shouldResetAuthSessionState(
+  current: AuthSessionBoundary,
+  event: string,
+  authenticatedUserId: string | null,
+): boolean {
+  return !(
+    event === 'INITIAL_SESSION' &&
+    current.authenticatedUserId === null &&
+    authenticatedUserId !== null
+  )
+}
+
+export function shouldDeferAutoConnectLoad(context: AutoConnectLoadContext): boolean {
+  if (context.isOfflineMode) return false
+  if (context.authenticatedUserId !== null && context.sessionGeneration === 0) return true
+  return !context.authInitialized
+}
+
+export function isAuthSessionCurrent(
+  expected: AuthSessionBoundary,
+  current: AuthSessionBoundary,
+): boolean {
+  return (
+    expected.authenticatedUserId === current.authenticatedUserId &&
+    expected.sessionGeneration === current.sessionGeneration
+  )
+}
 
 /**
  * Truncate email for safe logging (e.g., "jo***@example.com")
@@ -52,6 +112,7 @@ export function useAuth() {
     setAuthInitialized,
     setOfflineMode,
     addToast,
+    resetSessionState,
   } = usePDMStore(
     useShallow((s) => ({
       setUser: s.setUser,
@@ -62,11 +123,38 @@ export function useAuth() {
       setAuthInitialized: s.setAuthInitialized,
       setOfflineMode: s.setOfflineMode,
       addToast: s.addToast,
+      resetSessionState: s.resetSessionState,
     })),
   )
 
   // Track if Supabase is configured (can change at runtime)
   const [supabaseReady, setSupabaseReady] = useState(() => isSupabaseConfigured())
+  const [sessionGeneration, setSessionGeneration] = useState(0)
+  const sessionBoundaryRef = useRef<AuthSessionBoundary>({
+    authenticatedUserId: null,
+    sessionGeneration: 0,
+  })
+  const authEventSequenceRef = useRef(0)
+  const authListenerEpochRef = useRef(0)
+
+  const advanceSession = useCallback(
+    (event: string, authenticatedUserId: string | null): AuthSessionBoundary => {
+      const previous = sessionBoundaryRef.current
+      const next = advanceAuthSessionBoundary(previous, event, authenticatedUserId)
+      sessionBoundaryRef.current = next
+
+      if (next.sessionGeneration !== previous.sessionGeneration) {
+        setSessionGeneration(next.sessionGeneration)
+        if (shouldResetAuthSessionState(previous, event, authenticatedUserId)) {
+          resetSessionState()
+        }
+        setLoadFilesSessionContext(next)
+      }
+
+      return next
+    },
+    [resetSessionState],
+  )
 
   // Handle Supabase being configured (from SetupScreen)
   const handleSupabaseConfigured = useCallback(() => {
@@ -75,13 +163,14 @@ export function useAuth() {
 
   // Handle user wanting to change organization (go back to setup)
   const handleChangeOrg = useCallback(async () => {
+    advanceSession('SIGNED_OUT', null)
     // Sign out first if user is signed in
     await signOut()
     // Clear the stored Supabase config
     clearConfig()
     // Reset state to show setup screen
     setSupabaseReady(false)
-  }, [])
+  }, [advanceSession])
 
   // Initialize auth state via onAuthStateChange listener
   // NOTE: We removed the duplicate getCurrentSession() flow that was causing a race condition
@@ -92,9 +181,24 @@ export function useAuth() {
     }
 
     // Listen for auth state changes (also handles session restoration on startup)
+    const listenerEpoch = ++authListenerEpochRef.current
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (authListenerEpochRef.current !== listenerEpoch) return
+
+      const eventSequence = ++authEventSequenceRef.current
+      const sessionUserId = session?.user?.id ?? null
+
+      const handlerBoundary = advanceSession(event, sessionUserId)
+      if (event === 'INITIAL_SESSION' || event === 'SIGNED_IN') {
+        setAuthInitialized(false)
+      }
+      const isCurrentHandler = () =>
+        authListenerEpochRef.current === listenerEpoch &&
+        authEventSequenceRef.current === eventSequence &&
+        isAuthSessionCurrent(handlerBoundary, sessionBoundaryRef.current)
+
       // Handle session events: INITIAL_SESSION (startup restore), SIGNED_IN (new login), TOKEN_REFRESHED
       if (
         (event === 'INITIAL_SESSION' || event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') &&
@@ -106,6 +210,7 @@ export function useAuth() {
         if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION') {
           setIsConnecting(true)
           connectingTimeout = setTimeout(() => {
+            if (!isCurrentHandler()) return
             log.warn('[Auth]', 'Organization loading timeout - clearing connecting state')
             setIsConnecting(false)
             addToast(
@@ -133,6 +238,11 @@ export function useAuth() {
           })
           if (profileError) {
             log.warn('[Auth]', 'Profile fetch error', { error: profileError.message })
+          }
+
+          if (!isCurrentHandler()) {
+            if (connectingTimeout) clearTimeout(connectingTimeout)
+            return
           }
 
           const userProfile = profile as {
@@ -181,11 +291,17 @@ export function useAuth() {
           setAnalyticsUser(session.user.id, userProfile?.org_id || undefined)
 
           if (event === 'SIGNED_IN') {
+            if (!isCurrentHandler()) {
+              if (connectingTimeout) clearTimeout(connectingTimeout)
+              return
+            }
             // Only show welcome message for new sign-ins, not session restoration
             setStatusMessage(
               `Welcome, ${session.user.user_metadata?.full_name || session.user.email}!`,
             )
-            setTimeout(() => setStatusMessage(''), STATUS_MESSAGE_CLEAR_MS)
+            setTimeout(() => {
+              if (isCurrentHandler()) setStatusMessage('')
+            }, STATUS_MESSAGE_CLEAR_MS)
 
             // Disable offline mode when user signs in (they're now authenticated)
             // Use getState() to get current value, not stale closure value
@@ -215,6 +331,12 @@ export function useAuth() {
             hasOrg: !!org,
             usedCachedOrgId: !!userProfile?.org_id,
           })
+
+          if (!isCurrentHandler()) {
+            if (connectingTimeout) clearTimeout(connectingTimeout)
+            return
+          }
+
           if (org) {
             log.info('[Auth]', 'Organization loaded', { name: org.name })
             if (connectingTimeout) clearTimeout(connectingTimeout)
@@ -232,13 +354,19 @@ export function useAuth() {
             syncUserSessionsOrgId(session.user.id, org.id)
 
             // Load user's team permissions
-            usePDMStore.getState().loadUserPermissions()
+            if (isCurrentHandler()) {
+              usePDMStore.getState().loadUserPermissions()
+            }
 
             // Load user's workflow roles for real-time sync
-            usePDMStore.getState().loadUserWorkflowRoles()
+            if (isCurrentHandler()) {
+              usePDMStore.getState().loadUserWorkflowRoles()
+            }
 
             // Load which modules an admin has restricted away from this user
-            usePDMStore.getState().loadModuleAccess()
+            if (isCurrentHandler()) {
+              usePDMStore.getState().loadModuleAccess()
+            }
           } else {
             log.warn('[Auth]', 'No organization found', { error: orgError })
             if (connectingTimeout) clearTimeout(connectingTimeout)
@@ -250,11 +378,12 @@ export function useAuth() {
                 'No organization found. Please enter an organization code or contact your administrator.',
             )
           }
-          if (event === 'INITIAL_SESSION') {
+          if (event === 'INITIAL_SESSION' && isCurrentHandler()) {
             setAuthInitialized(true)
           }
         } catch (error) {
           log.error('[Auth]', 'Error in auth state handler', { error: error })
+          if (!isCurrentHandler()) return
           if (connectingTimeout) clearTimeout(connectingTimeout)
           setIsConnecting(false)
           if (event === 'INITIAL_SESSION') {
@@ -262,22 +391,29 @@ export function useAuth() {
           }
         }
       } else if (event === 'INITIAL_SESSION' && !session?.user) {
+        if (!isCurrentHandler()) return
         log.info('[Auth]', 'No stored session found')
         setAuthInitialized(true)
       } else if (event === 'SIGNED_OUT') {
+        if (!isCurrentHandler()) return
         logUserAction('auth', 'User signed out')
         log.info('[Auth]', 'User signed out')
         clearAnalyticsUser()
+        setAuthInitialized(true)
         setUser(null)
         setOrganization(null)
         setVaultConnected(false)
         setIsConnecting(false)
         setStatusMessage('Signed out')
-        setTimeout(() => setStatusMessage(''), STATUS_MESSAGE_CLEAR_MS)
+        setTimeout(() => {
+          if (isCurrentHandler()) setStatusMessage('')
+        }, STATUS_MESSAGE_CLEAR_MS)
       }
     })
 
     return () => {
+      authListenerEpochRef.current += 1
+      authEventSequenceRef.current += 1
       subscription.unsubscribe()
     }
   }, [
@@ -290,10 +426,12 @@ export function useAuth() {
     setAuthInitialized,
     setOfflineMode,
     addToast,
+    advanceSession,
   ])
 
   return {
     supabaseReady,
+    sessionGeneration,
     handleSupabaseConfigured,
     handleChangeOrg,
   }

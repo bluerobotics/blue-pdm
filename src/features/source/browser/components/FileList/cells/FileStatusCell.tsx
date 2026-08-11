@@ -2,7 +2,10 @@
  * File Status column cell renderer
  */
 import { AlertTriangle, ArrowDown, Cloud, HardDrive, Loader2, Monitor } from 'lucide-react'
+import { t } from '@/lib/i18n'
+import { deriveCheckoutDisplay } from '@/lib/checkout/checkoutDisplay'
 import { getInitials } from '@/lib/utils'
+import { usePDMStore } from '@/stores/pdmStore'
 import { useFilePaneContext, useFilePaneHandlers } from '../../../context'
 import type { CellRendererBaseProps } from './types'
 
@@ -19,6 +22,9 @@ const OPERATION_LABELS: Record<string, string> = {
 export function FileStatusCell({ file }: CellRendererBaseProps): React.ReactNode {
   const { user, currentMachineId } = useFilePaneContext()
   const { getProcessingOperation } = useFilePaneHandlers()
+  const checkoutHydrationState = usePDMStore((state) =>
+    file.pdmData?.id ? state.checkoutHydration[file.pdmData.id]?.state : undefined,
+  )
 
   if (file.isDirectory) return ''
 
@@ -72,27 +78,32 @@ export function FileStatusCell({ file }: CellRendererBaseProps): React.ReactNode
   }
 
   // 3. Avatar checkout (checked out by someone)
-  if (file.pdmData?.checked_out_by) {
-    const isMe = user?.id === file.pdmData.checked_out_by
-    const checkoutUser = file.pdmData.checked_out_user
-    const checkoutAvatarUrl = isMe ? user?.avatar_url : checkoutUser?.avatar_url
-    const checkoutName = isMe
-      ? 'You'
-      : checkoutUser?.full_name || checkoutUser?.email?.split('@')[0] || 'Someone'
+  const checkoutDisplay = deriveCheckoutDisplay(file, user, checkoutHydrationState)
+  if (checkoutDisplay.state !== 'none') {
+    const pdmData = file.pdmData
+    if (!pdmData) return ''
+
+    const isMe = checkoutDisplay.state === 'mine'
+    const checkoutAvatarUrl = checkoutDisplay.avatarUrl
+    const checkoutName = checkoutDisplay.displayName ?? t('checkoutDisplay.ownerUnavailable')
 
     // Check if checked out on different machine (only for current user)
-    const checkoutMachineId = file.pdmData.checked_out_by_machine_id
-    const checkoutMachineName = file.pdmData.checked_out_by_machine_name
-    const isDifferentMachine =
-      isMe && checkoutMachineId && currentMachineId && checkoutMachineId !== currentMachineId
+    const checkoutMachineId = pdmData.checked_out_by_machine_id
+    const checkoutMachineName = pdmData.checked_out_by_machine_name
+    const isDifferentMachine = Boolean(
+      isMe && checkoutMachineId && currentMachineId && checkoutMachineId !== currentMachineId,
+    )
 
     return (
       <span
         className={`flex items-center gap-1 ${isMe ? 'text-plm-warning' : 'text-plm-error'}`}
         title={
           isDifferentMachine
-            ? `Checked out by ${checkoutName} on ${checkoutMachineName || 'another computer'} (different computer)`
-            : `Checked out by ${checkoutName}`
+            ? t('checkoutDisplay.checkedOutByOnComputer', {
+                name: checkoutName,
+                computer: checkoutMachineName || t('checkoutDisplay.anotherComputer'),
+              }) + ` (${t('checkoutDisplay.differentComputer')})`
+            : t('checkoutDisplay.checkedOutBy', { name: checkoutName })
         }
       >
         <div className="relative w-5 h-5 flex-shrink-0">
@@ -112,19 +123,22 @@ export function FileStatusCell({ file }: CellRendererBaseProps): React.ReactNode
           <div
             className={`w-5 h-5 rounded-full ${isMe ? 'bg-plm-warning/30' : 'bg-plm-error/30'} flex items-center justify-center text-[9px] font-medium absolute inset-0 ${checkoutAvatarUrl ? 'hidden' : ''}`}
           >
-            {getInitials(checkoutName)}
+            {getInitials(checkoutName, { placeholder: checkoutDisplay.state !== 'mine' && checkoutDisplay.state !== 'resolved' })}
           </div>
           {isDifferentMachine && (
             <div
               className="absolute -bottom-0.5 -right-0.5 bg-plm-warning rounded-full p-0.5"
               style={{ width: 8, height: 8 }}
-              title={`Checked out on ${checkoutMachineName || 'another computer'}`}
+              title={t('checkoutDisplay.checkedOutByOnComputer', {
+                name: isMe ? t('checkoutDisplay.you') : checkoutName,
+                computer: checkoutMachineName || t('checkoutDisplay.anotherComputer'),
+              })}
             >
               <Monitor size={6} className="text-plm-bg w-full h-full" />
             </div>
           )}
         </div>
-        Checked Out
+        {t('source.details.checkedOut')}
       </span>
     )
   }

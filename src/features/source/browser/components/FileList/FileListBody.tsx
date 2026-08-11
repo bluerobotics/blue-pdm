@@ -8,111 +8,35 @@ import React, {
 } from 'react'
 import { useVirtualizer, type VirtualItem } from '@tanstack/react-virtual'
 import { FolderOpen } from 'lucide-react'
-import type { LocalFile } from '@/stores/pdmStore'
-import type { ConfigWithDepth } from '../../types'
-import type { ConfigBomItem, DrawingRefItem } from '@/stores/types'
-import { FileRow } from './FileRow'
-import { ConfigRow } from './ConfigRow'
-import { ConfigBomRow } from './ConfigBomRow'
-import { DrawingRefRow } from './DrawingRefRow'
-import { ConfigDrawingRow } from './ConfigDrawingRow'
-import { useFilePaneContext, useFilePaneHandlers } from '../../context'
+import { getCheckoutSignature } from '@/lib/checkout/checkoutDisplay'
 import { isConfigurationWriteInFlight } from '@/lib/metadata/writeInFlight'
-import { usePDMStore } from '@/stores/pdmStore'
 import { getTabValidationOptions } from '@/lib/tabValidation'
 import { combineBaseAndTab } from '@/lib/serialization'
-import { resolvePartNumber, resolvedText } from '@/lib/metadata/overlay'
+import type { LocalFile } from '@/stores/pdmStore'
+import { usePDMStore } from '@/stores/pdmStore'
+import type { ConfigBomItem, DrawingRefItem } from '@/stores/types'
 
-// ============================================================================
-// Types
-// ============================================================================
-
-/** File row data */
-interface FileVirtualRow {
-  type: 'file'
-  file: LocalFile
-  index: number
-  isSelected: boolean
-  isProcessing: boolean
-  diffClass: string
-  isDragTarget: boolean
-  isCut: boolean
-  isEditable: boolean
-  basePartNumber: string
-}
-
-/** Config row data (SolidWorks configuration under a file) */
-interface ConfigVirtualRow {
-  type: 'config'
-  file: LocalFile
-  config: ConfigWithDepth
-  isSelected: boolean
-  isEditable: boolean
-  basePartNumber: string
-  /** Configuration-specific revision (from drawing propagation) */
-  configRevision?: string
-  /** Whether this config can be expanded (true for both parts and assemblies) */
-  isExpandable: boolean
-  /** Whether the BOM section is currently expanded */
-  isBomExpanded: boolean
-  /** Whether the BOM is currently loading */
-  isBomLoading: boolean
-  /** Whether the drawings section is currently expanded */
-  isDrawingsExpanded: boolean
-  /** Whether the drawings section is currently loading */
-  isDrawingsLoading: boolean
-}
-
-/** Config BOM row data (part/assembly under a configuration) */
-interface ConfigBomVirtualRow {
-  type: 'config-bom'
-  file: LocalFile
-  configName: string
-  configDepth: number
-  item: ConfigBomItem
-}
-
-/** Drawing reference row data (referenced model under a .slddrw file) */
-interface DrawingRefVirtualRow {
-  type: 'drawing-ref'
-  file: LocalFile
-  item: DrawingRefItem
-}
-
-/** Config drawing row data (drawing that references a part/assembly config) */
-interface ConfigDrawingVirtualRow {
-  type: 'config-drawing'
-  file: LocalFile
-  configName: string
-  configDepth: number
-  item: DrawingRefItem
-}
-
-/** Drawing ref config row data (configuration child under a DrawingRefRow) */
-interface DrawingRefConfigVirtualRow {
-  type: 'drawing-ref-config'
-  file: LocalFile
-  configName: string
-  parentItem: DrawingRefItem
-}
-
-/** New folder input row */
-interface NewFolderVirtualRow {
-  type: 'new-folder'
-}
-
-type VirtualRow =
-  | FileVirtualRow
-  | ConfigVirtualRow
-  | ConfigBomVirtualRow
-  | DrawingRefVirtualRow
-  | ConfigDrawingVirtualRow
-  | DrawingRefConfigVirtualRow
-  | NewFolderVirtualRow
-
-// ============================================================================
-// Props Interface
-// ============================================================================
+import type { ConfigWithDepth } from '../../types'
+import { useFilePaneContext, useFilePaneHandlers } from '../../context'
+import { buildVirtualRows } from './buildVirtualRows'
+import { ConfigBomRow } from './ConfigBomRow'
+import { ConfigDrawingRow } from './ConfigDrawingRow'
+import { ConfigEmptyRow } from './ConfigEmptyRow'
+import { ConfigGroupRow } from './ConfigGroupRow'
+import { ConfigRow } from './ConfigRow'
+import { DrawingRefRow } from './DrawingRefRow'
+import { FileRow } from './FileRow'
+import type {
+  ConfigBomVirtualRow,
+  ConfigDrawingVirtualRow,
+  ConfigEmptyVirtualRow,
+  ConfigGroupVirtualRow,
+  ConfigVirtualRow,
+  DrawingRefConfigVirtualRow,
+  DrawingRefVirtualRow,
+  FileVirtualRow,
+  SelectableRow,
+} from './rowTypes'
 
 // Slim props interface - state comes from context
 export interface FileListBodyProps {
@@ -151,7 +75,17 @@ export interface FileListBodyProps {
   onConfigContextMenu: (e: React.MouseEvent, filePath: string, configName: string) => void
   onConfigDescriptionChange: (filePath: string, configName: string, value: string) => void
   onConfigTabChange: (filePath: string, configName: string, value: string) => void
-  onConfigBomToggle: (e: React.MouseEvent, file: LocalFile, configName: string) => void
+  onCommitConfigurationEdits: (
+    file: LocalFile,
+    configNames: string[],
+  ) => void | Promise<void>
+  onConfigSectionsToggle: (e: React.MouseEvent, file: LocalFile, configName: string) => void
+  onConfigGroupToggle: (
+    e: React.MouseEvent,
+    file: LocalFile,
+    configName: string,
+    group: 'drawings' | 'ebom',
+  ) => void
 
   // Config BOM row event handlers
   onConfigBomRowClick: (e: React.MouseEvent, file: LocalFile, item: ConfigBomItem) => void
@@ -160,13 +94,21 @@ export interface FileListBodyProps {
   onDrawingRefRowClick: (e: React.MouseEvent, file: LocalFile, item: DrawingRefItem) => void
   onDrawingRefRowContextMenu: (e: React.MouseEvent, file: LocalFile, item: DrawingRefItem) => void
   onDrawingRefFileToggle: (e: React.MouseEvent, file: LocalFile, item: DrawingRefItem) => void
-  onConfigDrawingToggle: (e: React.MouseEvent, file: LocalFile, configName: string) => void
-  onConfigDrawingRowClick: (e: React.MouseEvent, file: LocalFile, item: DrawingRefItem) => void
+  onConfigDrawingRowClick: (
+    e: React.MouseEvent,
+    file: LocalFile,
+    item: DrawingRefItem,
+    selectableIndex?: number,
+  ) => void
   onConfigDrawingRowContextMenu: (
     e: React.MouseEvent,
     file: LocalFile,
     item: DrawingRefItem,
   ) => void
+  onConfigDrawingFileContextMenu: (e: React.MouseEvent, file: LocalFile) => void
+
+  // Ordered rows used by file selection and keyboard navigation
+  onSelectableRowsChange: (rows: SelectableRow[]) => void
 
   // Cell rendering
   renderCellContent: (file: LocalFile, columnId: string) => React.ReactNode
@@ -196,20 +138,24 @@ export const FileListBody = forwardRef<HTMLTableSectionElement, FileListBodyProp
       onConfigContextMenu,
       onConfigDescriptionChange,
       onConfigTabChange,
-      onConfigBomToggle,
+      onCommitConfigurationEdits,
+      onConfigSectionsToggle,
+      onConfigGroupToggle,
       onConfigBomRowClick,
       onDrawingRefRowClick,
       onDrawingRefRowContextMenu,
       onDrawingRefFileToggle,
-      onConfigDrawingToggle,
       onConfigDrawingRowClick,
       onConfigDrawingRowContextMenu,
+      onConfigDrawingFileContextMenu,
+      onSelectableRowsChange,
       renderCellContent,
     },
     ref,
   ) {
     // Get state from context
     const {
+      files,
       selectedFiles,
       clipboard,
       listRowSize,
@@ -217,12 +163,12 @@ export const FileListBody = forwardRef<HTMLTableSectionElement, FileListBodyProp
       expandedConfigFiles,
       fileConfigurations,
       selectedConfigs,
+      expandedConfigSections,
       expandedConfigBoms,
       configBomData,
       loadingConfigBoms,
       expandedDrawingRefs,
       drawingRefData,
-      loadingDrawingRefs,
       expandedDrawingRefFiles,
       expandedConfigDrawings,
       configDrawingData,
@@ -236,6 +182,7 @@ export const FileListBody = forwardRef<HTMLTableSectionElement, FileListBodyProp
       pendingScrollToFile,
     } = useFilePaneContext()
     const { savingConfigsToSW } = useFilePaneHandlers()
+    const checkoutHydration = usePDMStore((s) => s.checkoutHydration)
 
     // Get tab settings from organization serialization settings
     const serializationSettings = usePDMStore((s) => s.organization?.serialization_settings)
@@ -261,174 +208,59 @@ export const FileListBody = forwardRef<HTMLTableSectionElement, FileListBodyProp
     // Build virtual rows array
     // ============================================================================
 
-    const virtualRows = useMemo<VirtualRow[]>(() => {
-      const rows: VirtualRow[] = []
+    const { rows: virtualRows, selectableRows } = useMemo(
+      () =>
+        buildVirtualRows({
+          displayFiles,
+          files,
+          isCreatingFolder,
+          selectedFiles,
+          clipboard,
+          dragOverFolder,
+          userId: user?.id,
+          isBeingProcessed,
+          expandedConfigFiles,
+          fileConfigurations,
+          selectedConfigs,
+          expandedConfigSections,
+          expandedConfigDrawings,
+          configDrawingData,
+          loadingConfigDrawings,
+          expandedConfigBoms,
+          configBomData,
+          loadingConfigBoms,
+          expandedDrawingRefs,
+          drawingRefData,
+          expandedDrawingRefFiles,
+        }),
+      [
+        displayFiles,
+        files,
+        isCreatingFolder,
+        selectedFiles,
+        clipboard,
+        dragOverFolder,
+        user?.id,
+        isBeingProcessed,
+        expandedConfigFiles,
+        fileConfigurations,
+        selectedConfigs,
+        expandedConfigSections,
+        expandedConfigDrawings,
+        configDrawingData,
+        loadingConfigDrawings,
+        expandedConfigBoms,
+        configBomData,
+        loadingConfigBoms,
+        expandedDrawingRefs,
+        drawingRefData,
+        expandedDrawingRefFiles,
+      ],
+    )
 
-      // Add new folder input row at the top if creating
-      if (isCreatingFolder) {
-        rows.push({ type: 'new-folder' })
-      }
-
-      // Build rows from display files
-      displayFiles.forEach((file, index) => {
-        // Compute derived state for this file
-        const diffClass =
-          file.diffStatus === 'added'
-            ? 'diff-added'
-            : file.diffStatus === 'modified'
-              ? 'diff-modified'
-              : file.diffStatus === 'moved'
-                ? 'diff-moved'
-                : file.diffStatus === 'deleted'
-                  ? 'diff-deleted'
-                  : file.diffStatus === 'deleted_remote'
-                    ? 'diff-deleted-remote'
-                    : file.diffStatus === 'outdated'
-                      ? 'diff-outdated'
-                      : file.diffStatus === 'cloud'
-                        ? 'diff-cloud'
-                        : ''
-
-        const isProcessing = isBeingProcessed(file.relativePath)
-        const isDragTarget = file.isDirectory && dragOverFolder === file.relativePath
-        const isCut =
-          clipboard?.operation === 'cut' && clipboard.files.some((f) => f.path === file.path)
-        const isEditable = !!file.pdmData?.id && file.pdmData?.checked_out_by === user?.id
-        const basePartNumber = resolvedText(resolvePartNumber(file))
-
-        // Add file row
-        rows.push({
-          type: 'file',
-          file,
-          index,
-          isSelected: selectedFiles.includes(file.path),
-          isProcessing,
-          diffClass,
-          isDragTarget,
-          isCut,
-          isEditable,
-          basePartNumber,
-        })
-
-        // Add drawing reference rows if .slddrw file is expanded
-        if (expandedDrawingRefs.has(file.path)) {
-          const refItems = drawingRefData.get(file.path) || []
-          refItems.forEach((item) => {
-            rows.push({
-              type: 'drawing-ref',
-              file,
-              item,
-            })
-
-            // Add config children if this ref file is expanded and has configs
-            const refFileKey = `${file.path}::${item.file_path}`
-            if (
-              item.configurations &&
-              item.configurations.length > 0 &&
-              expandedDrawingRefFiles.has(refFileKey)
-            ) {
-              item.configurations.forEach((configName) => {
-                rows.push({
-                  type: 'drawing-ref-config',
-                  file,
-                  configName,
-                  parentItem: item,
-                })
-              })
-            }
-          })
-        }
-
-        // Add config rows if expanded
-        if (expandedConfigFiles.has(file.path)) {
-          const configs = fileConfigurations.get(file.path) || []
-          // Get configuration revisions from file's pdmData (propagated from drawings)
-          const configRevisions = (file.pdmData?.configuration_revisions || {}) as Record<
-            string,
-            string
-          >
-
-          // Check file type - assemblies can show BOM, both parts and assemblies can show drawings
-          const isAssemblyFile = file.extension?.toLowerCase() === '.sldasm'
-          const isPartFile = file.extension?.toLowerCase() === '.sldprt'
-          const isConfigExpandable = isAssemblyFile || isPartFile
-
-          configs.forEach((config) => {
-            const configKey = `${file.path}::${config.name}`
-            const isBomExpanded = expandedConfigBoms.has(configKey)
-            const isBomLoading = loadingConfigBoms.has(configKey)
-            const isDrawingsExpanded = expandedConfigDrawings.has(configKey)
-            const isDrawingsLoading = loadingConfigDrawings.has(configKey)
-
-            rows.push({
-              type: 'config',
-              file,
-              config,
-              isSelected: selectedConfigs.has(configKey),
-              isEditable,
-              basePartNumber,
-              configRevision: configRevisions[config.name],
-              isExpandable: isConfigExpandable,
-              isBomExpanded,
-              isBomLoading,
-              isDrawingsExpanded,
-              isDrawingsLoading,
-            })
-
-            // Add config drawing rows FIRST (drawings appear before BOM items under a config)
-            if (isDrawingsExpanded) {
-              const drawingItems = configDrawingData.get(configKey) || []
-              drawingItems.forEach((item) => {
-                rows.push({
-                  type: 'config-drawing',
-                  file,
-                  configName: config.name,
-                  configDepth: config.depth,
-                  item,
-                })
-              })
-            }
-
-            // Add BOM rows if config BOM is expanded (assemblies only)
-            if (isBomExpanded) {
-              const bomItems = configBomData.get(configKey) || []
-              bomItems.forEach((item) => {
-                rows.push({
-                  type: 'config-bom',
-                  file,
-                  configName: config.name,
-                  configDepth: config.depth,
-                  item,
-                })
-              })
-            }
-          })
-        }
-      })
-
-      return rows
-    }, [
-      displayFiles,
-      isCreatingFolder,
-      selectedFiles,
-      clipboard,
-      dragOverFolder,
-      user?.id,
-      expandedConfigFiles,
-      fileConfigurations,
-      selectedConfigs,
-      expandedConfigBoms,
-      configBomData,
-      loadingConfigBoms,
-      expandedDrawingRefs,
-      drawingRefData,
-      loadingDrawingRefs,
-      expandedDrawingRefFiles,
-      expandedConfigDrawings,
-      configDrawingData,
-      loadingConfigDrawings,
-      isBeingProcessed,
-    ])
+    useEffect(() => {
+      onSelectableRowsChange(selectableRows)
+    }, [onSelectableRowsChange, selectableRows])
 
     // ============================================================================
     // Virtualizer setup
@@ -444,6 +276,8 @@ export const FileListBody = forwardRef<HTMLTableSectionElement, FileListBodyProp
             return newFolderRowHeight
           case 'config':
             return configRowHeight
+          case 'config-group':
+          case 'config-empty':
           case 'config-bom':
             return configBomRowHeight
           case 'drawing-ref':
@@ -550,6 +384,11 @@ export const FileListBody = forwardRef<HTMLTableSectionElement, FileListBodyProp
             isCut={isCut}
             rowHeight={fileRowHeight}
             visibleColumns={visibleColumns}
+            checkoutSignature={getCheckoutSignature(
+              file,
+              user,
+              file.pdmData?.id ? checkoutHydration[file.pdmData.id]?.state : undefined,
+            )}
             draggable={file.diffStatus !== 'cloud'}
             onClick={(e) => onRowClick(e, file, index)}
             onDoubleClick={() => onRowDoubleClick(file)}
@@ -575,6 +414,8 @@ export const FileListBody = forwardRef<HTMLTableSectionElement, FileListBodyProp
         onFolderDragLeave,
         onDropOnFolder,
         renderCellContent,
+        user,
+        checkoutHydration,
       ],
     )
 
@@ -588,16 +429,15 @@ export const FileListBody = forwardRef<HTMLTableSectionElement, FileListBodyProp
           basePartNumber,
           configRevision,
           isExpandable,
-          isBomExpanded,
-          isBomLoading,
-          isDrawingsExpanded,
-          isDrawingsLoading,
+          isExpanded,
+          isLoading,
         } = row
         const configs = fileConfigurations.get(file.path) || []
 
         return (
           <ConfigRow
             key={`${file.path}::config::${config.name}`}
+            file={file}
             config={config}
             isSelected={isSelected}
             isEditable={isEditable}
@@ -606,25 +446,19 @@ export const FileListBody = forwardRef<HTMLTableSectionElement, FileListBodyProp
             basePartNumber={basePartNumber}
             configRevision={configRevision}
             isExpandable={isExpandable}
-            isBomExpanded={isBomExpanded}
-            isBomLoading={isBomLoading}
-            isDrawingsExpanded={isDrawingsExpanded}
-            isDrawingsLoading={isDrawingsLoading}
+            isExpanded={isExpanded}
+            isLoading={isLoading}
             tabEnabled={tabEnabled}
             tabValidationOptions={tabValidationOptions}
             isWriting={isConfigurationWriteInFlight(savingConfigsToSW, file.path, config.name)}
+            onCommitConfigurationEdits={onCommitConfigurationEdits}
             onClick={(e) => onConfigRowClick(e, file.path, config.name, configs)}
             onContextMenu={(e) => onConfigContextMenu(e, file.path, config.name)}
             onDescriptionChange={(value) =>
               onConfigDescriptionChange(file.path, config.name, value)
             }
             onTabChange={(value) => onConfigTabChange(file.path, config.name, value)}
-            onToggleBom={
-              file.extension?.toLowerCase() === '.sldasm'
-                ? (e) => onConfigBomToggle(e, file, config.name)
-                : undefined
-            }
-            onToggleDrawings={(e) => onConfigDrawingToggle(e, file, config.name)}
+            onToggleSections={(e) => onConfigSectionsToggle(e, file, config.name)}
           />
         )
       },
@@ -639,20 +473,50 @@ export const FileListBody = forwardRef<HTMLTableSectionElement, FileListBodyProp
         onConfigContextMenu,
         onConfigDescriptionChange,
         onConfigTabChange,
-        onConfigBomToggle,
-        onConfigDrawingToggle,
+        onCommitConfigurationEdits,
+        onConfigSectionsToggle,
       ],
+    )
+
+    const renderConfigGroupRow = useCallback(
+      (row: ConfigGroupVirtualRow) => (
+        <ConfigGroupRow
+          key={`${row.file.path}::config-group::${row.configName}::${row.group}`}
+          group={row.group}
+          configDepth={row.configDepth}
+          isExpanded={row.isExpanded}
+          isLoading={row.isLoading}
+          count={row.count}
+          rowHeight={configBomRowHeight}
+          visibleColumns={visibleColumns}
+          onToggle={(e) => onConfigGroupToggle(e, row.file, row.configName, row.group)}
+        />
+      ),
+      [configBomRowHeight, visibleColumns, onConfigGroupToggle],
+    )
+
+    const renderConfigEmptyRow = useCallback(
+      (row: ConfigEmptyVirtualRow) => (
+        <ConfigEmptyRow
+          key={`${row.file.path}::config-empty::${row.configName}::${row.kind}`}
+          kind={row.kind}
+          configDepth={row.configDepth}
+          rowHeight={configBomRowHeight}
+          visibleColumns={visibleColumns}
+        />
+      ),
+      [configBomRowHeight, visibleColumns],
     )
 
     const renderConfigBomRow = useCallback(
       (row: ConfigBomVirtualRow) => {
-        const { file, configDepth, item } = row
+        const { file, configDepth, depth, item } = row
 
         return (
           <ConfigBomRow
             key={`${file.path}::bom::${row.configName}::${item.id}`}
             item={item}
-            depth={0}
+            depth={depth}
             configDepth={configDepth}
             rowHeight={configBomRowHeight}
             visibleColumns={visibleColumns}
@@ -695,22 +559,37 @@ export const FileListBody = forwardRef<HTMLTableSectionElement, FileListBodyProp
 
     const renderConfigDrawingRow = useCallback(
       (row: ConfigDrawingVirtualRow) => {
-        const { file, configDepth, item } = row
+        const { file, configDepth, depth, item, drawingFile, selectableIndex, isSelected } = row
 
         return (
           <ConfigDrawingRow
             key={`${file.path}::config-drawing::${row.configName}::${item.id}`}
             item={item}
-            depth={0}
+            depth={depth}
             configDepth={configDepth}
             rowHeight={configBomRowHeight}
             visibleColumns={visibleColumns}
-            onClick={(e) => onConfigDrawingRowClick(e, file, item)}
-            onContextMenu={(e) => onConfigDrawingRowContextMenu(e, file, item)}
+            drawingFile={drawingFile}
+            selectableIndex={selectableIndex}
+            isSelected={isSelected}
+            onClick={(e) =>
+              onConfigDrawingRowClick(e, drawingFile ?? file, item, selectableIndex)
+            }
+            onContextMenu={(e) =>
+              drawingFile
+                ? onConfigDrawingFileContextMenu(e, drawingFile)
+                : onConfigDrawingRowContextMenu(e, file, item)
+            }
           />
         )
       },
-      [configBomRowHeight, visibleColumns, onConfigDrawingRowClick, onConfigDrawingRowContextMenu],
+      [
+        configBomRowHeight,
+        visibleColumns,
+        onConfigDrawingRowClick,
+        onConfigDrawingRowContextMenu,
+        onConfigDrawingFileContextMenu,
+      ],
     )
 
     const renderDrawingRefConfigRow = useCallback(
@@ -823,6 +702,22 @@ export const FileListBody = forwardRef<HTMLTableSectionElement, FileListBodyProp
               return (
                 <React.Fragment key={`config::${row.file.path}::${row.config.name}`}>
                   {renderConfigRow(row)}
+                </React.Fragment>
+              )
+            case 'config-group':
+              return (
+                <React.Fragment
+                  key={`config-group::${row.file.path}::${row.configName}::${row.group}`}
+                >
+                  {renderConfigGroupRow(row)}
+                </React.Fragment>
+              )
+            case 'config-empty':
+              return (
+                <React.Fragment
+                  key={`config-empty::${row.file.path}::${row.configName}::${row.kind}`}
+                >
+                  {renderConfigEmptyRow(row)}
                 </React.Fragment>
               )
             case 'config-bom':

@@ -2,6 +2,7 @@
  * File sorting utilities for the file browser
  */
 import type { LocalFile } from '@/stores/pdmStore'
+import { deriveCheckoutDisplay } from '@/lib/checkout/checkoutDisplay'
 import {
   resolveDescription,
   resolvePartNumber,
@@ -28,11 +29,12 @@ export function compareFiles(
     case 'size':
       comparison = a.size - b.size
       break
-    case 'modifiedTime':
+    case 'modifiedTime': {
       const aTime = a.modifiedTime ? new Date(a.modifiedTime).getTime() : 0
       const bTime = b.modifiedTime ? new Date(b.modifiedTime).getTime() : 0
       comparison = (isNaN(aTime) ? 0 : aTime) - (isNaN(bTime) ? 0 : bTime)
       break
+    }
     case 'extension':
       comparison = a.extension.localeCompare(b.extension)
       break
@@ -51,26 +53,30 @@ export function compareFiles(
     case 'revision':
       comparison = resolvedText(resolveRevision(a)).localeCompare(resolvedText(resolveRevision(b)))
       break
-    case 'version':
+    case 'version': {
       const aVer = a.pdmData?.version || 0
       const bVer = b.pdmData?.version || 0
       comparison = aVer - bVer
       break
-    case 'state':
+    }
+    case 'state': {
       const aState = a.pdmData?.workflow_state?.name || ''
       const bState = b.pdmData?.workflow_state?.name || ''
       comparison = aState.localeCompare(bState)
       break
-    case 'checkedOutBy':
-      const aCheckedOut = a.pdmData?.checked_out_user?.full_name || ''
-      const bCheckedOut = b.pdmData?.checked_out_user?.full_name || ''
+    }
+    case 'checkedOutBy': {
+      const aCheckedOut = deriveCheckoutDisplay(a, null).displayName || ''
+      const bCheckedOut = deriveCheckoutDisplay(b, null).displayName || ''
       comparison = aCheckedOut.localeCompare(bCheckedOut)
       break
-    case 'fileStatus':
+    }
+    case 'fileStatus': {
       const aStatus = a.diffStatus || ''
       const bStatus = b.diffStatus || ''
       comparison = aStatus.localeCompare(bStatus)
       break
+    }
     default:
       comparison = a.name.localeCompare(b.name)
   }

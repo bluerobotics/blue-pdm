@@ -872,9 +872,31 @@ const DELIBERATE: readonly Allowance[] = [
   },
   {
     file: 'features/source/browser/hooks/configWritePlan.ts',
-    symbols: ['buildConfigurationTabWritePlan', 'buildConfigurationDescriptionWritePlan'],
+    symbols: [
+      'buildConfigurationTabWritePlan',
+      'buildConfigurationDescriptionWritePlan',
+      'buildConfigurationCommitWritePlan',
+    ],
     reason:
-      'Reads back the edit `partNumberEdit` has just built out of `resolvePartNumber`, so the overlay has already decided. It is shaped as a PendingMetadata because that is what the planner takes.',
+      'Reads back edits the planners have just built out of resolvePartNumber, so the overlay has already decided. The values are shaped as PendingMetadata because that is what the planners take.',
+  },
+  {
+    file: 'features/source/browser/components/FileList/ConfigRow.tsx',
+    symbols: ['scopeConfigurationFile'],
+    reason:
+      'Projects one configuration out of the pending maps and write-state record so the row marker reports only that configuration. It does not resolve a displayed metadata value.',
+  },
+  {
+    file: 'features/source/browser/hooks/useConfigCommitHandlers.ts',
+    symbols: ['configurationDirtyAddresses', 'pendingEditForConfiguration'],
+    reason:
+      'Determines which pending configuration edits are dirty and carries those exact values into the write planner. Overlaying them would erase the distinction between an edit and the committed document state.',
+  },
+  {
+    file: 'lib/commands/handlers/checkin.ts',
+    symbols: ['pendingConfigurationNames'],
+    reason:
+      'Enumerates configuration edits still awaiting check-in and checks their per-address write state. It needs the pending map as an edit set, not as a displayed metadata value.',
   },
   {
     file: 'features/source/browser/hooks/useConfigHandlers.ts',
@@ -886,12 +908,6 @@ const DELIBERATE: readonly Allowance[] = [
     ],
     reason:
       'The committed row is what buildMetadataWritePlan consults for the fields the datacard edit does not name. The pending maps it reads are the ones it is about to store, where merging the committed values in would defeat dropCommittedPendingMetadata.',
-  },
-  {
-    file: 'features/source/details/DetailsPanel.tsx',
-    symbols: ['DetailsPanel'],
-    reason:
-      'Re-issues a write that never landed, from the values it failed on. A retry has to carry the edit as the user left it, not the field as it now displays.',
   },
   {
     file: 'features/source/explorer/file-tree/hooks/useVaultTree.ts',
@@ -947,9 +963,8 @@ const DELIBERATE: readonly Allowance[] = [
   },
   {
     file: 'lib/metadata/pendingEdits.ts',
-    symbols: ['applyPendingEdit', 'retryEdit'],
-    reason:
-      'Merges one edit into the pending set and names the fields a retry has to cover. Both are the edit as an edit, which is the one thing the overlay is not about.',
+    symbols: ['applyPendingEdit'],
+    reason: 'Merges one edit into the pending set, which is the one thing the overlay is not about.',
   },
   {
     file: 'lib/metadata/writePlan.ts',

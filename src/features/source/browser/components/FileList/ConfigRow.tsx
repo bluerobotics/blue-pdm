@@ -1,7 +1,15 @@
-import React, { memo, useState, useEffect, useCallback } from 'react'
+import React, { memo, useState, useEffect, useCallback, useMemo } from 'react'
 import { Layers, FileInput, ChevronRight, ChevronDown, Loader2 } from 'lucide-react'
+
+import { InlineConfigSyncButton } from '@/components/shared/InlineActions'
+import { MetadataWriteStateMarker } from '@/components/MetadataWriteStateMarker'
 import { t } from '@/lib/i18n'
-import type { ConfigWithDepth } from '../../types'
+import {
+  resolveFileWriteState,
+  type MetadataWriteStateRecord,
+} from '@/lib/metadata/writeState'
+import { usePDMStore } from '@/stores/pdmStore'
+import type { LocalFile, PendingMetadata } from '@/stores/types'
 import {
   validateTabInput,
   getTabPlaceholder,
@@ -9,7 +17,12 @@ import {
   DEFAULT_TAB_VALIDATION_OPTIONS,
 } from '@/lib/tabValidation'
 
+import { isConfigurationDirty } from '../../hooks/useConfigCommitHandlers'
+import { useFilePaneContext } from '../../context'
+import type { ConfigWithDepth } from '../../types'
+
 export interface ConfigRowProps {
+  file: LocalFile
   config: ConfigWithDepth
   isSelected: boolean
   isEditable: boolean
@@ -20,14 +33,10 @@ export interface ConfigRowProps {
   configRevision?: string
   /** Whether this config can be expanded (true for both parts and assemblies) */
   isExpandable?: boolean
-  /** Whether the BOM section is currently expanded */
-  isBomExpanded?: boolean
-  /** Whether the BOM is currently loading */
-  isBomLoading?: boolean
-  /** Whether the drawings section is currently expanded */
-  isDrawingsExpanded?: boolean
-  /** Whether the drawings section is currently loading */
-  isDrawingsLoading?: boolean
+  /** Whether this configuration's child sections are expanded */
+  isExpanded?: boolean
+  /** Whether this configuration's child data is currently loading */
+  isLoading?: boolean
   /** Whether tab numbers are enabled org-wide (from serialization_settings.tab_enabled) */
   tabEnabled?: boolean
   /** Tab validation options (from serialization settings) */
@@ -39,14 +48,14 @@ export interface ConfigRowProps {
    * seconds. Without this the row simply sat there, so the edit looked either instant or ignored.
    */
   isWriting?: boolean
+  /** Commit the dirty configurations represented by this row. */
+  onCommitConfigurationEdits: (file: LocalFile, configNames: string[]) => void | Promise<void>
   onClick: (e: React.MouseEvent) => void
   onContextMenu: (e: React.MouseEvent) => void
   onDescriptionChange: (value: string) => void
   onTabChange: (value: string) => void
-  /** Handler for toggling BOM expansion */
-  onToggleBom?: (e: React.MouseEvent) => void
-  /** Handler for toggling drawings expansion */
-  onToggleDrawings?: (e: React.MouseEvent) => void
+  /** Handler for toggling this configuration's child sections */
+  onToggleSections?: (e: React.MouseEvent) => void
 }
 
 /**
@@ -54,6 +63,8 @@ export interface ConfigRowProps {
  * Compares props that affect rendering, skipping callback functions.
  */
 function areConfigRowPropsEqual(prevProps: ConfigRowProps, nextProps: ConfigRowProps): boolean {
+  if (prevProps.file !== nextProps.file) return false
+
   // Compare config identity and key properties
   if (prevProps.config.name !== nextProps.config.name) return false
   if (prevProps.config.depth !== nextProps.config.depth) return false
@@ -68,10 +79,8 @@ function areConfigRowPropsEqual(prevProps: ConfigRowProps, nextProps: ConfigRowP
   if (prevProps.basePartNumber !== nextProps.basePartNumber) return false
   if (prevProps.configRevision !== nextProps.configRevision) return false
   if (prevProps.isExpandable !== nextProps.isExpandable) return false
-  if (prevProps.isBomExpanded !== nextProps.isBomExpanded) return false
-  if (prevProps.isBomLoading !== nextProps.isBomLoading) return false
-  if (prevProps.isDrawingsExpanded !== nextProps.isDrawingsExpanded) return false
-  if (prevProps.isDrawingsLoading !== nextProps.isDrawingsLoading) return false
+  if (prevProps.isExpanded !== nextProps.isExpanded) return false
+  if (prevProps.isLoading !== nextProps.isLoading) return false
   if (prevProps.isWriting !== nextProps.isWriting) return false
   if (prevProps.tabEnabled !== nextProps.tabEnabled) return false
   // Compare tab validation options
@@ -94,6 +103,7 @@ function areConfigRowPropsEqual(prevProps: ConfigRowProps, nextProps: ConfigRowP
 }
 
 export const ConfigRow = memo(function ConfigRow({
+  file,
   config,
   isSelected,
   isEditable,
@@ -102,20 +112,37 @@ export const ConfigRow = memo(function ConfigRow({
   basePartNumber,
   configRevision,
   isExpandable,
-  isBomExpanded,
-  isBomLoading,
-  isDrawingsExpanded,
-  isDrawingsLoading,
+  isExpanded,
+  isLoading,
   tabEnabled = false,
   tabValidationOptions = DEFAULT_TAB_VALIDATION_OPTIONS,
   isWriting = false,
+  onCommitConfigurationEdits,
   onClick,
   onContextMenu,
   onDescriptionChange,
   onTabChange,
-  onToggleBom,
-  onToggleDrawings,
+  onToggleSections,
 }: ConfigRowProps) {
+  const { isConfigCommitHovered, setIsConfigCommitHovered } = useFilePaneContext()
+  const selectedConfigs = usePDMStore((state) => state.selectedConfigs)
+  const solidWorksStatus = usePDMStore((state) => state.integrations.solidworks.status)
+  const isDirty = isConfigurationDirty(file, config.name)
+  const isSolidWorksAvailable = solidWorksStatus === 'online' || solidWorksStatus === 'partial'
+  const markerFile = useMemo(() => scopeConfigurationFile(file, config.name), [config.name, file])
+  const writeState = resolveFileWriteState(markerFile.pendingMetadata, markerFile.metadataWriteState)
+  const hasFailedWrite =
+    writeState === 'failed' || writeState === 'unattempted' || writeState === 'unverified'
+  const selectedDirtyConfigNames = useMemo(() => {
+    if (!selectedConfigs.has(`${file.path}::${config.name}`)) return []
+    const filePrefix = `${file.path}::`
+    return [...selectedConfigs]
+      .filter((key) => key.startsWith(filePrefix))
+      .map((key) => key.slice(filePrefix.length))
+      .filter((name) => isConfigurationDirty(file, name))
+  }, [config.name, file, selectedConfigs])
+  const isMultiCommit = selectedDirtyConfigNames.length > 1
+
   // Local state for description input - prevents race conditions when clicking between inputs
   const [localDescription, setLocalDescription] = useState(config.description || '')
 
@@ -188,9 +215,22 @@ export const ConfigRow = memo(function ConfigRow({
     [localTabNumber, config.tabNumber, onTabChange, tabValidationOptions],
   )
 
+  const handleCommitClick = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation()
+      const configNames =
+        selectedDirtyConfigNames.length > 1 ? selectedDirtyConfigNames : [config.name]
+
+      void onCommitConfigurationEdits(file, configNames)
+    },
+    [config.name, file, onCommitConfigurationEdits, selectedDirtyConfigNames],
+  )
+
   return (
     <tr
-      className={`config-row cursor-pointer ${isSelected ? 'selected' : ''}`}
+      className={`config-row cursor-pointer ${isSelected ? 'selected' : ''} ${
+        hasFailedWrite ? 'config-write-failed' : isDirty ? 'config-dirty' : ''
+      }`}
       style={{ height: rowHeight }}
       onClick={onClick}
       onContextMenu={onContextMenu}
@@ -205,31 +245,27 @@ export const ConfigRow = memo(function ConfigRow({
                 paddingLeft: `${24 + config.depth * 16}px`,
               }}
             >
-              {/* Expand toggle for drawings and/or BOM under this config */}
+              {/* Expand toggle for drawings and/or eBOM under this config */}
               {isExpandable ? (
                 (() => {
-                  // Determine combined expanded/loading state across drawings + BOM
-                  const isAnyExpanded = !!(isDrawingsExpanded || isBomExpanded)
-                  const isAnyLoading = !!(isDrawingsLoading || isBomLoading)
-
-                  // Single click handler toggles both sections
                   const handleToggle = (e: React.MouseEvent) => {
                     e.stopPropagation()
-                    // Toggle drawings if handler exists
-                    onToggleDrawings?.(e)
-                    // Toggle BOM if handler exists (assemblies only)
-                    onToggleBom?.(e)
+                    onToggleSections?.(e)
                   }
 
                   return (
                     <button
                       onClick={handleToggle}
                       className="p-0.5 -ml-1 hover:bg-plm-bg-light rounded transition-colors"
-                      title={isAnyExpanded ? 'Collapse' : 'Expand'}
+                      title={
+                        isExpanded
+                          ? t('source.configTree.collapse', 'Collapse')
+                          : t('source.configTree.expand', 'Expand')
+                      }
                     >
-                      {isAnyLoading ? (
+                      {isLoading ? (
                         <Loader2 size={10} className="text-plm-fg-muted animate-spin" />
-                      ) : isAnyExpanded ? (
+                      ) : isExpanded ? (
                         <ChevronDown size={10} className="text-plm-fg-muted" />
                       ) : (
                         <ChevronRight size={10} className="text-plm-fg-muted" />
@@ -249,20 +285,46 @@ export const ConfigRow = memo(function ConfigRow({
               >
                 {config.name}
               </span>
-              {config.isActive && (
-                <span
-                  className="w-1.5 h-1.5 rounded-full bg-emerald-400 flex-shrink-0"
-                  title="Active configuration"
-                />
-              )}
-              {/* Beside the name rather than in a column, so it shows whichever field was edited. */}
-              {isWriting && (
-                <Loader2
-                  size={10}
-                  className="text-plm-fg-muted animate-spin flex-shrink-0"
-                  aria-label={t('source.metadataWrite.stateWriting')}
-                />
-              )}
+              <span className="flex items-center gap-1 ml-auto mr-0.5">
+                {hasFailedWrite && (
+                  <MetadataWriteStateMarker file={markerFile} isWriting={isWriting} />
+                )}
+                {config.isActive && (
+                  <span
+                    className="w-1.5 h-1.5 rounded-full bg-emerald-400 flex-shrink-0"
+                    title="Active configuration"
+                  />
+                )}
+                {isDirty && isEditable && (
+                  <InlineConfigSyncButton
+                    onClick={handleCommitClick}
+                    selectedCount={isMultiCommit ? selectedDirtyConfigNames.length : undefined}
+                    isSelectionHovered={isMultiCommit && isConfigCommitHovered}
+                    onMouseEnter={() => {
+                      if (isMultiCommit) setIsConfigCommitHovered(true)
+                    }}
+                    onMouseLeave={() => setIsConfigCommitHovered(false)}
+                    disabled={!isSolidWorksAvailable}
+                    isProcessing={isWriting}
+                    title={
+                      !isSolidWorksAvailable
+                        ? t('source.configCommit.swOffline')
+                        : isMultiCommit
+                          ? t('source.configCommit.writeAndSyncCount', {
+                              count: selectedDirtyConfigNames.length,
+                            })
+                          : t('source.configCommit.writeAndSync')
+                    }
+                  />
+                )}
+                {isWriting && !isDirty && (
+                  <Loader2
+                    size={10}
+                    className="text-plm-fg-muted animate-spin flex-shrink-0"
+                    aria-label={t('source.metadataWrite.stateWriting')}
+                  />
+                )}
+              </span>
             </div>
           ) : column.id === 'description' ? (
             <input
@@ -386,3 +448,32 @@ export const ConfigRow = memo(function ConfigRow({
     </tr>
   )
 }, areConfigRowPropsEqual)
+
+function scopeConfigurationFile(file: LocalFile, configuration: string): LocalFile {
+  const pending: PendingMetadata = {}
+  const metadataWriteState: MetadataWriteStateRecord = {}
+  const pendingTabs = file.pendingMetadata?.config_tabs
+  const pendingDescriptions = file.pendingMetadata?.config_descriptions
+  const tabState = file.metadataWriteState?.config_tabs?.[configuration]
+  const descriptionState = file.metadataWriteState?.config_descriptions?.[configuration]
+
+  if (pendingTabs && Object.prototype.hasOwnProperty.call(pendingTabs, configuration)) {
+    pending.config_tabs = { [configuration]: pendingTabs[configuration] }
+  }
+  if (
+    pendingDescriptions &&
+    Object.prototype.hasOwnProperty.call(pendingDescriptions, configuration)
+  ) {
+    pending.config_descriptions = { [configuration]: pendingDescriptions[configuration] }
+  }
+  if (tabState) metadataWriteState.config_tabs = { [configuration]: tabState }
+  if (descriptionState) {
+    metadataWriteState.config_descriptions = { [configuration]: descriptionState }
+  }
+
+  return {
+    ...file,
+    pendingMetadata: Object.keys(pending).length > 0 ? pending : undefined,
+    metadataWriteState: Object.keys(metadataWriteState).length > 0 ? metadataWriteState : undefined,
+  }
+}

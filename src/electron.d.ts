@@ -261,6 +261,7 @@ declare global {
           isCurrentSession: boolean
         }>
         error?: string
+        logsDir?: string
       }>
       readLogFile: (
         filePath: string,
@@ -329,6 +330,7 @@ declare global {
         filePath: string,
       ) => Promise<{ success: boolean; content?: string; error?: string }>
       openCrashesDir: () => Promise<{ success: boolean; error?: string }>
+      getCrashesDir: () => Promise<string>
 
       // Window controls
       minimize: () => void

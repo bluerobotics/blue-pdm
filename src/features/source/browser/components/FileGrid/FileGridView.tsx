@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 
+import { getCheckoutSignature } from '@/lib/checkout/checkoutDisplay'
 import { usePDMStore, type LocalFile } from '@/stores/pdmStore'
 import type { OperationType } from '@/stores/types'
 
@@ -71,6 +72,7 @@ export function FileGridView({
 }: FileGridViewProps) {
   const pendingScrollToFile = usePDMStore((s) => s.pendingScrollToFile)
   const setPendingScrollToFile = usePDMStore((s) => s.setPendingScrollToFile)
+  const checkoutHydration = usePDMStore((s) => s.checkoutHydration)
 
   const gridRef = useRef<HTMLDivElement>(null)
   const [contentWidth, setContentWidth] = useState(0)
@@ -173,6 +175,20 @@ export function FileGridView({
                       userFullName={userFullName}
                       userEmail={userEmail}
                       userAvatarUrl={userAvatarUrl}
+                      checkoutSignature={getCheckoutSignature(
+                        file,
+                        userId
+                          ? {
+                              id: userId,
+                              full_name: userFullName,
+                              email: userEmail,
+                              avatar_url: userAvatarUrl,
+                            }
+                          : null,
+                        file.pdmData?.id
+                          ? checkoutHydration[file.pdmData.id]?.state
+                          : undefined,
+                      )}
                       onClick={(e) => onSelect(e, file, index)}
                       onDoubleClick={() => onDoubleClick(file)}
                       onContextMenu={(e) => onContextMenu(e, file)}

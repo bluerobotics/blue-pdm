@@ -20,6 +20,7 @@ export interface FileCardProps {
   userFullName: string | undefined
   userEmail: string | undefined
   userAvatarUrl: string | undefined
+  checkoutSignature: string
   onClick: (e: React.MouseEvent) => void
   onDoubleClick: () => void
   onContextMenu: (e: React.MouseEvent) => void
@@ -215,6 +216,8 @@ export const FileCard = memo(
   },
   (prevProps, nextProps) => {
     // Custom comparison to avoid re-renders when allFiles changes but this file didn't
+    if (prevProps.checkoutSignature !== nextProps.checkoutSignature) return false
+    if (prevProps.file.isDirectory && prevProps.allFiles !== nextProps.allFiles) return false
     if (prevProps.file !== nextProps.file) {
       const prev = prevProps.file
       const next = nextProps.file

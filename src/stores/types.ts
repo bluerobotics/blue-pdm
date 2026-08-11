@@ -1,5 +1,5 @@
 // Store types - extracted from pdmStore.ts for use across slices
-import type { PDMFile, Organization, User } from '../types/pdm'
+import type { CheckoutUserProfile, PDMFile, Organization, User } from '../types/pdm'
 import type { ModuleId, ModuleConfig } from '../types/modules'
 import type {
   KeybindingsConfig,
@@ -272,12 +272,23 @@ export interface FileLocationUpdate {
   pdmData: import('../types/pdm').PDMFile
 }
 
+/** Hydration operation state; never used as persisted checkout identity. */
+export interface CheckoutHydrationStatus {
+  ownerId: string
+  state: 'pending' | 'error'
+  attempt: number
+  lastError: string | null
+  requestId: string
+  updatedAt: number
+}
+
 // TODO(decompose): Extract to src/types/operations.ts — QueuedOperation,
 // ConnectedVault (operation/vault domain models)
 
 // Queued operation for non-blocking file operations
 export interface QueuedOperation {
   id: string
+  commandId?: string
   type:
     | 'download'
     | 'get-latest'
@@ -358,6 +369,8 @@ export interface DrawingRefItem {
   revision: string | null
   state: string | null
   configuration: string | null
+  /** Whether SolidWorks confirmed that this drawing references the requested configuration */
+  configurationConfirmed?: boolean
   /** All configurations of this file that the parent drawing references (from DB enrichment) */
   configurations?: string[]
   /** Per-config tab numbers (from pendingMetadata.config_tabs or pdmData) */
@@ -998,6 +1011,9 @@ export interface FilesSlice {
   fileConfigurations: Map<string, SWConfiguration[]> // Cached configurations per file
   loadingConfigs: Set<string> // Files currently loading configs
 
+  // State - Configuration section expansion (groups nested under a config row)
+  expandedConfigSections: Set<string> // Expanded config rows (format: "filePath::configName")
+
   // State - Configuration BOM expansion (nested under configs)
   expandedConfigBoms: Set<string> // Expanded config BOMs (format: "filePath::configName")
   configBomData: Map<string, ConfigBomItem[]> // Cached BOM data per config (format: "filePath::configName")
@@ -1020,8 +1036,15 @@ export interface FilesSlice {
   // State - Pending pane section expansion
   expandedPendingSections: Set<string> // Section IDs that are expanded
 
+  // State - Checkout profile hydration diagnostics (render-only operation state)
+  checkoutHydration: Record<string, CheckoutHydrationStatus>
+
   // Actions - Files
   setFiles: (files: LocalFile[]) => void
+  applyCheckoutUserProfiles: (profiles: Record<string, CheckoutUserProfile>) => void
+  setCheckoutHydrationStatus: (fileId: string, status: CheckoutHydrationStatus) => void
+  clearCheckoutHydrationStatus: (fileId: string) => void
+  clearCheckoutHydration: () => void
   setServerFiles: (files: ServerFile[]) => void
   setServerFolderPaths: (paths: Set<string>) => void
   updateFileInStore: (path: string, updates: Partial<LocalFile>) => void
@@ -1131,8 +1154,13 @@ export interface FilesSlice {
   setLoadingConfigs: (paths: Set<string>) => void
   addLoadingConfig: (filePath: string) => void
   removeLoadingConfig: (filePath: string) => void
-  /** Clear all configuration caches (fileConfigurations, expandedConfigFiles, selectedConfigs, configBomData, expandedConfigBoms) */
+  /** Clear all configuration caches and expansion state. */
   clearAllConfigCaches: () => void
+
+  // Actions - Configuration section expansion
+  toggleConfigSectionsExpansion: (configKey: string) => void
+  /** Clear a config row's section, group expansion, loading, and cached data state. */
+  clearConfigSectionData: (configKey: string) => void
 
   // Actions - Configuration BOM expansion
   toggleConfigBomExpansion: (configKey: string) => void
@@ -1387,7 +1415,12 @@ export interface OperationsSlice {
   operationQueue: QueuedOperation[]
   isOperationRunning: boolean
   /** Currently running operation details (for deduplication) */
-  currentOperation: { type: QueuedOperation['type']; paths: string[] } | null
+  currentOperation: {
+    id: string
+    commandId: string | null
+    type: QueuedOperation['type']
+    paths: string[]
+  } | null
 
   // State - Reviews
   pendingReviewCount: number
@@ -2269,9 +2302,16 @@ export type {
   OrderListItem,
   OrgModuleDefaults,
 } from '../types/modules'
+
 export type {
   KeybindingAction,
   KeybindingsConfig,
   Keybinding,
   SettingsTab,
 } from '../types/settings'
+
+/** Clears session-owned state without removing persisted vault preferences. */
+export interface UserSlice {
+  resetFileSessionState: () => void
+  resetSessionState: () => void
+}

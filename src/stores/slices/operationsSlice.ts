@@ -180,7 +180,12 @@ export const createOperationsSlice: StateCreator<
     // Mark that an operation is now running and track its details for deduplication
     set({
       isOperationRunning: true,
-      currentOperation: { type: operation.type, paths: operation.paths },
+      currentOperation: {
+        id: operation.id,
+        commandId: operation.commandId ?? null,
+        type: operation.type,
+        paths: operation.paths,
+      },
     })
 
     try {

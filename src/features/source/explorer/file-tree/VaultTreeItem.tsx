@@ -36,6 +36,7 @@ interface VaultTreeItemProps {
   syncedFilesCount: number
   checkedOutByMeCount: number
   allCheckoutUsers: CheckoutUserWithCount[]
+  checkoutUsersSignature: string
   totalCheckouts: number
   // Processing states
   isDownloadingAll: boolean
@@ -83,15 +84,8 @@ function areVaultTreeItemPropsEqual(
   if (prevProps.isAnyCloudFileProcessing !== nextProps.isAnyCloudFileProcessing) return false
   if (prevProps.isAnyOutdatedFileProcessing !== nextProps.isAnyOutdatedFileProcessing) return false
 
-  // Compare checkout users array (length and content for avatar updates)
-  if (prevProps.allCheckoutUsers.length !== nextProps.allCheckoutUsers.length) return false
-  for (let i = 0; i < prevProps.allCheckoutUsers.length; i++) {
-    const prev = prevProps.allCheckoutUsers[i]
-    const next = nextProps.allCheckoutUsers[i]
-    if (prev.id !== next.id) return false
-    if (prev.avatar_url !== next.avatar_url) return false
-    if (prev.name !== next.name) return false
-  }
+  // Compare all owner/profile fields through the shared stable signature
+  if (prevProps.checkoutUsersSignature !== nextProps.checkoutUsersSignature) return false
 
   return true
 }

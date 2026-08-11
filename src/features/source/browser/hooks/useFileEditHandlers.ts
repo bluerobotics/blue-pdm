@@ -1,4 +1,6 @@
 import { useCallback, useRef } from 'react'
+import { getCheckoutDisplayUser } from '@/lib/checkout/checkoutDisplay'
+import { t } from '@/lib/i18n'
 import type { LocalFile } from '@/stores/pdmStore'
 import { usePDMStore } from '@/stores/pdmStore'
 import { executeCommand } from '@/lib/commands'
@@ -251,10 +253,13 @@ export function useFileEditHandlers(deps: FileEditHandlersDeps): UseFileEditHand
         }
 
         if (file.pdmData.checked_out_by !== user.id) {
-          const checkedOutUser = (file.pdmData as any).checked_out_user // TODO: type this
+          const checkedOutUser = getCheckoutDisplayUser(file, user)
           const checkedOutName =
-            checkedOutUser?.full_name || checkedOutUser?.email || 'another user'
-          addToast('info', `File is checked out by ${checkedOutName}`)
+            checkedOutUser?.name ?? t('checkoutDisplay.ownerUnavailable')
+          addToast(
+            'info',
+            t('checkoutDisplay.checkedOutBy', { name: checkedOutName }),
+          )
           return
         }
       }
@@ -294,7 +299,7 @@ export function useFileEditHandlers(deps: FileEditHandlersDeps): UseFileEditHand
         inlineEditInputRef.current?.select()
       }, 0)
     },
-    [user?.id, addToast, setEditingCell, setEditValue, inlineEditInputRef],
+    [user, addToast, setEditingCell, setEditValue, inlineEditInputRef],
   )
 
   // Guard against double invocation (Enter keydown fires handleSaveCellEdit, then

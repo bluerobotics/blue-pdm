@@ -1,4 +1,5 @@
 import { recordMetric } from '@/lib/performanceMetrics'
+import type { LoadFilesSessionContext } from '@/types/pdm'
 
 /**
  * Cross-instance coordination state for `loadFiles`.
@@ -13,6 +14,9 @@ export interface LoadFilesRequest {
   forceHashComputation: boolean
   /** Set when the file watcher supplied the specific paths that changed. */
   hasChangedPaths: boolean
+  /** Auth boundary for callers that need session-scoped serialization. */
+  authenticatedUserId?: LoadFilesSessionContext['authenticatedUserId']
+  sessionGeneration?: LoadFilesSessionContext['sessionGeneration']
 }
 
 interface InFlightLoad {
@@ -22,6 +26,52 @@ interface InFlightLoad {
 }
 
 let inFlightLoad: InFlightLoad | null = null
+let currentSessionContext: LoadFilesSessionContext | undefined
+
+interface LoadSessionBoundary {
+  authenticatedUserId?: LoadFilesSessionContext['authenticatedUserId']
+  sessionGeneration?: LoadFilesSessionContext['sessionGeneration']
+}
+
+function sessionContextMatches(active: LoadSessionBoundary, incoming: LoadSessionBoundary): boolean {
+  return (
+    active.authenticatedUserId === incoming.authenticatedUserId &&
+    active.sessionGeneration === incoming.sessionGeneration
+  )
+}
+
+function withCurrentSessionContext(request: LoadFilesRequest): LoadFilesRequest {
+  return {
+    ...request,
+    authenticatedUserId:
+      request.authenticatedUserId !== undefined
+        ? request.authenticatedUserId
+        : currentSessionContext?.authenticatedUserId,
+    sessionGeneration:
+      request.sessionGeneration !== undefined
+        ? request.sessionGeneration
+        : currentSessionContext?.sessionGeneration,
+  }
+}
+
+/**
+ * Publish the auth boundary used by legacy `useLoadFiles` callers that do not
+ * pass a request object to this module. A changed boundary invalidates
+ * per-vault merge shortcuts, while an in-flight pass is allowed to finish and
+ * reject its own stale commit.
+ */
+export function setLoadFilesSessionContext(context: LoadFilesSessionContext): void {
+  if (sessionContextMatches(currentSessionContext ?? {}, context)) return
+
+  resetLoadFilesCoordination()
+  currentSessionContext = { ...context }
+}
+
+/** Drop coordination state that belongs to a previous auth/session boundary. */
+export function resetLoadFilesCoordination(): void {
+  supersededLoads.clear()
+  lastMergedState.clear()
+}
 
 /** True while a full loadFiles pass is running (including silent refreshes). */
 export function isLoadFilesInFlight(): boolean {
@@ -56,23 +106,30 @@ export async function runExclusiveLoad(
   request: LoadFilesRequest,
   start: () => Promise<void>,
 ): Promise<void> {
-  const active = inFlightLoad
+  const scopedRequest = withCurrentSessionContext(request)
 
-  if (active) {
-    if (active.vaultId === vaultId && inFlightCoversRequest(active.request, request)) {
-      window.electronAPI?.log('info', '[LoadFiles] Joining in-flight load', { ...request })
-      recordMetric('VaultLoad', 'Joined in-flight load', { ...request })
+  while (inFlightLoad) {
+    const active = inFlightLoad
+    if (
+      active.vaultId === vaultId &&
+      sessionContextMatches(active.request, scopedRequest) &&
+      inFlightCoversRequest(active.request, scopedRequest)
+    ) {
+      window.electronAPI?.log('info', '[LoadFiles] Joining in-flight load', { ...scopedRequest })
+      recordMetric('VaultLoad', 'Joined in-flight load', { ...scopedRequest })
       return active.promise
     }
 
-    window.electronAPI?.log('info', '[LoadFiles] Queued behind in-flight load', { ...request })
-    recordMetric('VaultLoad', 'Queued behind in-flight load', { ...request })
+    window.electronAPI?.log('info', '[LoadFiles] Queued behind in-flight load', {
+      ...scopedRequest,
+    })
+    recordMetric('VaultLoad', 'Queued behind in-flight load', { ...scopedRequest })
     // Errors from the previous pass are already logged by the pass itself.
     await active.promise.catch(() => undefined)
   }
 
   const promise = start()
-  inFlightLoad = { vaultId, request, promise }
+  inFlightLoad = { vaultId, request: scopedRequest, promise }
 
   try {
     await promise

@@ -99,6 +99,7 @@ export interface FilePaneContextValue {
   // Configuration state (SolidWorks) - read from Zustand store
   // Note: setters are accessed via usePDMStore directly, not through context
   expandedConfigFiles: Set<string>
+  expandedConfigSections: Set<string>
   fileConfigurations: Map<string, ConfigWithDepth[]>
   loadingConfigs: Set<string>
   selectedConfigs: Set<string>
@@ -155,6 +156,8 @@ export interface FilePaneContextValue {
   setIsCheckinHovered: (hovered: boolean) => void
   isUpdateHovered: boolean
   setIsUpdateHovered: (hovered: boolean) => void
+  isConfigCommitHovered: boolean
+  setIsConfigCommitHovered: (hovered: boolean) => void
 
   // Refs
   tableRef: React.RefObject<HTMLDivElement | null>
@@ -231,6 +234,7 @@ export function FilePaneProvider({
   // SolidWorks configuration state from store (similar to expandedFolders/selectedFiles)
   // Note: setters are accessed via usePDMStore directly in handlers, not passed through context
   const expandedConfigFiles = usePDMStore((s) => s.expandedConfigFiles)
+  const expandedConfigSections = usePDMStore((s) => s.expandedConfigSections)
   const selectedConfigs = usePDMStore((s) => s.selectedConfigs)
   const fileConfigurations = usePDMStore((s) => s.fileConfigurations)
   const loadingConfigs = usePDMStore((s) => s.loadingConfigs)
@@ -344,6 +348,7 @@ export function FilePaneProvider({
   const [isCheckoutHovered, setIsCheckoutHovered] = useState(false)
   const [isCheckinHovered, setIsCheckinHovered] = useState(false)
   const [isUpdateHovered, setIsUpdateHovered] = useState(false)
+  const [isConfigCommitHovered, setIsConfigCommitHovered] = useState(false)
 
   // Refs
   // Use external tableRef if provided (from FilePane.tsx), otherwise create local ref
@@ -436,6 +441,7 @@ export function FilePaneProvider({
 
       // Configurations (read from Zustand store, setters accessed via usePDMStore directly)
       expandedConfigFiles,
+      expandedConfigSections,
       fileConfigurations,
       loadingConfigs,
       selectedConfigs,
@@ -492,6 +498,8 @@ export function FilePaneProvider({
       setIsCheckinHovered,
       isUpdateHovered,
       setIsUpdateHovered,
+      isConfigCommitHovered,
+      setIsConfigCommitHovered,
 
       // Refs
       tableRef,
@@ -536,6 +544,7 @@ export function FilePaneProvider({
       draggingColumn,
       dragOverColumn,
       expandedConfigFiles,
+      expandedConfigSections,
       fileConfigurations,
       loadingConfigs,
       selectedConfigs,
@@ -562,6 +571,7 @@ export function FilePaneProvider({
       isCheckoutHovered,
       isCheckinHovered,
       isUpdateHovered,
+      isConfigCommitHovered,
       onRefresh,
     ],
   )

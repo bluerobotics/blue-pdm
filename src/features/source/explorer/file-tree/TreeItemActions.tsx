@@ -1,5 +1,7 @@
 // Inline action buttons for tree items
 import { Loader2 } from 'lucide-react'
+import { deriveCheckoutDisplay } from '@/lib/checkout/checkoutDisplay'
+import { t } from '@/lib/i18n'
 import type { LocalFile } from '@/stores/pdmStore'
 import type { OperationType, StagedCheckin, ToastType } from '@/stores/types'
 import type { User } from '@/types/pdm'
@@ -285,9 +287,9 @@ export function FileActionButtons({
           !isOfflineMode &&
           file.pdmData?.checked_out_by === user?.id &&
           file.diffStatus !== 'deleted'
+        const checkoutDisplay = deriveCheckoutDisplay(file, user)
         const checkedOutByOther =
-          file.pdmData?.checked_out_by && file.pdmData.checked_out_by !== user?.id
-        const checkedOutUser = checkedOutByOther ? (file.pdmData as any)?.checked_out_user : null // TODO: type this
+          checkoutDisplay.state !== 'none' && checkoutDisplay.state !== 'mine'
         const showOfflineCheckoutIndicator =
           isOfflineMode && file.pdmData?.checked_out_by === user?.id
 
@@ -346,12 +348,12 @@ export function FileActionButtons({
             {showOfflineCheckoutIndicator && (
               <div
                 className="relative w-5 h-5 flex-shrink-0"
-                title="You have this file checked out (use stage button to queue check-in)"
+                title={t('checkoutDisplay.checkedOutBy', { name: t('checkoutDisplay.you') })}
               >
                 {user?.avatar_url ? (
                   <img
                     src={user.avatar_url}
-                    alt={user?.full_name || user?.email?.split('@')[0] || 'You'}
+                    alt={user?.full_name || user?.email?.split('@')[0] || t('checkoutDisplay.you')}
                     className="w-5 h-5 rounded-full object-cover ring-2 ring-plm-accent"
                     referrerPolicy="no-referrer"
                     onError={(e) => {
@@ -367,24 +369,38 @@ export function FileActionButtons({
                     <div
                       className={`w-5 h-5 rounded-full ${avatarColors.bg} ${avatarColors.text} flex items-center justify-center text-[9px] font-medium ring-2 ring-plm-accent ${user?.avatar_url ? 'hidden' : ''}`}
                     >
-                      {getInitials(user?.full_name || user?.email?.split('@')[0] || 'U')}
+                      {getInitials(
+                        user?.full_name || user?.email?.split('@')[0] || t('checkoutDisplay.you'),
+                      )}
                     </div>
                   )
                 })()}
               </div>
             )}
-            {checkedOutByOther && checkedOutUser && file.pdmData?.id && (
-              <NotifiableCheckoutAvatar
-                user={{
-                  id: file.pdmData.checked_out_by!,
-                  email: checkedOutUser.email,
-                  full_name: checkedOutUser.full_name,
-                  avatar_url: checkedOutUser.avatar_url,
-                }}
-                fileId={file.pdmData.id}
-                fileName={file.name}
-                size={20}
-              />
+            {checkedOutByOther && file.pdmData?.id && (
+              checkoutDisplay.state === 'resolved' && checkoutDisplay.profile ? (
+                <NotifiableCheckoutAvatar
+                  user={{
+                    id: checkoutDisplay.ownerId!,
+                    email: checkoutDisplay.profile.email,
+                    full_name: checkoutDisplay.profile.full_name,
+                    avatar_url: checkoutDisplay.profile.avatar_url,
+                  }}
+                  fileId={file.pdmData.id}
+                  fileName={file.name}
+                  size={20}
+                />
+              ) : (
+                <div
+                  className="w-5 h-5 rounded-full bg-plm-error/20 text-plm-error flex items-center justify-center text-[9px] font-medium"
+                  title={checkoutDisplay.displayName ?? t('checkoutDisplay.ownerUnavailable')}
+                >
+                  {getInitials(
+                    checkoutDisplay.displayName,
+                    { placeholder: true },
+                  )}
+                </div>
+              )
             )}
           </span>
         )

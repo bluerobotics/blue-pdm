@@ -14,7 +14,8 @@
  *
  * @example
  * useKeyboardNav({
- *   sortedFiles,
+ *   selectableRows,
+ *   topLevelFiles,
  *   selectedFiles,
  *   setSelectedFiles,
  *   matchesKeybinding,
@@ -27,10 +28,14 @@ import { useEffect, useCallback } from 'react'
 import type { LocalFile } from '@/stores/pdmStore'
 import type { KeybindingAction } from '@/types/settings'
 import { executeCommand } from '@/lib/commands'
+import type { SelectableRow } from '../components/FileList/rowTypes'
 
 export interface UseKeyboardNavOptions {
   files: LocalFile[]
-  sortedFiles: LocalFile[]
+  /** Every selectable row in visual order, including resolved configuration drawings */
+  selectableRows: SelectableRow[]
+  /** The sorted/filtered top-level files used by Select All */
+  topLevelFiles: LocalFile[]
   selectedFiles: string[]
   setSelectedFiles: (paths: string[]) => void
   lastClickedIndex: number | null
@@ -57,13 +62,14 @@ export interface UseKeyboardNavOptions {
  */
 export function useKeyboardNav({
   files,
-  sortedFiles,
+  selectableRows,
+  topLevelFiles,
   selectedFiles,
   setSelectedFiles,
   lastClickedIndex,
   setLastClickedIndex,
   currentPath,
-  clipboard,
+  clipboard: _clipboard,
   setClipboard,
   matchesKeybinding,
   navigateToFolder,
@@ -109,7 +115,7 @@ export function useKeyboardNav({
       if (e.key === 'F2' && !e.ctrlKey && !e.metaKey && !e.altKey && startRenaming) {
         if (selectedFiles.length !== 1) return
 
-        const selectedFile = sortedFiles.find((f) => f.path === selectedFiles[0])
+        const selectedFile = selectableRows.find((row) => row.path === selectedFiles[0])?.file
         if (!selectedFile) return
 
         e.preventDefault()
@@ -127,7 +133,7 @@ export function useKeyboardNav({
 
         e.preventDefault()
         e.stopPropagation()
-        if (sortedFiles.length === 0) return
+        if (selectableRows.length === 0) return
 
         const isUp = e.key === 'ArrowUp'
         const isShift = e.shiftKey
@@ -136,13 +142,18 @@ export function useKeyboardNav({
         // This is the last item in the selection when extending, or the only selected item
         const focusIndex =
           selectedFiles.length > 0
-            ? sortedFiles.findIndex((f) => f.path === selectedFiles[selectedFiles.length - 1])
+            ? lastClickedIndex !== null &&
+              selectableRows[lastClickedIndex]?.path === selectedFiles[selectedFiles.length - 1]
+              ? lastClickedIndex
+              : selectableRows.findIndex(
+                  (row) => row.path === selectedFiles[selectedFiles.length - 1],
+                )
             : -1
 
         // If current selection is not in view, select first or last based on direction
         if (focusIndex === -1) {
-          const newIndex = isUp ? sortedFiles.length - 1 : 0
-          setSelectedFiles([sortedFiles[newIndex].path])
+          const newIndex = isUp ? selectableRows.length - 1 : 0
+          setSelectedFiles([selectableRows[newIndex].path])
           setLastClickedIndex(newIndex)
           return
         }
@@ -152,7 +163,7 @@ export function useKeyboardNav({
         if (isUp) {
           newIndex = Math.max(0, focusIndex - 1)
         } else {
-          newIndex = Math.min(sortedFiles.length - 1, focusIndex + 1)
+          newIndex = Math.min(selectableRows.length - 1, focusIndex + 1)
         }
 
         // Only update if index actually changed
@@ -162,12 +173,14 @@ export function useKeyboardNav({
             const anchorIndex = lastClickedIndex ?? focusIndex
             const start = Math.min(anchorIndex, newIndex)
             const end = Math.max(anchorIndex, newIndex)
-            const rangePaths = sortedFiles.slice(start, end + 1).map((f) => f.path)
+            const rangePaths = [
+              ...new Set(selectableRows.slice(start, end + 1).map((row) => row.path)),
+            ]
             setSelectedFiles(rangePaths)
             // Don't update lastClickedIndex - it's the anchor
           } else {
             // No shift - single selection
-            setSelectedFiles([sortedFiles[newIndex].path])
+            setSelectedFiles([selectableRows[newIndex].path])
             setLastClickedIndex(newIndex)
           }
         }
@@ -178,7 +191,7 @@ export function useKeyboardNav({
       if (e.key === 'ArrowRight' && !e.ctrlKey && !e.metaKey && !e.altKey) {
         if (selectedFiles.length !== 1) return
 
-        const selectedFile = sortedFiles.find((f) => f.path === selectedFiles[0])
+        const selectedFile = selectableRows.find((row) => row.path === selectedFiles[0])?.file
         if (!selectedFile?.isDirectory) return
 
         e.preventDefault()
@@ -204,7 +217,7 @@ export function useKeyboardNav({
         e.stopPropagation()
         if (selectedFiles.length !== 1) return
 
-        const selectedFile = sortedFiles.find((f) => f.path === selectedFiles[0])
+        const selectedFile = selectableRows.find((row) => row.path === selectedFiles[0])?.file
         if (!selectedFile) return
 
         if (selectedFile.isDirectory) {
@@ -252,7 +265,7 @@ export function useKeyboardNav({
       if (matchesKeybinding(e, 'selectAll')) {
         e.preventDefault()
         e.stopPropagation()
-        setSelectedFiles(sortedFiles.map((f) => f.path))
+        setSelectedFiles(topLevelFiles.map((file) => file.path))
         return
       }
 
@@ -261,7 +274,7 @@ export function useKeyboardNav({
         e.preventDefault()
         e.stopPropagation()
 
-        const selectedItems = sortedFiles.filter((f) => selectedFiles.includes(f.path))
+        const selectedItems = files.filter((file) => selectedFiles.includes(file.path))
 
         // Delete files/folders using the command system
         // The delete-local command handles confirmation internally if needed
@@ -296,13 +309,13 @@ export function useKeyboardNav({
     },
     [
       files,
-      sortedFiles,
+      selectableRows,
+      topLevelFiles,
       selectedFiles,
       setSelectedFiles,
       lastClickedIndex,
       setLastClickedIndex,
       currentPath,
-      clipboard,
       setClipboard,
       matchesKeybinding,
       navigateToFolder,

@@ -7,7 +7,7 @@
  */
 import { useEffect } from 'react'
 import { ChevronDown, ChevronRight, HardDrive, Loader2 } from 'lucide-react'
-import { ListRowIcon } from '../ListRowIcon'
+import { getCheckoutDisplayUser } from '@/lib/checkout/checkoutDisplay'
 import {
   InlineCheckoutButton,
   InlineDownloadButton,
@@ -21,12 +21,26 @@ import {
 import { NotifiableCheckoutAvatar } from '@/components/shared/Avatar'
 import { HiddenFolderBadge } from '@/components/shared/HiddenFolder'
 import { useHiddenFolders } from '@/hooks/useHiddenFolders'
+import { usePDMStore } from '@/stores/pdmStore'
 import type { CheckoutUser } from '../../../types'
 import { useFilePaneContext, useFilePaneHandlers } from '../../../context'
+import { ListRowIcon } from '../ListRowIcon'
 import type { CellRendererBaseProps } from './types'
 
-export function NameCell({ file }: CellRendererBaseProps): React.ReactNode {
+export interface NameCellProps extends CellRendererBaseProps {
+  indentPx?: number
+  nested?: boolean
+}
+
+export function NameCell({
+  file,
+  indentPx,
+  nested = false,
+}: NameCellProps): React.ReactNode {
   const { isMarkedHidden } = useHiddenFolders()
+  const checkoutHydrationState = usePDMStore((state) =>
+    file.pdmData?.id ? state.checkoutHydration[file.pdmData.id]?.state : undefined,
+  )
 
   // UI state from FilePaneContext
   const {
@@ -59,6 +73,12 @@ export function NameCell({ file }: CellRendererBaseProps): React.ReactNode {
     isUpdateHovered,
     setIsUpdateHovered,
   } = useFilePaneContext()
+
+  const nameRowClassName = `flex items-center ${nested ? 'gap-1.5' : 'gap-1'} group/name`
+  const nameRowStyle =
+    nested && indentPx !== undefined
+      ? { minHeight: listRowSize, paddingLeft: `${indentPx}px` }
+      : { minHeight: listRowSize }
 
   // Handlers from FilePaneHandlersContext
   const {
@@ -114,7 +134,8 @@ export function NameCell({ file }: CellRendererBaseProps): React.ReactNode {
   if (isBeingRenamed) {
     const renameIconSize = Math.max(16, listRowSize - 8)
     return (
-      <div className="flex items-center gap-2" style={{ minHeight: listRowSize }}>
+      <div className="flex items-center gap-2" style={nameRowStyle}>
+        {nested && <span className="text-plm-fg-dim text-[10px]">├</span>}
         <ListRowIcon
           file={file}
           size={renameIconSize}
@@ -152,7 +173,8 @@ export function NameCell({ file }: CellRendererBaseProps): React.ReactNode {
   if (isBeingHighlighted) {
     const highlightIconSize = Math.max(16, listRowSize - 8)
     return (
-      <div className="flex items-center gap-2" style={{ minHeight: listRowSize }}>
+      <div className="flex items-center gap-2" style={nameRowStyle}>
+        {nested && <span className="text-plm-fg-dim text-[10px]">├</span>}
         <ListRowIcon
           file={file}
           size={highlightIconSize}
@@ -207,21 +229,9 @@ export function NameCell({ file }: CellRendererBaseProps): React.ReactNode {
     if (file.isDirectory) {
       return fm?.checkoutUsers || []
     } else if (file.pdmData?.checked_out_by) {
-      const isMe = file.pdmData.checked_out_by === user?.id
-      if (isMe) {
-        return []
-      } else {
-        const checkedOutUser = file.pdmData.checked_out_user
-        return [
-          {
-            id: file.pdmData.checked_out_by,
-            name: checkedOutUser?.full_name || checkedOutUser?.email?.split('@')[0] || 'Someone',
-            email: checkedOutUser?.email ?? undefined,
-            avatar_url: checkedOutUser?.avatar_url ?? undefined,
-            isMe: false,
-          },
-        ]
-      }
+      const displayUser = getCheckoutDisplayUser(file, user, checkoutHydrationState)
+      if (!displayUser || displayUser.isMe || displayUser.displayState !== 'resolved') return []
+      return [displayUser]
     }
     return []
   }
@@ -271,9 +281,11 @@ export function NameCell({ file }: CellRendererBaseProps): React.ReactNode {
       : 'Expand references'
 
   return (
-    <div className="flex items-center gap-1 group/name" style={{ minHeight: listRowSize }}>
+    <div className={nameRowClassName} style={nameRowStyle}>
       {/* Expand button for SW files with configurations or drawing references */}
-      {isExpandable ? (
+      {nested ? (
+        <span className="text-plm-fg-dim text-[10px]">├</span>
+      ) : isExpandable ? (
         <button
           onClick={(e) => {
             e.stopPropagation()

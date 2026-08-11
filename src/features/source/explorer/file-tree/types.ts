@@ -80,6 +80,7 @@ export interface FolderTreeItemProps extends TreeItemBaseProps {
   diffCounts: FolderDiffCounts | null
   localOnlyCount: number
   checkoutUsers: CheckoutUser[]
+  checkoutSignature: string
   checkedOutByMeCount: number
   totalCheckouts: number
   syncedCount: number
@@ -107,6 +108,7 @@ export interface VaultTreeItemProps {
   syncedFilesCount: number
   checkedOutByMeCount: number
   allCheckoutUsers: CheckoutUser[]
+  checkoutUsersSignature: string
   totalCheckouts: number
   // Processing states
   isDownloadingAll: boolean

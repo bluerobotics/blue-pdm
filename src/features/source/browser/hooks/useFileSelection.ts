@@ -15,19 +15,25 @@
  *
  * @example
  * const { handleRowClick, lastClickedIndex } = useFileSelection({
- *   sortedFiles,
+ *   selectableRows,
+ *   topLevelFiles,
  *   selectedFiles,
  *   setSelectedFiles,
  *   toggleFileSelection
  * })
  */
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useMemo } from 'react'
 import type { LocalFile } from '@/stores/pdmStore'
 import { usePDMStore } from '@/stores/pdmStore'
+import type { SelectableRow } from '../components/FileList/rowTypes'
 
 export interface UseFileSelectionOptions {
-  /** The sorted/filtered files to select from */
-  sortedFiles: LocalFile[]
+  /** Every selectable row in visual order, including resolved configuration drawings */
+  selectableRows?: SelectableRow[]
+  /** The sorted/filtered top-level files used by Select All */
+  topLevelFiles?: LocalFile[]
+  /** @deprecated Use selectableRows and topLevelFiles */
+  sortedFiles?: LocalFile[]
   selectedFiles: string[]
   setSelectedFiles: (paths: string[]) => void
   toggleFileSelection: (path: string, addToSelection?: boolean) => void
@@ -45,12 +51,24 @@ export interface UseFileSelectionReturn {
  * Hook to manage file selection state and handlers
  */
 export function useFileSelection({
+  selectableRows: providedSelectableRows,
+  topLevelFiles: providedTopLevelFiles,
   sortedFiles,
   selectedFiles,
   setSelectedFiles,
   toggleFileSelection,
 }: UseFileSelectionOptions): UseFileSelectionReturn {
   const [lastClickedIndex, setLastClickedIndex] = useState<number | null>(null)
+  const selectableRows = useMemo(
+    () =>
+      providedSelectableRows ??
+      (sortedFiles ?? []).map((file) => ({ path: file.path, file })),
+    [providedSelectableRows, sortedFiles],
+  )
+  const topLevelFiles = useMemo(
+    () => providedTopLevelFiles ?? sortedFiles ?? [],
+    [providedTopLevelFiles, sortedFiles],
+  )
 
   // Get config selection clearer from store
   const setSelectedConfigs = usePDMStore((s) => s.setSelectedConfigs)
@@ -64,7 +82,9 @@ export function useFileSelection({
         // Shift+click: select range
         const start = Math.min(lastClickedIndex, index)
         const end = Math.max(lastClickedIndex, index)
-        const rangePaths = sortedFiles.slice(start, end + 1).map((f) => f.path)
+        const rangePaths = [
+          ...new Set(selectableRows.slice(start, end + 1).map((row) => row.path)),
+        ]
 
         if (e.ctrlKey || e.metaKey) {
           // Add range to existing selection
@@ -85,7 +105,7 @@ export function useFileSelection({
       }
     },
     [
-      sortedFiles,
+      selectableRows,
       selectedFiles,
       setSelectedFiles,
       toggleFileSelection,
@@ -95,14 +115,16 @@ export function useFileSelection({
   )
 
   const selectAll = useCallback(() => {
-    setSelectedFiles(sortedFiles.map((f) => f.path))
-  }, [sortedFiles, setSelectedFiles])
+    setSelectedFiles(topLevelFiles.map((file) => file.path))
+  }, [topLevelFiles, setSelectedFiles])
 
   const selectRange = useCallback(
     (startIndex: number, endIndex: number, addToExisting = false) => {
       const start = Math.min(startIndex, endIndex)
       const end = Math.max(startIndex, endIndex)
-      const rangePaths = sortedFiles.slice(start, end + 1).map((f) => f.path)
+      const rangePaths = [
+        ...new Set(selectableRows.slice(start, end + 1).map((row) => row.path)),
+      ]
 
       if (addToExisting) {
         const newSelection = [...new Set([...selectedFiles, ...rangePaths])]
@@ -111,7 +133,7 @@ export function useFileSelection({
         setSelectedFiles(rangePaths)
       }
     },
-    [sortedFiles, selectedFiles, setSelectedFiles],
+    [selectableRows, selectedFiles, setSelectedFiles],
   )
 
   return {

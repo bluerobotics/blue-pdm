@@ -142,7 +142,6 @@ export function TabNumberCell({ file }: CellRendererBaseProps): React.ReactNode 
           file={file}
           field="tab_number"
           isWriting={isFileWriteInFlight(savingConfigsToSW, file.path)}
-          onRetry={saveConfigsToSWFile}
         />
       </span>
     </div>

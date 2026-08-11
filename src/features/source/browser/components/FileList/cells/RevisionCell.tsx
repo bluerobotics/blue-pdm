@@ -30,7 +30,6 @@ export function RevisionCell({ file }: CellRendererBaseProps): React.ReactNode {
     handleSaveCellEdit,
     handleCancelCellEdit,
     handleStartCellEdit,
-    saveConfigsToSWFile,
     savingConfigsToSW,
   } = useFilePaneHandlers()
 
@@ -121,7 +120,6 @@ export function RevisionCell({ file }: CellRendererBaseProps): React.ReactNode {
         file={file}
         field="revision"
         isWriting={isFileWriteInFlight(savingConfigsToSW, file.path)}
-        onRetry={saveConfigsToSWFile}
       />
       {isDrawingLocked && (
         <span

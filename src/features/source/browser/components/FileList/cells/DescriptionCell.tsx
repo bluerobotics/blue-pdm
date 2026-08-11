@@ -29,7 +29,6 @@ export function DescriptionCell({ file }: CellRendererBaseProps): React.ReactNod
     handleSaveCellEdit,
     handleCancelCellEdit,
     handleStartCellEdit,
-    saveConfigsToSWFile,
     savingConfigsToSW,
   } = useFilePaneHandlers()
 
@@ -118,7 +117,6 @@ export function DescriptionCell({ file }: CellRendererBaseProps): React.ReactNod
         file={file}
         field="description"
         isWriting={isFileWriteInFlight(savingConfigsToSW, file.path)}
-        onRetry={saveConfigsToSWFile}
       />
       {isDrawingLocked && (
         <span

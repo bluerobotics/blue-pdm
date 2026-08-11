@@ -23,6 +23,7 @@ const TAG_COLORS: Record<MetricTag, string> = {
   Startup: 'text-sky-400 bg-sky-400/10',
   VaultLoad: 'text-lime-400 bg-lime-400/10',
   FolderMetrics: 'text-purple-400 bg-purple-400/10',
+  Performance: 'text-fuchsia-400 bg-fuchsia-400/10',
   Store: 'text-blue-400 bg-blue-400/10',
   FileWatcher: 'text-amber-400 bg-amber-400/10',
   Download: 'text-emerald-400 bg-emerald-400/10',
@@ -256,6 +257,7 @@ export function FileOperationTiming() {
               <option value="Startup">Startup</option>
               <option value="VaultLoad">VaultLoad</option>
               <option value="FolderMetrics">FolderMetrics</option>
+              <option value="Performance">Performance</option>
               <option value="Store">Store</option>
               <option value="FileWatcher">FileWatcher</option>
               <option value="Download">Download</option>
@@ -388,4 +390,3 @@ function SummaryCard({
     </div>
   )
 }
-

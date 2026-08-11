@@ -37,10 +37,12 @@ import type { LocalFile } from '@/stores/types'
 import {
   applyWriteState,
   clearWriteState,
+  groupOfAddress,
   listWriteAddresses,
   readWriteState,
   writeStateOf,
   type MetadataWriteAddress,
+  type MetadataFieldGroup,
   type MetadataWriteState,
   type MetadataWriteStateRecord,
 } from './writeState'
@@ -56,6 +58,9 @@ const NOTHING_TO_REPORT: ReadonlySet<MetadataWriteState> = new Set<MetadataWrite
   'pending',
 ])
 
+/** The default preserves pure callers that have no ownership exclusions. */
+const NO_UNWRITABLE_GROUPS: ReadonlySet<MetadataFieldGroup> = new Set()
+
 /** What check-in learned, and the record it must carry forward. */
 export interface CheckinMetadataOutcome {
   /** The write state to store on the file after promotion. Undefined means nothing left to say. */
@@ -67,18 +72,29 @@ export interface CheckinMetadataOutcome {
 /**
  * Say what the database may take, and keep whatever marks the file already carried.
  *
+ * `unwritableGroups` is supplied by the caller because ownership depends on the file and current
+ * drawing settings. Those addresses are cleared rather than promoted, while the remaining marks
+ * retain their original attempt details.
+ *
  * Returns the record to store rather than storing it, so check-in can fold it into the batched
  * update it already makes per file instead of triggering a separate render.
  */
-export function promoteMetadataForCheckin(file: LocalFile): CheckinMetadataOutcome {
+export function promoteMetadataForCheckin(
+  file: LocalFile,
+  unwritableGroups: ReadonlySet<MetadataFieldGroup> = NO_UNWRITABLE_GROUPS,
+): CheckinMetadataOutcome {
   const record = file.metadataWriteState
   const edited = listWriteAddresses(file.pendingMetadata)
 
   const settled: MetadataWriteAddress[] = []
   const unconfirmed: MetadataWriteAddress[] = []
   for (const address of edited) {
-    if (NOTHING_TO_REPORT.has(writeStateOf(record, address))) settled.push(address)
-    else unconfirmed.push(address)
+    if (
+      unwritableGroups.has(groupOfAddress(address)) ||
+      NOTHING_TO_REPORT.has(writeStateOf(record, address))
+    ) {
+      settled.push(address)
+    } else unconfirmed.push(address)
   }
 
   let next = clearWriteState(record, settled)

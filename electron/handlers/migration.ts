@@ -1,10 +1,10 @@
 // Migration handler for major version upgrades
-// Clears disposable caches/logs while preserving user configuration
+// Clears disposable caches while preserving user configuration
 
 import { app, session } from 'electron'
 import fs from 'fs'
 import path from 'path'
-import { writeLog } from './logging'
+import { pruneCrashDumpsToRetention, pruneLogsToRetention, writeLog } from './logging'
 
 // ============================================
 // Types
@@ -14,6 +14,13 @@ interface VersionInfo {
   version: string
   lastRun: string
   migratedFrom?: string
+}
+
+type StoredVersionStatus = 'missing' | 'valid' | 'corrupt'
+
+interface StoredVersionResult {
+  info: VersionInfo | null
+  status: StoredVersionStatus
 }
 
 interface MigrationResult {
@@ -46,20 +53,36 @@ function getTempUpdatePath(): string {
 // Version Management
 // ============================================
 
-function loadStoredVersion(): VersionInfo | null {
-  try {
-    const versionFile = getVersionFilePath()
-    if (fs.existsSync(versionFile)) {
-      const data = fs.readFileSync(versionFile, 'utf-8')
-      return JSON.parse(data)
-    }
-  } catch {
-    // File doesn't exist or is corrupted
+function isVersionInfo(value: unknown): value is VersionInfo {
+  if (typeof value !== 'object' || value === null) {
+    return false
   }
-  return null
+
+  const record = value as Record<string, unknown>
+  return typeof record.version === 'string' && typeof record.lastRun === 'string'
 }
 
-function saveVersion(version: string, migratedFrom?: string): void {
+function loadStoredVersion(): StoredVersionResult {
+  const versionFile = getVersionFilePath()
+
+  if (!fs.existsSync(versionFile)) {
+    return { info: null, status: 'missing' }
+  }
+
+  try {
+    const data = fs.readFileSync(versionFile, 'utf-8')
+    const parsed: unknown = JSON.parse(data)
+    if (isVersionInfo(parsed)) {
+      return { info: parsed, status: 'valid' }
+    }
+  } catch {
+    return { info: null, status: 'corrupt' }
+  }
+
+  return { info: null, status: 'corrupt' }
+}
+
+function saveVersion(version: string, migratedFrom?: string): boolean {
   try {
     const versionInfo: VersionInfo = {
       version,
@@ -74,8 +97,10 @@ function saveVersion(version: string, migratedFrom?: string): void {
     }
 
     fs.writeFileSync(getVersionFilePath(), JSON.stringify(versionInfo, null, 2))
+    return true
   } catch (error) {
     writeLog('error', '[Migration] Failed to save version info', { error: String(error) })
+    return false
   }
 }
 
@@ -88,12 +113,20 @@ function getMajorVersion(version: string): number {
   return match ? parseInt(match[1], 10) : 0
 }
 
-function shouldPerformMajorUpgradeCleanup(fromVersion: string | null, toVersion: string): boolean {
+function shouldPerformMajorUpgradeCleanup(
+  fromVersion: string | null,
+  toVersion: string,
+  storedVersionStatus: StoredVersionStatus,
+): boolean {
+  if (storedVersionStatus === 'corrupt') {
+    return false
+  }
+
   // If no previous version stored, this might be:
   // 1. A fresh install (no migration needed)
   // 2. An upgrade from an older version that didn't track versions
   // For safety, we check if userData has old data patterns
-  if (!fromVersion) {
+  if (storedVersionStatus === 'missing') {
     // Check for telltale signs of a pre-3.0 installation (no version tracking)
     const userDataPath = app.getPath('userData')
     const hasLegacyData =
@@ -103,10 +136,17 @@ function shouldPerformMajorUpgradeCleanup(fromVersion: string | null, toVersion:
 
     // If we have legacy data but no version file, assume it's a pre-3.0 upgrade
     if (hasLegacyData) {
-      writeLog('info', '[Migration] Found legacy data without version file - treating as pre-3.0 upgrade')
+      writeLog(
+        'info',
+        '[Migration] Found legacy data without version file - treating as pre-3.0 upgrade',
+      )
       return getMajorVersion(toVersion) >= 3
     }
 
+    return false
+  }
+
+  if (!fromVersion) {
     return false
   }
 
@@ -145,7 +185,7 @@ function deleteRecursive(targetPath: string): boolean {
 }
 
 /**
- * Delete disposable caches/logs only.
+ * Delete disposable caches and prune retained logs/crashes only.
  *
  * Intentionally preserved (user configuration):
  * - Local Storage / Session Storage — org config, login session, vault bindings,
@@ -153,18 +193,32 @@ function deleteRecursive(targetPath: string): boolean {
  * - IndexedDB — vault file cache / sync index
  * - analytics-settings.json, log-settings.json — telemetry / logging prefs
  * - window-state.json — window geometry
- * - app-version.json — written after migration
+ * - app-version.json — stamped before migration cleanup
  */
 function cleanDisposableUserData(): { cleaned: string[]; errors: string[] } {
   const userDataPath = app.getPath('userData')
   const cleaned: string[] = []
   const errors: string[] = []
 
+  const logsPath = path.join(userDataPath, 'logs')
+  const logCleanup = pruneLogsToRetention()
+  if (logCleanup.deleted > 0) {
+    cleaned.push(logsPath)
+    writeLog('info', `[Migration] Pruned ${logCleanup.deleted} log files`)
+  }
+  errors.push(...logCleanup.errors.map((error) => `Failed to prune logs: ${error}`))
+
+  const crashReportsPath = path.join(userDataPath, 'Crashpad', 'reports')
+  const crashCleanup = pruneCrashDumpsToRetention()
+  if (crashCleanup.deleted > 0) {
+    cleaned.push(crashReportsPath)
+    writeLog('info', `[Migration] Pruned ${crashCleanup.deleted} crash dumps`)
+  }
+  errors.push(...crashCleanup.errors.map((error) => `Failed to prune crash dumps: ${error}`))
+
   const itemsToDelete = [
     'update-reminder.json',
     'log-recording-state.json',
-    'logs',
-    'Crashpad',
     'Cache',
     'Code Cache',
     'GPUCache',
@@ -218,11 +272,18 @@ function cleanTempFiles(): { cleaned: string[]; errors: string[] } {
  */
 export async function performMigrationCheck(): Promise<MigrationResult> {
   const currentVersion = app.getVersion()
-  const storedVersionInfo = loadStoredVersion()
-  const previousVersion = storedVersionInfo?.version ?? null
+  const storedVersion = loadStoredVersion()
+  const previousVersion = storedVersion.info?.version ?? null
+
+  if (storedVersion.status === 'corrupt') {
+    writeLog('error', '[Migration] app-version.json is corrupt; skipping legacy cleanup')
+  }
 
   writeLog('info', `[Migration] Current version: ${currentVersion}`)
-  writeLog('info', `[Migration] Previous version: ${previousVersion ?? 'none (first run or legacy)'}`)
+  writeLog(
+    'info',
+    `[Migration] Previous version: ${previousVersion ?? 'none (first run or legacy)'}`,
+  )
 
   const result: MigrationResult = {
     performed: false,
@@ -232,18 +293,28 @@ export async function performMigrationCheck(): Promise<MigrationResult> {
     errors: [],
   }
 
-  if (shouldPerformMajorUpgradeCleanup(previousVersion, currentVersion)) {
+  if (shouldPerformMajorUpgradeCleanup(previousVersion, currentVersion, storedVersion.status)) {
     const fromMajor = previousVersion ? getMajorVersion(previousVersion) : 'legacy'
     const toMajor = getMajorVersion(currentVersion)
     writeLog('info', '[Migration] ===== PERFORMING MAJOR UPGRADE CACHE CLEANUP =====')
     writeLog('info', `[Migration] Major version upgrade: ${fromMajor} → ${toMajor}`)
-    writeLog('info', `[Migration] Upgrading from ${previousVersion ?? 'pre-3.0 (legacy)'} to ${currentVersion}`)
     writeLog(
       'info',
-      '[Migration] Preserving Local Storage (org config, session, vault bindings, onboarding)'
+      `[Migration] Upgrading from ${previousVersion ?? 'pre-3.0 (legacy)'} to ${currentVersion}`,
+    )
+    writeLog(
+      'info',
+      '[Migration] Preserving Local Storage (org config, session, vault bindings, onboarding)',
     )
 
-    result.performed = true
+    const versionSaved = saveVersion(currentVersion, previousVersion ?? 'pre-3.0')
+    if (!versionSaved) {
+      const errorMessage = 'Failed to save app version before cleanup'
+      result.errors.push(errorMessage)
+      writeLog('error', `[Migration] ${errorMessage}; aborting cleanup`)
+      migrationResult = result
+      return result
+    }
 
     // Clean disposable caches/logs only — keep configuration
     const userDataResult = cleanDisposableUserData()
@@ -268,13 +339,16 @@ export async function performMigrationCheck(): Promise<MigrationResult> {
       result.errors.push(`Failed to clear session caches: ${String(error)}`)
     }
 
-    writeLog('info', `[Migration] Major upgrade cleanup complete. Cleaned ${result.cleanedPaths.length} items.`)
+    result.performed = true
+    writeLog(
+      'info',
+      `[Migration] Major upgrade cleanup complete. Cleaned ${result.cleanedPaths.length} items.`,
+    )
     if (result.errors.length > 0) {
-      writeLog('warn', `[Migration] Encountered ${result.errors.length} errors`, { errors: result.errors })
+      writeLog('warn', `[Migration] Encountered ${result.errors.length} errors`, {
+        errors: result.errors,
+      })
     }
-
-    // Save new version with migration info
-    saveVersion(currentVersion, previousVersion ?? 'pre-3.0')
   } else {
     // Just update the version file
     saveVersion(currentVersion)

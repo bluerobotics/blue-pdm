@@ -358,7 +358,6 @@ export function ItemNumberCell({ file }: CellRendererBaseProps): React.ReactNode
             file={file}
             field="part_number"
             isWriting={isFileWriteInFlight(savingConfigsToSW, file.path)}
-            onRetry={saveConfigsToSWFile}
           />
           {isDrawingLocked && (
             <span

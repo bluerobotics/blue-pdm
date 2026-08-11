@@ -15,6 +15,7 @@ import type {
   CommandResult,
   LocalFile,
 } from '../types'
+import { getCheckoutProfileForOwner } from '@/lib/checkout/checkoutDisplay'
 import type { PendingMetadata } from '@/stores/types'
 import {
   getFilesInFolder,
@@ -169,12 +170,14 @@ export const renameCommand: Command<RenameParams> = {
           (f) => f.pdmData?.checked_out_by && f.pdmData.checked_out_by !== ctx.user?.id,
         )
         if (blockedBy) {
-          const userName = (blockedBy.pdmData as any).checked_out_user?.full_name || 'another user' // TODO: type this
+          const checkoutProfile = getCheckoutProfileForOwner(blockedBy)
+          const userName = checkoutProfile?.full_name || 'another user'
           return `Cannot rename folder: ${blockedBy.name} is checked out by ${userName}`
         }
       } else {
         if (file.pdmData.checked_out_by && file.pdmData.checked_out_by !== ctx.user?.id) {
-          const userName = (file.pdmData as any).checked_out_user?.full_name || 'another user' // TODO: type this
+          const checkoutProfile = getCheckoutProfileForOwner(file)
+          const userName = checkoutProfile?.full_name || 'another user'
           return `Cannot rename: file is checked out by ${userName}`
         }
       }

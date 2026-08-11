@@ -35,6 +35,7 @@ import {
   CheckSquare,
   Square,
 } from 'lucide-react'
+import { t } from '@/lib/i18n'
 import { log } from '@/lib/logger'
 import { usePDMStore } from '@/stores/pdmStore'
 import { copyToClipboard } from '@/lib/clipboard'
@@ -94,6 +95,11 @@ interface LogStorageInfo {
   totalSize: number
   fileCount: number
   logsDir?: string
+}
+
+interface LogFilesError {
+  message: string
+  logsDir: string
 }
 
 interface LogViewerProps {
@@ -267,12 +273,13 @@ function createHistogramBuckets(entries: LogEntry[], period: TimePeriod): Histog
       bucketMs = 12 * 60 * 60 * 1000 // 12 hours
       labelFormat = (d) => d.toLocaleDateString(undefined, { weekday: 'short', hour: '2-digit' })
       break
-    case 'all':
+    case 'all': {
       // Dynamic bucket size based on date range
       const range = now.getTime() - startTime.getTime()
       bucketMs = Math.max(60 * 60 * 1000, Math.floor(range / 24))
       labelFormat = (d) => d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
       break
+    }
   }
 
   // Create buckets
@@ -813,6 +820,7 @@ function LogViewerContent({ onClose }: LogViewerContentProps) {
   const [entries, setEntries] = useState<LogEntry[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isLoadingContent, setIsLoadingContent] = useState(false)
+  const [logFilesError, setLogFilesError] = useState<LogFilesError | null>(null)
 
   // Filters
   const [searchQuery, setSearchQuery] = useState('')
@@ -918,6 +926,7 @@ function LogViewerContent({ onClose }: LogViewerContentProps) {
     }
 
     setIsLoading(true)
+    setLogFilesError(null)
     try {
       // Load both logs and crashes in parallel
       const [logsResult, crashesResult] = await Promise.all([
@@ -925,14 +934,30 @@ function LogViewerContent({ onClose }: LogViewerContentProps) {
         window.electronAPI.listCrashFiles?.() || { success: true, files: [] },
       ])
 
-      if (logsResult.success && logsResult.files) {
-        setLogFiles(logsResult.files)
+      if (logsResult.success) {
+        setLogFiles(logsResult.files ?? [])
+      } else {
+        const logsDir =
+          logsResult.logsDir ??
+          (await window.electronAPI.getLogsDir().catch(() => undefined)) ??
+          t('logs.directoryUnavailable')
+        setLogFilesError({
+          message: logsResult.error || t('logs.loadFailed'),
+          logsDir,
+        })
       }
       if (crashesResult.success && crashesResult.files) {
         setCrashFiles(crashesResult.files)
       }
     } catch (error) {
       log.error('[LogViewer]', 'Failed to load log files', { error: error })
+      const logsDir =
+        (await window.electronAPI.getLogsDir().catch(() => undefined)) ??
+        t('logs.directoryUnavailable')
+      setLogFilesError({
+        message: error instanceof Error ? error.message : String(error),
+        logsDir,
+      })
     } finally {
       setIsLoading(false)
     }
@@ -1692,6 +1717,17 @@ function LogViewerContent({ onClose }: LogViewerContentProps) {
               {isLoading ? (
                 <div className="flex items-center justify-center py-8">
                   <Loader2 size={20} className="animate-spin text-plm-fg-muted" />
+                </div>
+              ) : fileViewMode === 'logs' && logFilesError ? (
+                <div className="flex flex-col items-center gap-2 text-center py-8 text-xs text-plm-error">
+                  <AlertCircle size={24} />
+                  <p>{t('logs.loadFailed')}</p>
+                  <p className="max-w-full break-words text-plm-fg-muted">
+                    {logFilesError.message}
+                  </p>
+                  <p className="max-w-full break-words text-plm-fg-dim">
+                    {t('logs.directoryPath', { path: logFilesError.logsDir })}
+                  </p>
                 </div>
               ) : fileViewMode === 'logs' ? (
                 // Log files view

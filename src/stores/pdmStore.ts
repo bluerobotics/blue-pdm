@@ -12,8 +12,14 @@
  * acting on those values.
  */
 import { useSyncExternalStore } from 'react'
-import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import { create, type StateCreator } from 'zustand'
+import { persist, type PersistStorage, type StorageValue } from 'zustand/middleware'
+import { log } from '@/lib/logger'
+import {
+  PERSIST_WRITE_THRESHOLD_MS,
+  STORE_MUTATION_THRESHOLD_MS,
+} from '@/lib/performanceThresholds'
+
 import type { ModuleId, ModuleGroupId, ModuleConfig, SectionDivider } from '../types/modules'
 import { getDefaultModuleConfig, MODULES, getChildModules } from '../types/modules'
 import type { KeybindingsConfig, SettingsTab } from '../types/settings'
@@ -67,10 +73,144 @@ import {
 } from './slices'
 import { defaultCardViewFields } from './slices/settingsSlice'
 
+const PERSIST_STORAGE_NAME = 'blue-plm-storage'
+const MAX_PERSISTED_KEY_DETAILS = 5
+
+interface PersistedKeySize {
+  key: string
+  bytes: number
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function getLocalStorage(): Storage | null {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage
+  } catch {
+    return null
+  }
+}
+
+const textEncoder = typeof TextEncoder === 'undefined' ? null : new TextEncoder()
+
+function getByteLength(value: string): number {
+  return textEncoder ? textEncoder.encode(value).length : value.length
+}
+
+function getTopPersistedKeySizes(value: StorageValue<unknown>): PersistedKeySize[] {
+  if (!isRecord(value.state)) return []
+
+  return Object.entries(value.state)
+    .map(([key, stateValue]) => {
+      const serialized = JSON.stringify(stateValue)
+      return {
+        key,
+        bytes: serialized === undefined ? 0 : getByteLength(serialized),
+      }
+    })
+    .sort((first, second) => second.bytes - first.bytes)
+    .slice(0, MAX_PERSISTED_KEY_DETAILS)
+}
+
+let persistedBlobSizeLogged = false
+
+function logPersistedBlobSize(name: string, rawValue: string | null): void {
+  if (persistedBlobSizeLogged) return
+  persistedBlobSizeLogged = true
+
+  log.info('[Perf]', 'Persisted blob size', {
+    key: name,
+    totalBytes: rawValue === null ? 0 : getByteLength(rawValue),
+  })
+}
+
+const diagnosticsStorage: PersistStorage<unknown> = {
+  getItem: (name) => {
+    const rawValue = getLocalStorage()?.getItem(name) ?? null
+    logPersistedBlobSize(name, rawValue)
+    if (rawValue === null) return null
+
+    const parsed: unknown = JSON.parse(rawValue)
+    return isRecord(parsed) ? (parsed as StorageValue<unknown>) : null
+  },
+  setItem: (name, value) => {
+    const serializeStart = performance.now()
+    const serialized = JSON.stringify(value)
+    const serializeMs = performance.now() - serializeStart
+    if (serialized === undefined) return
+
+    const writeStart = performance.now()
+    getLocalStorage()?.setItem(name, serialized)
+    const writeMs = performance.now() - writeStart
+    const totalMs = performance.now() - serializeStart
+
+    if (totalMs < PERSIST_WRITE_THRESHOLD_MS) return
+
+    log.warn('[Perf]', 'Persist write', {
+      key: name,
+      serializeMs: Math.round(serializeMs),
+      writeMs: Math.round(writeMs),
+      totalMs: Math.round(totalMs),
+      totalBytes: getByteLength(serialized),
+      topLevelKeys: getTopPersistedKeySizes(value),
+    })
+  },
+  removeItem: (name) => {
+    getLocalStorage()?.removeItem(name)
+  },
+}
+
+type PDMStoreInitializer = StateCreator<
+  PDMStoreState,
+  [['zustand/persist', unknown]],
+  [],
+  PDMStoreState
+>
+
+function withMutationTiming(initializer: PDMStoreInitializer): PDMStoreInitializer {
+  return (set, get, api) => {
+    const timedSet: typeof set = (...args) => {
+      const start = performance.now()
+      const [partial, replace] = args
+      let result: unknown
+
+      if (replace === true) {
+        result = set(
+          partial as PDMStoreState | ((state: PDMStoreState) => PDMStoreState),
+          true,
+        )
+      } else {
+        result = set(
+          partial as
+            | PDMStoreState
+            | Partial<PDMStoreState>
+            | ((state: PDMStoreState) => PDMStoreState | Partial<PDMStoreState>),
+          false,
+        )
+      }
+      const durationMs = performance.now() - start
+
+      if (durationMs >= STORE_MUTATION_THRESHOLD_MS) {
+        const stack = new Error().stack
+        log.warn('[Perf]', 'Slow store mutation', {
+          durationMs: Math.round(durationMs),
+          stack,
+        })
+      }
+
+      return result
+    }
+
+    return initializer(timedSet, get, api)
+  }
+}
+
 // Create the combined store
 export const usePDMStore = create<PDMStoreState>()(
   persist(
-    (...a) => ({
+    withMutationTiming((...a) => ({
       ...createToastsSlice(...a),
       ...createUpdateSlice(...a),
       ...createUISlice(...a),
@@ -93,9 +233,10 @@ export const usePDMStore = create<PDMStoreState>()(
       ...createItemBrowserSlice(...a),
       ...createCustomersSlice(...a),
       ...createVaultAuditSlice(...a),
-    }),
+    })),
     {
-      name: 'blue-plm-storage',
+      name: PERSIST_STORAGE_NAME,
+      storage: diagnosticsStorage,
       partialize: (state) => ({
         // ═══════════════════════════════════════════════════════════════
         // Schema Version

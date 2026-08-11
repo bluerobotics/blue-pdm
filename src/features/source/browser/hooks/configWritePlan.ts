@@ -39,6 +39,12 @@ import {
 } from '@/lib/metadata/overlay'
 import type { MetadataWriteGroup } from '@/lib/metadata/writeMetadataToFile'
 import { buildMetadataWritePlan, type PlanSerialization } from '@/lib/metadata/writePlan'
+import {
+  writeStateOf,
+  type MetadataWriteAddress,
+  type MetadataWriteStateRecord,
+  type MetadataWriteState,
+} from '@/lib/metadata/writeState'
 import type { PendingMetadata } from '@/stores/types'
 
 export interface ConfigurationWriteInput {
@@ -93,6 +99,106 @@ export function buildConfigurationDescriptionWritePlan(
     committed: { partNumber: number.part_number },
     configurations: [{ name: configuration, isActive: true, tabNumber }],
     only: [{ scope: 'configuration', field: 'config_description', configuration }],
+    serialization,
+    parity,
+  })
+}
+
+export interface ConfigurationCommitWriteInput extends Omit<ConfigurationWriteInput, 'file'> {
+  file: ConfigurationCommitSource
+  /**
+   * Values to establish. When omitted, the corresponding pending map on `file` is used, which
+   * keeps the commit plan tied to the same stash the row displays.
+   */
+  tabNumber?: string
+  description?: string
+  /** The document's tab, used only when a description is dirty and the tab is not. */
+  documentTabNumber?: string
+}
+
+type ConfigurationCommitSource = MetadataOverlaySource & {
+  metadataWriteState?: MetadataWriteStateRecord
+}
+
+function hasConfigurationValue(
+  values: Record<string, string> | undefined,
+  configuration: string,
+): boolean {
+  return values !== undefined && Object.prototype.hasOwnProperty.call(values, configuration)
+}
+
+const DIRTY_WRITE_STATES: ReadonlySet<MetadataWriteState> = new Set(['pending', 'failed'])
+
+function hasDirtyConfigurationAddress(
+  file: ConfigurationCommitSource,
+  address: MetadataWriteAddress,
+): boolean {
+  return DIRTY_WRITE_STATES.has(writeStateOf(file.metadataWriteState, address))
+}
+
+/**
+ * Build one write plan for every dirty field on one configuration.
+ *
+ * The pending values are intentionally projected to this configuration and the `only` list names
+ * exactly the dirty addresses. The composed Number and Base Item Number properties still travel
+ * with the plan as context, but they do not acquire file-scope write verdicts.
+ */
+export function buildConfigurationCommitWritePlan(
+  input: ConfigurationCommitWriteInput,
+): MetadataWriteGroup[] {
+  const { file, configuration, serialization, parity } = input
+  const pendingTabs = file.pendingMetadata?.config_tabs
+  const pendingDescriptions = file.pendingMetadata?.config_descriptions
+  const tabAddress: MetadataWriteAddress = {
+    scope: 'configuration',
+    field: 'config_tab',
+    configuration,
+  }
+  const descriptionAddress: MetadataWriteAddress = {
+    scope: 'configuration',
+    field: 'config_description',
+    configuration,
+  }
+  const tabEdited =
+    input.tabNumber !== undefined ||
+    (hasConfigurationValue(pendingTabs, configuration) &&
+      hasDirtyConfigurationAddress(file, tabAddress))
+  const descriptionEdited =
+    input.description !== undefined ||
+    (hasConfigurationValue(pendingDescriptions, configuration) &&
+      hasDirtyConfigurationAddress(file, descriptionAddress))
+
+  if (!tabEdited && !descriptionEdited) return []
+
+  const number = partNumberEdit(file)
+  const tabNumber = tabEdited
+    ? (input.tabNumber ?? pendingTabs?.[configuration] ?? '')
+    : (resolveConfigurationTab(file, configuration).value ?? input.documentTabNumber ?? '')
+  const description = input.description ?? pendingDescriptions?.[configuration] ?? ''
+  const pending: PendingMetadata = { ...number }
+  const only: MetadataWriteAddress[] = []
+
+  if (tabEdited) {
+    pending.config_tabs = { [configuration]: tabNumber }
+    only.push({ scope: 'configuration', field: 'config_tab', configuration })
+  }
+  if (descriptionEdited) {
+    pending.config_descriptions = { [configuration]: description }
+    only.push({ scope: 'configuration', field: 'config_description', configuration })
+  }
+
+  return buildMetadataWritePlan({
+    pending,
+    committed: { partNumber: number.part_number },
+    configurations: [
+      {
+        name: configuration,
+        isActive: true,
+        tabNumber,
+        ...(descriptionEdited ? { description } : {}),
+      },
+    ],
+    only,
     serialization,
     parity,
   })

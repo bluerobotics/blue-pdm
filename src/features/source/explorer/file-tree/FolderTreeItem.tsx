@@ -30,6 +30,7 @@ interface FolderTreeItemProps {
   diffCounts: FolderDiffCounts | null
   localOnlyCount: number
   checkoutUsers: CheckoutUser[]
+  checkoutSignature: string
   checkedOutByMeCount: number
   totalCheckouts: number
   syncedCount: number
@@ -90,8 +91,8 @@ function areFolderTreeItemPropsEqual(
     if (prevProps.diffCounts.outdated !== nextProps.diffCounts.outdated) return false
   }
 
-  // Compare checkout users array length (shallow check)
-  if (prevProps.checkoutUsers.length !== nextProps.checkoutUsers.length) return false
+  // Compare all owner/profile fields through the shared stable signature
+  if (prevProps.checkoutSignature !== nextProps.checkoutSignature) return false
 
   // Compare children by reference (React handles child reconciliation)
   if (prevProps.children !== nextProps.children) return false

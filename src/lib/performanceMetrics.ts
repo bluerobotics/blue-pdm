@@ -9,6 +9,7 @@ export type MetricTag =
   | 'Startup' // App startup phases (hydration, auth, org loading)
   | 'VaultLoad' // Vault loading operations (local scan, server fetch, merge)
   | 'FolderMetrics'
+  | 'Performance'
   | 'Store'
   | 'FileWatcher'
   | 'Download'

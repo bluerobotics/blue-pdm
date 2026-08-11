@@ -27,6 +27,11 @@ import {
 } from 'lucide-react'
 // Shared file/folder components
 import { FileIcon, type CheckoutUser } from '@/components/shared/FileItem'
+import {
+  getCheckoutDisplayUser,
+  getCheckoutSignature,
+  getCheckoutUsersSignature,
+} from '@/lib/checkout/checkoutDisplay'
 // Use command system for PDM operations
 import { executeCommand } from '@/lib/commands'
 import { usePDMStore, LocalFile, ConnectedVault } from '@/stores/pdmStore'
@@ -107,6 +112,7 @@ export function FileTree({ onRefresh }: FileTreeProps) {
 
   // ─── User Selectors ────────────────────────────────────────────────────────
   const user = usePDMStore((s) => s.user)
+  const checkoutHydration = usePDMStore((s) => s.checkoutHydration)
   const impersonatedUser = usePDMStore((s) => s.impersonatedUser)
 
   // ─── Admin-only folder visibility ──────────────────────────────────────────
@@ -849,6 +855,9 @@ export function FileTree({ onRefresh }: FileTreeProps) {
     const checkedOutByMeCount = isActive
       ? files.filter((f) => !f.isDirectory && f.pdmData?.checked_out_by === user?.id).length
       : 0
+    const checkedOutByMeFiles = isActive
+      ? files.filter((f) => !f.isDirectory && f.pdmData?.checked_out_by === user?.id)
+      : []
     const checkedOutByOthers = isActive
       ? files.filter(
           (f) =>
@@ -857,40 +866,51 @@ export function FileTree({ onRefresh }: FileTreeProps) {
       : []
 
     // Get all checkout users (with count for FolderCheckinButton)
-    type CheckoutUserWithCount = CheckoutUser & { count?: number }
+    type CheckoutUserWithCount = CheckoutUser & { count: number }
     const allCheckoutUsers: CheckoutUserWithCount[] = []
     if (isActive && checkedOutByMeCount > 0 && user) {
-      allCheckoutUsers.push({
-        id: user.id,
-        name: user.full_name || user.email || 'You',
-        email: user.email || undefined,
-        avatar_url: user.avatar_url || undefined,
-        isMe: true,
-        count: checkedOutByMeCount,
-      })
+      const myCheckoutFile = checkedOutByMeFiles[0]
+      const displayUser = myCheckoutFile
+        ? getCheckoutDisplayUser(
+            myCheckoutFile,
+            user,
+            myCheckoutFile.pdmData?.id
+              ? checkoutHydration[myCheckoutFile.pdmData.id]?.state
+              : undefined,
+          )
+        : null
+      if (displayUser) {
+        allCheckoutUsers.push({
+          ...displayUser,
+          count: checkedOutByMeCount,
+        })
+      }
     }
     if (isActive) {
       const othersMap = new Map<
         string,
-        { id: string; name: string; email?: string; avatar_url?: string; count: number }
+        CheckoutUserWithCount
       >()
       for (const f of checkedOutByOthers) {
         const checkoutUserId = f.pdmData!.checked_out_by!
-        const checkedOutUser = (f.pdmData as any).checked_out_user // TODO: type this
+        const displayUser = getCheckoutDisplayUser(
+          f,
+          user,
+          f.pdmData?.id ? checkoutHydration[f.pdmData.id]?.state : undefined,
+        )
+        if (!displayUser || displayUser.displayState !== 'resolved') continue
         if (othersMap.has(checkoutUserId)) {
           othersMap.get(checkoutUserId)!.count++
         } else {
           othersMap.set(checkoutUserId, {
-            id: checkoutUserId,
-            name: checkedOutUser?.full_name || checkedOutUser?.email?.split('@')[0] || 'Someone',
-            email: checkedOutUser?.email,
-            avatar_url: checkedOutUser?.avatar_url,
+            ...displayUser,
+            isMe: false,
             count: 1,
           })
         }
       }
       for (const u of othersMap.values()) {
-        allCheckoutUsers.push({ ...u, isMe: false })
+        allCheckoutUsers.push(u)
       }
     }
 
@@ -958,6 +978,7 @@ export function FileTree({ onRefresh }: FileTreeProps) {
           syncedFilesCount={syncedFilesCount}
           checkedOutByMeCount={checkedOutByMeCount}
           allCheckoutUsers={allCheckoutUsers}
+          checkoutUsersSignature={getCheckoutUsersSignature(allCheckoutUsers)}
           totalCheckouts={totalCheckouts}
           isDownloadingAll={isDownloadingAll}
           isCheckingInAll={isCheckingInAll}
@@ -1047,6 +1068,13 @@ export function FileTree({ onRefresh }: FileTreeProps) {
                       clipboard={clipboard}
                       operationType={operationType}
                       diffCounts={diffCounts}
+                      checkoutSignature={getCheckoutSignature(
+                        file,
+                        user,
+                        file.pdmData?.id
+                          ? checkoutHydration[file.pdmData.id]?.state
+                          : undefined,
+                      )}
                       folderMetrics={metrics}
                       isHiddenFromNonAdmins={
                         file.isDirectory && isMarkedHidden(file.relativePath)

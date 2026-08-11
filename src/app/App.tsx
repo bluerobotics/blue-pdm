@@ -2,6 +2,8 @@ import { useEffect, useRef } from 'react'
 import { usePDMStore } from '@/stores/pdmStore'
 import { log } from '@/lib/logger'
 import { recordMetric } from '@/lib/performanceMetrics'
+import { setLoadFilesSessionContext } from '@/hooks/loadFilesCoordination'
+import { shouldDeferAutoConnectLoad } from '@/hooks/useAuth'
 import { startLongTaskMonitor } from '@/lib/longTaskMonitor'
 import { SetupScreen } from '@/components/shared/Screens'
 import { OnboardingScreen } from '@/components/shared/Screens'
@@ -15,6 +17,7 @@ import { checkApiVersion } from '@/lib/apiVersion'
 import { getAccessibleVaults, syncFolder, deleteFolderByPath } from '@/lib/supabase'
 import { clearSwReferencesCache } from '@/lib/solidworks'
 import { syncDrawingReferencesInBackground } from '@/lib/solidworks/drawingReferenceSync'
+import { hashCheckoutIdentifier } from '@/types/pdm'
 import {
   useTheme,
   useLanguage,
@@ -35,6 +38,27 @@ import {
 
 /** Debounce delay (ms) for watcher-recovery reloads, which arrive in bursts */
 const VAULT_RESYNC_DEBOUNCE_MS = 1000
+
+interface PerformanceMemory {
+  usedJSHeapSize: number
+  totalJSHeapSize: number
+  jsHeapSizeLimit: number
+}
+
+interface PerformanceWithMemory extends Performance {
+  memory?: PerformanceMemory
+}
+
+function getHeapContext(): Record<string, number> {
+  const memory = (performance as PerformanceWithMemory).memory
+  if (!memory) return {}
+
+  return {
+    usedJSHeapSize: memory.usedJSHeapSize,
+    totalJSHeapSize: memory.totalJSHeapSize,
+    jsHeapSizeLimit: memory.jsHeapSizeLimit,
+  }
+}
 
 // Check if we're in performance mode (pop-out window)
 function isPerformanceMode(): boolean {
@@ -84,12 +108,34 @@ export function App() {
   useEffect(
     () =>
       startLongTaskMonitor(() => {
-        const { activeView, customersTab } = usePDMStore.getState()
+        const {
+          activeView,
+          customersTab,
+          currentOperation,
+          operationQueue,
+          processingOperations,
+          files,
+          serverFiles,
+          selectedFiles,
+          expandedFolders,
+          activeVaultId,
+        } = usePDMStore.getState()
         // The customers tabs mount separately and cost wildly different
         // amounts to render, so "customers" alone does not narrow anything.
-        return activeView === 'customers'
-          ? { view: activeView, tab: customersTab }
-          : { view: activeView }
+        return {
+          view: activeView,
+          ...(activeView === 'customers' ? { tab: customersTab } : {}),
+          operationId: currentOperation?.id ?? null,
+          commandId: currentOperation?.commandId ?? null,
+          operationQueueLength: operationQueue.length,
+          processingOperationsCount: processingOperations.size,
+          filesCount: files.length,
+          serverFilesCount: serverFiles.length,
+          selectedCount: selectedFiles.length,
+          expandedFoldersCount: expandedFolders.size,
+          vaultId: hashCheckoutIdentifier(activeVaultId),
+          ...getHeapContext(),
+        }
       }),
     [],
   )
@@ -98,13 +144,23 @@ export function App() {
   const onboardingComplete = usePDMStore((s) => s.onboardingComplete)
 
   // Auth hook - handles authentication state and Supabase initialization
-  const { supabaseReady, handleSupabaseConfigured, handleChangeOrg } = useAuth()
+  const {
+    supabaseReady,
+    handleSupabaseConfigured,
+    handleChangeOrg,
+    sessionGeneration,
+  } = useAuth()
 
   // Vault management hook - now gets setSettingsTab from store internally
   const { handleOpenVault, lastLoadKey } = useVaultManagement()
 
+  const authUser = usePDMStore((s) => s.user)
+
   // Load files hook
-  const { loadFiles } = useLoadFiles()
+  const { loadFiles } = useLoadFiles({
+    authenticatedUserId: authUser?.id ?? null,
+    sessionGeneration,
+  })
 
   // Auto-download trigger hook
   useAutoDownload()
@@ -113,6 +169,7 @@ export function App() {
   const {
     user,
     organization,
+    authInitialized,
     isOfflineMode,
     vaultPath,
     isVaultConnected,
@@ -134,8 +191,42 @@ export function App() {
   // Get current vault ID (from activeVaultId or first connected vault)
   const currentVaultId = activeVaultId || connectedVaults[0]?.id
 
+  useEffect(() => {
+    setLoadFilesSessionContext({
+      authenticatedUserId: user?.id ?? null,
+      sessionGeneration,
+    })
+  }, [sessionGeneration, user?.id])
+
+  const realtimeSessionKey = `${user?.id ?? ''}:${sessionGeneration}`
+
   // Existing extracted hooks
-  useRealtimeSubscriptions(organization, isOfflineMode)
+  useRealtimeSubscriptions(organization, isOfflineMode, realtimeSessionKey)
+
+  const previousSessionBoundaryRef = useRef<{
+    authenticatedUserId: string | null
+    sessionGeneration: number
+  } | null>(null)
+
+  useEffect(() => {
+    const previous = previousSessionBoundaryRef.current
+    const changed =
+      previous !== null &&
+      (previous.authenticatedUserId !== user?.id ||
+        previous.sessionGeneration !== sessionGeneration)
+
+    if (changed) {
+      // The realtime hook flushes its queued location batch during cleanup.
+      // Clear it again after cleanup so that batch cannot repopulate the new session.
+      usePDMStore.getState().resetFileSessionState()
+    }
+
+    previousSessionBoundaryRef.current = {
+      authenticatedUserId: user?.id ?? null,
+      sessionGeneration,
+    }
+  }, [sessionGeneration, user?.id])
+
   useSessionHeartbeat(user, organization)
   useBackupHeartbeat(organization?.id)
   useSolidWorksAutoStart(organization)
@@ -728,13 +819,25 @@ export function App() {
   useEffect(() => {
     if (!isVaultConnected || !vaultPath) return
 
+    if (
+      shouldDeferAutoConnectLoad({
+        isOfflineMode,
+        authenticatedUserId: user?.id ?? null,
+        sessionGeneration,
+        authInitialized,
+      })
+    ) {
+      setIsLoading(false)
+      return
+    }
+
     if (!isOfflineMode && user && !organization) {
       setIsLoading(true)
       setStatusMessage('Loading organization...')
       return
     }
 
-    const loadKey = `${vaultPath}:${currentVaultId || 'none'}:${organization?.id || 'none'}:${isOfflineMode ? 'offline' : 'online'}`
+    const loadKey = `${vaultPath}:${currentVaultId || 'none'}:${organization?.id || 'none'}:${user?.id || 'none'}:${sessionGeneration}:${isOfflineMode ? 'offline' : 'online'}`
 
     log.debug('[LoadEffect]', 'Checking loadKey', { loadKey, lastLoadKey: lastLoadKey.current })
 
@@ -757,9 +860,11 @@ export function App() {
     isVaultConnected,
     vaultPath,
     isOfflineMode,
+    authInitialized,
     user,
     organization,
     currentVaultId,
+    sessionGeneration,
     loadFiles,
     setIsLoading,
     setStatusMessage,

@@ -415,6 +415,64 @@ export const InlineSyncButton: React.FC<SyncButtonProps> = ({
 }
 
 // ============================================================================
+// CONFIGURATION SYNC BUTTON - Grey refresh icon, expands to show blue count + arrow on hover
+// For dirty SolidWorks configurations that need to be written to the document
+// ============================================================================
+interface ConfigSyncButtonProps extends BaseButtonProps {
+  title: string
+  selectedCount?: number
+  isSelectionHovered?: boolean
+}
+
+export const InlineConfigSyncButton: React.FC<ConfigSyncButtonProps> = ({
+  onClick,
+  title,
+  disabled,
+  isProcessing,
+  selectedCount,
+  isSelectionHovered,
+  onMouseEnter,
+  onMouseLeave,
+}) => {
+  const showCount = selectedCount !== undefined && selectedCount > 1
+  const forceExpanded = isSelectionHovered
+
+  if (isProcessing) {
+    return <Loader2 size={16} className="text-blue-400 animate-spin" />
+  }
+
+  return (
+    <button
+      className={`group/configsync flex items-center px-1.5 py-0.5 rounded-md transition-all duration-200 bg-white/10 text-plm-fg-muted hover:bg-blue-500/20 hover:text-blue-400 disabled:opacity-40 disabled:cursor-not-allowed ${forceExpanded ? 'gap-1 bg-blue-500/20 text-blue-400' : 'gap-0 hover:gap-1'}`}
+      onClick={onClick}
+      title={title}
+      aria-label={title}
+      disabled={disabled}
+      data-no-drag
+      onMouseDown={(e) => e.stopPropagation()}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+    >
+      <RefreshCw
+        size={12}
+        className={`transition-colors duration-200 ${forceExpanded ? 'text-blue-400' : 'group-hover/configsync:text-blue-400'}`}
+      />
+      {showCount && (
+        <span
+          className={`text-[10px] font-medium text-blue-400 overflow-hidden transition-all duration-200 ${forceExpanded ? 'max-w-[2rem]' : 'max-w-0 group-hover/configsync:max-w-[2rem]'}`}
+        >
+          {selectedCount}
+        </span>
+      )}
+      <ArrowUp
+        size={12}
+        className={`text-blue-400 overflow-hidden transition-all duration-200 ${forceExpanded ? 'max-w-[1rem]' : 'max-w-0 group-hover/configsync:max-w-[1rem]'}`}
+      />
+    </button>
+  )
+}
+
+// ============================================================================
 // FOLDER DOWNLOAD BUTTON - For folders with cloud files (always shows count)
 // Grey cloud with count, expands to show blue arrow on hover
 // ============================================================================

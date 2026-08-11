@@ -6,6 +6,7 @@
  *           history, versions
  */
 
+import { getCheckoutProfileForOwner } from '@/lib/checkout/checkoutDisplay'
 import { usePDMStore, LocalFile } from '../../../stores/pdmStore'
 import { updateFileMetadata, getFileVersions } from '../../supabase'
 import { formatBytes } from '../../utils'
@@ -18,7 +19,7 @@ type OutputFn = (type: TerminalOutput['type'], content: string) => void
  * Resolve a path pattern to matching files
  */
 function resolvePathPattern(pattern: string, files: LocalFile[]): LocalFile[] {
-  let normalizedPattern = pattern.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '')
+  const normalizedPattern = pattern.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '')
 
   if (normalizedPattern.includes('*')) {
     const regexPattern = normalizedPattern
@@ -130,8 +131,9 @@ export function handleInfo(parsed: ParsedCommand, files: LocalFile[], addOutput:
     if (file.pdmData.checked_out_by) {
       const { user } = usePDMStore.getState()
       const isMe = file.pdmData.checked_out_by === user?.id
+      const checkoutProfile = getCheckoutProfileForOwner(file)
       lines.push(
-        `   Checked out by: ${isMe ? 'You' : file.pdmData.checked_out_user?.full_name || file.pdmData.checked_out_user?.email || 'Unknown'}`,
+        `   Checked out by: ${isMe ? 'You' : checkoutProfile?.full_name || checkoutProfile?.email || 'Unknown'}`,
       )
     }
     if (file.pdmData.version) {

@@ -19,21 +19,29 @@ import type {
   FileLocationUpdate,
   ServerFile,
 } from '../types'
-import type { PDMFile } from '../../types/pdm'
+import {
+  mergePdmFileData,
+  reconcileCheckoutProfile,
+  type CheckoutUserProfile,
+} from '../../types/pdm'
 import { buildFullPath } from '@/lib/utils/path'
 import { recordMetric } from '@/lib/performanceMetrics'
 import { log } from '@/lib/logger'
+import { STORE_MUTATION_THRESHOLD_MS } from '@/lib/performanceThresholds'
 import { isPathHidden, readHiddenFolderPaths } from '@/lib/hiddenFolders'
 import { dropCommittedPendingMetadata } from '@/lib/pendingMetadata'
 import { resolveDescription, resolvePartNumber } from '@/lib/metadata/overlay'
 import { applyPendingEdit, noPendingEdit } from '@/lib/metadata/pendingEdits'
+import { unwritableFieldGroups } from '@/lib/metadata/writeOwnership'
 import {
   applyWriteState,
   applyWriteStates,
   clearWriteState,
+  groupOfAddress,
   isEmptyRecord,
   listRecordedAddresses,
   listWriteAddresses,
+  recordWithoutGroups,
   type MetadataWriteStateRecord,
 } from '@/lib/metadata/writeState'
 import { logExplorer } from '@/lib/userActionLogger'
@@ -53,8 +61,8 @@ import { migratePersistedPathKeys, type PathRename } from '../persistedPathKeys'
 // synchronous code that adds the processing operation completes, preventing
 // intermediate states like "green cloud during checkin".
 
-let pendingProcessingAdds = new Map<string, OperationType>()
-let pendingProcessingRemoves = new Set<string>()
+const pendingProcessingAdds = new Map<string, OperationType>()
+const pendingProcessingRemoves = new Set<string>()
 let processingFlushScheduled = false
 
 /**
@@ -278,6 +286,9 @@ export const createFilesSlice: StateCreator<
   fileConfigurations: new Map<string, import('../types').SWConfiguration[]>(),
   loadingConfigs: new Set<string>(),
 
+  // Initial state - Configuration section expansion
+  expandedConfigSections: new Set<string>(),
+
   // Initial state - Configuration BOM expansion
   expandedConfigBoms: new Set<string>(),
   configBomData: new Map<string, import('../types').ConfigBomItem[]>(),
@@ -301,9 +312,14 @@ export const createFilesSlice: StateCreator<
 
   // Initial state - Pending pane sections (collapsed by default)
   expandedPendingSections: new Set<string>(),
+  checkoutHydration: {},
 
   // Actions - Files
   setFiles: (files) => {
+    const validatedFiles = files.map((file) =>
+      file.pdmData ? { ...file, pdmData: reconcileCheckoutProfile(file.pdmData) } : file,
+    )
+
     // Restore any persisted pending metadata to the files
     const { persistedPendingMetadata } = get()
     const persistedKeys = Object.keys(persistedPendingMetadata)
@@ -315,10 +331,10 @@ export const createFilesSlice: StateCreator<
     // Deduplicate by path (case-insensitive for Windows compatibility)
     // When duplicates exist, prefer LOCAL files over CLOUD files
     const seenPaths = new Map<string, number>() // lowercase path -> index in deduped array
-    const deduped: typeof files = []
+    const deduped: typeof validatedFiles = []
     let duplicateCount = 0
 
-    for (const file of files) {
+    for (const file of validatedFiles) {
       const pathLower = file.path.toLowerCase()
       const existingIdx = seenPaths.get(pathLower)
 
@@ -339,7 +355,7 @@ export const createFilesSlice: StateCreator<
     if (duplicateCount > 0) {
       window.electronAPI?.log('warn', '[Store] setFiles filtered duplicates', {
         duplicateCount,
-        originalCount: files.length,
+        originalCount: validatedFiles.length,
         dedupedCount: deduped.length,
         timestamp: Date.now(),
       })
@@ -406,6 +422,51 @@ export const createFilesSlice: StateCreator<
 
     set({ files: filesWithRestoredMetadata })
   },
+
+  applyCheckoutUserProfiles: (profiles: Record<string, CheckoutUserProfile>) => {
+    if (Object.keys(profiles).length === 0) return
+
+    set((state) => {
+      let changed = false
+      const files = state.files.map((file) => {
+        const currentPdmData = file.pdmData
+        const profile = currentPdmData?.id ? profiles[currentPdmData.id] : undefined
+
+        if (!currentPdmData || !profile || currentPdmData.checked_out_by !== profile.id) {
+          return file
+        }
+
+        const pdmData = mergePdmFileData(currentPdmData, { checked_out_user: profile })
+        if (pdmData === currentPdmData) return file
+
+        changed = true
+        return { ...file, pdmData }
+      })
+
+      return changed ? { files } : state
+    })
+  },
+
+  setCheckoutHydrationStatus: (fileId, status) => {
+    set((state) => ({
+      checkoutHydration: {
+        ...state.checkoutHydration,
+        [fileId]: status,
+      },
+    }))
+  },
+
+  clearCheckoutHydrationStatus: (fileId) => {
+    set((state) => {
+      if (!(fileId in state.checkoutHydration)) return state
+
+      const checkoutHydration = { ...state.checkoutHydration }
+      delete checkoutHydration[fileId]
+      return { checkoutHydration }
+    })
+  },
+
+  clearCheckoutHydration: () => set({ checkoutHydration: {} }),
 
   setServerFiles: (serverFiles) => set({ serverFiles }),
   setServerFolderPaths: (serverFolderPaths) => set({ serverFolderPaths }),
@@ -555,14 +616,20 @@ export const createFilesSlice: StateCreator<
 
   removeFilesFromStore: (paths) => {
     if (paths.length === 0) return
+    const timingStart = performance.now()
     bumpFileMutationEpoch()
     // Use lowercase paths for case-insensitive matching on Windows
     const pathSet = new Set(paths.map((p) => p.toLowerCase()))
     const beforeCount = get().files.length
     // Check if paths exist in files before removing
+    const existingPathsStart = performance.now()
     const existingPaths = paths.filter((p) =>
       get().files.some((f) => f.path.toLowerCase() === p.toLowerCase()),
     )
+    const existingPathsMs = performance.now() - existingPathsStart
+    let filesMatchFilterMs = 0
+    let filesFilterMs = 0
+    let serverFilesFilterMs = 0
     log.debug('[Store]', 'removeFilesFromStore BEFORE', {
       pathsToRemove: paths.length,
       existingPaths: existingPaths.length,
@@ -575,7 +642,9 @@ export const createFilesSlice: StateCreator<
       // Without this, a refreshCurrentFolder pass after a delete would see the
       // stale server entry whose path is no longer on disk and resurrect it as
       // a 'cloud' ghost.
+      const filesMatchFilterStart = performance.now()
       const itemsToRemove = state.files.filter((f) => pathSet.has(f.path.toLowerCase()))
+      filesMatchFilterMs = performance.now() - filesMatchFilterStart
       const relPathsToRemove = new Set<string>()
       const relPrefixesToRemove: string[] = []
       for (const item of itemsToRemove) {
@@ -586,6 +655,7 @@ export const createFilesSlice: StateCreator<
         }
       }
 
+      const serverFilesFilterStart = performance.now()
       const updatedServerFiles =
         relPathsToRemove.size === 0 && relPrefixesToRemove.length === 0
           ? state.serverFiles
@@ -597,13 +667,27 @@ export const createFilesSlice: StateCreator<
               }
               return true
             })
+      serverFilesFilterMs = performance.now() - serverFilesFilterStart
 
+      const filesFilterStart = performance.now()
+      const updatedFiles = state.files.filter((f) => !pathSet.has(f.path.toLowerCase()))
+      filesFilterMs = performance.now() - filesFilterStart
       return {
-        files: state.files.filter((f) => !pathSet.has(f.path.toLowerCase())),
+        files: updatedFiles,
         serverFiles: updatedServerFiles,
         selectedFiles: state.selectedFiles.filter((p) => !pathSet.has(p.toLowerCase())),
       }
     })
+    const totalTimingMs = performance.now() - timingStart
+    if (totalTimingMs >= STORE_MUTATION_THRESHOLD_MS) {
+      log.warn('[Perf]', 'removeFilesFromStore phases', {
+        totalMs: Math.round(totalTimingMs),
+        existingPathsMs: Math.round(existingPathsMs),
+        filesMatchFilterMs: Math.round(filesMatchFilterMs),
+        filesFilterMs: Math.round(filesFilterMs),
+        serverFilesFilterMs: Math.round(serverFilesFilterMs),
+      })
+    }
     const afterCount = get().files.length
     log.debug('[Store]', 'removeFilesFromStore AFTER', {
       afterCount,
@@ -690,10 +774,18 @@ export const createFilesSlice: StateCreator<
     const existingPending = file?.pendingMetadata ?? state.persistedPendingMetadata[path]
     const { pending, edit } = applyPendingEdit(path, existingPending, metadata)
 
-    // The edited addresses start at 'pending' - edited, nothing attempted. Marking them here rather
-    // than in the writer means a field is never in the state of having no state: if the write is
-    // never issued at all, the edit still shows as unsaved rather than as confirmed.
-    const editedAddresses = listWriteAddresses(metadata)
+    const unwritable = unwritableFieldGroups(file?.extension, {
+      lockDrawingItemNumber: state.lockDrawingItemNumber,
+      lockDrawingDescription: state.lockDrawingDescription,
+      lockDrawingRevision: state.lockDrawingRevision,
+    })
+
+    // Writable edited addresses start at 'pending' - edited, nothing attempted. Marking them here
+    // rather than in the writer means a writable field is never in the state of having no state:
+    // if the write is never issued at all, the edit still shows as unsaved rather than confirmed.
+    const editedAddresses = listWriteAddresses(metadata).filter(
+      (address) => !unwritable.has(groupOfAddress(address)),
+    )
 
     log.debug('[filesSlice]', 'updatePendingMetadata: newPending', pending as Record<string, unknown>)
 
@@ -701,7 +793,13 @@ export const createFilesSlice: StateCreator<
       const previousState =
         state.files.find((f) => f.path === path)?.metadataWriteState ??
         state.persistedMetadataWriteState[path]
-      const writeState = applyWriteState(previousState, editedAddresses, 'pending')
+      // `writeStateOf` reads an absent address as `pending`, so leaving an unwritable address
+      // unrecorded would preserve the marker's meaning. Prune it before applying the edit.
+      const writeState = applyWriteState(
+        recordWithoutGroups(previousState, unwritable),
+        editedAddresses,
+        'pending',
+      )
 
       return {
         files: state.files.map((f) =>
@@ -1234,7 +1332,8 @@ export const createFilesSlice: StateCreator<
   },
 
   // Actions - Realtime Updates (incremental without full refresh)
-  addCloudFile: (pdmFile) => {
+  addCloudFile: (inputPdmFile) => {
+    const pdmFile = reconcileCheckoutProfile(inputPdmFile)
     const { files, vaultPath, activeVaultId } = get()
     if (!vaultPath) {
       window.electronAPI?.log(
@@ -1390,20 +1489,9 @@ export const createFilesSlice: StateCreator<
           // edit is still owed by comparing it against this row. Holding an older true value there
           // kept edits pending after the database had already accepted them.
 
-          // Preserve checked_out_user if not explicitly provided in the update
-          // Realtime events don't include joined user info, so we preserve existing data
-          // to prevent "SO" (Someone) avatars from appearing during file updates
-          const existingUserInfo = (f.pdmData as any)?.checked_out_user // TODO: type this
-          const preserveUserInfo =
-            existingUserInfo &&
-            !('checked_out_user' in pdmData) &&
-            f.pdmData.checked_out_by === pdmData.checked_out_by
-
-          const updatedPdmData = {
-            ...f.pdmData,
-            ...pdmData,
-            ...(preserveUserInfo ? { checked_out_user: existingUserInfo } : {}),
-          } as PDMFile
+          // Realtime rows omit joined profiles. The merge helper preserves one only when
+          // its ID still matches the incoming authoritative owner.
+          const updatedPdmData = mergePdmFileData(f.pdmData, pdmData)
 
           // Recompute diff status using best available information
           let newDiffStatus = f.diffStatus
@@ -1522,7 +1610,7 @@ export const createFilesSlice: StateCreator<
           extension: newFileName.includes('.')
             ? '.' + (newFileName.split('.').pop()?.toLowerCase() || '')
             : '',
-          pdmData: { ...f.pdmData, ...pdmData } as PDMFile,
+          pdmData: mergePdmFileData(f.pdmData, pdmData),
         }
       })
 
@@ -1643,7 +1731,7 @@ export const createFilesSlice: StateCreator<
       // Update all files in a single pass
       const updatedFiles = state.files.map((f) => {
         const update = f.pdmData?.id ? updateMap.get(f.pdmData.id) : undefined
-        if (!update) return f
+        if (!update || !f.pdmData) return f
 
         const newFullPath = buildFullPath(vaultPath, update.newRelativePath)
         oldPathToNewPath.set(f.path, newFullPath)
@@ -1656,7 +1744,7 @@ export const createFilesSlice: StateCreator<
           extension: update.newFileName.includes('.')
             ? '.' + (update.newFileName.split('.').pop()?.toLowerCase() || '')
             : '',
-          pdmData: { ...f.pdmData, ...update.pdmData } as PDMFile,
+          pdmData: mergePdmFileData(f.pdmData, update.pdmData),
         }
       })
 
@@ -1914,11 +2002,36 @@ export const createFilesSlice: StateCreator<
     if (newExpanded.has(filePath)) {
       newExpanded.delete(filePath)
       // Also clear selected configs for this file when collapsing
-      const { selectedConfigs } = get()
+      const {
+        selectedConfigs,
+        expandedConfigSections,
+        expandedConfigBoms,
+        configBomData,
+        loadingConfigBoms,
+        expandedConfigDrawings,
+        configDrawingData,
+        loadingConfigDrawings,
+      } = get()
       const newSelected = new Set(
         [...selectedConfigs].filter((key) => !key.startsWith(filePath + '::')),
       )
-      set({ expandedConfigFiles: newExpanded, selectedConfigs: newSelected })
+      const belongsToFile = (key: string): boolean => key.startsWith(filePath + '::')
+      const withoutFileKeys = (keys: Set<string>): Set<string> =>
+        new Set([...keys].filter((key) => !belongsToFile(key)))
+      const withoutFileEntries = <T>(entries: Map<string, T>): Map<string, T> =>
+        new Map([...entries].filter(([key]) => !belongsToFile(key)))
+
+      set({
+        expandedConfigFiles: newExpanded,
+        selectedConfigs: newSelected,
+        expandedConfigSections: withoutFileKeys(expandedConfigSections),
+        expandedConfigBoms: withoutFileKeys(expandedConfigBoms),
+        configBomData: withoutFileEntries(configBomData),
+        loadingConfigBoms: withoutFileKeys(loadingConfigBoms),
+        expandedConfigDrawings: withoutFileKeys(expandedConfigDrawings),
+        configDrawingData: withoutFileEntries(configDrawingData),
+        loadingConfigDrawings: withoutFileKeys(loadingConfigDrawings),
+      })
     } else {
       newExpanded.add(filePath)
       set({ expandedConfigFiles: newExpanded })
@@ -1964,11 +2077,65 @@ export const createFilesSlice: StateCreator<
       selectedConfigs: new Set(),
       configBomData: new Map(),
       expandedConfigBoms: new Set(),
+      loadingConfigBoms: new Set(),
+      expandedConfigSections: new Set(),
       drawingRefData: new Map(),
       expandedDrawingRefs: new Set(),
       expandedDrawingRefFiles: new Set(),
       configDrawingData: new Map(),
       expandedConfigDrawings: new Set(),
+      loadingConfigDrawings: new Set(),
+    })
+  },
+
+  // Actions - Configuration section expansion
+  toggleConfigSectionsExpansion: (configKey: string) => {
+    const { expandedConfigSections } = get()
+    if (expandedConfigSections.has(configKey)) {
+      get().clearConfigSectionData(configKey)
+      return
+    }
+
+    set({ expandedConfigSections: new Set(expandedConfigSections).add(configKey) })
+  },
+
+  clearConfigSectionData: (configKey: string) => {
+    set((state) => {
+      const hasState =
+        state.expandedConfigSections.has(configKey) ||
+        state.expandedConfigDrawings.has(configKey) ||
+        state.configDrawingData.has(configKey) ||
+        state.loadingConfigDrawings.has(configKey) ||
+        state.expandedConfigBoms.has(configKey) ||
+        state.configBomData.has(configKey) ||
+        state.loadingConfigBoms.has(configKey)
+
+      if (!hasState) return state
+
+      const expandedConfigSections = new Set(state.expandedConfigSections)
+      expandedConfigSections.delete(configKey)
+      const expandedConfigDrawings = new Set(state.expandedConfigDrawings)
+      expandedConfigDrawings.delete(configKey)
+      const configDrawingData = new Map(state.configDrawingData)
+      configDrawingData.delete(configKey)
+      const loadingConfigDrawings = new Set(state.loadingConfigDrawings)
+      loadingConfigDrawings.delete(configKey)
+      const expandedConfigBoms = new Set(state.expandedConfigBoms)
+      expandedConfigBoms.delete(configKey)
+      const configBomData = new Map(state.configBomData)
+      configBomData.delete(configKey)
+      const loadingConfigBoms = new Set(state.loadingConfigBoms)
+      loadingConfigBoms.delete(configKey)
+
+      return {
+        expandedConfigSections,
+        expandedConfigDrawings,
+        configDrawingData,
+        loadingConfigDrawings,
+        expandedConfigBoms,
+        configBomData,
+        loadingConfigBoms,
+      }
     })
   },
 
@@ -2241,7 +2408,7 @@ export const createFilesSlice: StateCreator<
     let deleted = 0
     let outdated = 0
     let cloud = 0
-    let cloudNew = 0
+    const cloudNew = 0
 
     const prefix = folderPath ? folderPath + '/' : ''
     for (const file of files) {

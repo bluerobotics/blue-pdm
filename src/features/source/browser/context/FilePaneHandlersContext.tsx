@@ -41,6 +41,17 @@ export interface FilePaneHandlersContextValue {
   savingConfigsToSW: ReadonlySet<string>
   /** `edit` names the fields the write must report on - see useConfigHandlers. */
   saveConfigsToSWFile: (file: LocalFile, edit: PendingMetadataEdit) => void
+  onConfigSectionsToggle: (
+    e: React.MouseEvent,
+    file: LocalFile,
+    configName: string,
+  ) => void
+  onConfigGroupToggle: (
+    e: React.MouseEvent,
+    file: LocalFile,
+    configName: string,
+    group: 'drawings' | 'ebom',
+  ) => void
 
   // Drawing reference handlers
   canHaveDrawingRefs: (file: LocalFile) => boolean

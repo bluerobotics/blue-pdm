@@ -7,13 +7,17 @@
  * relationship read from opposite ends, and because they share the store's loading bookkeeping.
  */
 
-import { useCallback } from 'react'
+import { useCallback, useRef } from 'react'
 
 import { t } from '@/lib/i18n'
 import { log } from '@/lib/logger'
-import { getDrawingsForFileConfig } from '@/lib/supabase/files/queries'
+import {
+  confirmConfigDrawingsWithSolidWorks,
+  loadConfigDrawingsFromDatabase,
+} from '@/lib/solidworks/configDrawingLookup'
 import type { LocalFile } from '@/stores/pdmStore'
 import { usePDMStore } from '@/stores/pdmStore'
+import type { DrawingRefItem } from '@/stores/types'
 
 import { loadDrawingReferences, unresolvedDrawingRefRows } from './loadDrawingReferences'
 
@@ -36,6 +40,8 @@ export interface UseDrawingRefHandlersReturn {
   retryDrawingRefs: (file: LocalFile) => Promise<void>
   /** Toggle config-level drawing expansion (which drawings reference this config) */
   toggleConfigDrawingExpansion: (file: LocalFile, configName: string) => Promise<void>
+  /** Invalidate an in-flight config drawing load when its parent section collapses */
+  cancelConfigDrawingLoad: (configKey: string) => void
 }
 
 export function useDrawingRefHandlers(
@@ -50,12 +56,20 @@ export function useDrawingRefHandlers(
   const addLoadingDrawingRef = usePDMStore((s) => s.addLoadingDrawingRef)
   const removeLoadingDrawingRef = usePDMStore((s) => s.removeLoadingDrawingRef)
 
-  const expandedConfigDrawings = usePDMStore((s) => s.expandedConfigDrawings)
-  const configDrawingData = usePDMStore((s) => s.configDrawingData)
   const toggleConfigDrawingExpansionStore = usePDMStore((s) => s.toggleConfigDrawingExpansion)
   const setConfigDrawingData = usePDMStore((s) => s.setConfigDrawingData)
   const addLoadingConfigDrawing = usePDMStore((s) => s.addLoadingConfigDrawing)
   const removeLoadingConfigDrawing = usePDMStore((s) => s.removeLoadingConfigDrawing)
+  const configDrawingLoadGenerations = useRef(new Map<string, number>())
+
+  const cancelConfigDrawingLoad = useCallback(
+    (configKey: string): void => {
+      const nextGeneration = (configDrawingLoadGenerations.current.get(configKey) ?? 0) + 1
+      configDrawingLoadGenerations.current.set(configKey, nextGeneration)
+      removeLoadingConfigDrawing(configKey)
+    },
+    [removeLoadingConfigDrawing],
+  )
 
   const canHaveDrawingRefs = useCallback((file: LocalFile): boolean => {
     if (file.isDirectory) return false
@@ -157,9 +171,11 @@ export function useDrawingRefHandlers(
   const toggleConfigDrawingExpansion = useCallback(
     async (file: LocalFile, configName: string) => {
       const configKey = `${file.path}::${configName}`
+      const currentState = usePDMStore.getState()
 
       // If already expanded, just collapse
-      if (expandedConfigDrawings.has(configKey)) {
+      if (currentState.expandedConfigDrawings.has(configKey)) {
+        cancelConfigDrawingLoad(configKey)
         toggleConfigDrawingExpansionStore(configKey)
         return
       }
@@ -167,48 +183,83 @@ export function useDrawingRefHandlers(
       // Expand and load drawing data if not cached
       toggleConfigDrawingExpansionStore(configKey)
 
-      if (configDrawingData.has(configKey)) return
+      if (usePDMStore.getState().configDrawingData.has(configKey)) return
 
-      const fileId = file.pdmData?.id
-      if (!fileId) {
-        log.debug('[ConfigHandlers]', 'Skipping config drawing load - file not synced', {
-          configKey,
-        })
-        return
+      const generation = (configDrawingLoadGenerations.current.get(configKey) ?? 0) + 1
+      configDrawingLoadGenerations.current.set(configKey, generation)
+      addLoadingConfigDrawing(configKey)
+
+      const isCurrentLoad = (): boolean => {
+        const state = usePDMStore.getState()
+        return (
+          configDrawingLoadGenerations.current.get(configKey) === generation &&
+          state.expandedConfigSections.has(configKey) &&
+          state.expandedConfigDrawings.has(configKey)
+        )
       }
 
-      addLoadingConfigDrawing(configKey)
       try {
-        const { items, error } = await getDrawingsForFileConfig(fileId, configName)
+        const fileId = file.pdmData?.id
+        let dbItems: DrawingRefItem[] = []
 
-        if (error) {
-          log.error('[ConfigHandlers]', 'Failed to load config drawings from database', {
-            error,
-            configKey,
-          })
-          addToast('error', 'Failed to load drawings for configuration')
+        if (fileId) {
+          const databaseResult = await loadConfigDrawingsFromDatabase(fileId, configName)
+          if (databaseResult.error) {
+            log.error('[ConfigHandlers]', 'Failed to load config drawings from database', {
+              error: databaseResult.error,
+              configKey,
+            })
+          } else {
+            dbItems = databaseResult.items
+            if (isCurrentLoad()) {
+              setConfigDrawingData(configKey, dbItems)
+            }
+            log.debug('[ConfigHandlers]', 'Loaded config drawings from database', {
+              configKey,
+              itemCount: dbItems.length,
+            })
+          }
         } else {
-          setConfigDrawingData(configKey, items)
-          log.debug('[ConfigHandlers]', 'Loaded config drawings from database', {
+          log.debug('[ConfigHandlers]', 'Loading config drawings from SolidWorks for local file', {
             configKey,
-            itemCount: items.length,
           })
         }
+
+        const liveResult = await confirmConfigDrawingsWithSolidWorks({
+          file,
+          configName,
+          files,
+          dbItems,
+        })
+
+        if (isCurrentLoad()) {
+          setConfigDrawingData(configKey, liveResult.items)
+        }
+        log.debug('[ConfigHandlers]', 'Confirmed config drawings with SolidWorks', {
+          configKey,
+          itemCount: liveResult.items.length,
+          confirmed: liveResult.confirmed,
+        })
       } catch (error) {
         log.error('[ConfigHandlers]', 'Exception loading config drawings', { error, configKey })
-        addToast('error', 'Failed to load drawings for configuration')
+        addToast(
+          'error',
+          t('configDrawings.loadFailed', 'Failed to load drawings for configuration'),
+        )
       } finally {
-        removeLoadingConfigDrawing(configKey)
+        if (configDrawingLoadGenerations.current.get(configKey) === generation) {
+          removeLoadingConfigDrawing(configKey)
+        }
       }
     },
     [
-      expandedConfigDrawings,
-      configDrawingData,
       toggleConfigDrawingExpansionStore,
       setConfigDrawingData,
       addLoadingConfigDrawing,
       removeLoadingConfigDrawing,
       addToast,
+      files,
+      cancelConfigDrawingLoad,
     ],
   )
 
@@ -217,5 +268,6 @@ export function useDrawingRefHandlers(
     toggleDrawingRefExpansion,
     retryDrawingRefs,
     toggleConfigDrawingExpansion,
+    cancelConfigDrawingLoad,
   }
 }

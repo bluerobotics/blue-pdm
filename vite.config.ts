@@ -23,16 +23,16 @@ export default defineConfig({
             outDir: 'dist-electron',
             lib: {
               entry: 'electron/main.ts',
-              formats: ['cjs']
+              formats: ['cjs'],
             },
             rollupOptions: {
               external: ['electron'],
               output: {
-                entryFileNames: '[name].js'
-              }
-            }
-          }
-        }
+                entryFileNames: '[name].js',
+              },
+            },
+          },
+        },
       },
       {
         entry: 'electron/preload.ts',
@@ -44,33 +44,36 @@ export default defineConfig({
             outDir: 'dist-electron',
             lib: {
               entry: 'electron/preload.ts',
-              formats: ['cjs']
+              formats: ['cjs'],
             },
             rollupOptions: {
               external: ['electron'],
               output: {
-                entryFileNames: '[name].js'
-              }
-            }
-          }
-        }
-      }
+                entryFileNames: '[name].js',
+              },
+            },
+          },
+        },
+      },
       // Note: extension-host/host.html and preload.ts are handled by
       // scripts/copy-extension-host.js, which runs from both the predev and build scripts.
       // It must run after `vite build` so this plugin's outDir cleaning cannot remove them.
     ]),
-    renderer()
+    renderer(),
   ],
   resolve: {
     alias: {
-      '@': resolve(__dirname, 'src')
-    }
+      '@': resolve(__dirname, 'src'),
+    },
+  },
+  esbuild: {
+    keepNames: true,
   },
   build: {
     rollupOptions: {
       input: {
-        main: resolve(__dirname, 'index.html')
-      }
-    }
-  }
+        main: resolve(__dirname, 'index.html'),
+      },
+    },
+  },
 })

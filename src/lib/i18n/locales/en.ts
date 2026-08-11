@@ -2,6 +2,16 @@ import type { TranslationDict } from '../types'
 
 // English translations (default/fallback)
 export const en: TranslationDict = {
+  checkoutDisplay: {
+    you: 'You',
+    loadingOwner: 'Loading checkout owner',
+    ownerUnavailable: 'Checkout owner unavailable',
+    checkedOutBy: 'Checked out by {{name}}',
+    checkedOutByOnComputer: 'Checked out by {{name}} on {{computer}}',
+    anotherComputer: 'another computer',
+    differentComputer: 'different computer',
+    otherComputer: 'other computer',
+  },
   // Item Browser expandable sections
   itemBrowser: {
     designation: 'Designation',
@@ -205,6 +215,13 @@ export const en: TranslationDict = {
     api: 'API',
     logs: 'Logs',
     about: 'About',
+  },
+
+  // Log viewer
+  logs: {
+    loadFailed: 'Unable to load log files',
+    directoryPath: 'Logs directory: {{path}}',
+    directoryUnavailable: 'Logs directory path unavailable',
   },
 
   // Preferences
@@ -447,6 +464,37 @@ export const en: TranslationDict = {
 
   // Source / Details Panel
   source: {
+    configTree: {
+      drawings: 'Drawings',
+      ebom: 'eBOM',
+      noDrawings: 'No drawings reference this configuration',
+      noComponents: 'No components in this configuration',
+      expand: 'Expand',
+      collapse: 'Collapse',
+    },
+    configCommit: {
+      write: 'Write to file',
+      writeAndSync: 'Write and update drawings',
+      writeAndSyncCount: 'Write and update drawings for {{count}} configurations',
+      pending: 'Not yet written to the document',
+      swOffline: 'Start the SolidWorks service to write configuration metadata',
+      summary:
+        'Configurations written: {{configurations}}; drawings updated: {{updated}}, skipped: {{skipped}}, failed: {{failed}}',
+    },
+    configDrawings: {
+      dialogTitle: 'Drawings reference this configuration',
+      dialogBody:
+        'Some referenced drawings are not checked out by you. They must be checked out before they can receive the update.',
+      checkOutAndUpdate: 'Check out and update',
+      forceModelOnly: 'Write model only',
+      heldBy: 'Held by {{name}}',
+      blocked: 'Held by others',
+      notInVault: 'Not in this vault',
+      ready: 'Ready to update',
+      available: 'Available to check out',
+      modelOnlyWarning:
+        'Write model only leaves drawings that are not checked out by you unchanged.',
+    },
     inspection: {
       title: 'Inspection Table',
       notSynced: 'Sync this drawing to bluePLM to manage its inspection table.',
@@ -517,7 +565,7 @@ export const en: TranslationDict = {
       partial: 'Wrote {{saved}} of {{total}} — the rest is kept here and marked as not in the file',
       unverified: 'Written, but the file could not be read back to confirm it',
       saved: 'Saved metadata to file',
-      retry: 'Write to file',
+      runSyncMetadata: 'Run Sync Metadata to write it into the file',
       // What the marker on an edited field means, one message per write state.
       statePending: 'Not written to the file yet',
       stateWriting: 'Writing to the file…',

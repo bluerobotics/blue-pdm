@@ -14,6 +14,7 @@ import { getDownloadUrl } from '../../storage'
 import { isRetryableError, getNetworkErrorMessage, getBackoffDelay, sleep } from '../../network'
 import { processWithConcurrency, CONCURRENT_OPERATIONS } from '../../concurrency'
 import { log } from '@/lib/logger'
+import { getCheckoutProfileForOwner } from '@/lib/checkout/checkoutDisplay'
 import { FileOperationTracker } from '../../fileOperationTracker'
 import { clearVaultCache } from '@/lib/cache/vaultFileCache'
 
@@ -38,7 +39,7 @@ function getFileContext(file: LocalFile): Record<string, unknown> {
     fileId: file.pdmData?.id,
     diffStatus: file.diffStatus,
     checkedOutBy: file.pdmData?.checked_out_by,
-    checkedOutUser: file.pdmData?.checked_out_user?.email,
+    checkedOutUser: getCheckoutProfileForOwner(file)?.email,
   }
 }
 
@@ -85,7 +86,7 @@ function analyzeFilterResults(
         .slice(0, 3)
         .map(
           (f) =>
-            `${f.name} (by: ${f.pdmData?.checked_out_user?.email || f.pdmData?.checked_out_by || 'none'})`,
+            `${f.name} (by: ${getCheckoutProfileForOwner(f)?.email || f.pdmData?.checked_out_by || 'none'})`,
         ),
       cloudOnly: cloudOnly.slice(0, 3).map((f) => f.name),
     },

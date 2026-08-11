@@ -2,6 +2,16 @@ import type { TranslationDict } from '../types'
 
 // Spanish translations
 export const es: TranslationDict = {
+  checkoutDisplay: {
+    you: 'Tú',
+    loadingOwner: 'Cargando propietario del checkout',
+    ownerUnavailable: 'Propietario del checkout no disponible',
+    checkedOutBy: 'Bloqueado por {{name}}',
+    checkedOutByOnComputer: 'Bloqueado por {{name}} en {{computer}}',
+    anotherComputer: 'otro ordenador',
+    differentComputer: 'ordenador diferente',
+    otherComputer: 'otro PC',
+  },
   common: {
     save: 'Guardar',
     cancel: 'Cancelar',
@@ -147,6 +157,41 @@ export const es: TranslationDict = {
     enterOrgCode: 'Por favor ingresa el código de organización',
     invalidCode: 'Código de organización inválido. Por favor verifica e intenta de nuevo.',
     failedWithCode: 'Error al conectar a Supabase con el código proporcionado',
+  },
+
+  source: {
+    configTree: {
+      drawings: 'Dibujos',
+      ebom: 'eBOM',
+      noDrawings: 'Ningún dibujo hace referencia a esta configuración',
+      noComponents: 'No hay componentes en esta configuración',
+      expand: 'Expandir',
+      collapse: 'Contraer',
+    },
+    configCommit: {
+      write: 'Escribir en el archivo',
+      writeAndSync: 'Escribir y actualizar dibujos',
+      writeAndSyncCount: 'Escribir y actualizar dibujos para {{count}} configuraciones',
+      pending: 'Aún no se ha escrito en el documento',
+      swOffline:
+        'Inicia el servicio de SolidWorks para escribir los metadatos de configuración',
+      summary:
+        'Configuraciones escritas: {{configurations}}; dibujos actualizados: {{updated}}, omitidos: {{skipped}}, fallidos: {{failed}}',
+    },
+    configDrawings: {
+      dialogTitle: 'Los dibujos hacen referencia a esta configuración',
+      dialogBody:
+        'Algunos dibujos referenciados no están bloqueados por ti. Debes bloquearlos para que reciban la actualización.',
+      checkOutAndUpdate: 'Bloquear y actualizar',
+      forceModelOnly: 'Escribir solo el modelo',
+      heldBy: 'Bloqueado por {{name}}',
+      blocked: 'Bloqueado por otras personas',
+      notInVault: 'No está en esta bóveda',
+      ready: 'Listo para actualizar',
+      available: 'Disponible para bloquear',
+      modelOnlyWarning:
+        'Escribir solo el modelo deja sin cambios los dibujos que no estén bloqueados por ti.',
+    },
   },
 
   settings: {

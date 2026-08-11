@@ -1,7 +1,19 @@
 import { StateCreator } from 'zustand'
+import { resetLoadFilesCoordination } from '@/hooks/loadFilesCoordination'
+
 import type { PDMStoreState, UserSlice, ImpersonatedUser } from '../types'
 import type { User, Organization } from '../../types/pdm'
 import type { ModuleId, ModuleGroupId, ModuleConfig } from '../../types/modules'
+
+const RESET_SYNC_PROGRESS = {
+  isActive: false,
+  operation: 'upload' as const,
+  current: 0,
+  total: 0,
+  percent: 0,
+  speed: '',
+  cancelRequested: false,
+}
 
 export const createUserSlice: StateCreator<
   PDMStoreState,
@@ -31,17 +43,102 @@ export const createUserSlice: StateCreator<
     set({ organization, isConnecting: false }),
   setOfflineMode: (isOfflineMode) => set({ isOfflineMode }),
   setIsConnecting: (isConnecting) => set({ isConnecting }),
-  signOut: () =>
+  resetFileSessionState: () => {
+    resetLoadFilesCoordination()
+
+    const state = get()
+    state.clearAllConfigCaches()
+    state.clearAnnotations()
+    state.clearRecentSearches()
+    state.clearClipboard()
+    state.clearReviewPreviewFile()
+    state.setItemPanel(null)
+    state.clearProcessingFolders()
+    state.clearOrphanedCheckouts()
+    state.clearStagedCheckins()
+    state.clearMissingStorageFiles()
+    state.clearPendingLargeUpload()
+
+    set({
+      files: [],
+      serverFiles: [],
+      serverFolderPaths: new Set<string>(),
+      selectedFiles: [],
+      pendingScrollToFile: null,
+      expandedFolders: new Set<string>(),
+      currentFolder: '',
+      persistedPendingMetadata: {},
+      persistedMetadataWriteState: {},
+      persistedCopySource: {},
+      searchQuery: '',
+      searchType: 'all',
+      searchResults: [],
+      isSearching: false,
+      workflowStateFilter: [],
+      extensionFilter: [],
+      historyFolderFilter: null,
+      trashFolderFilter: null,
+      processingOperations: new Map(),
+      expandedConfigFiles: new Set<string>(),
+      selectedConfigs: new Set<string>(),
+      fileConfigurations: new Map(),
+      loadingConfigs: new Set<string>(),
+      expandedConfigBoms: new Set<string>(),
+      configBomData: new Map(),
+      loadingConfigBoms: new Set<string>(),
+      expandedDrawingRefs: new Set<string>(),
+      drawingRefData: new Map(),
+      loadingDrawingRefs: new Set<string>(),
+      expandedDrawingRefFiles: new Set<string>(),
+      expandedConfigDrawings: new Set<string>(),
+      configDrawingData: new Map(),
+      loadingConfigDrawings: new Set<string>(),
+      recentlyModifiedFiles: new Map(),
+      expandedPendingSections: new Set<string>(),
+      checkoutHydration: {},
+      vaultFilesCache: {},
+      isLoading: false,
+      isRefreshing: false,
+      statusMessage: '',
+      filesLoaded: false,
+      syncProgress: { ...RESET_SYNC_PROGRESS },
+      operationQueue: [],
+      isOperationRunning: false,
+      currentOperation: null,
+      pendingReviewCount: 0,
+      orphanedCheckouts: [],
+      stagedCheckins: [],
+      missingStorageFiles: [],
+      pendingLargeUpload: null,
+      lastOperationCompletedAt: 0,
+      expectedFileChanges: new Set<string>(),
+    })
+  },
+  resetSessionState: () => {
+    get().resetFileSessionState()
+    const state = get()
+    state.clearOrganizationData()
+    state.clearOrganizationMetadata()
+
     set({
       user: null,
       organization: null,
       isAuthenticated: false,
       isOfflineMode: false,
       isConnecting: false,
+      isVaultConnected: false,
       impersonatedUser: null,
+      userTeams: null,
+      userPermissions: null,
       userWorkflowRoleIds: [],
+      permissionsLoaded: false,
+      permissionsLastUpdated: 0,
       deniedModules: [],
-    }),
+      apiServerUrl: null,
+      orgColorSwatches: [],
+    })
+  },
+  signOut: () => get().resetSessionState(),
 
   // Get effective role (considering user impersonation)
   getEffectiveRole: () => {
@@ -70,7 +167,7 @@ export const createUserSlice: StateCreator<
     if (customUser) {
       // For pending members, we need to load their team permissions, module config, and vault access
       const teamIds = (customUser.teams || []).map((t) => t.id)
-      let permissions: Record<string, string[]> = {}
+      const permissions: Record<string, string[]> = {}
       let moduleConfig: ModuleConfig | undefined
       let vaultIds: string[] = []
 
@@ -236,6 +333,8 @@ export const createUserSlice: StateCreator<
       set({ userTeams: null, userPermissions: null, permissionsLoaded: false })
       return
     }
+    const userId = user.id
+    const organizationId = get().organization?.id
 
     try {
       const { getUserTeams, getUserPermissions } = await import('../../lib/supabase')
@@ -246,12 +345,15 @@ export const createUserSlice: StateCreator<
       // Load permissions
       const { permissions } = await getUserPermissions(user.id, user.role)
 
+      if (get().user?.id !== userId || get().organization?.id !== organizationId) return
+
       set({
         userTeams: teams,
         userPermissions: permissions,
         permissionsLoaded: true,
       })
     } catch (error) {
+      if (get().user?.id !== userId || get().organization?.id !== organizationId) return
       set({ permissionsLoaded: true })
     }
   },
@@ -262,10 +364,13 @@ export const createUserSlice: StateCreator<
       set({ userWorkflowRoleIds: [] })
       return
     }
+    const userId = user.id
+    const organizationId = get().organization?.id
 
     try {
       const { getUserWorkflowRoles } = await import('../../lib/supabase')
       const { roleIds } = await getUserWorkflowRoles(user.id)
+      if (get().user?.id !== userId || get().organization?.id !== organizationId) return
       set({ userWorkflowRoleIds: roleIds })
     } catch (error) {
       // Non-critical, just log and continue
@@ -278,17 +383,21 @@ export const createUserSlice: StateCreator<
       set({ deniedModules: [] })
       return
     }
+    const userId = user.id
+    const organizationId = get().organization?.id
 
     try {
       const { supabase } = await import('../../lib/supabase')
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const { data, error } = await (supabase.rpc as any)('get_denied_modules') // TODO: type this
       if (error) throw error
+      if (get().user?.id !== userId || get().organization?.id !== organizationId) return
       set({ deniedModules: (data || []) as ModuleId[] })
     } catch (error) {
       // Fail open: a database that predates the module_access table has no
       // restrictions to enforce, and hiding every module would be worse than
       // showing a restricted one.
+      if (get().user?.id !== userId || get().organization?.id !== organizationId) return
       set({ deniedModules: [] })
     }
   },

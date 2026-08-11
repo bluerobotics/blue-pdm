@@ -418,6 +418,7 @@ export async function executeCommand<K extends CommandId>(
     store.addProcessingFoldersSync(paths, processingType)
 
     const operationId = store.queueOperation({
+      commandId,
       type: opType,
       label: toastMessage,
       paths,

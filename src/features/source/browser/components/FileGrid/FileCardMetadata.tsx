@@ -16,6 +16,7 @@
 import { memo, useState, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { Sparkles, Loader2, Layers, FileInput } from 'lucide-react'
+import { deriveCheckoutDisplay } from '@/lib/checkout/checkoutDisplay'
 import type { LocalFile } from '@/stores/pdmStore'
 import { usePDMStore } from '@/stores/pdmStore'
 import { formatFileSize } from '@/lib/utils'
@@ -34,7 +35,12 @@ const EDITABLE_FIELDS = ['itemNumber', 'description', 'revision']
 /**
  * Get display value for a metadata field
  */
-function getFieldValue(file: LocalFile, fieldId: string): string | null {
+function getFieldValue(
+  file: LocalFile,
+  fieldId: string,
+  currentUser: ReturnType<typeof usePDMStore.getState>['user'],
+  checkoutHydrationState?: 'pending' | 'error',
+): string | null {
   const pdmData = file.pdmData
 
   switch (fieldId) {
@@ -66,8 +72,8 @@ function getFieldValue(file: LocalFile, fieldId: string): string | null {
       return tabNumber ? String(tabNumber) : null
     }
     case 'checkedOutBy': {
-      const user = pdmData?.checked_out_user
-      return user?.full_name || user?.email || null
+      const display = deriveCheckoutDisplay(file, currentUser, checkoutHydrationState)
+      return display.state === 'none' ? null : display.displayName
     }
     case 'size': {
       const size = pdmData?.file_size || file.size
@@ -341,8 +347,6 @@ function ConfigIndicator({ file, fontSize }: { file: LocalFile; fontSize: number
   const customProps = file.pdmData?.custom_properties as Record<string, unknown> | undefined
   const configCount = customProps?.['$PRP:SW-Configuration Count'] as number | undefined
 
-  if (!canHaveConfigs || !configCount || configCount <= 1) return null
-
   // Calculate tooltip position
   useEffect(() => {
     if (showTooltip && badgeRef.current) {
@@ -353,6 +357,8 @@ function ConfigIndicator({ file, fontSize }: { file: LocalFile; fontSize: number
       })
     }
   }, [showTooltip])
+
+  if (!canHaveConfigs || !configCount || configCount <= 1) return null
 
   return (
     <div
@@ -392,6 +398,9 @@ export const FileCardMetadata = memo(function FileCardMetadata({
 }: FileCardMetadataProps) {
   const cardViewFields = usePDMStore((state) => state.cardViewFields)
   const user = usePDMStore((state) => state.user)
+  const checkoutHydrationState = usePDMStore((state) =>
+    file.pdmData?.id ? state.checkoutHydration[file.pdmData.id]?.state : undefined,
+  )
 
   // Don't show metadata for folders or at small sizes
   if (file.isDirectory || iconSize < 80) return null
@@ -423,7 +432,7 @@ export const FileCardMetadata = memo(function FileCardMetadata({
 
       {/* Metadata fields */}
       {visibleFields.map((field) => {
-        const value = getFieldValue(file, field.id)
+        const value = getFieldValue(file, field.id, user, checkoutHydrationState)
         const shortLabel = getShortLabel(field.id)
 
         // Version field gets special treatment with dropdown

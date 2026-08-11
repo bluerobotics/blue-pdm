@@ -13,6 +13,11 @@
 
 import { getFilesDelta, LightweightFile, DeltaFile } from '@/lib/supabase/files/queries'
 import { log } from '@/lib/logger'
+import {
+  hashCheckoutIdentifier,
+  isCheckoutProfileForOwner,
+  type CheckoutUserProfile,
+} from '@/types/pdm'
 
 /**
  * Cached server file extends LightweightFile with user profile info.
@@ -20,11 +25,12 @@ import { log } from '@/lib/logger'
  * preventing the "SO" (Someone) avatar fallback when files are refreshed.
  */
 export interface CachedServerFile extends LightweightFile {
-  checked_out_user?: {
-    email: string
-    full_name: string | null
-    avatar_url?: string
-  } | null
+  checked_out_user?: CheckoutUserProfile | null
+}
+
+export interface CacheWriteContext {
+  requestId?: string
+  isCurrent?: () => boolean
 }
 
 interface VaultCacheEntry {
@@ -40,13 +46,59 @@ const DB_NAME = 'blueplm-vault-cache'
 // v1 -> v2: Fixed Supabase 1000 row limit bug
 // v2 -> v3: Rows gained custom_properties; cached rows without it would leave files
 //           looking permanently modified until their next delta update
-const DB_VERSION = 3
+// v3 -> v4: Profiles gained owner IDs; old unkeyed profiles are not safe to migrate
+const DB_VERSION = 4
 const STORE_NAME = 'vault-files'
 
 // Cache expiry - if cache is older than this, do a full refresh
 const CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
 
 let dbPromise: Promise<IDBDatabase> | null = null
+const vaultWriteQueues = new Map<string, Promise<void>>()
+
+function enqueueVaultWrite(
+  vaultId: string,
+  operation: () => Promise<void>,
+  context?: CacheWriteContext,
+): Promise<void> {
+  const previous = vaultWriteQueues.get(vaultId) ?? Promise.resolve()
+  const queued = previous.catch(() => undefined).then(async () => {
+    if (context?.isCurrent && !context.isCurrent()) {
+      log.debug('[VaultCache]', 'Discarding stale cache write before transaction', {
+        vaultId: hashCheckoutIdentifier(vaultId),
+        requestId: context.requestId,
+        stale: true,
+      })
+      return
+    }
+
+    await operation()
+  })
+
+  vaultWriteQueues.set(vaultId, queued)
+  queued.then(
+    () => {
+      if (vaultWriteQueues.get(vaultId) === queued) vaultWriteQueues.delete(vaultId)
+    },
+    () => {
+      if (vaultWriteQueues.get(vaultId) === queued) vaultWriteQueues.delete(vaultId)
+    },
+  )
+  return queued
+}
+
+function sanitizeCachedFile(file: CachedServerFile): CachedServerFile {
+  if (isCheckoutProfileForOwner(file.checked_out_user, file.checked_out_by)) {
+    return file
+  }
+
+  const { checked_out_user: _checkedOutUser, ...withoutProfile } = file
+  return withoutProfile
+}
+
+function isCacheContextCurrent(context?: CacheWriteContext): boolean {
+  return !context?.isCurrent || context.isCurrent()
+}
 
 /**
  * Open or create the IndexedDB database
@@ -122,8 +174,20 @@ export async function getCachedVaultFiles(
           return
         }
 
+        const files = entry.files.map(sanitizeCachedFile)
+        const discardedProfiles = entry.files.filter(
+          (file, index) => file.checked_out_user && !files[index].checked_out_user,
+        ).length
+        if (discardedProfiles > 0) {
+          log.warn('[VaultCache]', 'Discarded cache profiles without matching owners', {
+            orgId: hashCheckoutIdentifier(orgId),
+            vaultId: hashCheckoutIdentifier(vaultId),
+            discardedProfiles,
+          })
+        }
+
         resolve({
-          files: entry.files,
+          files,
           watermark: entry.watermark,
         })
       }
@@ -146,47 +210,73 @@ export async function setCachedVaultFiles(
   orgId: string,
   vaultId: string,
   files: CachedServerFile[],
+  context?: CacheWriteContext,
 ): Promise<void> {
-  try {
-    const db = await openDB()
+  return enqueueVaultWrite(
+    vaultId,
+    async () => {
+      const writeStart = performance.now()
+      try {
+        const db = await openDB()
+        const validatedFiles = files.map(sanitizeCachedFile)
 
-    // Compute watermark as MAX(updated_at)
-    let maxUpdatedAt = ''
-    for (const file of files) {
-      if (file.updated_at && file.updated_at > maxUpdatedAt) {
-        maxUpdatedAt = file.updated_at
+        // Compute watermark as MAX(updated_at)
+        let maxUpdatedAt = ''
+        for (const file of validatedFiles) {
+          if (file.updated_at && file.updated_at > maxUpdatedAt) {
+            maxUpdatedAt = file.updated_at
+          }
+        }
+
+        const watermark = maxUpdatedAt || new Date().toISOString()
+        const entry: VaultCacheEntry = {
+          vaultId,
+          orgId,
+          files: validatedFiles,
+          watermark,
+          cachedAt: Date.now(),
+        }
+
+        await new Promise<void>((resolve, reject) => {
+          const transaction = db.transaction(STORE_NAME, 'readwrite')
+          const store = transaction.objectStore(STORE_NAME)
+
+          // Revalidate immediately before the write, while this transaction is still authoritative.
+          if (!isCacheContextCurrent(context)) {
+            log.debug('[VaultCache]', 'Discarding stale full cache write in transaction', {
+              orgId: hashCheckoutIdentifier(orgId),
+              vaultId: hashCheckoutIdentifier(vaultId),
+              requestId: context?.requestId,
+              stale: true,
+            })
+            transaction.abort()
+            resolve()
+            return
+          }
+
+          const request = store.put(entry)
+          request.onsuccess = () => resolve()
+          request.onerror = () => reject(request.error)
+        })
+
+        log.info('[VaultCache]', 'Cached server files', {
+          orgId: hashCheckoutIdentifier(orgId),
+          vaultId: hashCheckoutIdentifier(vaultId),
+          requestId: context?.requestId,
+          fileCount: validatedFiles.length,
+          latencyMs: Math.round(performance.now() - writeStart),
+        })
+      } catch (error) {
+        log.error('[VaultCache]', 'Error writing cache', {
+          orgId: hashCheckoutIdentifier(orgId),
+          vaultId: hashCheckoutIdentifier(vaultId),
+          requestId: context?.requestId,
+          error: error instanceof Error ? error.message : String(error),
+        })
       }
-    }
-
-    // Fallback to now if no files
-    const watermark = maxUpdatedAt || new Date().toISOString()
-
-    const entry: VaultCacheEntry = {
-      vaultId,
-      orgId,
-      files,
-      watermark,
-      cachedAt: Date.now(),
-    }
-
-    return new Promise((resolve, reject) => {
-      const transaction = db.transaction(STORE_NAME, 'readwrite')
-      const store = transaction.objectStore(STORE_NAME)
-      const request = store.put(entry)
-
-      request.onsuccess = () => {
-        log.info('[VaultCache]', `Cached ${files.length} files, watermark: ${watermark}`)
-        resolve()
-      }
-
-      request.onerror = () => {
-        log.error('[VaultCache]', 'Failed to write cache', { error: request.error })
-        reject(request.error)
-      }
-    })
-  } catch (error) {
-    log.error('[VaultCache]', 'Error writing cache', { error })
-  }
+    },
+    context,
+  )
 }
 
 /**
@@ -199,7 +289,7 @@ export function applyDeltaToCache(
   deltaFiles: DeltaFile[],
 ): CachedServerFile[] {
   // Create map for O(1) lookup by ID
-  const fileMap = new Map(cachedFiles.map((f) => [f.id, f]))
+  const fileMap = new Map(cachedFiles.map((file) => [file.id, sanitizeCachedFile(file)]))
 
   for (const delta of deltaFiles) {
     if (delta.is_deleted || delta.deleted_at) {
@@ -210,9 +300,11 @@ export function applyDeltaToCache(
       // Preserve checked_out_user if the checkout user hasn't changed
       const existing = fileMap.get(delta.id)
       const preserveUserInfo =
-        existing?.checked_out_user && existing.checked_out_by === delta.checked_out_by
+        existing?.checked_out_user &&
+        isCheckoutProfileForOwner(existing.checked_out_user, delta.checked_out_by) &&
+        existing.checked_out_by === delta.checked_out_by
 
-      fileMap.set(delta.id, {
+      const nextFile: CachedServerFile = {
         id: delta.id,
         file_path: delta.file_path,
         file_name: delta.file_name,
@@ -231,7 +323,8 @@ export function applyDeltaToCache(
         custom_properties: delta.custom_properties,
         // Preserve user info if checkout user hasn't changed
         checked_out_user: preserveUserInfo ? existing!.checked_out_user : undefined,
-      })
+      }
+      fileMap.set(delta.id, sanitizeCachedFile(nextFile))
     }
   }
 
@@ -251,10 +344,11 @@ export function applyDeltaToCache(
 export async function getFilesWithCache(
   orgId: string,
   vaultId: string,
-  fetchFullFn: () => Promise<{ files: CachedServerFile[] | null; error: any }>,
+  fetchFullFn: () => Promise<{ files: CachedServerFile[] | null; error: unknown }>,
+  context?: CacheWriteContext,
 ): Promise<{
   files: CachedServerFile[] | null
-  error: any
+  error: unknown
   cacheHit: boolean
   deltaCount: number
   timing: {
@@ -276,7 +370,13 @@ export async function getFilesWithCache(
 
   if (cached) {
     // Cache hit - fetch only delta
-    log.info('[VaultCache]', `Cache hit: ${cached.files.length} files, watermark: ${cached.watermark}`)
+    log.info('[VaultCache]', 'Cache hit', {
+      orgId: hashCheckoutIdentifier(orgId),
+      vaultId: hashCheckoutIdentifier(vaultId),
+      requestId: context?.requestId,
+      fileCount: cached.files.length,
+      watermark: cached.watermark,
+    })
 
     const fetchStart = performance.now()
     const { files: deltaFiles, error } = await getFilesDelta(orgId, vaultId, cached.watermark)
@@ -303,9 +403,7 @@ export async function getFilesWithCache(
       timing.mergeMs = Math.round(performance.now() - mergeStart)
 
       // Update cache with merged data
-      setCachedVaultFiles(orgId, vaultId, mergedFiles).catch((err) => {
-        log.error('[VaultCache]', 'Failed to update cache after delta', { error: err })
-      })
+      void setCachedVaultFiles(orgId, vaultId, mergedFiles, context)
 
       return {
         files: mergedFiles,
@@ -327,7 +425,11 @@ export async function getFilesWithCache(
   }
 
   // Cache miss - full fetch
-  log.info('[VaultCache]', 'Cache miss, doing full fetch')
+  log.info('[VaultCache]', 'Cache miss, doing full fetch', {
+    orgId: hashCheckoutIdentifier(orgId),
+    vaultId: hashCheckoutIdentifier(vaultId),
+    requestId: context?.requestId,
+  })
 
   const fetchStart = performance.now()
   const { files, error } = await fetchFullFn()
@@ -344,9 +446,7 @@ export async function getFilesWithCache(
   }
 
   // Cache the result for next time
-  setCachedVaultFiles(orgId, vaultId, files).catch((err) => {
-    log.error('[VaultCache]', 'Failed to cache files', { error: err })
-  })
+  void setCachedVaultFiles(orgId, vaultId, files, context)
 
   return {
     files,
@@ -362,59 +462,118 @@ export async function getFilesWithCache(
  * Called after background task fetches checked_out_user data.
  * This persists user info to IndexedDB so subsequent loads have it immediately.
  */
-export async function updateCachedUserInfo(
+export function updateCachedUserInfo(
   vaultId: string,
-  userInfoMap: Record<string, { email: string; full_name: string | null; avatar_url?: string }>,
+  userInfoMap: Record<string, CheckoutUserProfile>,
+): Promise<void>
+export function updateCachedUserInfo(
+  orgId: string,
+  vaultId: string,
+  userInfoMap: Record<string, CheckoutUserProfile>,
+  context?: CacheWriteContext,
+): Promise<void>
+export function updateCachedUserInfo(
+  first: string,
+  second: string | Record<string, CheckoutUserProfile>,
+  third?: Record<string, CheckoutUserProfile>,
+  context?: CacheWriteContext,
 ): Promise<void> {
-  try {
-    const db = await openDB()
+  const orgId: string | null = typeof second === 'string' ? first : null
+  const vaultId: string = typeof second === 'string' ? second : first
+  const userInfoMap: Record<string, CheckoutUserProfile> | undefined =
+    typeof second === 'string' ? third : second
 
-    return new Promise((resolve) => {
-      const transaction = db.transaction(STORE_NAME, 'readwrite')
-      const store = transaction.objectStore(STORE_NAME)
-      const getRequest = store.get(vaultId)
+  if (!userInfoMap) return Promise.resolve()
 
-      getRequest.onsuccess = () => {
-        const entry = getRequest.result as VaultCacheEntry | undefined
-        if (!entry) {
-          resolve()
-          return
-        }
+  return enqueueVaultWrite(
+    vaultId,
+    async () => {
+      const updateStart = performance.now()
+      try {
+        const db = await openDB()
 
-        // Update files with user info
-        let updatedCount = 0
-        const updatedFiles = entry.files.map((f) => {
-          if (f.id in userInfoMap && f.checked_out_by) {
-            updatedCount++
-            return { ...f, checked_out_user: userInfoMap[f.id] }
+        await new Promise<void>((resolve, reject) => {
+          const transaction = db.transaction(STORE_NAME, 'readwrite')
+          const store = transaction.objectStore(STORE_NAME)
+
+          if (!isCacheContextCurrent(context)) {
+            log.debug('[VaultCache]', 'Discarding stale profile cache write in transaction', {
+              orgId: hashCheckoutIdentifier(orgId),
+              vaultId: hashCheckoutIdentifier(vaultId),
+              requestId: context?.requestId,
+              stale: true,
+            })
+            transaction.abort()
+            resolve()
+            return
           }
-          return f
+
+          const getRequest = store.get(vaultId)
+          getRequest.onsuccess = () => {
+            const entry = getRequest.result as VaultCacheEntry | undefined
+            if (!entry || (orgId !== null && entry.orgId !== orgId)) {
+              resolve()
+              return
+            }
+
+            if (!isCacheContextCurrent(context)) {
+              log.debug('[VaultCache]', 'Discarding stale profile cache write after read', {
+                orgId: hashCheckoutIdentifier(orgId),
+                vaultId: hashCheckoutIdentifier(vaultId),
+                requestId: context?.requestId,
+                stale: true,
+              })
+              transaction.abort()
+              resolve()
+              return
+            }
+
+            let updatedCount = 0
+            const updatedFiles = entry.files.map((file) => {
+              const profile = userInfoMap[file.id]
+              if (
+                profile &&
+                file.checked_out_by === profile.id &&
+                isCheckoutProfileForOwner(profile, file.checked_out_by)
+              ) {
+                updatedCount++
+                return { ...file, checked_out_user: profile }
+              }
+              return sanitizeCachedFile(file)
+            })
+
+            if (updatedCount === 0) {
+              resolve()
+              return
+            }
+
+            entry.files = updatedFiles
+            const putRequest = store.put(entry)
+            putRequest.onsuccess = () => resolve()
+            putRequest.onerror = () => reject(putRequest.error)
+          }
+
+          getRequest.onerror = () => reject(getRequest.error)
         })
 
-        if (updatedCount > 0) {
-          entry.files = updatedFiles
-          const putRequest = store.put(entry)
-          putRequest.onsuccess = () => {
-            log.info('[VaultCache]', `Updated ${updatedCount} files with user info`)
-            resolve()
-          }
-          putRequest.onerror = () => {
-            log.error('[VaultCache]', 'Failed to update user info', { error: putRequest.error })
-            resolve()
-          }
-        } else {
-          resolve()
-        }
+        log.info('[VaultCache]', 'Updated cached checkout profiles', {
+          orgId: hashCheckoutIdentifier(orgId),
+          vaultId: hashCheckoutIdentifier(vaultId),
+          requestId: context?.requestId,
+          profileCount: Object.keys(userInfoMap).length,
+          latencyMs: Math.round(performance.now() - updateStart),
+        })
+      } catch (error) {
+        log.error('[VaultCache]', 'Error updating cached user info', {
+          orgId: hashCheckoutIdentifier(orgId),
+          vaultId: hashCheckoutIdentifier(vaultId),
+          requestId: context?.requestId,
+          error: error instanceof Error ? error.message : String(error),
+        })
       }
-
-      getRequest.onerror = () => {
-        log.error('[VaultCache]', 'Failed to read cache for user info update', { error: getRequest.error })
-        resolve()
-      }
-    })
-  } catch (error) {
-    log.error('[VaultCache]', 'Error updating user info', { error })
-  }
+    },
+    context,
+  )
 }
 
 /**

@@ -1,5 +1,9 @@
 import { useMemo, useCallback, useDeferredValue, useRef } from 'react'
 import { usePDMStore, LocalFile } from '@/stores/pdmStore'
+import {
+  getCheckoutDisplayUser,
+  getCheckoutUsersSignature,
+} from '@/lib/checkout/checkoutDisplay'
 import { useHiddenFolders } from '@/hooks/useHiddenFolders'
 import { isPathHidden } from '@/lib/hiddenFolders'
 import type { OperationType } from '@/stores/types'
@@ -48,6 +52,8 @@ export interface FolderMetrics {
   syncedFilesCount: number
   /** List of users who have files checked out */
   checkoutUsers: CheckoutUser[]
+  /** Stable identity signature for all displayed checkout users in this folder */
+  checkoutSignature: string
   /**
    * Whether folder text should be normal (true) or italic/muted (false).
    * Computed via priority-based logic from computeFolderVisualState().
@@ -109,6 +115,7 @@ export function useVaultTree() {
   const hideSolidworksTempFiles = usePDMStore((s) => s.hideSolidworksTempFiles)
   const hideCloudOnlyFolders = usePDMStore((s) => s.hideCloudOnlyFolders)
   const user = usePDMStore((s) => s.user)
+  const checkoutHydration = usePDMStore((s) => s.checkoutHydration)
   const processingOperations = usePDMStore((s) => s.processingOperations)
   const { enforcedHiddenPaths } = useHiddenFolders()
 
@@ -244,6 +251,7 @@ export function useVaultTree() {
       user?.full_name,
       user?.email,
       user?.avatar_url,
+      checkoutHydration,
       hideSolidworksTempFiles,
       enforcedHiddenPaths,
     ] as const
@@ -261,9 +269,6 @@ export function useVaultTree() {
     // Track checkout users per folder using Map for O(1) deduplication during single pass
     const checkoutUsersMaps = new Map<string, Map<string, CheckoutUser>>()
     const userId = user?.id
-    const userFullName = user?.full_name
-    const userEmail = user?.email
-    const userAvatarUrl = user?.avatar_url
 
     // Get all non-directory files (optionally excluding SolidWorks temp files)
     // Uses deferredFiles to allow React to batch updates and yield to user input
@@ -290,6 +295,7 @@ export function useVaultTree() {
       totalCheckedOutFilesCount: 0,
       syncedFilesCount: 0,
       checkoutUsers: [],
+      checkoutSignature: getCheckoutUsersSignature([]),
       isSynced: false, // Will be computed via computeFolderVisualState in post-processing
       checkoutStatus: null,
       iconColor: 'text-plm-fg-muted', // Will be computed via computeFolderVisualState in post-processing
@@ -408,23 +414,18 @@ export function useVaultTree() {
 
           // O(1) deduplication via Map.has() instead of O(users) array.some()
           if (!usersMap.has(checkoutUserId)) {
-            const isMe = checkoutUserId === userId
-            if (isMe) {
+            const displayUser = getCheckoutDisplayUser(
+              file,
+              user,
+              fileId ? checkoutHydration[fileId]?.state : undefined,
+            )
+            if (
+              displayUser &&
+              (displayUser.displayState === 'mine' ||
+                displayUser.displayState === 'resolved')
+            ) {
               usersMap.set(checkoutUserId, {
-                id: checkoutUserId,
-                name: userFullName || userEmail || 'You',
-                avatar_url: userAvatarUrl ?? undefined,
-                isMe: true,
-                fileIds: [fileId],
-              })
-            } else {
-              const checkedOutUser = file.pdmData.checked_out_user
-              usersMap.set(checkoutUserId, {
-                id: checkoutUserId,
-                name:
-                  checkedOutUser?.full_name || checkedOutUser?.email?.split('@')[0] || 'Someone',
-                avatar_url: checkedOutUser?.avatar_url ?? undefined,
-                isMe: false,
+                ...displayUser,
                 fileIds: [fileId],
               })
             }
@@ -453,6 +454,7 @@ export function useVaultTree() {
           return 0
         })
       }
+      m.checkoutSignature = getCheckoutUsersSignature(m.checkoutUsers)
 
       // Compute checkout status
       if (m.hasMyCheckedOutFiles && m.hasOthersCheckedOutFiles) {
@@ -490,10 +492,8 @@ export function useVaultTree() {
     return metrics
   }, [
     deferredFiles,
-    user?.id,
-    user?.full_name,
-    user?.email,
-    user?.avatar_url,
+    user,
+    checkoutHydration,
     hideSolidworksTempFiles,
     enforcedHiddenPaths,
   ])

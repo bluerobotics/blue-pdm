@@ -11,6 +11,7 @@ export interface FileRowProps {
   isCut: boolean
   rowHeight: number
   visibleColumns: { id: string; width: number }[]
+  checkoutSignature: string
   draggable: boolean
   onClick: (e: React.MouseEvent) => void
   onDoubleClick: () => void
@@ -35,6 +36,7 @@ function areFileRowPropsEqual(prevProps: FileRowProps, nextProps: FileRowProps):
   if (prevProps.file.isDirectory !== nextProps.file.isDirectory) return false
   if (prevProps.file.size !== nextProps.file.size) return false
   if (prevProps.file.modifiedTime !== nextProps.file.modifiedTime) return false
+  if (prevProps.checkoutSignature !== nextProps.checkoutSignature) return false
 
   // Compare primitive props
   if (prevProps.index !== nextProps.index) return false

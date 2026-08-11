@@ -1,9 +1,23 @@
 import { getSupabaseClient } from '../client'
 import { log } from '@/lib/logger'
+import { hashCheckoutIdentifier, type CheckoutUserProfile } from '@/types/pdm'
 
 // ============================================
 // Files - Read Operations
 // ============================================
+
+export interface CheckoutProfileScope {
+  orgId: string
+  vaultId: string | null
+  fileId?: string
+}
+
+export interface CheckedOutUsersResult {
+  users: Record<string, CheckoutUserProfile>
+  error: unknown
+}
+
+const checkedOutUsersInFlight = new Map<string, Promise<CheckedOutUsersResult>>()
 
 /**
  * Get files with full metadata including user info (slower, use for single file or small sets)
@@ -26,7 +40,7 @@ export async function getFiles(
     .select(
       `
       *,
-      checked_out_user:users!checked_out_by(email, full_name, avatar_url),
+      checked_out_user:users!checked_out_by(id, email, full_name, avatar_url),
       created_by_user:users!created_by(email, full_name)
     `,
     )
@@ -192,18 +206,29 @@ export async function getFilesDelta(
  * Get checked out user info for a batch of file IDs
  * Used to lazily load user info after initial sync
  */
-export async function getCheckedOutUsers(fileIds: string[]) {
+async function fetchCheckedOutUsers(
+  fileIds: string[],
+  scope?: CheckoutProfileScope,
+): Promise<CheckedOutUsersResult> {
   if (fileIds.length === 0) return { users: {}, error: null }
 
   const client = getSupabaseClient()
 
   // First get files with their checked_out_by user IDs
-  const { data: files, error: filesError } = await client
+  let filesQuery = client
     .from('files')
-    .select('id, checked_out_by')
+    .select('id, checked_out_by, org_id, vault_id')
     .in('id', fileIds)
     .not('checked_out_by', 'is', null)
 
+  if (scope) {
+    filesQuery = filesQuery.eq('org_id', scope.orgId)
+    if (scope.vaultId) {
+      filesQuery = filesQuery.eq('vault_id', scope.vaultId)
+    }
+  }
+
+  const { data: files, error: filesError } = await filesQuery
   if (filesError) return { users: {}, error: filesError }
   if (!files || files.length === 0) return { users: {}, error: null }
 
@@ -219,6 +244,7 @@ export async function getCheckedOutUsers(fileIds: string[]) {
     .from('users')
     .select('id, email, full_name, avatar_url')
     .in('id', userIds)
+    .eq('org_id', scope?.orgId ?? files[0].org_id)
 
   if (usersError) return { users: {}, error: usersError }
 
@@ -226,15 +252,16 @@ export async function getCheckedOutUsers(fileIds: string[]) {
   const userLookup = new Map(usersData?.map((u) => [u.id, u]) || [])
 
   // Convert to a map for easy lookup by file ID
-  const users: Record<string, { email: string; full_name: string; avatar_url?: string }> = {}
+  const users: Record<string, CheckoutUserProfile> = {}
   for (const file of files) {
     if (!file.checked_out_by) continue
     const user = userLookup.get(file.checked_out_by)
     if (user) {
       users[file.id] = {
+        id: user.id,
         email: user.email,
-        full_name: user.full_name || '',
-        avatar_url: user.avatar_url || undefined,
+        full_name: user.full_name,
+        avatar_url: user.avatar_url,
       }
     }
   }
@@ -242,21 +269,68 @@ export async function getCheckedOutUsers(fileIds: string[]) {
   return { users, error: null }
 }
 
+export function getCheckedOutUsers(
+  fileIds: string[],
+  scope?: CheckoutProfileScope,
+): Promise<CheckedOutUsersResult> {
+  const normalizedFileIds = [...new Set(fileIds)].sort()
+  const scopeKey = scope ? `${scope.orgId}:${scope.vaultId ?? ''}:${scope.fileId ?? ''}` : ''
+  const key = `${scopeKey}:${normalizedFileIds.join(',')}`
+  const existing = checkedOutUsersInFlight.get(key)
+  if (existing) return existing
+
+  const request = fetchCheckedOutUsers(normalizedFileIds, scope).finally(() => {
+    if (checkedOutUsersInFlight.get(key) === request) {
+      checkedOutUsersInFlight.delete(key)
+    }
+  })
+  checkedOutUsersInFlight.set(key, request)
+  return request
+}
+
 /**
  * Get basic user info by ID (for checkout display)
  * Used when realtime updates come in and we need to show who checked out a file
  */
-export async function getUserBasicInfo(userId: string): Promise<{
-  user: { email: string; full_name: string; avatar_url?: string } | null
+export async function getUserBasicInfo(
+  userId: string,
+  scope?: CheckoutProfileScope,
+): Promise<{
+  user: CheckoutUserProfile | null
   error?: string
 }> {
   const client = getSupabaseClient()
 
-  const { data, error } = await client
-    .from('users')
-    .select('email, full_name, avatar_url')
-    .eq('id', userId)
-    .single()
+  if (scope?.fileId) {
+    let fileQuery = client
+      .from('files')
+      .select('checked_out_by')
+      .eq('id', scope.fileId)
+      .eq('org_id', scope.orgId)
+    if (scope.vaultId) {
+      fileQuery = fileQuery.eq('vault_id', scope.vaultId)
+    }
+    const { data: file, error: fileError } = await fileQuery.maybeSingle()
+
+    if (fileError) {
+      log.warn('[Files]', 'Failed to validate checkout owner scope', {
+        error: fileError.message,
+        fileId: hashCheckoutIdentifier(scope.fileId),
+      })
+      return { user: null, error: fileError.message }
+    }
+
+    if (file?.checked_out_by !== userId) {
+      return { user: null }
+    }
+  }
+
+  let userQuery = client.from('users').select('id, email, full_name, avatar_url').eq('id', userId)
+  if (scope) {
+    userQuery = userQuery.eq('org_id', scope.orgId)
+  }
+
+  const { data, error } = await userQuery.single()
 
   if (error) {
     log.error('[Files]', 'Failed to fetch user', { error: error.message })
@@ -266,9 +340,10 @@ export async function getUserBasicInfo(userId: string): Promise<{
   return {
     user: data
       ? {
+          id: data.id,
           email: data.email,
-          full_name: data.full_name || '',
-          avatar_url: data.avatar_url || undefined,
+          full_name: data.full_name,
+          avatar_url: data.avatar_url,
         }
       : null,
   }
@@ -281,7 +356,7 @@ export async function getFile(fileId: string) {
     .select(
       `
       *,
-      checked_out_user:users!checked_out_by(email, full_name, avatar_url),
+      checked_out_user:users!checked_out_by(id, email, full_name, avatar_url),
       created_by_user:users!created_by(email, full_name),
       updated_by_user:users!updated_by(email, full_name)
     `,
@@ -478,6 +553,7 @@ export interface DrawingRefItem {
   revision: string | null
   state: string | null
   configuration: string | null
+  configurationConfirmed?: boolean
   in_database: boolean
 }
 
@@ -499,7 +575,7 @@ export async function getDrawingsForFileConfig(
 ): Promise<{ items: DrawingRefItem[]; error: string | null }> {
   const client = getSupabaseClient()
 
-  let query = client
+  const query = client
     .from('file_references')
     .select(
       `
@@ -512,11 +588,6 @@ export async function getDrawingsForFileConfig(
     `,
     )
     .eq('child_file_id', fileId)
-
-  // Filter by configuration if specified
-  if (configName !== null) {
-    query = query.eq('configuration', configName)
-  }
 
   const { data, error } = await query.order('parent(file_name)', { ascending: true })
 
@@ -546,6 +617,10 @@ export async function getDrawingsForFileConfig(
 
     // Only include drawing files (.slddrw)
     if (!parent?.file_name?.toLowerCase().endsWith('.slddrw')) {
+      continue
+    }
+
+    if (configName !== null && ref.configuration !== configName) {
       continue
     }
 
@@ -907,7 +982,7 @@ export async function getAllCheckedOutFiles(orgId: string) {
     .select(
       `
       *,
-      checked_out_user:users!checked_out_by(email, full_name, avatar_url)
+      checked_out_user:users!checked_out_by(id, email, full_name, avatar_url)
     `,
     )
     .eq('org_id', orgId)

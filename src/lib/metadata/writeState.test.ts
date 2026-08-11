@@ -14,11 +14,14 @@ import {
   applyWriteState,
   applyWriteStates,
   clearWriteState,
+  groupOfAddress,
   isConfirmed,
   isEmptyRecord,
   listRecordedAddresses,
   listWriteAddresses,
   needsWrite,
+  pendingWithoutGroups,
+  recordWithoutGroups,
   readWriteState,
   resolveFileWriteState,
   scopePendingToGroup,
@@ -407,5 +410,109 @@ describe('the promoted mark outlives the attempt that set it', () => {
     const record = applyWriteState(undefined, [partNumber], 'failed', { at: AT })
 
     expect(readWriteState(record, partNumber)?.promoted).toBeUndefined()
+  })
+})
+
+describe('grouping and removing write obligations', () => {
+  const revision: MetadataWriteAddress = { scope: 'file', field: 'revision' }
+  const description: MetadataWriteAddress = {
+    scope: 'configuration',
+    field: 'config_description',
+    configuration: 'Default',
+  }
+
+  it('maps every address shape to the column that answers for it', () => {
+    expect(groupOfAddress({ scope: 'file', field: 'part_number' })).toBe('part_number')
+    expect(groupOfAddress({ scope: 'file', field: 'tab_number' })).toBe('tab_number')
+    expect(groupOfAddress({ scope: 'file', field: 'description' })).toBe('description')
+    expect(groupOfAddress({ scope: 'file', field: 'revision' })).toBe('revision')
+    expect(groupOfAddress(tab014)).toBe('tab_number')
+    expect(groupOfAddress(description)).toBe('description')
+  })
+
+  it('drops configuration maps with the column they belong to', () => {
+    const pending = {
+      part_number: 'PN-NEW',
+      tab_number: '014',
+      config_tabs: { Default: '014' },
+      description: 'O-ring',
+      config_descriptions: { Default: 'O-ring' },
+      revision: 'B',
+    }
+
+    expect(pendingWithoutGroups(pending, new Set(['description', 'tab_number'] as const))).toEqual({
+      part_number: 'PN-NEW',
+      revision: 'B',
+    })
+  })
+
+  it('returns the pending input untouched when no groups are excluded', () => {
+    const pending = { part_number: 'PN-NEW', config_tabs: { Default: '014' } }
+
+    expect(pendingWithoutGroups(pending, new Set())).toBe(pending)
+  })
+
+  it('returns no pending set when every group is excluded', () => {
+    const pending = {
+      part_number: 'PN-NEW',
+      tab_number: '014',
+      config_tabs: { Default: '014' },
+      description: 'O-ring',
+      config_descriptions: { Default: 'O-ring' },
+      revision: 'B',
+    }
+
+    expect(
+      pendingWithoutGroups(
+        pending,
+        new Set(['part_number', 'tab_number', 'description', 'revision'] as const),
+      ),
+    ).toBeUndefined()
+  })
+
+  it('removes recorded configuration addresses through the existing clear operation', () => {
+    const record = applyWriteStates(
+      undefined,
+      [
+        { address: partNumber, state: 'failed' },
+        { address: tab014, state: 'failed' },
+        { address: description, state: 'failed' },
+        { address: revision, state: 'failed' },
+      ],
+      { at: AT },
+    )
+
+    const remaining = recordWithoutGroups(record, new Set(['description', 'tab_number'] as const))
+
+    expect(readWriteState(remaining, partNumber)?.state).toBe('failed')
+    expect(readWriteState(remaining, revision)?.state).toBe('failed')
+    expect(readWriteState(remaining, tab014)).toBeUndefined()
+    expect(readWriteState(remaining, description)).toBeUndefined()
+  })
+
+  it('returns the recorded input untouched when no groups are excluded', () => {
+    const record = applyWriteState(undefined, [partNumber], 'failed', { at: AT })
+
+    expect(recordWithoutGroups(record, new Set())).toBe(record)
+  })
+
+  it('returns no recorded state when every address is excluded', () => {
+    const record = applyWriteStates(
+      undefined,
+      [
+        { address: partNumber, state: 'failed' },
+        { address: tab014, state: 'failed' },
+        { address: description, state: 'failed' },
+        { address: revision, state: 'failed' },
+      ],
+      { at: AT },
+    )
+
+    expect(
+      recordWithoutGroups(
+        record,
+        new Set(['part_number', 'tab_number', 'description', 'revision'] as const),
+      ),
+    ).toBeUndefined()
   })
 })

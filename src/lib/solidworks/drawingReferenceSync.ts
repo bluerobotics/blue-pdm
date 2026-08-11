@@ -19,9 +19,9 @@
 import { log } from '@/lib/logger'
 import { usePDMStore } from '@/stores/pdmStore'
 import { upsertFileReferences } from '@/lib/supabase'
-import type { SWReference } from '@/lib/supabase'
 
 import { getSwReferencesCached, isReferencesUnresolved } from './referencesCache'
+import { swRefsToFileReferences } from './referenceRows'
 import type { SWServiceReference } from './types'
 
 /** Collapse rapid successive saves of the same drawing into one read. */
@@ -184,12 +184,7 @@ async function syncOneDrawing(
 
     const swRefs = result.data.references
 
-    // Drawing references are always type 'reference'; 'component' is for assembly BOM rows.
-    const references: SWReference[] = swRefs.map((ref) => ({
-      childFilePath: ref.path,
-      quantity: 1,
-      referenceType: 'reference' as const,
-    }))
+    const references = swRefsToFileReferences(swRefs)
 
     const upsertResult = await upsertFileReferences(
       context.orgId,

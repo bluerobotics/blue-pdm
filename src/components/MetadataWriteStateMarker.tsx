@@ -1,17 +1,16 @@
 /**
- * The mark on a value the user typed that is not in the SolidWorks file.
+ * Marks metadata that BluePLM has not confirmed in a document it can write.
  *
- * The previous release had no way to show this, and that absence was the whole argument for throwing
- * a failed edit away: a value that stayed put looked identical to one the file had accepted, and
- * check-in would promote it as though it had. Given somewhere to put the mark, keeping the value is
- * plainly the better answer - the user's typing survives, and it is labelled.
+ * Sync Metadata is the command that writes BluePLM's values into a part or assembly. The marker
+ * therefore names that command in the tooltip instead of offering a second per-cell retry action:
+ * a retry icon in a 10px table cell duplicates the command and gives the write a confusing second
+ * entry point.
  *
  * What it shows, in order of how much it should worry someone:
  *
- * - **failed** and **unattempted**: the value is definitely not in the file. Red, with a retry.
- * - **unverified**: the write was made and could not be confirmed. Amber, with a retry, because a
- *   retry is the only way to find out and re-writing a correct value costs nothing.
- * - **pending**: edited, nothing attempted yet. Muted, with a retry.
+ * - **failed** and **unattempted**: the value is definitely not in the file.
+ * - **unverified**: the write was made but could not be confirmed.
+ * - **pending**: edited, with no write attempted yet.
  * - **verified**: nothing at all. A confirmed value needs no decoration.
  *
  * One mark can only show one state, so the most alarming among the addresses it covers wins - see
@@ -20,14 +19,18 @@
  *
  * A `field` narrows the mark to the column it sits in, so a failed configuration tab is flagged on
  * Tab Number rather than on all four datacard columns at once. Omitting it marks the file as a whole,
- * which is what a panel wants.
+ * which is what a panel wants. Write ownership is filtered before either mode resolves its state,
+ * including for marks persisted before this guard existed.
  */
 
-import { AlertTriangle, Loader2, RefreshCw } from 'lucide-react'
+import { AlertTriangle, Loader2 } from 'lucide-react'
 
 import { t } from '@/lib/i18n'
-import { retryEdit } from '@/lib/metadata/pendingEdits'
+import { unwritableFieldGroups } from '@/lib/metadata/writeOwnership'
 import {
+  needsWrite,
+  pendingWithoutGroups,
+  recordWithoutGroups,
   resolveFileWriteState,
   scopePendingToGroup,
   scopeRecordToGroup,
@@ -35,6 +38,7 @@ import {
   type MetadataFieldGroup,
   type MetadataWriteDisplayState,
 } from '@/lib/metadata/writeState'
+import { usePDMStore } from '@/stores/pdmStore'
 import type { LocalFile } from '@/stores/types'
 
 const STATE_MESSAGE: Record<MetadataWriteDisplayState, string> = {
@@ -60,8 +64,6 @@ export interface MetadataWriteStateMarkerProps {
   file: LocalFile
   /** The column this mark sits in. Omitted marks every field the file has an outcome for. */
   field?: MetadataFieldGroup
-  /** Runs the write again for everything still pending on this file. */
-  onRetry?: (file: LocalFile, edit: ReturnType<typeof retryEdit>) => void
   /**
    * True while a write for this file is in flight.
    *
@@ -74,11 +76,25 @@ export interface MetadataWriteStateMarkerProps {
 export function MetadataWriteStateMarker({
   file,
   field,
-  onRetry,
   isWriting,
 }: MetadataWriteStateMarkerProps): React.ReactNode {
-  const pending = field ? scopePendingToGroup(file.pendingMetadata, field) : file.pendingMetadata
-  const record = field ? scopeRecordToGroup(file.metadataWriteState, field) : file.metadataWriteState
+  const lockDrawingItemNumber = usePDMStore((state) => state.lockDrawingItemNumber)
+  const lockDrawingDescription = usePDMStore((state) => state.lockDrawingDescription)
+  const lockDrawingRevision = usePDMStore((state) => state.lockDrawingRevision)
+  const unwritableGroups = unwritableFieldGroups(file.extension, {
+    lockDrawingItemNumber,
+    lockDrawingDescription,
+    lockDrawingRevision,
+  })
+
+  if (field && unwritableGroups.has(field)) return null
+
+  const pending = field
+    ? scopePendingToGroup(file.pendingMetadata, field)
+    : pendingWithoutGroups(file.pendingMetadata, unwritableGroups)
+  const record = field
+    ? scopeRecordToGroup(file.metadataWriteState, field)
+    : recordWithoutGroups(file.metadataWriteState, unwritableGroups)
 
   const state = isWriting && pending ? 'writing' : resolveFileWriteState(pending, record)
 
@@ -94,6 +110,9 @@ export function MetadataWriteStateMarker({
       }),
     )
   }
+  if (state !== 'writing' && needsWrite(state)) {
+    parts.push(t('source.metadataWrite.runSyncMetadata'))
+  }
   if (summary.hasPromotedUnconfirmed) parts.push(t('source.metadataWrite.promotedUnverified'))
   const title = parts.join(' — ')
 
@@ -103,20 +122,6 @@ export function MetadataWriteStateMarker({
         <Loader2 size={11} className={`animate-spin ${STATE_CLASS[state]}`} />
       ) : (
         <AlertTriangle size={11} className={STATE_CLASS[state]} />
-      )}
-      {onRetry && state !== 'writing' && (
-        <button
-          onClick={(event) => {
-            event.stopPropagation()
-            event.preventDefault()
-            onRetry(file, retryEdit(file.path, file.pendingMetadata))
-          }}
-          onMouseDown={(event) => event.stopPropagation()}
-          className="p-0.5 rounded text-plm-fg-muted hover:text-plm-accent hover:bg-plm-accent/20 transition-colors"
-          title={t('source.metadataWrite.retry')}
-        >
-          <RefreshCw size={10} />
-        </button>
       )}
     </span>
   )

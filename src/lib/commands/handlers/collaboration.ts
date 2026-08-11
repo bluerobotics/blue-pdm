@@ -4,6 +4,7 @@
  * Commands: watch, unwatch, share, notify, request-review, request-checkout, add-to-eco
  */
 
+import { getCheckoutProfileForOwner } from '@/lib/checkout/checkoutDisplay'
 import { usePDMStore, LocalFile } from '../../../stores/pdmStore'
 import {
   watchFile,
@@ -24,7 +25,7 @@ type OutputFn = (type: TerminalOutput['type'], content: string) => void
  * Resolve a path pattern to matching files
  */
 function resolvePathPattern(pattern: string, files: LocalFile[]): LocalFile[] {
-  let normalizedPattern = pattern.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '')
+  const normalizedPattern = pattern.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '')
 
   if (normalizedPattern.includes('*')) {
     const regexPattern = normalizedPattern
@@ -363,8 +364,8 @@ export async function handleRequestCheckout(
     return
   }
 
-  const ownerName =
-    file.pdmData.checked_out_user?.full_name || file.pdmData.checked_out_user?.email || 'the owner'
+  const checkoutProfile = getCheckoutProfileForOwner(file)
+  const ownerName = checkoutProfile?.full_name || checkoutProfile?.email || 'the owner'
   addOutput('info', 'Notification system has been removed. Checkout request not sent.')
   addOutput('info', `Would have sent checkout request to ${ownerName}`)
 }

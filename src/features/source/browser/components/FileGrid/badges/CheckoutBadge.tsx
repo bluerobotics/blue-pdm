@@ -1,6 +1,8 @@
 import { Monitor } from 'lucide-react'
+import { t } from '@/lib/i18n'
 import { getInitials, getAvatarColor } from '@/lib/utils'
 import { NotifiableCheckoutAvatar } from '@/components/shared/Avatar'
+import type { CheckoutDisplayState } from '@/types/pdm'
 
 export interface CheckoutBadgeUser {
   id: string
@@ -8,6 +10,7 @@ export interface CheckoutBadgeUser {
   email?: string
   avatar_url?: string
   isMe: boolean
+  displayState?: CheckoutDisplayState
   isDifferentMachine?: boolean
   machineName?: string
   /** For folders: list of file IDs this user has checked out */
@@ -64,12 +67,19 @@ export function CheckoutBadge({
           }}
           title={
             u.isDifferentMachine && u.machineName
-              ? `Checked out on ${u.machineName} (different computer)`
+              ? t('checkoutDisplay.checkedOutByOnComputer', {
+                  name: u.name,
+                  computer: u.machineName,
+                })
               : undefined
           }
         >
           {/* For other users' checkouts, use NotifiableCheckoutAvatar (works for both files and folders) */}
-          {!u.isMe && fileName && (fileId || (isFolder && u.fileIds && u.fileIds.length > 0)) ? (
+          {!u.isMe &&
+          u.displayState !== 'hydrating' &&
+          u.displayState !== 'unavailable' &&
+          fileName &&
+          (fileId || (isFolder && u.fileIds && u.fileIds.length > 0)) ? (
             <NotifiableCheckoutAvatar
               user={{
                 id: u.id,
@@ -106,13 +116,19 @@ export function CheckoutBadge({
                     className={`rounded-full ${u.isMe ? (u.isDifferentMachine ? 'bg-plm-warning/50 text-plm-warning' : `${avatarColors.bg} ${avatarColors.text}`) : `${avatarColors.bg} ${avatarColors.text}`} flex items-center justify-center font-medium ${u.avatar_url ? 'hidden' : ''}`}
                     style={{ width: avatarSize, height: avatarSize, fontSize: avatarFontSize }}
                   >
-                    {getInitials(u.name)}
+                    {getInitials(u.name, {
+                      placeholder:
+                        u.displayState === 'hydrating' || u.displayState === 'unavailable',
+                    })}
                   </div>
                   {u.isDifferentMachine && (
                     <div
                       className="absolute -bottom-0.5 -right-0.5 bg-plm-warning rounded-full p-0.5"
                       style={{ width: avatarSize * 0.4, height: avatarSize * 0.4 }}
-                      title={`Checked out on ${u.machineName || 'another computer'}`}
+                      title={t('checkoutDisplay.checkedOutByOnComputer', {
+                        name: u.name,
+                        computer: u.machineName || t('checkoutDisplay.anotherComputer'),
+                      })}
                     >
                       <Monitor size={avatarSize * 0.3} className="text-plm-bg w-full h-full" />
                     </div>

@@ -1,5 +1,50 @@
 // PDM Types for SolidWorks and CAD file management
 
+export interface CheckoutUserProfile {
+  id: string
+  email: string
+  full_name: string | null
+  avatar_url: string | null
+}
+
+// Render-only derivation state. It must never be persisted as checkout identity.
+export type CheckoutDisplayState = 'none' | 'mine' | 'resolved' | 'hydrating' | 'unavailable'
+
+/** Session values supplied by auth-aware callers to scope asynchronous vault loads. */
+export interface LoadFilesSessionContext {
+  authenticatedUserId: string | null
+  sessionGeneration: number
+}
+
+/** Immutable identity captured when checkout hydration work begins. */
+export interface CheckoutLoadContext extends LoadFilesSessionContext {
+  orgId: string | null
+  vaultId: string | null
+  vaultPath: string | null
+  requestId: string
+}
+
+export interface CheckoutIdentityCarrier {
+  checked_out_by: string | null
+  checked_out_user?: CheckoutUserProfile | null
+}
+
+const CHECKOUT_HASH_OFFSET_BASIS = 2166136261
+const CHECKOUT_HASH_PRIME = 16777619
+
+/** Hashes identifiers for diagnostics without writing raw identity values to logs. */
+export function hashCheckoutIdentifier(value: string | null | undefined): string | null {
+  if (!value) return null
+
+  let hash = CHECKOUT_HASH_OFFSET_BASIS
+  for (let index = 0; index < value.length; index++) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, CHECKOUT_HASH_PRIME)
+  }
+
+  return `#${(hash >>> 0).toString(16)}`
+}
+
 // Revision follows engineering convention (A, B, C... then AA, AB, etc.)
 export type RevisionScheme = 'letter' | 'numeric'
 
@@ -435,11 +480,7 @@ export interface PDMFile {
   lock_message: string | null
   checked_out_by_machine_id: string | null // Machine ID that checked out the file
   checked_out_by_machine_name: string | null // Machine name for display
-  checked_out_user?: {
-    full_name: string | null
-    email: string
-    avatar_url: string | null
-  } | null
+  checked_out_user?: CheckoutUserProfile | null
 
   // Content tracking
   content_hash: string | null // SHA-256 hash of file content
@@ -465,6 +506,38 @@ export interface PDMFile {
   // Soft delete (trash bin)
   deleted_at: string | null
   deleted_by: string | null
+}
+
+export function isCheckoutProfileForOwner(
+  profile: CheckoutUserProfile | null | undefined,
+  ownerId: string | null,
+): profile is CheckoutUserProfile {
+  return Boolean(profile && ownerId && profile.id === ownerId)
+}
+
+/**
+ * Reconciles display enrichment against the authoritative checkout owner.
+ * Invalid enrichment is removed instead of being retained as a plausible identity.
+ */
+export function reconcileCheckoutProfile<T extends CheckoutIdentityCarrier>(
+  file: T,
+  profile: CheckoutUserProfile | null | undefined = file.checked_out_user,
+): T {
+  if (isCheckoutProfileForOwner(profile, file.checked_out_by)) {
+    return { ...file, checked_out_user: profile }
+  }
+
+  const { checked_out_user: _checkedOutUser, ...withoutProfile } = file
+  return withoutProfile as T
+}
+
+/** Merges a server or realtime patch while preserving only owner-matching enrichment. */
+export function mergePdmFileData(
+  current: PDMFile,
+  update: Partial<PDMFile>,
+): PDMFile {
+  const profile = 'checked_out_user' in update ? update.checked_out_user : current.checked_out_user
+  return reconcileCheckoutProfile({ ...current, ...update }, profile)
 }
 
 // Assembly/part relationships for where-used

@@ -22,12 +22,19 @@
 import { describe, expect, it } from 'vitest'
 
 import { promoteMetadataForCheckin } from './checkinMetadata'
-import { addressKey, applyWriteState, type MetadataWriteStateRecord } from './writeState'
+import {
+  addressKey,
+  applyWriteState,
+  type MetadataFieldGroup,
+  type MetadataWriteStateRecord,
+} from './writeState'
 import type { LocalFile } from '@/stores/types'
 
 const AT = '2026-08-06T12:00:00.000Z'
 
 const PART_NUMBER = { scope: 'file', field: 'part_number' } as const
+const REVISION = { scope: 'file', field: 'revision' } as const
+const REVISION_ONLY_UNWRITABLE = new Set<MetadataFieldGroup>(['revision'])
 
 function file(overrides: Partial<LocalFile> = {}): LocalFile {
   return {
@@ -137,6 +144,39 @@ describe('a value whose write ran and did not confirm', () => {
   })
 })
 
+describe('addresses with no BluePLM write path', () => {
+  it('clears an unwritable failed address without promoting it', () => {
+    const outcome = promoteMetadataForCheckin(
+      file({
+        extension: '.slddrw',
+        pendingMetadata: { revision: 'R2' },
+        metadataWriteState: applyWriteState(undefined, [REVISION], 'failed', { at: AT }),
+      }),
+      REVISION_ONLY_UNWRITABLE,
+    )
+
+    expect(outcome.writeState).toBeUndefined()
+    expect(outcome.promotedUnconfirmed).toHaveLength(0)
+  })
+
+  it('still promotes a writable address with its existing mark', () => {
+    const outcome = promoteMetadataForCheckin(
+      file({
+        extension: '.slddrw',
+        pendingMetadata: { part_number: 'BR-202020' },
+        metadataWriteState: marked('failed'),
+      }),
+      REVISION_ONLY_UNWRITABLE,
+    )
+
+    expect(outcome.promotedUnconfirmed.map(addressKey)).toEqual(['file:part_number'])
+    expect(outcome.writeState?.fields?.part_number).toMatchObject({
+      state: 'failed',
+      promoted: true,
+    })
+  })
+})
+
 describe('a value the file is known to hold', () => {
   it('is forgotten, since the file and the database now agree', () => {
     const outcome = promoteMetadataForCheckin(
@@ -216,9 +256,14 @@ describe('marks that outlive the edit that produced them', () => {
   })
 
   it('does not disturb an unrelated address while clearing a settled one', () => {
-    const record = applyWriteState(marked('verified'), [{ scope: 'file', field: 'revision' }], 'failed', {
-      at: AT,
-    })
+    const record = applyWriteState(
+      marked('verified'),
+      [{ scope: 'file', field: 'revision' }],
+      'failed',
+      {
+        at: AT,
+      },
+    )
 
     const outcome = promoteMetadataForCheckin(
       file({ pendingMetadata: { part_number: 'BR-202020' }, metadataWriteState: record }),

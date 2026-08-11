@@ -18,6 +18,10 @@
  * - No onRefresh() calls - all updates are incremental
  */
 
+import { log } from '@/lib/logger'
+import { STORE_MUTATION_THRESHOLD_MS } from '@/lib/performanceThresholds'
+import { beginWatcherSuppression } from '@/lib/fileWatcherSuppression'
+
 import type {
   Command,
   DeleteLocalParams,
@@ -32,11 +36,9 @@ import {
 } from '../types'
 import { checkinFile, softDeleteFile, deleteFolderByPath } from '../../supabase'
 import { processWithConcurrency, CONCURRENT_OPERATIONS } from '../../concurrency'
-import { log } from '@/lib/logger'
 import { FileOperationTracker } from '../../fileOperationTracker'
 import { removeFromSyncIndex } from '../../cache/localSyncIndex'
 import { clearVaultCache } from '../../cache/vaultFileCache'
-import { beginWatcherSuppression } from '@/lib/fileWatcherSuppression'
 
 // Helper for timing-based logging
 function logDelete(
@@ -45,6 +47,22 @@ function logDelete(
   context: Record<string, unknown> = {},
 ) {
   log[level]('[Delete]', message, { ...context, timestamp: Date.now() })
+}
+
+function measureDeleteTailCall(label: string, callback: () => void): void {
+  const start = performance.now()
+
+  try {
+    callback()
+  } finally {
+    const durationMs = performance.now() - start
+    if (durationMs >= STORE_MUTATION_THRESHOLD_MS) {
+      logDelete('warn', 'Slow delete tail step', {
+        step: label,
+        durationMs: Math.round(durationMs),
+      })
+    }
+  }
 }
 
 // ============================================
@@ -1130,14 +1148,18 @@ export const deleteServerCommand: Command<DeleteServerParams> = {
     // Remove successfully deleted files from store and clear processing atomically
     const allPathsToRemove = [...successfullyDeletedPaths, ...foldersToDeleteFromStore]
     if (allPathsToRemove.length > 0) {
-      ctx.removeFilesFromStore(allPathsToRemove)
+      measureDeleteTailCall('removeFilesFromStore', () => ctx.removeFilesFromStore(allPathsToRemove))
     }
 
     // Clear processing state synchronously so UI updates immediately
-    ctx.removeProcessingFoldersSync(allPathsBeingProcessed)
-    ctx.setLastOperationCompletedAt(Date.now())
-    releaseWatcher()
-    ctx.removeToast(toastId)
+    measureDeleteTailCall('removeProcessingFoldersSync', () =>
+      ctx.removeProcessingFoldersSync(allPathsBeingProcessed),
+    )
+    measureDeleteTailCall('setLastOperationCompletedAt', () =>
+      ctx.setLastOperationCompletedAt(Date.now()),
+    )
+    measureDeleteTailCall('releaseWatcher', releaseWatcher)
+    measureDeleteTailCall('removeToast', () => ctx.removeToast(toastId))
 
     logDelete('info', 'Store updated after delete-server', {
       filesRemoved: successfullyDeletedPaths.length,
@@ -1171,21 +1193,29 @@ export const deleteServerCommand: Command<DeleteServerParams> = {
       if (failed > 0 && errors.length > 0) {
         // Show error info when some files failed
         if (uniqueFiles.length === 1) {
-          ctx.addToast('warning', `Failed to delete: ${errors[0]}`)
+          measureDeleteTailCall('addToast', () =>
+            ctx.addToast('warning', `Failed to delete: ${errors[0]}`),
+          )
         } else if (errors.length === 1) {
-          ctx.addToast('warning', `${message}. Error: ${errors[0]}`)
+          measureDeleteTailCall('addToast', () =>
+            ctx.addToast('warning', `${message}. Error: ${errors[0]}`),
+          )
         } else {
-          ctx.addToast('warning', `${message}. ${errors.length} error(s) - check logs for details`)
+          measureDeleteTailCall('addToast', () =>
+            ctx.addToast('warning', `${message}. ${errors.length} error(s) - check logs for details`),
+          )
         }
       } else {
-        ctx.addToast('success', message)
+        measureDeleteTailCall('addToast', () => ctx.addToast('success', message))
       }
     } else if (failed > 0 && errors.length > 0) {
       // All files failed
       if (errors.length === 1) {
-        ctx.addToast('error', `Delete failed: ${errors[0]}`)
+        measureDeleteTailCall('addToast', () => ctx.addToast('error', `Delete failed: ${errors[0]}`))
       } else {
-        ctx.addToast('error', `Delete failed for ${failed} file(s) - check logs for details`)
+        measureDeleteTailCall('addToast', () =>
+          ctx.addToast('error', `Delete failed for ${failed} file(s) - check logs for details`),
+        )
       }
     }
 

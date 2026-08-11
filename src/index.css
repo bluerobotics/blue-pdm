@@ -1121,6 +1121,44 @@ input::placeholder {
   background: rgba(6, 182, 212, 0.2);
 }
 
+/* Configuration rows holding edits that are not in the document yet. The left border is the
+   signal that survives selection, whose background rule is !important. */
+.file-table tr.config-row.config-dirty {
+  background: rgba(96, 165, 250, 0.16);
+  border-left: 3px solid var(--plm-accent);
+}
+
+.file-table tr.config-row.config-dirty:hover:not(.selected) {
+  background: rgba(96, 165, 250, 0.26);
+}
+
+.file-table tr.config-row.config-dirty.selected {
+  background: rgba(96, 165, 250, 0.28) !important;
+  box-shadow: inset 0 0 0 1px rgba(147, 197, 253, 0.5);
+}
+
+.file-table tr.config-row.config-dirty.selected:hover {
+  background: rgba(96, 165, 250, 0.36) !important;
+}
+
+.file-table tr.config-row.config-write-failed {
+  background: rgba(248, 113, 113, 0.16);
+  border-left: 3px solid var(--plm-error);
+}
+
+.file-table tr.config-row.config-write-failed:hover:not(.selected) {
+  background: rgba(248, 113, 113, 0.26);
+}
+
+.file-table tr.config-row.config-write-failed.selected {
+  background: rgba(248, 113, 113, 0.28) !important;
+  box-shadow: inset 0 0 0 1px rgba(252, 165, 165, 0.5);
+}
+
+.file-table tr.config-row.config-write-failed.selected:hover {
+  background: rgba(248, 113, 113, 0.36) !important;
+}
+
 .file-table tr.config-row td {
   padding: 2px 12px;
   border-bottom: 1px solid rgba(var(--plm-border), 0.3);

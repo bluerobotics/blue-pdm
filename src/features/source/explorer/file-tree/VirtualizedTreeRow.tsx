@@ -65,6 +65,8 @@ interface VirtualizedTreeRowProps {
   operationType: OperationType | null
   /** Folder diff counts (for folders only) */
   diffCounts: FolderDiffCounts | null
+  /** Stable checkout identity signature for this row */
+  checkoutSignature: string
   /**
    * Pre-computed folder metrics from useVaultTree's O(N) single-pass computation.
    * Consolidates localOnlyCount, folderStats, and other metrics into a single object.
@@ -153,6 +155,7 @@ function arePropsEqual(
   if (prevProps.item.file.name !== nextProps.item.file.name) return false
   if (prevProps.item.file.pdmData?.checked_out_by !== nextProps.item.file.pdmData?.checked_out_by)
     return false
+  if (prevProps.checkoutSignature !== nextProps.checkoutSignature) return false
   if (prevProps.item.file.pdmData?.version !== nextProps.item.file.pdmData?.version) return false
   if (prevProps.item.file.localHash !== nextProps.item.file.localHash) return false
 
@@ -201,15 +204,8 @@ function arePropsEqual(
       if (prevMetrics.totalCheckedOutFilesCount !== nextMetrics.totalCheckedOutFilesCount)
         return false
       if (prevMetrics.myCheckedOutFilesCount !== nextMetrics.myCheckedOutFilesCount) return false
-      // Compare checkout users (length and content for avatar updates)
-      if (prevMetrics.checkoutUsers.length !== nextMetrics.checkoutUsers.length) return false
-      for (let i = 0; i < prevMetrics.checkoutUsers.length; i++) {
-        const prev = prevMetrics.checkoutUsers[i]
-        const next = nextMetrics.checkoutUsers[i]
-        if (prev.id !== next.id) return false
-        if (prev.avatar_url !== next.avatar_url) return false
-        if (prev.name !== next.name) return false
-      }
+      // Compare all owner/profile fields through the shared stable signature.
+      if (prevMetrics.checkoutSignature !== nextMetrics.checkoutSignature) return false
     }
   }
 

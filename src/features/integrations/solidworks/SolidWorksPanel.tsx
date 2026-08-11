@@ -7,9 +7,11 @@ import { syncMetadata } from '@/lib/commands'
 import { beginWatcherSuppression } from '@/lib/fileWatcherSuppression'
 import { refreshLocalFileFacts } from '@/lib/refreshLocalFileFacts'
 import { resolvedPropertyView } from '@/lib/metadata/divergence'
-import { lockedDrawingFields, withoutLockedDrawingFields } from '@/lib/metadata/drawingLockouts'
+import { lockedDrawingFields } from '@/lib/metadata/drawingLockouts'
 import { resolveFileMetadata } from '@/lib/metadata/overlay'
+import { currentUnwritableFieldGroups } from '@/lib/metadata/writeOwnership'
 import { buildMetadataWritePlan } from '@/lib/metadata/writePlan'
+import { pendingWithoutGroups } from '@/lib/metadata/writeState'
 import type { PendingMetadata } from '@/stores/types'
 import {
   FileBox,
@@ -1153,11 +1155,13 @@ export function SWPropertiesTab({ file }: { file: LocalFile }) {
         pending.description = resolved.description.value ?? ''
       }
 
-      // A drawing's inherited fields are dropped here rather than at the button, because the
-      // button still appears when only some of them are locked. What survives is written; what
-      // does not reaches the drawing through Sync from Parent, carrying the model's own value.
-      const writable = withoutLockedDrawingFields(pending, lockedDrawing)
-      if (Object.keys(writable).length === 0) {
+      // Keep fields BluePLM does not own out of the plan, including a drawing revision even when
+      // its editability lock is disabled. This prevents the button from mutating those fields.
+      const writable = pendingWithoutGroups(
+        pending,
+        currentUnwritableFieldGroups(file.extension),
+      )
+      if (!writable) {
         addToast('info', t('metadataWrite.drawingNothingToWrite'))
         return
       }

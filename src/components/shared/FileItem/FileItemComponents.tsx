@@ -22,7 +22,9 @@ import {
   FilePen,
   Loader2,
 } from 'lucide-react'
-import { LocalFile } from '@/stores/pdmStore'
+import { getCheckoutDisplayUser } from '@/lib/checkout/checkoutDisplay'
+import { t } from '@/lib/i18n'
+import type { LocalFile } from '@/stores/pdmStore'
 import { getFileIconType, getInitials, getAvatarColor } from '@/lib/utils'
 import { buildThumbnailUrl } from '@/lib/thumbnailUrl'
 import { useRetryableImage } from '@/hooks/useRetryableImage'
@@ -334,6 +336,8 @@ export interface CheckoutUser {
   email?: string
   avatar_url?: string
   isMe: boolean
+  displayState: import('@/types/pdm').CheckoutDisplayState
+  checkoutSignature: string
   isDifferentMachine?: boolean
   machineName?: string
   /** For folders: list of file IDs this user has checked out (for notifications) */
@@ -360,27 +364,26 @@ export function getFolderCheckoutUsers(
   const usersMap = new Map<string, CheckoutUser>()
 
   for (const f of folderFiles) {
-    const checkoutUserId = f.pdmData!.checked_out_by!
-    if (!usersMap.has(checkoutUserId)) {
-      const isMe = checkoutUserId === userId
-      if (isMe) {
-        usersMap.set(checkoutUserId, {
-          id: checkoutUserId,
-          name: userFullName || userEmail || 'You',
-          email: userEmail,
-          avatar_url: userAvatarUrl,
-          isMe: true,
-        })
-      } else {
-        const checkedOutUser = (f.pdmData as any).checked_out_user // TODO: type this
-        usersMap.set(checkoutUserId, {
-          id: checkoutUserId,
-          name: checkedOutUser?.full_name || checkedOutUser?.email?.split('@')[0] || 'Someone',
-          email: checkedOutUser?.email,
-          avatar_url: checkedOutUser?.avatar_url,
-          isMe: false,
-        })
-      }
+    const displayUser = getCheckoutDisplayUser(
+      f,
+      userId
+        ? {
+            id: userId,
+            full_name: userFullName,
+            email: userEmail,
+            avatar_url: userAvatarUrl,
+          }
+        : null,
+    )
+    if (
+      !displayUser ||
+      displayUser.displayState === 'hydrating' ||
+      displayUser.displayState === 'unavailable'
+    ) {
+      continue
+    }
+    if (!usersMap.has(displayUser.id)) {
+      usersMap.set(displayUser.id, displayUser)
     }
   }
 
@@ -412,22 +415,25 @@ export function getFileCheckoutUser(
     isMe && checkoutMachineId && currentMachineId && checkoutMachineId !== currentMachineId
 
   if (isMe) {
-    return {
+    const displayUser = getCheckoutDisplayUser(file, {
       id: file.pdmData.checked_out_by,
-      name: userFullName || userEmail || 'You',
+      full_name: userFullName,
+      email: userEmail,
       avatar_url: userAvatarUrl,
-      isMe: true,
-      isDifferentMachine: isDifferentMachine || false,
+    })
+    if (!displayUser) return null
+    return {
+      ...displayUser,
+      isDifferentMachine: Boolean(isDifferentMachine),
       machineName: checkoutMachineName ?? undefined,
     }
-  } else {
-    const checkedOutUser = (file.pdmData as any).checked_out_user // TODO: type this
-    return {
-      id: file.pdmData.checked_out_by,
-      name: checkedOutUser?.full_name || checkedOutUser?.email?.split('@')[0] || 'Someone',
-      avatar_url: checkedOutUser?.avatar_url,
-      isMe: false,
-    }
+  }
+
+  const displayUser = getCheckoutDisplayUser(file, null)
+  if (!displayUser) return null
+  return {
+    ...displayUser,
+    isDifferentMachine: false,
   }
 }
 
@@ -467,7 +473,10 @@ export function CheckoutAvatars({
           style={{ width: size, height: size }}
           title={
             u.isDifferentMachine && u.machineName
-              ? `Checked out on ${u.machineName} (different computer)`
+              ? t('checkoutDisplay.checkedOutByOnComputer', {
+                  name: u.name,
+                  computer: u.machineName,
+                })
               : u.name
           }
         >
@@ -495,7 +504,10 @@ export function CheckoutAvatars({
                 } ${u.avatar_url ? 'hidden' : ''}`}
                 style={{ fontSize }}
               >
-                {getInitials(u.name)}
+                {getInitials(u.name, {
+                  placeholder:
+                    u.displayState === 'hydrating' || u.displayState === 'unavailable',
+                })}
               </div>
             )
           })()}
@@ -579,21 +591,22 @@ export function StatusIcon({ file, userId, size = 12 }: StatusIconProps) {
 
   // Checked out by someone else - show their avatar
   if (file.pdmData?.checked_out_by) {
-    const checkedOutUser = (file.pdmData as any).checked_out_user // TODO: type this
-    const avatarUrl = checkedOutUser?.avatar_url
-    const displayName =
-      checkedOutUser?.full_name || checkedOutUser?.email?.split('@')[0] || 'Someone'
+    const displayUser = getCheckoutDisplayUser(file, userId ? { id: userId } : null)
+    if (!displayUser || displayUser.isMe) return null
+
+    const avatarUrl = displayUser.avatar_url
+    const displayName = displayUser.name
 
     const avatarSize = Math.max(16, size * 1.5)
     const fontSize = Math.max(8, avatarSize * 0.45)
 
-    const avatarColors = getAvatarColor(checkedOutUser?.email || displayName)
+    const avatarColors = getAvatarColor(displayUser.email || displayName)
 
     return (
       <div
         className="relative flex-shrink-0"
         style={{ width: avatarSize, height: avatarSize }}
-        title={`Checked out by ${displayName}`}
+        title={t('checkoutDisplay.checkedOutBy', { name: displayName })}
       >
         {avatarUrl ? (
           <img
@@ -612,7 +625,11 @@ export function StatusIcon({ file, userId, size = 12 }: StatusIconProps) {
           className={`w-full h-full rounded-full ${avatarColors.bg} ${avatarColors.text} flex items-center justify-center font-medium absolute inset-0 ${avatarUrl ? 'hidden' : ''}`}
           style={{ fontSize }}
         >
-          {getInitials(displayName)}
+          {getInitials(displayName, {
+            placeholder:
+              displayUser.displayState === 'hydrating' ||
+              displayUser.displayState === 'unavailable',
+          })}
         </div>
       </div>
     )

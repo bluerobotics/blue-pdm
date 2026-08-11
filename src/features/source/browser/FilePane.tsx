@@ -61,11 +61,15 @@ import {
 
 // Import types directly to avoid circular dependency with barrel file
 import { COLUMN_TRANSLATION_KEYS } from './types'
+import type { SelectableRow } from './components/FileList/rowTypes'
 
 // Import hooks for folder metrics and sorting
 import { useFolderMetrics } from './hooks/useFolderMetrics'
 import { useMetadataWritesInFlight } from './hooks/useMetadataWritesInFlight'
+import { useConfigCommitHandlers } from './hooks/useConfigCommitHandlers'
 import { useSorting } from './hooks/useSorting'
+import { findLocalFileByPath } from './utils/localFileLookup'
+import { ConfigDrawingCheckoutDialog } from './components/Dialogs/ConfigDrawingCheckoutDialog'
 
 // Import state management hooks
 import {
@@ -282,6 +286,8 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
     setCustomConfirm,
     deleteLocalCheckoutConfirm,
     setDeleteLocalCheckoutConfirm,
+    configDrawingCheckoutConfirm,
+    setConfigDrawingCheckoutConfirm,
     conflictDialog,
     setConflictDialog,
     folderConflictDialog,
@@ -604,11 +610,11 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
     hasPendingMetadataChanges,
     getSelectedConfigsForFile,
     toggleFileConfigExpansion,
-    toggleConfigBomExpansion,
     canHaveDrawingRefs,
     toggleDrawingRefExpansion,
     retryDrawingRefs,
-    toggleConfigDrawingExpansion,
+    toggleConfigSectionsExpansion,
+    toggleConfigGroupExpansion,
   } = useConfigHandlers({
     files,
     lastClickedConfigRef,
@@ -622,6 +628,10 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
     addProgressToast,
     updateProgressToast,
     removeToast,
+  })
+
+  const { commitConfigurationEdits } = useConfigCommitHandlers({
+    setConfigDrawingCheckoutConfirm,
   })
 
   // Clipboard operations using shared hook
@@ -965,13 +975,32 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
     toggleSort,
   })
 
+  // The list view reports its visual row order, including resolved config drawings.
+  // Icon view has no nested rows, so its top-level order is the complete selectable order.
+  const [visibleSelectableRows, setVisibleSelectableRows] = useState<SelectableRow[]>([])
+  const topLevelSelectableRows = useMemo(
+    () => sortedFiles.map((file) => ({ path: file.path, file })),
+    [sortedFiles],
+  )
+  const selectableRows = useMemo(() => {
+    if (viewMode !== 'list') return topLevelSelectableRows
+
+    const visiblePaths = new Set(visibleSelectableRows.map((row) => row.path))
+    const hasCurrentTopLevelRows =
+      sortedFiles.length > 0
+        ? sortedFiles.every((file) => visiblePaths.has(file.path))
+        : visibleSelectableRows.length === 0
+    return hasCurrentTopLevelRows ? visibleSelectableRows : topLevelSelectableRows
+  }, [sortedFiles, topLevelSelectableRows, viewMode, visibleSelectableRows])
+
   // File selection (row click, shift/ctrl-click range selection)
   const {
     lastClickedIndex,
     setLastClickedIndex,
     handleRowClick: baseHandleRowClick,
   } = useFileSelection({
-    sortedFiles,
+    selectableRows,
+    topLevelFiles: sortedFiles,
     selectedFiles,
     setSelectedFiles,
     toggleFileSelection,
@@ -1004,14 +1033,15 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
   // Combined row click handler: selection + slow double-click detection
   const handleRowClick = useCallback(
     (e: React.MouseEvent, file: LocalFile, index: number) => {
-      baseHandleRowClick(e, file, index)
+      const selectableIndex = selectableRows.findIndex((row) => row.file === file)
+      baseHandleRowClick(e, file, selectableIndex >= 0 ? selectableIndex : index)
 
       // Only trigger slow double-click for normal clicks (not shift/ctrl selections)
       if (!e.shiftKey && !e.ctrlKey && !e.metaKey) {
         handleSlowDoubleClick(file)
       }
     },
-    [baseHandleRowClick, handleSlowDoubleClick],
+    [baseHandleRowClick, handleSlowDoubleClick, selectableRows],
   )
 
   // Selection box (marquee/drag-box selection). The grid lays cards out in two
@@ -1160,7 +1190,7 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
     // Only use multi-selection if MORE than 1 file is selected AND the right-clicked file is in that selection
     // This ensures that right-clicking on a single file always operates on just that file
     if (selectedFiles.length > 1 && selectedFiles.includes(contextMenu.file.path)) {
-      return sortedFiles.filter((f) => selectedFiles.includes(f.path))
+      return files.filter((file) => selectedFiles.includes(file.path))
     }
 
     // Otherwise just the right-clicked file
@@ -1393,7 +1423,8 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
   // Keyboard navigation and shortcuts (extracted to hook)
   useKeyboardNav({
     files,
-    sortedFiles,
+    selectableRows,
+    topLevelFiles: sortedFiles,
     selectedFiles,
     setSelectedFiles,
     lastClickedIndex,
@@ -1438,20 +1469,11 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
     }
   }
 
-  // TODO(decompose): Extract to browser/hooks/useRefRowHandlers.ts — handleConfigBomToggle,
-  // handleConfigBomRowClick, handleDrawingRefRowClick, handleConfigDrawingToggle,
+  // TODO(decompose): Extract to browser/hooks/useRefRowHandlers.ts — handleConfigBomRowClick,
+  // handleDrawingRefRowClick, onConfigSectionsToggle, onConfigGroupToggle,
   // handleDrawingRefFileToggle, handleConfigDrawingRowClick, handleRefRowContextMenu,
   // handleRefRowNavigateToFile (~120 lines). All operate on ref/BOM/drawing sub-rows
   // and share vaultPath, navigateToFolder, setSelectedFiles, setPendingScrollToFile.
-
-  // Handler for toggling BOM expansion under a configuration row
-  const handleConfigBomToggle = useCallback(
-    (e: React.MouseEvent, file: LocalFile, configName: string) => {
-      e.stopPropagation()
-      toggleConfigBomExpansion(file, configName)
-    },
-    [toggleConfigBomExpansion],
-  )
 
   // Handler for clicking on a BOM item row - navigate to the file, select it, and scroll into view
   const handleConfigBomRowClick = useCallback(
@@ -1491,13 +1513,22 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
     [vaultPath, navigateToFolder, setSelectedFiles, setPendingScrollToFile],
   )
 
-  // Handler for toggling drawing expansion under a configuration row
-  const handleConfigDrawingToggle = useCallback(
+  // Handler for toggling the section owned by a configuration row.
+  const onConfigSectionsToggle = useCallback(
     (e: React.MouseEvent, file: LocalFile, configName: string) => {
       e.stopPropagation()
-      toggleConfigDrawingExpansion(file, configName)
+      void toggleConfigSectionsExpansion(file, configName)
     },
-    [toggleConfigDrawingExpansion],
+    [toggleConfigSectionsExpansion],
+  )
+
+  // Handler for toggling one independent group nested under a configuration row.
+  const onConfigGroupToggle = useCallback(
+    (e: React.MouseEvent, file: LocalFile, configName: string, group: 'drawings' | 'ebom') => {
+      e.stopPropagation()
+      void toggleConfigGroupExpansion(file, configName, group)
+    },
+    [toggleConfigGroupExpansion],
   )
 
   // Handler for the chevron on a drawing ref row, which the unresolved placeholder reuses as its
@@ -1516,12 +1547,28 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
     [toggleDrawingRefFileExpansion, retryDrawingRefs],
   )
 
-  // Handler for clicking on a config drawing row - navigate to the drawing file, select it, and scroll into view
+  // Resolved config drawings participate in normal selection; unresolved rows retain legacy navigation.
   const handleConfigDrawingRowClick = useCallback(
-    (e: React.MouseEvent, _file: LocalFile, item: import('@/stores/types').DrawingRefItem) => {
+    (
+      e: React.MouseEvent,
+      _file: LocalFile,
+      item: import('@/stores/types').DrawingRefItem,
+      selectableIndex?: number,
+    ) => {
       e.stopPropagation()
+      const drawingFile = item.file_path ? findLocalFileByPath(item.file_path, files) : undefined
+
+      if (drawingFile && e.detail < 2) {
+        const resolvedIndex =
+          selectableIndex ?? selectableRows.findIndex((row) => row.file === drawingFile)
+        if (resolvedIndex >= 0) {
+          baseHandleRowClick(e, drawingFile, resolvedIndex)
+          return
+        }
+      }
+
       if (item.file_path && vaultPath) {
-        // Split on both / and \ to handle Windows paths and vault-relative paths
+        // Double-click opens the same folder-and-scroll target as the legacy single click.
         const folderPath = item.file_path.split(/[\\/]/).slice(0, -1).join('/')
         if (folderPath) {
           navigateToFolder(folderPath)
@@ -1532,7 +1579,22 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
         setPendingScrollToFile(fullPath)
       }
     },
-    [vaultPath, navigateToFolder, setSelectedFiles, setPendingScrollToFile],
+    [
+      files,
+      selectableRows,
+      baseHandleRowClick,
+      vaultPath,
+      navigateToFolder,
+      setSelectedFiles,
+      setPendingScrollToFile,
+    ],
+  )
+
+  const handleConfigDrawingFileContextMenu = useCallback(
+    (e: React.MouseEvent, file: LocalFile) => {
+      handleContextMenu(e, file)
+    },
+    [handleContextMenu],
   )
 
   // Handler for right-clicking on a drawing reference row or config drawing row
@@ -1602,6 +1664,8 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
       hasPendingMetadataChanges,
       savingConfigsToSW,
       saveConfigsToSWFile,
+      onConfigSectionsToggle,
+      onConfigGroupToggle,
       // Drawing reference handlers
       canHaveDrawingRefs,
       toggleDrawingRefExpansion,
@@ -1631,6 +1695,8 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
       hasPendingMetadataChanges,
       savingConfigsToSW,
       saveConfigsToSWFile,
+      onConfigSectionsToggle,
+      onConfigGroupToggle,
       canHaveDrawingRefs,
       toggleDrawingRefExpansion,
       handleRename,
@@ -1825,14 +1891,17 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
                   onConfigContextMenu={handleConfigContextMenu}
                   onConfigDescriptionChange={handleConfigDescriptionChange}
                   onConfigTabChange={handleConfigTabChange}
-                  onConfigBomToggle={handleConfigBomToggle}
+                  onCommitConfigurationEdits={commitConfigurationEdits}
+                  onConfigSectionsToggle={onConfigSectionsToggle}
+                  onConfigGroupToggle={onConfigGroupToggle}
                   onConfigBomRowClick={handleConfigBomRowClick}
                   onDrawingRefRowClick={handleDrawingRefRowClick}
                   onDrawingRefRowContextMenu={handleRefRowContextMenu}
                   onDrawingRefFileToggle={handleDrawingRefFileToggle}
-                  onConfigDrawingToggle={handleConfigDrawingToggle}
                   onConfigDrawingRowClick={handleConfigDrawingRowClick}
                   onConfigDrawingRowContextMenu={handleRefRowContextMenu}
+                  onConfigDrawingFileContextMenu={handleConfigDrawingFileContextMenu}
+                  onSelectableRowsChange={setVisibleSelectableRows}
                   renderCellContent={renderCellContent}
                 />
               </table>
@@ -2024,6 +2093,15 @@ export function FilePane({ onRefresh, onRefreshFolder }: FilePaneProps) {
                 executeCommand('delete-local', { files: contextFilesToUse }, { onRefresh })
               }}
               onCancel={() => setDeleteLocalCheckoutConfirm(null)}
+            />
+          )}
+
+          {configDrawingCheckoutConfirm && (
+            <ConfigDrawingCheckoutDialog
+              plan={configDrawingCheckoutConfirm.plan}
+              onCheckOutAndUpdate={configDrawingCheckoutConfirm.onCheckOutAndUpdate}
+              onForceModelOnly={configDrawingCheckoutConfirm.onForceModelOnly}
+              onCancel={() => setConfigDrawingCheckoutConfirm(null)}
             />
           )}
 

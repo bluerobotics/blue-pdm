@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import type { LocalFile } from '@/stores/pdmStore'
 
+import type { ConfigDrawingUpdatePlan } from './useConfigDrawingUpdate'
+
 export interface CustomConfirmState {
   title: string
   message: string
@@ -14,6 +16,12 @@ export interface DeleteLocalCheckoutConfirmState {
   checkedOutFiles: LocalFile[]
   allFilesToProcess: LocalFile[]
   contextFiles: LocalFile[]
+}
+
+export interface ConfigDrawingCheckoutConfirmState {
+  plan: ConfigDrawingUpdatePlan
+  onCheckOutAndUpdate: () => void
+  onForceModelOnly: () => void
 }
 
 export interface ConflictDialogState {
@@ -61,6 +69,10 @@ export interface UseDialogStateReturn {
   deleteLocalCheckoutConfirm: DeleteLocalCheckoutConfirmState | null
   setDeleteLocalCheckoutConfirm: (state: DeleteLocalCheckoutConfirmState | null) => void
 
+  // Configuration drawing checkout confirmation
+  configDrawingCheckoutConfirm: ConfigDrawingCheckoutConfirmState | null
+  setConfigDrawingCheckoutConfirm: (state: ConfigDrawingCheckoutConfirmState | null) => void
+
   // Conflict resolution dialog (for file conflicts)
   conflictDialog: ConflictDialogState | null
   setConflictDialog: (state: ConflictDialogState | null) => void
@@ -79,6 +91,8 @@ export function useDialogState(): UseDialogStateReturn {
   const [customConfirm, setCustomConfirm] = useState<CustomConfirmState | null>(null)
   const [deleteLocalCheckoutConfirm, setDeleteLocalCheckoutConfirm] =
     useState<DeleteLocalCheckoutConfirmState | null>(null)
+  const [configDrawingCheckoutConfirm, setConfigDrawingCheckoutConfirm] =
+    useState<ConfigDrawingCheckoutConfirmState | null>(null)
   const [conflictDialog, setConflictDialog] = useState<ConflictDialogState | null>(null)
   const [folderConflictDialog, setFolderConflictDialog] =
     useState<FolderConflictDialogState | null>(null)
@@ -88,6 +102,7 @@ export function useDialogState(): UseDialogStateReturn {
     setDeleteEverywhere(false)
     setCustomConfirm(null)
     setDeleteLocalCheckoutConfirm(null)
+    setConfigDrawingCheckoutConfirm(null)
     setConflictDialog(null)
     setFolderConflictDialog(null)
   }
@@ -101,6 +116,8 @@ export function useDialogState(): UseDialogStateReturn {
     setCustomConfirm,
     deleteLocalCheckoutConfirm,
     setDeleteLocalCheckoutConfirm,
+    configDrawingCheckoutConfirm,
+    setConfigDrawingCheckoutConfirm,
     conflictDialog,
     setConflictDialog,
     folderConflictDialog,

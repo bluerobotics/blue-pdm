@@ -4,6 +4,7 @@
  * Commands: vault, vaults, refresh, checkouts, switch-vault, disconnect-vault
  */
 
+import { getCheckoutProfileForOwner } from '@/lib/checkout/checkoutDisplay'
 import { usePDMStore, LocalFile } from '../../../stores/pdmStore'
 import { registerTerminalCommand } from '../registry'
 import type { ParsedCommand, TerminalOutput } from '../parser'
@@ -75,11 +76,10 @@ export function handleCheckouts(
   const lines = [`Checked Out Files (${checkedOutFiles.length}):`]
   for (const file of checkedOutFiles.slice(0, 20)) {
     const byMe = file.pdmData?.checked_out_by === user?.id
+    const checkoutProfile = getCheckoutProfileForOwner(file)
     const who = byMe
       ? 'you'
-      : file.pdmData?.checked_out_user?.full_name ||
-        file.pdmData?.checked_out_user?.email ||
-        'unknown'
+      : checkoutProfile?.full_name || checkoutProfile?.email || 'unknown'
     lines.push(`  ${file.relativePath} (${who})`)
   }
   if (checkedOutFiles.length > 20) {

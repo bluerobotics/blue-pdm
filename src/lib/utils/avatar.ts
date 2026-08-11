@@ -22,6 +22,11 @@ export const AVATAR_COLORS = [
 
 export type AvatarColor = (typeof AVATAR_COLORS)[number]
 
+export interface InitialsOptions {
+  /** Use a neutral mark when the supplied label is render-only placeholder text. */
+  placeholder?: boolean
+}
+
 /**
  * Get initials from a name (1-2 characters)
  *
@@ -30,7 +35,11 @@ export type AvatarColor = (typeof AVATAR_COLORS)[number]
  * getInitials("john.doe@email.com") // "JD"
  * getInitials("John") // "JO"
  */
-export function getInitials(name: string | null | undefined): string {
+export function getInitials(
+  name: string | null | undefined,
+  options?: InitialsOptions,
+): string {
+  if (options?.placeholder) return '?'
   if (!name) return '?'
 
   // If it's an email, extract the part before @

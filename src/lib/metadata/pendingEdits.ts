@@ -97,25 +97,6 @@ export function applyPendingEdit(
   }
 }
 
-/**
- * An edit token for retrying a write that never landed, naming everything still pending.
- *
- * A retry is not a new edit - nothing about the value changes - but the write path needs a token to
- * report against, and it has to cover every field, since the point of a retry is that the user does
- * not have to remember which of them failed.
- */
-export function retryEdit(
-  path: string,
-  pending: PendingMetadata | undefined,
-): PendingMetadataEdit {
-  const set = pending ?? {}
-  return {
-    path,
-    fields: (Object.keys(set) as PendingMetadataField[]).filter((field) => set[field] !== undefined),
-    pending: set,
-  }
-}
-
 /** Whether anything is still owed to the server. An empty configuration map owes nothing. */
 export function hasPendingMetadata(pending: PendingMetadata | undefined): boolean {
   if (!pending) return false

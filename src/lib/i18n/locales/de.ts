@@ -2,6 +2,16 @@ import type { TranslationDict } from '../types'
 
 // German translations
 export const de: TranslationDict = {
+  checkoutDisplay: {
+    you: 'Du',
+    loadingOwner: 'Checkout-Besitzer wird geladen',
+    ownerUnavailable: 'Checkout-Besitzer nicht verfügbar',
+    checkedOutBy: 'Ausgecheckt von {{name}}',
+    checkedOutByOnComputer: 'Ausgecheckt von {{name}} auf {{computer}}',
+    anotherComputer: 'einem anderen Computer',
+    differentComputer: 'anderer Computer',
+    otherComputer: 'anderer PC',
+  },
   common: {
     save: 'Speichern',
     cancel: 'Abbrechen',
@@ -151,6 +161,41 @@ export const de: TranslationDict = {
     enterOrgCode: 'Bitte geben Sie den Organisationscode ein',
     invalidCode: 'Ungültiger Organisationscode. Bitte überprüfen und erneut versuchen.',
     failedWithCode: 'Verbindung zu Supabase mit dem angegebenen Code fehlgeschlagen',
+  },
+
+  source: {
+    configTree: {
+      drawings: 'Zeichnungen',
+      ebom: 'eBOM',
+      noDrawings: 'Keine Zeichnungen verweisen auf diese Konfiguration',
+      noComponents: 'Keine Komponenten in dieser Konfiguration',
+      expand: 'Erweitern',
+      collapse: 'Einklappen',
+    },
+    configCommit: {
+      write: 'In Datei schreiben',
+      writeAndSync: 'Schreiben und Zeichnungen aktualisieren',
+      writeAndSyncCount: 'Schreiben und Zeichnungen für {{count}} Konfigurationen aktualisieren',
+      pending: 'Noch nicht in das Dokument geschrieben',
+      swOffline:
+        'Starten Sie den SolidWorks-Dienst, um Konfigurationsmetadaten zu schreiben',
+      summary:
+        'Konfigurationen geschrieben: {{configurations}}; Zeichnungen aktualisiert: {{updated}}, übersprungen: {{skipped}}, fehlgeschlagen: {{failed}}',
+    },
+    configDrawings: {
+      dialogTitle: 'Zeichnungen referenzieren diese Konfiguration',
+      dialogBody:
+        'Einige referenzierte Zeichnungen sind nicht von Ihnen ausgecheckt. Sie müssen ausgecheckt sein, damit sie die Aktualisierung erhalten.',
+      checkOutAndUpdate: 'Auschecken und aktualisieren',
+      forceModelOnly: 'Nur Modell schreiben',
+      heldBy: 'Gehalten von {{name}}',
+      blocked: 'Von anderen gehalten',
+      notInVault: 'Nicht in diesem Tresor',
+      ready: 'Bereit zur Aktualisierung',
+      available: 'Zum Auschecken verfügbar',
+      modelOnlyWarning:
+        'Nur das Modell zu schreiben lässt Zeichnungen, die nicht von Ihnen ausgecheckt sind, unverändert.',
+    },
   },
 
   settings: {

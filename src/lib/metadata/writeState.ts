@@ -459,6 +459,59 @@ export function summarizeWriteState(
  */
 export type MetadataFieldGroup = 'part_number' | 'description' | 'revision' | 'tab_number'
 
+/** The file-list column answered by one recorded write address. */
+export function groupOfAddress(address: MetadataWriteAddress): MetadataFieldGroup {
+  if (address.scope === 'file') return address.field
+  return address.field === 'config_tab' ? 'tab_number' : 'description'
+}
+
+/**
+ * Remove write obligations for the specified columns while preserving the pending values.
+ *
+ * Configuration maps belong to the column that displays them: `config_tabs` belongs to
+ * `tab_number`, and `config_descriptions` belongs to `description`. The caller supplies both
+ * `part_number` and `tab_number` when the item-number ownership rule excludes the composed number.
+ */
+export function pendingWithoutGroups(
+  pending: PendingMetadata | undefined,
+  groups: ReadonlySet<MetadataFieldGroup>,
+): PendingMetadata | undefined {
+  if (!pending || groups.size === 0) return pending
+
+  const remaining: PendingMetadata = { ...pending }
+  if (groups.has('part_number')) delete remaining.part_number
+  if (groups.has('revision')) delete remaining.revision
+  if (groups.has('tab_number')) {
+    delete remaining.tab_number
+    delete remaining.config_tabs
+  }
+  if (groups.has('description')) {
+    delete remaining.description
+    delete remaining.config_descriptions
+  }
+
+  return listWriteAddresses(remaining).length > 0 ? remaining : undefined
+}
+
+/**
+ * Remove recorded write state for the specified columns.
+ *
+ * Address-to-group mapping stays in one place: the record is reduced to its recorded addresses,
+ * those addresses are grouped, and the existing `clearWriteState` operation performs the actual
+ * shape-aware removal.
+ */
+export function recordWithoutGroups(
+  record: MetadataWriteStateRecord | undefined,
+  groups: ReadonlySet<MetadataFieldGroup>,
+): MetadataWriteStateRecord | undefined {
+  if (!record || groups.size === 0) return record
+
+  const addresses = listRecordedAddresses(record).filter((address) =>
+    groups.has(groupOfAddress(address)),
+  )
+  return clearWriteState(record, addresses)
+}
+
 /** The recorded states one column is answerable for. */
 export function scopeRecordToGroup(
   record: MetadataWriteStateRecord | undefined,

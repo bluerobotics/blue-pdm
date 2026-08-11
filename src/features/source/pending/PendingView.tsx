@@ -24,6 +24,10 @@ import {
   FileEdit,
 } from 'lucide-react'
 import { usePDMStore, LocalFile } from '@/stores/pdmStore'
+import {
+  deriveCheckoutDisplay,
+  getCheckoutSignature,
+} from '@/lib/checkout/checkoutDisplay'
 import { getInitials } from '@/lib/utils'
 // Shared file icon components - FileIcon supports thumbnails, FileTypeIcon is extension-only
 import { FileIcon, FileTypeIcon } from '@/components/shared/FileItem'
@@ -151,6 +155,7 @@ const deriveChildPaths = (
 
 interface FileRowProps {
   file: LocalFile
+  checkoutSignature: string
   isOwn: boolean
   showAdminSelect?: boolean
   isSelected: boolean
@@ -170,9 +175,13 @@ const FileRow = memo(function FileRow({
   onNavigate,
   onContextMenu,
 }: FileRowProps) {
-  const checkedOutUser = (file.pdmData as any)?.checked_out_user // TODO: type this
-  const userName = checkedOutUser?.full_name || checkedOutUser?.email?.split('@')[0] || t('pending.unknownUser')
-  const avatarUrl = checkedOutUser?.avatar_url
+  const currentUser = usePDMStore((state) => state.user)
+  const checkoutHydrationState = usePDMStore((state) =>
+    file.pdmData?.id ? state.checkoutHydration[file.pdmData.id]?.state : undefined,
+  )
+  const checkoutDisplay = deriveCheckoutDisplay(file, currentUser, checkoutHydrationState)
+  const userName = checkoutDisplay.displayName ?? t('checkoutDisplay.ownerUnavailable')
+  const avatarUrl = checkoutDisplay.avatarUrl
   const canSelect = isOwn || showAdminSelect
 
   // Don't render files that are being processed
@@ -248,7 +257,10 @@ const FileRow = memo(function FileRow({
           <div
             className={`w-5 h-5 rounded-full bg-plm-error/20 text-plm-error flex items-center justify-center text-[9px] font-medium ${avatarUrl ? 'hidden' : ''}`}
           >
-            {getInitials(userName)}
+            {getInitials(userName, {
+              placeholder:
+                checkoutDisplay.state === 'hydrating' || checkoutDisplay.state === 'unavailable',
+            })}
           </div>
         </div>
       )}
@@ -709,6 +721,7 @@ export function PendingView({ onRefresh }: PendingViewProps) {
     setPendingScrollToFile,
     expandedPendingSections,
     togglePendingSection,
+    checkoutHydration,
   } = usePDMStore()
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set())
   const [selectedAddedFiles, setSelectedAddedFiles] = useState<Set<string>>(new Set())
@@ -857,7 +870,7 @@ export function PendingView({ onRefresh }: PendingViewProps) {
         })
 
         // Prepare state values - will be set atomically at the end
-        let newRefs = new Map<string, string[]>()
+        const newRefs = new Map<string, string[]>()
         let newExpanded = new Set<string>()
 
         if (assemblies.length > 0) {
@@ -1976,6 +1989,13 @@ export function PendingView({ onRefresh }: PendingViewProps) {
                   <FileRow
                     key={file.path}
                     file={file}
+                    checkoutSignature={getCheckoutSignature(
+                      file,
+                      user,
+                      file.pdmData?.id
+                        ? checkoutHydration[file.pdmData.id]?.state
+                        : undefined,
+                    )}
                     isOwn={true}
                     isSelected={selectedFiles.has(file.path)}
                     isBeingProcessed={processingPaths.has(file.path)}
@@ -2049,6 +2069,13 @@ export function PendingView({ onRefresh }: PendingViewProps) {
                   <FileRow
                     key={file.path}
                     file={file}
+                    checkoutSignature={getCheckoutSignature(
+                      file,
+                      user,
+                      file.pdmData?.id
+                        ? checkoutHydration[file.pdmData.id]?.state
+                        : undefined,
+                    )}
                     isOwn={false}
                     showAdminSelect={isAdmin}
                     isSelected={selectedOthersFiles.has(file.path)}

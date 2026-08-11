@@ -2,6 +2,16 @@ import type { TranslationDict } from '../types'
 
 // Portuguese translations (Português)
 export const pt: TranslationDict = {
+  checkoutDisplay: {
+    you: 'Você',
+    loadingOwner: 'A carregar o proprietário do checkout',
+    ownerUnavailable: 'Proprietário do checkout indisponível',
+    checkedOutBy: 'Em checkout por {{name}}',
+    checkedOutByOnComputer: 'Em checkout por {{name}} em {{computer}}',
+    anotherComputer: 'outro computador',
+    differentComputer: 'computador diferente',
+    otherComputer: 'outro PC',
+  },
   common: {
     save: 'Guardar',
     cancel: 'Cancelar',
@@ -144,6 +154,41 @@ export const pt: TranslationDict = {
     enterOrgCode: 'Por favor introduza o Código da Organização',
     invalidCode: 'Código de Organização inválido. Por favor verifique e tente novamente.',
     failedWithCode: 'Falha ao ligar ao Supabase com o código fornecido',
+  },
+
+  source: {
+    configTree: {
+      drawings: 'Desenhos',
+      ebom: 'eBOM',
+      noDrawings: 'Nenhum desenho referencia esta configuração',
+      noComponents: 'Não há componentes nesta configuração',
+      expand: 'Expandir',
+      collapse: 'Recolher',
+    },
+    configCommit: {
+      write: 'Escrever no ficheiro',
+      writeAndSync: 'Escrever e atualizar desenhos',
+      writeAndSyncCount: 'Escrever e atualizar desenhos para {{count}} configurações',
+      pending: 'Ainda não escrito no documento',
+      swOffline:
+        'Inicie o serviço do SolidWorks para escrever os metadados da configuração',
+      summary:
+        'Configurações escritas: {{configurations}}; desenhos atualizados: {{updated}}, ignorados: {{skipped}}, falhados: {{failed}}',
+    },
+    configDrawings: {
+      dialogTitle: 'Desenhos referenciam esta configuração',
+      dialogBody:
+        'Alguns desenhos referenciados não estão em checkout por si. Têm de ser colocados em checkout para receber a atualização.',
+      checkOutAndUpdate: 'Fazer checkout e atualizar',
+      forceModelOnly: 'Escrever apenas o modelo',
+      heldBy: 'Em checkout por {{name}}',
+      blocked: 'Em checkout por outra pessoa',
+      notInVault: 'Não está neste cofre',
+      ready: 'Pronto para atualizar',
+      available: 'Disponível para checkout',
+      modelOnlyWarning:
+        'Escrever apenas o modelo deixa inalterados os desenhos que não estão em checkout por si.',
+    },
   },
 
   settings: {

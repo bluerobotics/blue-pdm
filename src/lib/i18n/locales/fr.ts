@@ -2,6 +2,16 @@ import type { TranslationDict } from '../types'
 
 // French translations
 export const fr: TranslationDict = {
+  checkoutDisplay: {
+    you: 'Vous',
+    loadingOwner: 'Chargement du propriétaire du checkout',
+    ownerUnavailable: 'Propriétaire du checkout indisponible',
+    checkedOutBy: 'Checkout par {{name}}',
+    checkedOutByOnComputer: 'Checkout par {{name}} sur {{computer}}',
+    anotherComputer: 'un autre ordinateur',
+    differentComputer: 'ordinateur différent',
+    otherComputer: 'un autre PC',
+  },
   common: {
     save: 'Enregistrer',
     cancel: 'Annuler',
@@ -148,6 +158,41 @@ export const fr: TranslationDict = {
     enterOrgCode: "Veuillez entrer le code d'organisation",
     invalidCode: "Code d'organisation invalide. Veuillez vérifier et réessayer.",
     failedWithCode: 'Échec de la connexion à Supabase avec le code fourni',
+  },
+
+  source: {
+    configTree: {
+      drawings: 'Mises en plan',
+      ebom: 'eBOM',
+      noDrawings: 'Aucune mise en plan ne fait référence à cette configuration',
+      noComponents: 'Aucun composant dans cette configuration',
+      expand: 'Développer',
+      collapse: 'Réduire',
+    },
+    configCommit: {
+      write: 'Écrire dans le fichier',
+      writeAndSync: 'Écrire et mettre à jour les mises en plan',
+      writeAndSyncCount: 'Écrire et mettre à jour les mises en plan pour {{count}} configurations',
+      pending: 'Pas encore écrit dans le document',
+      swOffline:
+        'Démarrez le service SolidWorks pour écrire les métadonnées de configuration',
+      summary:
+        'Configurations écrites : {{configurations}} ; mises en plan mises à jour : {{updated}}, ignorées : {{skipped}}, échecs : {{failed}}',
+    },
+    configDrawings: {
+      dialogTitle: 'Des mises en plan référencent cette configuration',
+      dialogBody:
+        'Certaines mises en plan référencées ne sont pas en checkout par vous. Elles doivent être en checkout pour recevoir la mise à jour.',
+      checkOutAndUpdate: 'Mettre en checkout et mettre à jour',
+      forceModelOnly: 'Écrire uniquement le modèle',
+      heldBy: 'Verrouillé par {{name}}',
+      blocked: 'Verrouillé par d’autres utilisateurs',
+      notInVault: 'Absent de ce coffre',
+      ready: 'Prêt à être mis à jour',
+      available: 'Disponible pour checkout',
+      modelOnlyWarning:
+        'Écrire uniquement le modèle laisse inchangées les mises en plan qui ne sont pas en checkout par vous.',
+    },
   },
 
   settings: {
