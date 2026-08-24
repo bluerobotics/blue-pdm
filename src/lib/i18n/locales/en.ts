@@ -2,6 +2,9 @@ import type { TranslationDict } from '../types'
 
 // English translations (default/fallback)
 export const en: TranslationDict = {
+  app: {
+    recoveredFromCrash: 'BluePLM stopped responding and reloaded. Your vault is being re-read.',
+  },
   vaultLoad: {
     loading: 'Loading vault...',
     stalled: 'Still loading. This is taking longer than expected.',

@@ -127,6 +127,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getMachineName: () => ipcRenderer.invoke('app:get-machine-name'),
   getAppVersion: () => ipcRenderer.invoke('app:get-app-version'),
 
+  // Set when the main process reloaded this window to recover from a renderer
+  // crash. Pulled rather than pushed because the reload finishes before React
+  // can subscribe to anything.
+  consumeCrashNotice: () => ipcRenderer.invoke('app:consume-crash-notice'),
+
   // Analytics settings
   setAnalyticsEnabled: (enabled: boolean) => ipcRenderer.invoke('analytics:set-enabled', enabled),
   getAnalyticsEnabled: () => ipcRenderer.invoke('analytics:get-enabled'),

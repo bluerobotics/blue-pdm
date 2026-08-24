@@ -39,27 +39,6 @@ import {
 /** Debounce delay (ms) for watcher-recovery reloads, which arrive in bursts */
 const VAULT_RESYNC_DEBOUNCE_MS = 1000
 
-interface PerformanceMemory {
-  usedJSHeapSize: number
-  totalJSHeapSize: number
-  jsHeapSizeLimit: number
-}
-
-interface PerformanceWithMemory extends Performance {
-  memory?: PerformanceMemory
-}
-
-function getHeapContext(): Record<string, number> {
-  const memory = (performance as PerformanceWithMemory).memory
-  if (!memory) return {}
-
-  return {
-    usedJSHeapSize: memory.usedJSHeapSize,
-    totalJSHeapSize: memory.totalJSHeapSize,
-    jsHeapSizeLimit: memory.jsHeapSizeLimit,
-  }
-}
-
 // Check if we're in performance mode (pop-out window)
 function isPerformanceMode(): boolean {
   const params = new URLSearchParams(window.location.search)
@@ -105,6 +84,11 @@ export function App() {
   // Records what is actually holding the main thread. Interaction feedback -
   // hover, cursor shape, scroll - stalls whenever anything blocks it, so
   // without this the view that is open gets blamed for a background subsystem.
+  //
+  // No memory reading here. performance.memory is quantised and reported the
+  // same 23 MB on every line of an entire session, which made a renderer that
+  // died of memory exhaustion look idle; the main process samples the real
+  // working set into the same log instead.
   useEffect(
     () =>
       startLongTaskMonitor(() => {
@@ -134,7 +118,6 @@ export function App() {
           selectedCount: selectedFiles.length,
           expandedFoldersCount: expandedFolders.size,
           vaultId: hashCheckoutIdentifier(activeVaultId),
-          ...getHeapContext(),
         }
       }),
     [],

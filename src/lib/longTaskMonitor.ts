@@ -262,10 +262,25 @@ export function startLongTaskMonitor(getContext: ContextProvider = () => ({})): 
 
   const timer = setInterval(flush, ROLLUP_INTERVAL_MS)
   let nextWatchdogAt = performance.now() + WATCHDOG_INTERVAL_MS
+  let hiddenSinceLastTick = document.visibilityState === 'hidden'
+
+  const markHidden = () => {
+    if (document.visibilityState === 'hidden') hiddenSinceLastTick = true
+  }
+  document.addEventListener('visibilitychange', markHidden)
+
   const watchdogTimer = setInterval(() => {
     const now = performance.now()
     const driftMs = now - nextWatchdogAt
     nextWatchdogAt = now + WATCHDOG_INTERVAL_MS
+
+    // A hidden window's timers are throttled to about one tick a minute, so the
+    // drift measured across a spell in the background says nothing about whether
+    // the renderer was blocked. One session reported a 200-second "stall" that
+    // was the window sitting unfocused while the app processed events normally.
+    const wasHidden = hiddenSinceLastTick || document.visibilityState === 'hidden'
+    hiddenSinceLastTick = document.visibilityState === 'hidden'
+    if (wasHidden) return
 
     if (driftMs >= WATCHDOG_DRIFT_THRESHOLD_MS) {
       log.warn('[Perf]', 'Renderer stalled', {
@@ -278,6 +293,7 @@ export function startLongTaskMonitor(getContext: ContextProvider = () => ({})): 
   stop = () => {
     clearInterval(timer)
     clearInterval(watchdogTimer)
+    document.removeEventListener('visibilitychange', markHidden)
     longTaskObserver?.disconnect()
     longAnimationFrameObserver?.disconnect()
     flush()

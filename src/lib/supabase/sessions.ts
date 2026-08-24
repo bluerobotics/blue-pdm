@@ -125,12 +125,16 @@ export async function syncUserSessionsOrgId(userId: string, orgId: string): Prom
 
 /**
  * Ensure the current user has the correct org_id in the database
- * This calls a database RPC that checks and fixes org_id based on email domain
- * Should be called on every app boot to prevent org_id mismatch issues
+ *
+ * Calls a SECURITY DEFINER RPC that creates the users row if the auth trigger never ran, and
+ * resolves org_id from a pending invitation or a matching organization email domain when it is
+ * still NULL. RLS pins org_id against self-update, so this RPC is the only way an account can
+ * acquire membership short of the org-code path.
  *
  * NOTE: This uses Supabase client.rpc() which can sometimes hang. We add a timeout
- * to prevent blocking the auth flow. If it times out, we just skip it - the
- * linkUserToOrganization function will handle setting org_id as a fallback.
+ * to prevent blocking the auth flow. If it times out, we just skip it - linkUserToOrganization
+ * calls the same RPC and then the org-code path, and refuses to report an organization the
+ * account did not actually end up in.
  */
 export async function ensureUserOrgId(): Promise<{
   success: boolean
@@ -458,6 +462,11 @@ export interface OnlineUser {
 /**
  * Get all online users from the organization
  * Returns users who have active sessions within the last 5 minutes
+ *
+ * Filtered on `users.org_id` as well as `user_sessions.org_id`. The session row is written by the
+ * client under a policy that only checks `user_id = auth.uid()`, so it can name an organization
+ * the account is not actually a member of. Without the second filter this indicator reported an
+ * unjoined user as present in the org while every membership query correctly omitted them.
  */
 export async function getOrgOnlineUsers(
   orgId: string,
@@ -485,6 +494,7 @@ export async function getOrgOnlineUsers(
     `,
     )
     .eq('org_id', orgId)
+    .eq('users.org_id', orgId)
     .eq('is_active', true)
     .gte('last_seen', fiveMinutesAgo)
     .order('last_seen', { ascending: false })

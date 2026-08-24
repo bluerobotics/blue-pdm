@@ -1259,6 +1259,9 @@ declare global {
       getMachineName: () => Promise<string | null>
       getAppVersion: () => Promise<string>
 
+      /** Non-null when the main process reloaded this window after a renderer crash */
+      consumeCrashNotice: () => Promise<{ reason: string; attempt: number } | null>
+
       // Analytics settings
       setAnalyticsEnabled: (enabled: boolean) => Promise<{ success: boolean }>
       getAnalyticsEnabled: () => Promise<boolean>

@@ -10,6 +10,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { usePDMStore, getHasHydrated } from '@/stores/pdmStore'
 import { isSupabaseConfigured } from '@/lib/supabase'
+import { t } from '@/lib/i18n'
 import { log } from '@/lib/logger'
 import { recordMetric } from '@/lib/performanceMetrics'
 
@@ -44,6 +45,9 @@ const EXTENSION_TIMEOUT_MS = 10000
 
 // Timeout for waiting on auth session resolution
 const AUTH_TIMEOUT_MS = 15000
+
+// A crash recovery notice is worth more reading time than a routine toast
+const CRASH_NOTICE_TOAST_MS = 12000
 
 /**
  * Wait for store hydration to complete
@@ -310,6 +314,23 @@ export function useAppStartup(): StartupState {
 
     runStartup()
   }, [loadInstalledExtensions, handleExtensionStateChange, addToast])
+
+  // The main process reloads the window when the renderer dies, so without a
+  // word on screen the app appears to have reset itself for no reason. Held
+  // until the splash screen is gone, or the toast expires behind it.
+  useEffect(() => {
+    if (!isReady) return
+
+    const api = window.electronAPI
+    if (!api?.consumeCrashNotice) return
+
+    void api.consumeCrashNotice().then((notice) => {
+      if (!notice) return
+
+      log.warn('[Startup]', 'Recovered from renderer crash', notice)
+      addToast('warning', t('app.recoveredFromCrash'), CRASH_NOTICE_TOAST_MS)
+    })
+  }, [isReady, addToast])
 
   return {
     isReady,

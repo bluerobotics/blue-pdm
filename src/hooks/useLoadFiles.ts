@@ -55,6 +55,17 @@ import { getFileMutationEpoch } from '@/lib/fileMutationEpoch'
 
 const CHECKOUT_PROFILE_MAX_ATTEMPTS = 3
 const CHECKOUT_PROFILE_RETRY_BASE_MS = 200
+
+/** Enough resolved renames to recognise the pattern without logging all of them. */
+const RENAME_LOG_SAMPLE_LIMIT = 5
+
+/**
+ * Merge phases hand the thread back after this long. The merge runs as one
+ * synchronous block, so a 25k-file vault produced single 9-second tasks during
+ * which hover, scrolling and the cursor shape all stopped responding.
+ */
+const MERGE_YIELD_INTERVAL_MS = 50
+
 let loadRequestSequence = 0
 const latestLoadRequestByVault = new Map<string, string>()
 
@@ -65,6 +76,42 @@ function createLoadRequestId(): string {
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/** Items processed between clock checks. Reading the clock per item is itself measurable. */
+const YIELD_CHECK_STRIDE = 256
+
+/**
+ * Returns a gate that hands the main thread back once it has been held for
+ * MERGE_YIELD_INTERVAL_MS, and does nothing before that.
+ *
+ * Yielding mid-merge is safe because the epoch check immediately before
+ * setFiles discards any merge that a file operation landed during, so an
+ * interleaved checkout cannot be reverted by a merge that started before it.
+ */
+function createYieldGate(): () => Promise<void> {
+  let lastYieldAt = performance.now()
+
+  return async () => {
+    if (performance.now() - lastYieldAt < MERGE_YIELD_INTERVAL_MS) return
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    lastYieldAt = performance.now()
+  }
+}
+
+async function mapYielding<T, R>(
+  items: T[],
+  transform: (item: T) => R,
+  yieldIfSlow: () => Promise<void>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+
+  for (let index = 0; index < items.length; index++) {
+    results[index] = transform(items[index])
+    if (index % YIELD_CHECK_STRIDE === YIELD_CHECK_STRIDE - 1) await yieldIfSlow()
+  }
+
+  return results
 }
 
 function waitForCheckoutRetry(attempt: number): Promise<void> {
@@ -547,6 +594,7 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
 
         // 2. If connected to Supabase, merge PDM data
         const mergeStart = performance.now()
+        const yieldIfSlow = createYieldGate()
         if (shouldFetchServer) {
           const pdmFiles = serverResult.files
           const pdmError = serverResult.error
@@ -856,6 +904,7 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
             // modified-then-renamed files where hash matching fails.
             const inodeRenameMap = new Map<string, PDMFile>() // localPath(lower) -> pdmFile
             const inodeMatchedServerPaths = new Set<string>() // old server paths matched by inode
+            let checkedOutRenameCount = 0
 
             if (savedInodeMap.size > 0) {
               // Build ino -> pdmFile map for server files that are missing locally.
@@ -888,28 +937,21 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
                     inodeRenameMap.set(localFile.relativePath.toLowerCase(), serverFile)
                     inodeMatchedServerPaths.add(serverFile.file_path.toLowerCase())
                     inodeToServerFile.delete(localFile.ino)
-                    const isCheckedOutByMe = user?.id
-                      ? serverFile.checked_out_by === user.id
-                      : !!serverFile.checked_out_by
-                    // Per-file, and an unreconciled folder rename produces hundreds of
-                    // these on every load - they were 80% of one 4.5 MB session log, which
-                    // buried the events worth reading. The summary below carries the count.
-                    window.electronAPI?.log('debug', '[LoadFiles] Inode rename detected', {
-                      oldPath: serverFile.file_path,
-                      newPath: localFile.relativePath,
-                      ino: localFile.ino,
-                      method: 'inode',
-                      checkedOutByMe: isCheckedOutByMe,
-                    })
+                    if (serverFile.checked_out_by) checkedOutRenameCount++
                   }
                 }
 
                 if (inodeRenameMap.size > 0) {
+                  // One line, not one per match. An unreconciled folder rename
+                  // produces hundreds of matches on every load; logged per file they
+                  // were 80% of one 4.5 MB session log, and each one is an IPC call
+                  // made from inside the merge that blocks the thread it reports on.
                   window.electronAPI?.log('info', '[LoadFiles] Inode rename summary', {
                     matches: inodeRenameMap.size,
+                    checkedOut: checkedOutRenameCount,
                     remainingUnresolved: inodeToServerFile.size,
                     samples: Array.from(inodeRenameMap.entries())
-                      .slice(0, 5)
+                      .slice(0, RENAME_LOG_SAMPLE_LIMIT)
                       .map(([newPath, serverFile]) => `${serverFile.file_path} -> ${newPath}`),
                   })
                 }
@@ -926,7 +968,7 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
             let unmatchedCount = 0
             const unmatchedSamples: string[] = []
 
-            localFiles = localFiles.map((localFile) => {
+            localFiles = await mapYielding(localFiles, (localFile) => {
               if (localFile.isDirectory) {
                 // Check if this folder exists on server (from explicit folder records)
                 const folderKey = localFile.relativePath.toLowerCase()
@@ -1187,23 +1229,20 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
                 }
               }
 
-              // Diagnostic logging for moved files to help debug BR number preservation
-              // issues. Only the failure - a server part number that did not survive the
-              // move - is worth an info line per file; an unreconciled folder rename makes
-              // the success case hundreds of lines per load. The count is in Merge summary.
+              // Only the failure - a server part number that did not survive the move -
+              // is worth a line of its own. Logging the success case too made an
+              // unreconciled folder rename cost hundreds of IPC calls per load from
+              // inside this loop; the count now rides along in Merge summary.
               if (isMovedFile) {
                 const partNumberLost = !!pdmData?.part_number && !finalPending?.part_number
-                window.electronAPI?.log(
-                  partNumberLost ? 'warn' : 'debug',
-                  '[LoadFiles] Moved file metadata',
-                  {
+                if (partNumberLost) {
+                  window.electronAPI?.log('warn', '[LoadFiles] Moved file lost its part number', {
                     oldPath: pdmData?.file_path,
                     newPath: localFile.relativePath,
                     pdmPartNumber: pdmData?.part_number ?? null,
                     preservedPartNumber: preservedPending?.part_number ?? null,
-                    finalPartNumber: finalPending?.part_number ?? null,
-                  },
-                )
+                  })
+                }
               }
 
               // Determine localVersion:
@@ -1242,7 +1281,7 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
                 // Preserve pendingMetadata so user's unsaved edits survive file refresh
                 pendingMetadata: finalPending,
               }
-            })
+            }, yieldIfSlow)
 
             // Debug: Log match statistics
             window.electronAPI?.log('info', '[LoadFiles] MATCH STATS', {
@@ -1268,7 +1307,12 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
               localFiles.filter((f) => !f.isDirectory && f.localHash).map((f) => f.localHash),
             )
 
+            let cloudScanIndex = 0
             for (const pdmFile of pdmFiles) {
+              if (cloudScanIndex++ % YIELD_CHECK_STRIDE === YIELD_CHECK_STRIDE - 1) {
+                await yieldIfSlow()
+              }
+
               if (!localPathSet.has(pdmFile.file_path.toLowerCase())) {
                 // Check if this file was MOVED (same content exists at a different location locally)
                 // or matched by inode-based rename detection
@@ -1875,10 +1919,18 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
             const hashTaskStart = performance.now()
             // When forceHashComputation, compute hashes for ALL files with server content_hash (even if local hash exists)
             // Otherwise, only compute for files without local hash
+            // Cloud-only rows have no file on disk to hash - their path is where the
+            // file would go if it were downloaded. Including them sent ~15,000 paths
+            // per load to the hashing IPC, in batches of 20, for the sole purpose of
+            // failing readFileSync on each one.
+            const hasLocalContent = (f: (typeof localFiles)[number]) =>
+              f.diffStatus !== 'cloud' && f.diffStatus !== 'deleted'
+
             const filesNeedingHash = skipHashComputation
               ? localFiles.filter(
                   (f) =>
                     !f.isDirectory &&
+                    hasLocalContent(f) &&
                     f.pdmData?.content_hash &&
                     !f.localHash &&
                     f.localVersion === undefined,
@@ -1886,6 +1938,7 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
               : localFiles.filter(
                   (f) =>
                     !f.isDirectory &&
+                    hasLocalContent(f) &&
                     f.pdmData?.content_hash &&
                     (forceHashComputation || !f.localHash),
                 )
@@ -2405,6 +2458,25 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
           serverPathSet.add(sf.file_path.toLowerCase())
         }
 
+        // Server paths that a local entry somewhere else already accounts for.
+        //
+        // The full load resolves moves (by inode, then by content hash) and then
+        // suppresses the ghost at the old server path. That resolution lives in
+        // the store, as a local entry whose pdmData points at a different path -
+        // so it can be read back here rather than recomputed. Without this, step 6
+        // treats every unreconciled move as a cloud-only file and re-adds it at
+        // its old path: one vault with 466 moved files gained 810 phantom rows
+        // and 58 phantom folders per press of Refresh, and every later load then
+        // merged the larger store.
+        const claimedServerPaths = new Set<string>()
+        for (const f of existingFiles) {
+          if (f.isDirectory || !f.pdmData?.file_path) continue
+          const serverPath = f.pdmData.file_path.toLowerCase()
+          if (serverPath !== f.relativePath.toLowerCase()) {
+            claimedServerPaths.add(serverPath)
+          }
+        }
+
         // 5. Merge local folder files with COMPLETE server data from existing files
         const userId = user?.id
         const refreshedFolderFiles = localResult.files.map((localFile: any) => {
@@ -2420,11 +2492,16 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
           const pdmData = existingPdmMap.get(lookupKey)
 
           // Determine diff status
-          let diffStatus: 'added' | 'modified' | 'outdated' | 'cloud' | undefined
+          let diffStatus: 'added' | 'modified' | 'outdated' | 'cloud' | 'moved' | undefined
           if (!pdmData) {
             // Check if file exists on server but we don't have pdmData yet
             // (shouldn't happen normally, but handle gracefully)
             diffStatus = serverPathSet.has(lookupKey) ? undefined : 'added'
+          } else if (pdmData.file_path && pdmData.file_path.toLowerCase() !== lookupKey) {
+            // The server still records this file at its old path, so it is a move
+            // awaiting check-in. Recomputing it as synced would drop the badge and
+            // leave nothing in the UI saying the check-in is still owed.
+            diffStatus = 'moved'
           } else if (pdmData.content_hash && localFile.hash) {
             if (pdmData.content_hash !== localFile.hash) {
               const localModTime = new Date(localFile.modifiedTime).getTime()
@@ -2478,7 +2555,7 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
           const sfPath = sf.file_path.toLowerCase()
           const isInFolder = folderPath === '' || sfPath.startsWith(folderPrefix)
 
-          if (isInFolder && !localPathSet.has(sfPath)) {
+          if (isInFolder && !localPathSet.has(sfPath) && !claimedServerPaths.has(sfPath)) {
             // Use complete pdmData from existing files if available
             const completePdmData = existingPdmMap.get(sfPath)
 
@@ -2517,7 +2594,22 @@ export function useLoadFiles(sessionContext?: LoadFilesSessionContext) {
           outsideFolder: filesOutsideFolder.length,
           inFolder: refreshedFolderFiles.length,
           total: combinedFiles.length,
+          suppressedClaimedServerPaths: claimedServerPaths.size,
         })
+
+        // A refresh reconciles; it does not discover. Growing the store while the
+        // disk scan found no more than the store already held means entries were
+        // duplicated or resurrected, which is how one vault climbed from 27,183 to
+        // 27,993 rows on a single press of Refresh.
+        if (combinedFiles.length > existingFiles.length) {
+          window.electronAPI?.log('warn', '[RefreshFolder] Store grew during refresh', {
+            folderPath,
+            before: existingFiles.length,
+            after: combinedFiles.length,
+            grewBy: combinedFiles.length - existingFiles.length,
+            localCount: localResult.files.length,
+          })
+        }
 
         // Use startTransition to mark this as a non-urgent update
         // This allows React to render the loading spinner before processing the heavy file list

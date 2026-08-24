@@ -330,13 +330,24 @@ export const createFilesSlice: StateCreator<
 
     // Deduplicate by path (case-insensitive for Windows compatibility)
     // When duplicates exist, prefer LOCAL files over CLOUD files
+    //
+    // Both keys are needed. The producers upstream match files on the relative
+    // path, while this only ever compared the absolute one: a local entry built
+    // with path.join and a cloud entry built with buildFullPath describe the same
+    // file, and if the two vault prefixes differ at all - a symlinked vault root,
+    // an extended-length path - the merge counts them as one row and the store
+    // keeps two.
     const seenPaths = new Map<string, number>() // lowercase path -> index in deduped array
+    const seenRelativePaths = new Map<string, number>()
     const deduped: typeof validatedFiles = []
     let duplicateCount = 0
 
     for (const file of validatedFiles) {
       const pathLower = file.path.toLowerCase()
-      const existingIdx = seenPaths.get(pathLower)
+      const relativePathLower = file.relativePath?.toLowerCase() || ''
+      const existingIdx =
+        seenPaths.get(pathLower) ??
+        (relativePathLower ? seenRelativePaths.get(relativePathLower) : undefined)
 
       if (existingIdx !== undefined) {
         duplicateCount++
@@ -347,6 +358,7 @@ export const createFilesSlice: StateCreator<
         }
       } else {
         seenPaths.set(pathLower, deduped.length)
+        if (relativePathLower) seenRelativePaths.set(relativePathLower, deduped.length)
         deduped.push(file)
       }
     }

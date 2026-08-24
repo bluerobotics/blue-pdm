@@ -1,7 +1,7 @@
 // BluePLM Electron Main Process
 // This file contains only app lifecycle, window creation, and imports handlers from modules
 
-import { app, BrowserWindow, shell, screen, nativeTheme, session, Menu } from 'electron'
+import { app, BrowserWindow, shell, screen, nativeTheme, session, Menu, ipcMain } from 'electron'
 import path from 'path'
 import fs from 'fs'
 import { fileURLToPath } from 'url'
@@ -265,6 +265,155 @@ let mainWindow: BrowserWindow | null = null
 const SHOW_WINDOW_FALLBACK_MS = 5_000
 const HARD_EXIT_FALLBACK_MS = 500
 
+// ============================================
+// Renderer Health
+// ============================================
+
+/**
+ * A dead renderer leaves the window painted in its own backgroundColor and
+ * nothing else - users report this as the app "turning blue" - so the crash has
+ * to be both recorded and recovered from. Reloads are capped because a renderer
+ * that dies on every boot would otherwise reload forever.
+ */
+const MAX_CRASH_RELOADS = 2
+const CRASH_RELOAD_BASE_DELAY_MS = 1_000
+const RENDERER_MEMORY_SAMPLE_INTERVAL_MS = 30_000
+
+/**
+ * A renderer that has run this long is a working one, so the reload budget is
+ * returned. Without this, the second and third crash of a week-long session
+ * would be treated as a renderer that cannot start at all.
+ */
+const RENDERER_STABLE_MS = 5 * 60_000
+
+let rendererMemoryTimer: NodeJS.Timeout | null = null
+let crashCreditTimer: NodeJS.Timeout | null = null
+let crashReloadCount = 0
+let lastRendererMemory: { privateMB: number; sampledAt: number } | null = null
+
+/** Set once teardown starts, so a renderer exiting with it is not treated as a crash. */
+let isAppQuitting = false
+
+/**
+ * performance.memory in the renderer is quantised and was reporting an
+ * unchanging 23 MB across whole sessions, which made it useless for telling an
+ * out-of-memory crash from any other kind. Private bytes are read here instead,
+ * where they are real numbers.
+ */
+function sampleRendererMemory(): { privateMB: number } | null {
+  if (!mainWindow || mainWindow.isDestroyed()) return null
+
+  try {
+    const rendererPid = mainWindow.webContents.getOSProcessId()
+    const metric = app.getAppMetrics().find((entry) => entry.pid === rendererPid)
+    if (!metric) return null
+
+    // Reported in kilobytes.
+    return { privateMB: Math.round(metric.memory.workingSetSize / 1024) }
+  } catch {
+    return null
+  }
+}
+
+function startRendererMemorySampling(): void {
+  if (rendererMemoryTimer) return
+
+  rendererMemoryTimer = setInterval(() => {
+    const sample = sampleRendererMemory()
+    if (!sample) return
+
+    const previous = lastRendererMemory
+    lastRendererMemory = { privateMB: sample.privateMB, sampledAt: Date.now() }
+
+    writeLog('info', '[Main] [Renderer] Memory sample', {
+      privateMB: sample.privateMB,
+      deltaMB: previous ? sample.privateMB - previous.privateMB : null,
+    })
+  }, RENDERER_MEMORY_SAMPLE_INTERVAL_MS)
+}
+
+function stopRendererMemorySampling(): void {
+  if (rendererMemoryTimer) {
+    clearInterval(rendererMemoryTimer)
+    rendererMemoryTimer = null
+  }
+  if (crashCreditTimer) {
+    clearTimeout(crashCreditTimer)
+    crashCreditTimer = null
+  }
+}
+
+function scheduleCrashCreditReset(): void {
+  if (crashCreditTimer) clearTimeout(crashCreditTimer)
+
+  crashCreditTimer = setTimeout(() => {
+    crashCreditTimer = null
+    crashReloadCount = 0
+  }, RENDERER_STABLE_MS)
+}
+
+function handleRendererGone(details: Electron.RenderProcessGoneDetails): void {
+  const crashContext = {
+    reason: details.reason,
+    exitCode: details.exitCode,
+    uptimeSeconds: Math.round(process.uptime()),
+    lastPrivateMB: lastRendererMemory?.privateMB ?? null,
+    msSinceMemorySample: lastRendererMemory ? Date.now() - lastRendererMemory.sampledAt : null,
+    reloadCount: crashReloadCount,
+  }
+
+  logError('Renderer process gone', crashContext)
+
+  if (sentryInitialized) {
+    try {
+      Sentry.captureException(new Error(`Renderer process gone: ${details.reason}`), {
+        extra: crashContext,
+      })
+    } catch {
+      // Reporting must never mask the crash itself
+    }
+  }
+
+  // 'clean-exit' and 'killed' are our own teardown, not a failure to recover from
+  if (details.reason === 'clean-exit' || details.reason === 'killed') return
+  if (isAppQuitting) return
+
+  if (crashReloadCount >= MAX_CRASH_RELOADS) {
+    logError('Renderer crash reload limit reached - leaving window as is', {
+      reloadCount: crashReloadCount,
+    })
+    return
+  }
+
+  // The dead renderer's pending stability timer must not hand its budget back
+  if (crashCreditTimer) {
+    clearTimeout(crashCreditTimer)
+    crashCreditTimer = null
+  }
+
+  crashReloadCount++
+  const delayMs = CRASH_RELOAD_BASE_DELAY_MS * crashReloadCount
+
+  setTimeout(() => {
+    if (isAppQuitting || !mainWindow || mainWindow.isDestroyed()) return
+    log('Reloading window after renderer crash', { attempt: crashReloadCount })
+    pendingCrashNotice = { reason: details.reason, attempt: crashReloadCount }
+    mainWindow.reload()
+  }, delayMs)
+}
+
+/**
+ * Held until the reloaded renderer asks for it: the window reloads faster than
+ * React mounts its listeners, so pushing the notice would race the subscribe.
+ */
+let pendingCrashNotice: { reason: string; attempt: number } | null = null
+
+ipcMain.handle('app:consume-crash-notice', () => {
+  const notice = pendingCrashNotice
+  pendingCrashNotice = null
+  return notice
+})
+
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 
 // Follow system dark/light mode for web content
@@ -518,6 +667,8 @@ function initializeApp() {
     // Prevent default quit behavior to allow async cleanup
     event.preventDefault()
     isQuitting = true
+    isAppQuitting = true
+    stopRendererMemorySampling()
 
     log('App quitting, cleaning up all resources...')
 
@@ -682,6 +833,11 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      // Chromium throttles timers in unfocused windows to roughly one tick a
+      // minute. The vault watcher debounces its refresh with setTimeout, so a
+      // backgrounded window stopped reconciling file changes entirely and then
+      // ran every deferred refresh at once on refocus.
+      backgroundThrottling: false,
     },
     show: false,
   })
@@ -726,12 +882,28 @@ function createWindow() {
   mainWindow.once('ready-to-show', showWindow)
   setTimeout(showWindow, SHOW_WINDOW_FALLBACK_MS)
 
-  mainWindow.webContents.on('render-process-gone', () => log('Renderer process crashed!'))
+  mainWindow.webContents.on('render-process-gone', (_event, details) =>
+    handleRendererGone(details),
+  )
+
+  // A renderer that is wedged but alive looks identical to a dead one from the
+  // outside. Recording both makes the session log say which happened.
+  mainWindow.on('unresponsive', () => {
+    logError('Renderer unresponsive', {
+      uptimeSeconds: Math.round(process.uptime()),
+      privateMB: sampleRendererMemory()?.privateMB ?? null,
+    })
+  })
+
+  mainWindow.on('responsive', () => log('Renderer responsive again'))
+
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
     log('Failed to load: ' + errorCode + ' ' + errorDescription)
   })
   mainWindow.webContents.on('did-finish-load', () => {
     log('Page finished loading')
+    startRendererMemorySampling()
+    scheduleCrashCreditReset()
     if (mainWindow) {
       // getTitleBarOverlayRect may not exist on all Electron versions
       const win = mainWindow as BrowserWindow & {

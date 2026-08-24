@@ -191,6 +191,153 @@ export async function getOrgAuthProviders(orgSlug?: string): Promise<AuthProvide
   }
 }
 
+// ============================================
+// Organization membership
+// ============================================
+
+const JOIN_ORG_MAX_RETRIES = 5
+const JOIN_ORG_RETRY_BASE_DELAY_MS = 1_000
+
+interface RestApi {
+  url: string
+  key: string
+  accessToken: string
+}
+
+function restHeaders(api: RestApi): Record<string, string> {
+  return {
+    apikey: api.key,
+    Authorization: `Bearer ${api.accessToken}`,
+    'Content-Type': 'application/json',
+  }
+}
+
+/**
+ * Join the signed-in user to an organization by slug.
+ *
+ * `users.org_id` is pinned by RLS: the self-update policy requires the new value to be
+ * `IS NOT DISTINCT FROM` the current one, so an account cannot put itself into an organization
+ * with a PATCH. `join_org_by_slug` is SECURITY DEFINER and is the only route a client has. It
+ * also enforces blocked users and `enforce_email_domain`, and adds the caller to the
+ * organization's default team - none of which the direct write it replaces ever did.
+ *
+ * Returns the joined org id, or null when the join did not happen.
+ */
+async function joinOrgBySlug(api: RestApi, slug: string, context: string): Promise<string | null> {
+  for (let attempt = 1; attempt <= JOIN_ORG_MAX_RETRIES; attempt++) {
+    try {
+      const response = await fetch(`${api.url}/rest/v1/rpc/join_org_by_slug`, {
+        method: 'POST',
+        headers: restHeaders(api),
+        body: JSON.stringify({ p_org_slug: slug }),
+      })
+      const result = await response.json()
+
+      authLog('info', 'join_org_by_slug result', {
+        context,
+        success: result?.success,
+        orgName: result?.org_name,
+        addedToDefaultTeam: result?.added_to_default_team,
+        retry: result?.retry,
+        attempt,
+      })
+
+      if (result?.success && result?.org_id) {
+        return result.org_id as string
+      }
+
+      // The users row may not exist yet because the auth trigger is still running.
+      if (result?.retry && attempt < JOIN_ORG_MAX_RETRIES) {
+        await new Promise((resolve) => setTimeout(resolve, JOIN_ORG_RETRY_BASE_DELAY_MS * attempt))
+        continue
+      }
+
+      if (result?.error) {
+        authLog('warn', 'join_org_by_slug failed', { context, error: result.error })
+      }
+    } catch (error) {
+      authLog('warn', 'join_org_by_slug request failed', {
+        context,
+        error: String(error),
+        attempt,
+      })
+      if (attempt < JOIN_ORG_MAX_RETRIES) {
+        await new Promise((resolve) => setTimeout(resolve, JOIN_ORG_RETRY_BASE_DELAY_MS * attempt))
+        continue
+      }
+    }
+    break
+  }
+
+  return null
+}
+
+/**
+ * Ask the database to resolve membership for the signed-in user. Runs as definer, so it can act
+ * on a pending invitation or an email-domain match that the client is not permitted to write
+ * itself. Returns the resolved org id, or null when the server could not place the user.
+ */
+async function ensureUserOrgIdRpc(api: RestApi): Promise<string | null> {
+  try {
+    const response = await fetch(`${api.url}/rest/v1/rpc/ensure_user_org_id`, {
+      method: 'POST',
+      headers: restHeaders(api),
+      body: '{}',
+    })
+    const result = await response.json()
+    authLog('info', 'ensure_user_org_id result', result)
+
+    return result?.has_org && result?.org_id ? (result.org_id as string) : null
+  } catch (error) {
+    authLog('warn', 'ensure_user_org_id RPC failed', { error: String(error) })
+    return null
+  }
+}
+
+async function fetchOrgById(api: RestApi, orgId: string): Promise<Organization | null> {
+  try {
+    const response = await fetch(`${api.url}/rest/v1/organizations?select=*&id=eq.${orgId}`, {
+      headers: restHeaders(api),
+    })
+    const data = await response.json()
+    return data?.[0] ?? null
+  } catch (error) {
+    authLog('warn', 'Failed to fetch organization', { error: String(error) })
+    return null
+  }
+}
+
+/**
+ * Read `users.org_id` back and confirm it holds the organization we are about to report as
+ * joined.
+ *
+ * A write that RLS refuses still returns a response a caller can mistake for success, and an
+ * account that boots into an organization it is not a member of looks entirely healthy from the
+ * inside - it even registers a `user_sessions` row stamped with that org, so it shows up in
+ * presence - while being absent from every query that reads real membership. Reporting no
+ * organization is the honest answer and the one that surfaces the problem immediately.
+ */
+async function confirmMembership(api: RestApi, userId: string, orgId: string): Promise<boolean> {
+  try {
+    const response = await fetch(`${api.url}/rest/v1/users?select=org_id&id=eq.${userId}`, {
+      headers: restHeaders(api),
+    })
+    const data = await response.json()
+    const storedOrgId: string | null = data?.[0]?.org_id ?? null
+
+    if (storedOrgId === orgId) return true
+
+    authLog('error', 'Organization link did not persist', {
+      expected: orgId.substring(0, 8) + '...',
+      stored: storedOrgId ? storedOrgId.substring(0, 8) + '...' : null,
+    })
+    return false
+  } catch (error) {
+    authLog('error', 'Failed to confirm organization link', { error: String(error) })
+    return false
+  }
+}
+
 // Find and link organization by email domain, pending membership, or fetch existing org
 // cachedOrgId: Optional org_id from already-fetched profile (avoids duplicate network request)
 export async function linkUserToOrganization(
@@ -210,6 +357,7 @@ export async function linkUserToOrganization(
   const url = config?.url || import.meta.env.VITE_SUPABASE_URL
   const key = config?.anonKey || import.meta.env.VITE_SUPABASE_ANON_KEY
   const accessToken = getCurrentAccessToken() || key
+  const api: RestApi = { url, key, accessToken }
 
   try {
     // Use cached org_id if provided, otherwise fetch user profile
@@ -354,159 +502,50 @@ export async function linkUserToOrganization(
         settingsKeys: Object.keys(matchingOrg.settings || {}),
       })
 
-      // Update the user's org_id in the database so future logins remember the org
-      // This also ensures sessions are registered with the correct org_id immediately
-      try {
-        const updateResponse = await fetch(`${url}/rest/v1/users?id=eq.${userId}`, {
-          method: 'PATCH',
-          headers: {
-            apikey: key,
-            Authorization: `Bearer ${accessToken}`,
-            'Content-Type': 'application/json',
-            Prefer: 'return=minimal',
-          },
-          body: JSON.stringify({ org_id: matchingOrg.id }),
+      const joinedOrgId = matchingOrg.slug
+        ? await joinOrgBySlug(api, matchingOrg.slug, 'domain_match')
+        : null
+
+      if (joinedOrgId && (await confirmMembership(api, userId, joinedOrgId))) {
+        const totalDuration = performance.now() - startTime
+        recordMetric('Startup', 'Organization load complete', {
+          durationMs: Math.round(totalDuration),
+          path: 'domain_match',
         })
-
-        if (updateResponse.ok) {
-          authLog('info', 'Updated user org_id in database', {
-            orgId: matchingOrg.id?.substring(0, 8) + '...',
-          })
-        } else {
-          authLog('warn', 'Failed to update user org_id', { status: updateResponse.status })
-        }
-      } catch (updateErr) {
-        authLog('warn', 'Error updating user org_id', { error: String(updateErr) })
+        return { org: matchingOrg, error: null }
       }
 
-      const totalDuration = performance.now() - startTime
-      recordMetric('Startup', 'Organization load complete', {
-        durationMs: Math.round(totalDuration),
-        path: 'domain_match',
+      authLog('warn', 'Domain match did not establish membership, continuing resolution', {
+        orgName: matchingOrg.name,
+        hasSlug: !!matchingOrg.slug,
       })
-      return { org: matchingOrg, error: null }
     }
 
-    authLog('info', 'No org found by domain, checking pending_org_members...', { domain })
+    authLog('info', 'No org found by domain, asking the server to resolve membership...', {
+      domain,
+    })
 
-    // Check pending_org_members for this email (in case trigger didn't run)
-    // Fetch all relevant fields so we can apply the correct permissions
-    // Use ilike for case-insensitive matching (admin may have typed email differently)
-    // Escape any % or _ characters in email to prevent pattern matching issues
-    const escapedEmail = userEmail.toLowerCase().replace(/%/g, '\\%').replace(/_/g, '\\_')
-    const pendingResponse = await fetch(
-      `${url}/rest/v1/pending_org_members?select=id,org_id,role,full_name,team_ids,vault_ids,workflow_role_ids,created_by&email=ilike.${encodeURIComponent(escapedEmail)}&claimed_at=is.null&limit=1`,
-      {
-        headers: {
-          apikey: key,
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-      },
-    )
-    const pendingData = await pendingResponse.json()
-    const pendingMember = pendingData?.[0]
+    // A pending invitation is applied by handle_new_user() and claim_pending_membership_trigger,
+    // both of which run as definer. This asks the database to do that work now in case neither
+    // trigger fired - the client cannot write org_id, role or claimed_at itself, so attempting
+    // it here only produced writes that RLS silently refused.
+    const ensuredOrgId = await ensureUserOrgIdRpc(api)
 
-    if (pendingMember?.org_id) {
-      authLog('info', 'Found pending membership, linking user to org', {
-        orgId: pendingMember.org_id?.substring(0, 8) + '...',
-        assignedRole: pendingMember.role,
-        hasTeamIds: !!pendingMember.team_ids?.length,
-        hasVaultIds: !!pendingMember.vault_ids?.length,
-        hasWorkflowRoleIds: !!pendingMember.workflow_role_ids?.length,
-      })
+    if (ensuredOrgId && (await confirmMembership(api, userId, ensuredOrgId))) {
+      const ensuredOrg = await fetchOrgById(api, ensuredOrgId)
 
-      // Fetch the organization
-      const orgResponse = await fetch(
-        `${url}/rest/v1/organizations?select=*&id=eq.${pendingMember.org_id}`,
-        {
-          headers: {
-            apikey: key,
-            Authorization: `Bearer ${accessToken}`,
-            'Content-Type': 'application/json',
-          },
-        },
-      )
-      const orgData = await orgResponse.json()
-      const pendingOrg = orgData?.[0]
-
-      if (pendingOrg) {
-        // Update user's org_id and role from pending membership
-        // IMPORTANT: Use the role from pending_org_members, default to 'viewer' only if missing
-        const assignedRole = pendingMember.role || 'viewer'
-        try {
-          await fetch(`${url}/rest/v1/users?id=eq.${userId}`, {
-            method: 'PATCH',
-            headers: {
-              apikey: key,
-              Authorization: `Bearer ${accessToken}`,
-              'Content-Type': 'application/json',
-              Prefer: 'return=minimal',
-            },
-            body: JSON.stringify({
-              org_id: pendingOrg.id,
-              role: assignedRole,
-              full_name: pendingMember.full_name || undefined, // Preserve name if set in invite
-            }),
-          })
-          authLog('info', 'Updated user from pending membership', {
-            assignedRole,
-            orgId: pendingOrg.id?.substring(0, 8) + '...',
-            fullNameFromInvite: pendingMember.full_name || null,
-          })
-
-          // Mark pending membership as claimed
-          await fetch(`${url}/rest/v1/pending_org_members?id=eq.${pendingMember.id}`, {
-            method: 'PATCH',
-            headers: {
-              apikey: key,
-              Authorization: `Bearer ${accessToken}`,
-              'Content-Type': 'application/json',
-              Prefer: 'return=minimal',
-            },
-            body: JSON.stringify({ claimed_at: new Date().toISOString(), claimed_by: userId }),
-          })
-          authLog('info', 'Marked pending membership as claimed', {
-            pendingMemberId: pendingMember.id?.substring(0, 8) + '...',
-          })
-
-          // Call RPC to apply team memberships, vault access, and workflow roles
-          // This is a backup in case the DB AFTER INSERT trigger didn't fire
-          try {
-            const rpcResponse = await fetch(`${url}/rest/v1/rpc/apply_pending_team_memberships`, {
-              method: 'POST',
-              headers: {
-                apikey: key,
-                Authorization: `Bearer ${accessToken}`,
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({ p_user_id: userId }),
-            })
-            if (rpcResponse.ok) {
-              authLog('info', 'Applied pending team memberships via RPC')
-            } else {
-              authLog('warn', 'RPC apply_pending_team_memberships returned non-OK', {
-                status: rpcResponse.status,
-              })
-            }
-          } catch (rpcErr) {
-            authLog(
-              'warn',
-              'Failed to call apply_pending_team_memberships RPC (may already be applied)',
-              { error: String(rpcErr) },
-            )
-          }
-        } catch (updateErr) {
-          authLog('warn', 'Error updating user from pending membership', {
-            error: String(updateErr),
-          })
-        }
-
-        return { org: pendingOrg, error: null }
+      if (ensuredOrg) {
+        const totalDuration = performance.now() - startTime
+        recordMetric('Startup', 'Organization load complete', {
+          durationMs: Math.round(totalDuration),
+          path: 'pending_member',
+        })
+        authLog('info', 'Server resolved membership', { orgName: ensuredOrg.name })
+        return { org: ensuredOrg, error: null }
       }
     }
 
-    // No pending membership found - try joining by org slug from config
+    // Not resolvable server-side - try joining by org slug from config
     authLog('info', 'No pending membership, trying org slug from config...')
 
     // Import dynamically to avoid circular dependency
@@ -518,70 +557,20 @@ export async function linkUserToOrganization(
 
     if (orgSlugToUse) {
       authLog('info', 'Found org slug in config, calling join_org_by_slug', { slug: orgSlugToUse })
+      const joinedOrgId = await joinOrgBySlug(api, orgSlugToUse, 'org_slug')
 
-      // Retry up to 5 times with delay if user record isn't ready yet
-      const maxRetries = 5
-      for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-          const rpcResponse = await fetch(`${url}/rest/v1/rpc/join_org_by_slug`, {
-            method: 'POST',
-            headers: {
-              apikey: key,
-              Authorization: `Bearer ${accessToken}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ p_org_slug: orgSlugToUse }),
+      if (joinedOrgId && (await confirmMembership(api, userId, joinedOrgId))) {
+        const joinedOrg = await fetchOrgById(api, joinedOrgId)
+
+        if (joinedOrg) {
+          const totalDuration = performance.now() - startTime
+          recordMetric('Startup', 'Organization load complete', {
+            durationMs: Math.round(totalDuration),
+            path: 'org_slug',
           })
-
-          const result = await rpcResponse.json()
-          authLog('info', 'join_org_by_slug result', {
-            success: result?.success,
-            orgName: result?.org_name,
-            retry: result?.retry,
-            attempt,
-          })
-
-          if (result?.success && result?.org_id) {
-            // Successfully joined - fetch the full organization
-            const orgResponse = await fetch(
-              `${url}/rest/v1/organizations?select=*&id=eq.${result.org_id}`,
-              {
-                headers: {
-                  apikey: key,
-                  Authorization: `Bearer ${accessToken}`,
-                  'Content-Type': 'application/json',
-                },
-              },
-            )
-            const orgData = await orgResponse.json()
-
-            if (orgData?.[0]) {
-              authLog('info', 'User joined org via slug', {
-                orgName: orgData[0].name,
-                addedToDefaultTeam: result.added_to_default_team,
-              })
-              return { org: orgData[0], error: null }
-            }
-          } else if (result?.retry && attempt < maxRetries) {
-            // User record not ready yet, wait and retry
-            authLog('info', 'User record not ready, retrying join_org_by_slug...', {
-              attempt,
-              maxRetries,
-            })
-            await new Promise((resolve) => setTimeout(resolve, 1000 * attempt))
-            continue
-          } else if (result?.error) {
-            authLog('warn', 'join_org_by_slug failed', { error: result.error })
-            break
-          }
-        } catch (rpcErr) {
-          authLog('warn', 'Failed to call join_org_by_slug RPC', { error: String(rpcErr), attempt })
-          if (attempt < maxRetries) {
-            await new Promise((resolve) => setTimeout(resolve, 1000 * attempt))
-            continue
-          }
+          authLog('info', 'User joined org via slug', { orgName: joinedOrg.name })
+          return { org: joinedOrg, error: null }
         }
-        break
       }
     }
 
@@ -589,62 +578,20 @@ export async function linkUserToOrganization(
     // This handles legacy org codes that don't have a slug
     // Each organization has their own Supabase backend, so if a user has the org code,
     // they're connecting to THAT org's backend - the only org there is the right one
-    if (allOrgs && allOrgs.length === 1) {
+    if (allOrgs.length === 1 && allOrgs[0]?.slug) {
       authLog('info', 'Only one org in database, attempting to join via slug', {
         slug: allOrgs[0].slug,
       })
+      const joinedOrgId = await joinOrgBySlug(api, allOrgs[0].slug, 'single_org')
 
-      // Retry up to 5 times with delay if user record isn't ready yet
-      const maxRetries = 5
-      for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-          const rpcResponse = await fetch(`${url}/rest/v1/rpc/join_org_by_slug`, {
-            method: 'POST',
-            headers: {
-              apikey: key,
-              Authorization: `Bearer ${accessToken}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ p_org_slug: allOrgs[0].slug }),
-          })
-
-          const result = await rpcResponse.json()
-          authLog('info', 'join_org_by_slug (single org fallback) result', {
-            success: result?.success,
-            orgName: result?.org_name,
-            retry: result?.retry,
-            attempt,
-          })
-
-          if (result?.success && result?.org_id) {
-            authLog('info', 'User joined the only org in database', { orgName: allOrgs[0].name })
-            return { org: allOrgs[0], error: null }
-          } else if (result?.retry && attempt < maxRetries) {
-            // User record not ready yet, wait and retry
-            authLog(
-              'info',
-              'User record not ready, retrying join_org_by_slug (single org fallback)...',
-              { attempt, maxRetries },
-            )
-            await new Promise((resolve) => setTimeout(resolve, 1000 * attempt))
-            continue
-          } else if (result?.error) {
-            authLog('warn', 'join_org_by_slug (single org fallback) failed', {
-              error: result.error,
-            })
-            break
-          }
-        } catch (rpcErr) {
-          authLog('warn', 'Failed to call join_org_by_slug for single org fallback', {
-            error: String(rpcErr),
-            attempt,
-          })
-          if (attempt < maxRetries) {
-            await new Promise((resolve) => setTimeout(resolve, 1000 * attempt))
-            continue
-          }
-        }
-        break
+      if (joinedOrgId && (await confirmMembership(api, userId, joinedOrgId))) {
+        const totalDuration = performance.now() - startTime
+        recordMetric('Startup', 'Organization load complete', {
+          durationMs: Math.round(totalDuration),
+          path: 'single_org',
+        })
+        authLog('info', 'User joined the only org in database', { orgName: allOrgs[0].name })
+        return { org: allOrgs[0], error: null }
       }
     }
 

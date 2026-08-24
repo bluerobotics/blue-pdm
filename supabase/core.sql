@@ -113,12 +113,28 @@ ON CONFLICT (id) DO NOTHING;
 -- what a database must contain to be allowed to claim it.
 
 CREATE OR REPLACE FUNCTION schema_release_version() RETURNS INTEGER
-LANGUAGE sql IMMUTABLE AS $$ SELECT 96 $$;
+LANGUAGE sql IMMUTABLE AS $$ SELECT 97 $$;
 
 CREATE OR REPLACE FUNCTION schema_release_description() RETURNS TEXT
 LANGUAGE sql IMMUTABLE AS $$ SELECT
-  'Every schema file asks try_stamp_schema() after installation, so the last file records '
-  'the verified release automatically while partial installs remain unstamped'
+  'An account could finish signing in belonging to no organization and not be told. v95 '
+  'pinned users.org_id against self-update, which was right, but linkUserToOrganization '
+  'still set that column with a PATCH whenever the email domain matched an org; PostgREST '
+  'refused the write, the refusal was logged as a warning, and the org was returned anyway. '
+  'The account then registered a user_sessions row stamped with that org - a table whose '
+  'policy only checks user_id = auth.uid() - so it appeared in the online-presence '
+  'indicator while being absent from Members & Teams and from every other query that reads '
+  'real membership, and no admin could repair it, because the admin update policy is gated '
+  'on `org_id IN (...)` and NULL IN (...) is NULL. Because the domain branch returned early '
+  'it also never reached join_org_by_slug, so the org code such a user had been given was '
+  'never actually used and they were never added to the default team. ensure_user_org_id() '
+  'now resolves a pending invitation first and an email-domain match second for any account '
+  'whose org_id is still NULL, honours blocked_users on both routes, and performs the '
+  'UPDATE as definer - repairing accounts already stranded on their next sign-in. The '
+  'client no longer writes users.org_id, users.role or pending_org_members.claimed_at at '
+  'all: every route goes through join_org_by_slug or this function, and reads the column '
+  'back before reporting an organization, so a link that does not persist surfaces as a '
+  'failure instead of a working-looking session.'
 $$;
 
 -- One row per object this release requires, scoped to the module that creates it.
@@ -156,6 +172,14 @@ LANGUAGE sql IMMUTABLE AS $$
     ('core', NULL, 'function', 'is_org_member(uuid)', NULL),
     ('core', NULL, 'function', 'schema_release_version()', NULL),
     ('core', NULL, 'function', 'try_stamp_schema()', NULL),
+    -- The only caller permitted to write users.org_id for the account that owns
+    -- it, and therefore the only place an account stranded with org_id NULL can
+    -- be repaired. Pinned on `resolved_org_id` rather than on the table names it
+    -- reads: a copy that still consults pending_org_members and organizations
+    -- but stops short of the UPDATE - which is exactly what every release
+    -- through 96 did - names both tables and resolves nothing. The variable
+    -- exists only in the version that reaches a decision and writes it.
+    ('core', NULL, 'function', 'ensure_user_org_id()', 'resolved_org_id'),
     -- The checks themselves are release content. A database carrying v90's
     -- copy of check_anon_reach() would look at no views at all and report a
     -- clean schema over the parts_with_pricing leak, so the manifest pins the
@@ -4003,6 +4027,9 @@ DECLARE
   auth_user RECORD;
   pending RECORD;
   user_exists BOOLEAN;
+  resolved_org_id UUID;
+  default_team_id UUID;
+  resolution TEXT;
 BEGIN
   current_user_id := auth.uid();
   
@@ -4064,10 +4091,92 @@ BEGIN
     RETURN json_build_object('success', true, 'has_org', true, 'org_id', current_org_id);
   END IF;
   
+  -- THE ROW EXISTS AND HAS NO ORGANIZATION
+  --
+  -- Until this release the function stopped here and told the caller to use an org code, which
+  -- was the wrong answer for an account that already had an invitation or an address in an
+  -- organization's email_domains. The client compensated by writing users.org_id itself, and
+  -- schema 95 - correctly - made that write impossible: the self-update policy pins org_id to
+  -- its current value. The client kept issuing the PATCH, PostgREST kept refusing it, and the
+  -- refusal was logged as a warning and otherwise ignored, so the account carried on with
+  -- org_id NULL while its user_sessions row named the organization. It appeared in the presence
+  -- indicator and in nothing that reads membership, and no admin could repair it either, since
+  -- the admin policy is gated on `org_id IN (...)` and NULL IN (...) is NULL.
+  --
+  -- Resolving it here is what closes that: this function is SECURITY DEFINER, so it is the one
+  -- caller that may write the column, and it runs on every boot, so an account already stranded
+  -- is repaired the next time it signs in.
+  --
+  -- Order matters. An invitation is an explicit decision about one person and carries a role,
+  -- teams and vaults; a domain match is a standing rule about an address. The invitation wins.
+  SELECT * INTO pending
+  FROM pending_org_members
+  WHERE LOWER(email) = LOWER(user_email)
+    AND claimed_at IS NULL
+  LIMIT 1;
+  
+  IF pending.org_id IS NOT NULL THEN
+    resolved_org_id := pending.org_id;
+    resolution := 'pending_invite';
+  ELSE
+    SELECT id INTO resolved_org_id
+    FROM organizations
+    WHERE split_part(user_email, '@', 2) = ANY(email_domains)
+    ORDER BY id
+    LIMIT 1;
+    
+    IF resolved_org_id IS NOT NULL THEN
+      resolution := 'email_domain';
+    END IF;
+  END IF;
+  
+  IF resolved_org_id IS NULL THEN
+    RETURN json_build_object(
+      'success', true,
+      'has_org', false,
+      'message', 'User needs to join an organization via org code'
+    );
+  END IF;
+  
+  -- Honoured here as well as in join_org_by_slug. A block has to hold on every route into an
+  -- organization or it holds on none of them.
+  IF EXISTS (
+    SELECT 1 FROM blocked_users
+    WHERE org_id = resolved_org_id AND LOWER(email) = LOWER(user_email)
+  ) THEN
+    RETURN json_build_object(
+      'success', false,
+      'has_org', false,
+      'error', 'You have been blocked from this organization'
+    );
+  END IF;
+  
+  -- Fires claim_pending_membership_trigger, which applies the invitation's teams and vaults and
+  -- stamps claimed_at. That trigger only ever fires on org_id changing, so it cannot run twice.
+  UPDATE users
+  SET org_id = resolved_org_id,
+      role = CASE WHEN pending.role IS NOT NULL THEN pending.role ELSE role END
+  WHERE id = current_user_id;
+  
+  -- An invitation names the teams; a domain match does not, so it takes the organization's
+  -- default. join_org_by_slug does the same thing for the org-code route, and an account that
+  -- arrives on this route used to land in no team at all.
+  IF resolution = 'email_domain' THEN
+    SELECT default_new_user_team_id INTO default_team_id
+    FROM organizations WHERE id = resolved_org_id;
+    
+    IF default_team_id IS NOT NULL THEN
+      INSERT INTO team_members (team_id, user_id, added_by)
+      VALUES (default_team_id, current_user_id, current_user_id)
+      ON CONFLICT (team_id, user_id) DO NOTHING;
+    END IF;
+  END IF;
+  
   RETURN json_build_object(
     'success', true,
-    'has_org', false,
-    'message', 'User needs to join an organization via org code'
+    'has_org', true,
+    'org_id', resolved_org_id,
+    'resolved_by', resolution
   );
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;

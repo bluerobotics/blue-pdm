@@ -1274,7 +1274,7 @@ All state changes go through these; nothing writes `files.state` or
 | Function | Purpose |
 |----------|---------|
 | `join_org_by_slug(p_org_slug)` | Join org via org code |
-| `ensure_user_org_id()` | Create user record if missing |
+| `ensure_user_org_id()` | Create the user record if missing, and resolve `org_id` for an account that still has none — pending invitation first, email-domain match second |
 | `apply_pending_team_memberships(p_user_id)` | Apply invite permissions |
 | `is_supplier_account(p_identifier)` | Check if email/phone is supplier |
 | `get_org_auth_providers(p_org_slug)` | Get enabled auth methods |
@@ -1612,10 +1612,10 @@ Database and app versions must match to prevent compatibility issues.
 
 ```sql
 -- Database version
-SELECT version FROM schema_version;  -- e.g., 96
+SELECT version FROM schema_version;  -- e.g., 97
 
 -- App expected version
-EXPECTED_SCHEMA_VERSION = 96  -- src/lib/schemaVersion.ts
+EXPECTED_SCHEMA_VERSION = 97  -- src/lib/schemaVersion.ts
 ```
 
 ### Version Mismatch Handling
